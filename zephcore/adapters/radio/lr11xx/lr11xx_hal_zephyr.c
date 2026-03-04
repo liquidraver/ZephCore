@@ -29,6 +29,10 @@ static struct lr11xx_hal_context *current_ctx = NULL;
  */
 static struct k_work dio1_work;
 
+/* BUSY pin interrupt — wakes wait_on_busy() via semaphore instead of polling */
+static struct gpio_callback busy_gpio_cb;
+static K_SEM_DEFINE(busy_sem, 0, 1);
+
 static void dio1_work_handler(struct k_work *work)
 {
     ARG_UNUSED(work);
@@ -37,28 +41,53 @@ static void dio1_work_handler(struct k_work *work)
     }
 }
 
+static void busy_isr_callback(const struct device *dev, struct gpio_callback *cb,
+                               uint32_t pins)
+{
+    ARG_UNUSED(dev);
+    ARG_UNUSED(cb);
+    ARG_UNUSED(pins);
+    k_sem_give(&busy_sem);
+}
+
 /* Track the last SPI opcode for debugging BUSY stuck */
 static uint16_t last_opcode;
 static int64_t last_cmd_time;
 
 /**
- * @brief Wait until BUSY pin goes low or timeout
+ * @brief Wait until BUSY pin goes low or timeout.
+ *
+ * Uses GPIO interrupt + semaphore instead of polling.  The CPU sleeps
+ * while waiting, saving power during long BUSY periods (reset, sleep
+ * wake, firmware commands).  For sub-microsecond waits the fast-path
+ * check returns immediately without touching the interrupt at all.
  */
 static lr11xx_hal_status_t wait_on_busy(struct lr11xx_hal_context *ctx)
 {
-    int64_t start = k_uptime_get();
-    int loops = 0;
+    /* Fast path: already ready */
+    if (!gpio_pin_get_dt(&ctx->busy)) {
+        return LR11XX_HAL_STATUS_OK;
+    }
 
-    while (gpio_pin_get_dt(&ctx->busy)) {
-        if ((k_uptime_get() - start) > LR11XX_BUSY_TIMEOUT_MS) {
-            LOG_ERR("BUSY timeout! last_op=0x%04x sent_at=%lld (%lld ms ago) DIO1=%d",
-                    last_opcode, last_cmd_time,
-                    k_uptime_get() - last_cmd_time,
-                    gpio_pin_get_dt(&ctx->dio1));
-            return LR11XX_HAL_STATUS_ERROR;
-        }
-        k_usleep(100);  /* 100us — yields CPU so other threads can run */
-        loops++;
+    k_sem_reset(&busy_sem);
+    gpio_pin_interrupt_configure_dt(&ctx->busy, GPIO_INT_EDGE_TO_INACTIVE);
+
+    /* Re-check after enabling interrupt to close the race window where
+     * BUSY dropped between our first check and the interrupt enable. */
+    if (!gpio_pin_get_dt(&ctx->busy)) {
+        gpio_pin_interrupt_configure_dt(&ctx->busy, GPIO_INT_DISABLE);
+        return LR11XX_HAL_STATUS_OK;
+    }
+
+    int ret = k_sem_take(&busy_sem, K_MSEC(LR11XX_BUSY_TIMEOUT_MS));
+    gpio_pin_interrupt_configure_dt(&ctx->busy, GPIO_INT_DISABLE);
+
+    if (ret == -EAGAIN) {
+        LOG_ERR("BUSY timeout! last_op=0x%04x sent_at=%lld (%lld ms ago) DIO1=%d",
+                last_opcode, last_cmd_time,
+                k_uptime_get() - last_cmd_time,
+                gpio_pin_get_dt(&ctx->dio1));
+        return LR11XX_HAL_STATUS_ERROR;
     }
 
     return LR11XX_HAL_STATUS_OK;
@@ -128,10 +157,18 @@ int lr11xx_hal_init(struct lr11xx_hal_context *ctx)
         return ret;
     }
 
-    /* Configure BUSY as input */
+    /* Configure BUSY as input with interrupt support */
     ret = gpio_pin_configure_dt(&ctx->busy, GPIO_INPUT);
     if (ret < 0) {
         LOG_ERR("Failed to configure BUSY: %d", ret);
+        return ret;
+    }
+
+    /* Set up BUSY interrupt callback (interrupt enabled on-demand by wait_on_busy) */
+    gpio_init_callback(&busy_gpio_cb, busy_isr_callback, BIT(ctx->busy.pin));
+    ret = gpio_add_callback(ctx->busy.port, &busy_gpio_cb);
+    if (ret < 0) {
+        LOG_ERR("Failed to add BUSY callback: %d", ret);
         return ret;
     }
 

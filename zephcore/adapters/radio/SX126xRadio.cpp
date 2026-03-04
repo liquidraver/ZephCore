@@ -46,10 +46,10 @@ void SX126xRadio::hwStartReceive()
 	int ret = lora_recv_async(_dev, rxCallbackStatic, this);
 	if (ret < 0) {
 		LOG_ERR("lora_recv_async failed: %d", ret);
-		_in_recv_mode = false;
+		atomic_set(&_in_recv_mode, 0);
 		return;
 	}
-	_in_recv_mode = true;
+	atomic_set(&_in_recv_mode, 1);
 
 	/* RX boost: set once via setRxBoost(), preserved by SX126x
 	 * hardware retention registers (DS §9.6). */

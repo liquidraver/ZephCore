@@ -22,7 +22,7 @@ namespace mesh {
 LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 			     NodePrefs *prefs)
 	: _dev(lora_dev), _prefs(prefs), _board(&board),
-	  _in_recv_mode(false), _tx_active(false),
+	  _in_recv_mode(0), _tx_active(0),
 	  _last_rssi(0), _last_snr(0),
 	  _rx_head(0), _rx_tail(0),
 	  _noise_floor(DEFAULT_NOISE_FLOOR), _calibration_threshold(0), _ema_unguarded(0),
@@ -52,7 +52,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 	for (;;) {
 		k_sem_take(&self->_tx_start_sem, K_FOREVER);
 
-		if (!self->_tx_active) {
+		if (!atomic_get(&self->_tx_active)) {
 			continue;
 		}
 
@@ -73,8 +73,8 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
 			self->startReceive();
-			self->_tx_active = false;
-			self->_packets_sent++;
+			atomic_set(&self->_tx_active, 0);
+			atomic_inc(&self->_packets_sent);
 			if (self->_tx_done_cb) {
 				self->_tx_done_cb(self->_tx_done_cb_user_data);
 			}
@@ -86,7 +86,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 			LOG_ERR("TX wait: TIMEOUT!");
 			self->_board->onAfterTransmit();
 			self->startReceive();
-			self->_tx_active = false;
+			atomic_set(&self->_tx_active, 0);
 			if (self->_tx_done_cb) {
 				self->_tx_done_cb(self->_tx_done_cb_user_data);
 			}
@@ -97,8 +97,8 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
 			self->startReceive();
-			self->_tx_active = false;
-			self->_packets_sent++;
+			atomic_set(&self->_tx_active, 0);
+			atomic_inc(&self->_packets_sent);
 			LOG_INF("TX complete, RX restarted");
 
 			if (self->_tx_done_cb) {
@@ -110,7 +110,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
 			self->startReceive();
-			self->_tx_active = false;
+			atomic_set(&self->_tx_active, 0);
 
 			if (self->_tx_done_cb) {
 				self->_tx_done_cb(self->_tx_done_cb_user_data);
@@ -141,9 +141,9 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 
 	/* NULL data = RX error (CRC/header error) */
 	if (data == NULL && size == 0) {
-		self->_packets_recv_errors++;
+		atomic_inc(&self->_packets_recv_errors);
 		LOG_DBG("RX error (CRC/header), total errors: %u",
-			self->_packets_recv_errors);
+			(uint32_t)atomic_get(&self->_packets_recv_errors));
 		return;
 	}
 
@@ -152,27 +152,28 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	/* Ring buffer write — SPSC: only ISR writes _rx_head, only main
 	 * thread writes _rx_tail.  On overflow, drop the NEW packet to
 	 * preserve this invariant (ISR must never touch _rx_tail). */
-	uint8_t next_head = (self->_rx_head + 1) % RX_RING_SIZE;
-	if (next_head == self->_rx_tail) {
+	uint8_t head = (uint8_t)atomic_get(&self->_rx_head);
+	uint8_t next_head = (head + 1) % RX_RING_SIZE;
+	if (next_head == (uint8_t)atomic_get(&self->_rx_tail)) {
 		LOG_WRN("RX ring full, dropping new packet");
-		self->_packets_recv_errors++;
+		atomic_inc(&self->_packets_recv_errors);
 		if (self->_rx_cb) {
 			self->_rx_cb(self->_rx_cb_user_data);
 		}
 		return;
 	}
 
-	RxPacket *pkt = &self->_rx_ring[self->_rx_head];
+	RxPacket *pkt = &self->_rx_ring[head];
 	uint16_t copy_len = (size > sizeof(pkt->data)) ? sizeof(pkt->data) : size;
 	memcpy(pkt->data, data, copy_len);
 	pkt->len = copy_len;
 	pkt->rssi = rssi;
 	pkt->snr = snr;
 
-	self->_rx_head = next_head;
+	atomic_set(&self->_rx_head, next_head);
 	self->_last_rssi = (float)rssi;
 	self->_last_snr = (float)snr;
-	self->_packets_recv++;
+	atomic_inc(&self->_packets_recv);
 
 	if (self->_rx_cb) {
 		self->_rx_cb(self->_rx_cb_user_data);
@@ -337,7 +338,7 @@ void LoRaRadioBase::begin()
 void LoRaRadioBase::reconfigure()
 {
 	hwCancelReceive();
-	_in_recv_mode = false;
+	atomic_set(&_in_recv_mode, 0);
 	_config_cached = false;  /* Force full reconfigure */
 	startReceive();
 
@@ -375,11 +376,12 @@ void LoRaRadioBase::startReceive()
 
 int LoRaRadioBase::recvRaw(uint8_t *bytes, int sz)
 {
-	if (_rx_head == _rx_tail) {
+	uint8_t tail = (uint8_t)atomic_get(&_rx_tail);
+	if (atomic_get(&_rx_head) == tail) {
 		return 0;
 	}
 
-	RxPacket *pkt = &_rx_ring[_rx_tail];
+	RxPacket *pkt = &_rx_ring[tail];
 	uint16_t len = pkt->len;
 	if (len > (uint16_t)sz) {
 		len = (uint16_t)sz;
@@ -388,7 +390,7 @@ int LoRaRadioBase::recvRaw(uint8_t *bytes, int sz)
 	memcpy(bytes, pkt->data, len);
 	_last_rssi = (float)pkt->rssi;
 	_last_snr = (float)pkt->snr;
-	_rx_tail = (_rx_tail + 1) % RX_RING_SIZE;
+	atomic_set(&_rx_tail, (tail + 1) % RX_RING_SIZE);
 	return (int)len;
 }
 
@@ -399,8 +401,8 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	}
 
 	_board->onBeforeTransmit();
-	_tx_active = true;
-	_in_recv_mode = false;
+	atomic_set(&_tx_active, 1);
+	atomic_set(&_in_recv_mode, 0);
 
 	hwCancelReceive();
 	configureTx();
@@ -412,7 +414,7 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	if (ret < 0) {
 		LOG_ERR("hwSendAsync failed: %d", ret);
 		_board->onAfterTransmit();
-		_tx_active = false;
+		atomic_set(&_tx_active, 0);
 		startReceive();
 		return false;
 	}
@@ -424,7 +426,7 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 
 bool LoRaRadioBase::isSendComplete()
 {
-	return !_tx_active;
+	return !atomic_get(&_tx_active);
 }
 
 void LoRaRadioBase::onSendFinished()
@@ -434,7 +436,7 @@ void LoRaRadioBase::onSendFinished()
 
 bool LoRaRadioBase::isInRecvMode() const
 {
-	return _in_recv_mode;
+	return atomic_get(&_in_recv_mode) != 0;
 }
 
 float LoRaRadioBase::getLastRSSI() const
@@ -499,7 +501,7 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 {
 	_calibration_threshold = threshold;
 
-	if (!_in_recv_mode || _tx_active) {
+	if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active)) {
 		return;
 	}
 
@@ -591,7 +593,7 @@ void LoRaRadioBase::resetAGC()
 	/* Don't reset AGC while transmitting or receiving — warm sleep would
 	 * abort the TX or corrupt the incoming packet.  maintenanceLoop()
 	 * will retry next housekeeping cycle. */
-	if (_tx_active || isReceiving()) {
+	if (atomic_get(&_tx_active) || isReceiving()) {
 		return;
 	}
 
@@ -599,7 +601,7 @@ void LoRaRadioBase::resetAGC()
 
 	/* Warm sleep + calibrate leaves the radio in STANDBY.
 	 * Restart receive if we were in RX mode. */
-	if (_in_recv_mode) {
+	if (atomic_get(&_in_recv_mode)) {
 		startReceive();
 	}
 
@@ -612,7 +614,7 @@ void LoRaRadioBase::resetAGC()
 
 bool LoRaRadioBase::isReceiving()
 {
-	if (!_in_recv_mode || _tx_active) {
+	if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active)) {
 		return false;
 	}
 	if (hwIsPreambleDetected()) {
@@ -639,7 +641,7 @@ void LoRaRadioBase::enableRxDutyCycle(bool enable)
 {
 	_rx_duty_cycle_enabled = enable;
 	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
-	if (_in_recv_mode) {
+	if (atomic_get(&_in_recv_mode)) {
 		hwSetRxDutyCycle(enable);
 	}
 }
@@ -649,7 +651,7 @@ void LoRaRadioBase::setRxBoost(bool enable)
 	_rx_boost_enabled = enable;
 	LOG_INF("RX boost %s (+3dB sensitivity, +2mA)",
 		enable ? "enabled" : "disabled");
-	if (_in_recv_mode) {
+	if (atomic_get(&_in_recv_mode)) {
 		hwSetRxBoost(enable);
 	}
 }

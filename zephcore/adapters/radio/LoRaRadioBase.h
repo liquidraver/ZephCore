@@ -49,13 +49,13 @@ public:
 	float getLastSNR() const override;
 
 	/* Packet statistics */
-	uint32_t getPacketsRecv() const override { return _packets_recv; }
-	uint32_t getPacketsSent() const override { return _packets_sent; }
-	uint32_t getPacketsRecvErrors() const override { return _packets_recv_errors; }
+	uint32_t getPacketsRecv() const override { return (uint32_t)atomic_get(&_packets_recv); }
+	uint32_t getPacketsSent() const override { return (uint32_t)atomic_get(&_packets_sent); }
+	uint32_t getPacketsRecvErrors() const override { return (uint32_t)atomic_get(&_packets_recv_errors); }
 	void resetStats() {
-		_packets_recv = 0;
-		_packets_sent = 0;
-		_packets_recv_errors = 0;
+		atomic_set(&_packets_recv, 0);
+		atomic_set(&_packets_sent, 0);
+		atomic_set(&_packets_recv_errors, 0);
 	}
 
 	/* Advanced radio features */
@@ -117,10 +117,10 @@ protected:
 	const struct device *_dev;
 	NodePrefs *_prefs;
 	MainBoard *_board;
-	volatile bool _in_recv_mode;
-	volatile bool _tx_active;
-	volatile float _last_rssi;
-	volatile float _last_snr;
+	atomic_t _in_recv_mode;
+	atomic_t _tx_active;
+	volatile float _last_rssi;   /* word-aligned float — atomic on ARM */
+	volatile float _last_snr;    /* word-aligned float — atomic on ARM */
 
 	/* RX ring buffer */
 	struct RxPacket {
@@ -130,8 +130,8 @@ protected:
 		int8_t snr;
 	};
 	RxPacket _rx_ring[RX_RING_SIZE];
-	volatile uint8_t _rx_head;
-	volatile uint8_t _rx_tail;
+	atomic_t _rx_head;
+	atomic_t _rx_tail;
 
 	/* TX buffer + signal */
 	uint8_t _tx_buf[256];
@@ -171,9 +171,9 @@ private:
 	bool _tx_thread_running;
 
 	/* Packet statistics */
-	volatile uint32_t _packets_recv;
-	volatile uint32_t _packets_sent;
-	volatile uint32_t _packets_recv_errors;
+	atomic_t _packets_recv;
+	atomic_t _packets_sent;
+	atomic_t _packets_recv_errors;
 };
 
 } /* namespace mesh */
