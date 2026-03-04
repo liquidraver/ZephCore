@@ -46,6 +46,11 @@ static T constrain(T value, T min_val, T max_val) {
     return value;
 }
 
+/* Read exactly 'len' bytes; short/error read stops the chain via ok flag */
+static inline bool prefs_read(struct fs_file_t *f, void *dest, size_t len) {
+    return fs_read(f, dest, len) == (ssize_t)len;
+}
+
 void CommonCLI::loadPrefs(const char* path) {
     struct fs_file_t file;
     fs_file_t_init(&file);
@@ -56,50 +61,58 @@ void CommonCLI::loadPrefs(const char* path) {
     }
 
     uint8_t pad[8];
+    bool ok = true;
 
-    fs_read(&file, &_prefs->airtime_factor, sizeof(_prefs->airtime_factor));   // 0
-    fs_read(&file, &_prefs->node_name, sizeof(_prefs->node_name));             // 4
-    fs_read(&file, pad, 4);                                                     // 36
-    fs_read(&file, &_prefs->node_lat, sizeof(_prefs->node_lat));               // 40
-    fs_read(&file, &_prefs->node_lon, sizeof(_prefs->node_lon));               // 48
-    fs_read(&file, &_prefs->password[0], sizeof(_prefs->password));            // 56
-    fs_read(&file, &_prefs->freq, sizeof(_prefs->freq));                       // 72
-    fs_read(&file, &_prefs->tx_power_dbm, sizeof(_prefs->tx_power_dbm));       // 76
-    fs_read(&file, &_prefs->disable_fwd, sizeof(_prefs->disable_fwd));         // 77
-    fs_read(&file, &_prefs->advert_interval, sizeof(_prefs->advert_interval)); // 78
-    fs_read(&file, pad, 1);                                                     // 79
-    fs_read(&file, &_prefs->rx_delay_base, sizeof(_prefs->rx_delay_base));     // 80
-    fs_read(&file, &_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor)); // 84
-    fs_read(&file, &_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
-    fs_read(&file, &_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-    fs_read(&file, pad, 4);                                                     // 108
-    fs_read(&file, &_prefs->sf, sizeof(_prefs->sf));                           // 112
-    fs_read(&file, &_prefs->cr, sizeof(_prefs->cr));                           // 113
-    fs_read(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only)); // 114
-    fs_read(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));           // 115
-    fs_read(&file, &_prefs->bw, sizeof(_prefs->bw));                           // 116
-    fs_read(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval)); // 120
-    fs_read(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));    // 121
-    fs_read(&file, pad, 2);                                                     // 122
-    fs_read(&file, &_prefs->flood_max, sizeof(_prefs->flood_max));             // 124
-    fs_read(&file, &_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval)); // 125
-    fs_read(&file, &_prefs->interference_threshold, sizeof(_prefs->interference_threshold)); // 126
-    fs_read(&file, pad, 1);  // skip bridge_enabled                             // 127
-    fs_read(&file, pad, 2);  // skip bridge_delay                               // 128
-    fs_read(&file, pad, 1);  // skip bridge_pkt_src                             // 130
-    fs_read(&file, pad, 4);  // skip bridge_baud                                // 131
-    fs_read(&file, pad, 1);  // skip bridge_channel                             // 135
-    fs_read(&file, pad, 16); // skip bridge_secret                              // 136
-    fs_read(&file, &_prefs->powersaving_enabled, sizeof(_prefs->powersaving_enabled)); // 152
-    fs_read(&file, pad, 3);                                                     // 153
-    fs_read(&file, &_prefs->gps_enabled, sizeof(_prefs->gps_enabled));         // 156
-    fs_read(&file, &_prefs->gps_interval, sizeof(_prefs->gps_interval));       // 157
-    fs_read(&file, &_prefs->advert_loc_policy, sizeof(_prefs->advert_loc_policy)); // 161
-    fs_read(&file, &_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
-    fs_read(&file, &_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));   // 166
-    fs_read(&file, _prefs->owner_info, sizeof(_prefs->owner_info));            // 170
-    fs_read(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));               // 290
-    fs_read(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));     // 291
+    /* Read fields in Arduino-compatible binary order.
+     * On truncated file, short-circuit at first failure
+     * so remaining fields keep their default values. */
+    ok = ok && prefs_read(&file, &_prefs->airtime_factor, sizeof(_prefs->airtime_factor));   // 0
+    ok = ok && prefs_read(&file, &_prefs->node_name, sizeof(_prefs->node_name));             // 4
+    ok = ok && prefs_read(&file, pad, 4);                                                     // 36
+    ok = ok && prefs_read(&file, &_prefs->node_lat, sizeof(_prefs->node_lat));               // 40
+    ok = ok && prefs_read(&file, &_prefs->node_lon, sizeof(_prefs->node_lon));               // 48
+    ok = ok && prefs_read(&file, &_prefs->password[0], sizeof(_prefs->password));            // 56
+    ok = ok && prefs_read(&file, &_prefs->freq, sizeof(_prefs->freq));                       // 72
+    ok = ok && prefs_read(&file, &_prefs->tx_power_dbm, sizeof(_prefs->tx_power_dbm));       // 76
+    ok = ok && prefs_read(&file, &_prefs->disable_fwd, sizeof(_prefs->disable_fwd));         // 77
+    ok = ok && prefs_read(&file, &_prefs->advert_interval, sizeof(_prefs->advert_interval)); // 78
+    ok = ok && prefs_read(&file, pad, 1);                                                     // 79
+    ok = ok && prefs_read(&file, &_prefs->rx_delay_base, sizeof(_prefs->rx_delay_base));     // 80
+    ok = ok && prefs_read(&file, &_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor)); // 84
+    ok = ok && prefs_read(&file, &_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
+    ok = ok && prefs_read(&file, &_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
+    ok = ok && prefs_read(&file, pad, 4);                                                     // 108
+    ok = ok && prefs_read(&file, &_prefs->sf, sizeof(_prefs->sf));                           // 112
+    ok = ok && prefs_read(&file, &_prefs->cr, sizeof(_prefs->cr));                           // 113
+    ok = ok && prefs_read(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only)); // 114
+    ok = ok && prefs_read(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));           // 115
+    ok = ok && prefs_read(&file, &_prefs->bw, sizeof(_prefs->bw));                           // 116
+    ok = ok && prefs_read(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval)); // 120
+    ok = ok && prefs_read(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));    // 121
+    ok = ok && prefs_read(&file, pad, 2);                                                     // 122
+    ok = ok && prefs_read(&file, &_prefs->flood_max, sizeof(_prefs->flood_max));             // 124
+    ok = ok && prefs_read(&file, &_prefs->flood_advert_interval, sizeof(_prefs->flood_advert_interval)); // 125
+    ok = ok && prefs_read(&file, &_prefs->interference_threshold, sizeof(_prefs->interference_threshold)); // 126
+    ok = ok && prefs_read(&file, pad, 1);  // skip bridge_enabled                             // 127
+    ok = ok && prefs_read(&file, pad, 2);  // skip bridge_delay                               // 128
+    ok = ok && prefs_read(&file, pad, 1);  // skip bridge_pkt_src                             // 130
+    ok = ok && prefs_read(&file, pad, 4);  // skip bridge_baud                                // 131
+    ok = ok && prefs_read(&file, pad, 1);  // skip bridge_channel                             // 135
+    ok = ok && prefs_read(&file, pad, 16); // skip bridge_secret                              // 136
+    ok = ok && prefs_read(&file, &_prefs->powersaving_enabled, sizeof(_prefs->powersaving_enabled)); // 152
+    ok = ok && prefs_read(&file, pad, 3);                                                     // 153
+    ok = ok && prefs_read(&file, &_prefs->gps_enabled, sizeof(_prefs->gps_enabled));         // 156
+    ok = ok && prefs_read(&file, &_prefs->gps_interval, sizeof(_prefs->gps_interval));       // 157
+    ok = ok && prefs_read(&file, &_prefs->advert_loc_policy, sizeof(_prefs->advert_loc_policy)); // 161
+    ok = ok && prefs_read(&file, &_prefs->discovery_mod_timestamp, sizeof(_prefs->discovery_mod_timestamp)); // 162
+    ok = ok && prefs_read(&file, &_prefs->adc_multiplier, sizeof(_prefs->adc_multiplier));   // 166
+    ok = ok && prefs_read(&file, _prefs->owner_info, sizeof(_prefs->owner_info));            // 170
+    ok = ok && prefs_read(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));               // 290
+    ok = ok && prefs_read(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));     // 291
+
+    if (!ok) {
+        LOG_WRN("Prefs file %s truncated, some fields use defaults", path);
+    }
 
     fs_close(&file);
 

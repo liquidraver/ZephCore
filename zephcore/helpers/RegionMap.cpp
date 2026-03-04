@@ -150,9 +150,10 @@ RegionEntry* RegionMap::findMatch(mesh::Packet* packet, uint8_t mask) {
                 _store->getAutoKeyFor(region->id, region->name, keys[0]);
                 num = 1;
             } else {  // new: implicit auto hashtag region
-                char tmp[sizeof(region->name)];
+                char tmp[sizeof(region->name) + 1];
                 tmp[0] = '#';
-                strcpy(&tmp[1], region->name);
+                memcpy(&tmp[1], region->name, sizeof(region->name) - 1);
+                tmp[sizeof(region->name)] = '\0';
                 _store->getAutoKeyFor(region->id, tmp, keys[0]);
                 num = 1;
             }

@@ -81,8 +81,10 @@ uint8_t Packet::writeTo(uint8_t dest[]) const
 bool Packet::readFrom(const uint8_t src[], uint8_t len)
 {
 	uint8_t i = 0;
+	if (len < 2) return false;
 	header = src[i++];
 	if (hasTransportCodes()) {
+		if (len < 6) return false;
 		memcpy(&transport_codes[0], &src[i], 2); i += 2;
 		memcpy(&transport_codes[1], &src[i], 2); i += 2;
 	} else {

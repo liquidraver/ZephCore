@@ -156,6 +156,8 @@ static void ble_on_disconnected(void)
 	/* Reset message sync — un-ACKed peeked message stays in queue
 	 * and will be re-sent on next CMD_SYNC_NEXT_MESSAGE. */
 	companion_mesh_ptr->cancelSyncPending();
+	/* Free Ed25519 sign buffer if allocated mid-operation */
+	companion_mesh_ptr->cleanupSignState();
 #endif
 	ui_notify(UI_EVENT_BLE_DISCONNECTED);
 }

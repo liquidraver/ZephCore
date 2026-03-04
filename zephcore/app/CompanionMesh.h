@@ -179,6 +179,20 @@ public:
 	void cancelSyncPending() { _sync_pending = false; }
 
 	/**
+	 * Free the Ed25519 signing buffer if allocated.
+	 * Call on BLE disconnect to prevent 8KB leak when disconnect
+	 * occurs between CMD_SIGN_START and CMD_SIGN_FINISH.
+	 */
+	void cleanupSignState() {
+		if (_sign_data) {
+			delete[] _sign_data;
+			_sign_data = nullptr;
+		}
+		_sign_data_len = 0;
+		_sign_data_capacity = 0;
+	}
+
+	/**
 	 * Get BLE device name for advertising.
 	 */
 	const char *getDeviceName() const { return prefs.node_name[0] ? prefs.node_name : nullptr; }

@@ -25,6 +25,7 @@ LOG_MODULE_REGISTER(zephcore_usb, CONFIG_ZEPHCORE_USB_LOG_LEVEL);
 
 #define USB_DTR_CHECK_MS      10000   /* USB DTR poll interval - 10s for power savings */
 #define USB_RING_BUF_SIZE     512     /* USB RX ring buffer size */
+#define USB_FRAME_TIMEOUT_MS  2000    /* Partial frame timeout - reset parser after 2s of no completion */
 
 /* USB CDC state */
 static const struct device *usb_dev;
@@ -33,6 +34,7 @@ static struct ring_buf usb_ring_buf;
 static uint8_t usb_rx_buf[MAX_FRAME_SIZE + 2];  /* +2 for length prefix */
 static uint16_t usb_rx_idx;
 static uint16_t usb_frame_len;  /* Expected frame length (0 = waiting for header) */
+static uint32_t usb_frame_start_time;  /* Timestamp of first byte in current frame */
 static bool usb_dtr_active;
 
 /* Pointers to mesh event infrastructure (set by init) */
@@ -83,12 +85,22 @@ static void usb_rx_work_fn(struct k_work *work)
 
 	uint8_t byte;
 
+	/* Timeout partial frames — if we've been accumulating bytes for too long
+	 * without completing a frame, reset the parser state */
+	if (usb_rx_idx > 0 && (k_uptime_get_32() - usb_frame_start_time) > USB_FRAME_TIMEOUT_MS) {
+		LOG_WRN("usb_rx: partial frame timeout (idx=%u, expected=%u), resync",
+			usb_rx_idx, usb_frame_len);
+		usb_frame_len = 0;
+		usb_rx_idx = 0;
+	}
+
 	while (ring_buf_get(&usb_ring_buf, &byte, 1) == 1) {
 		/* V3 framing: [len_lo][len_hi][payload...] */
 		if (usb_rx_idx == 0) {
 			/* First byte of length */
 			usb_rx_buf[0] = byte;
 			usb_rx_idx = 1;
+			usb_frame_start_time = k_uptime_get_32();
 		} else if (usb_rx_idx == 1) {
 			/* Second byte of length */
 			usb_rx_buf[1] = byte;

@@ -409,10 +409,12 @@ Packet *Mesh::createControlData(const uint8_t *data, size_t len)
 void Mesh::sendFlood(Packet *packet, uint32_t delay_millis, uint8_t path_hash_size)
 {
 	if (packet->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+		releasePacket(packet);
 		return;
 	}
 	if (path_hash_size == 0 || path_hash_size > 3) {
 		LOG_WRN("sendFlood: invalid path_hash_size");
+		releasePacket(packet);
 		return;
 	}
 	packet->header &= ~PH_ROUTE_MASK;
@@ -434,10 +436,12 @@ void Mesh::sendFlood(Packet *packet, uint32_t delay_millis, uint8_t path_hash_si
 void Mesh::sendFlood(Packet *packet, uint16_t *transport_codes, uint32_t delay_millis, uint8_t path_hash_size)
 {
 	if (packet->getPayloadType() == PAYLOAD_TYPE_TRACE) {
+		releasePacket(packet);
 		return;
 	}
 	if (path_hash_size == 0 || path_hash_size > 3) {
 		LOG_WRN("sendFlood: invalid path_hash_size");
+		releasePacket(packet);
 		return;
 	}
 	packet->header &= ~PH_ROUTE_MASK;

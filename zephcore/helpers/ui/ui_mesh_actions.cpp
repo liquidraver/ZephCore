@@ -47,10 +47,12 @@ static uint32_t s_mesh_event_ui_action;
 /* Atomic UI action flags — set from input thread, consumed in mesh event loop */
 static atomic_t pending_ui_actions;
 
-/* Pending state for toggle actions (pass the value to mesh thread) */
-static volatile bool pending_gps_enabled;
-static volatile bool pending_buzzer_quiet;
-static volatile bool pending_offgrid_enabled;
+/* Pending state for toggle actions (pass the value to mesh thread).
+ * Written before atomic_or on pending_ui_actions, read after atomic_clear,
+ * so the atomic provides ordering. Using atomic_t for portability. */
+static atomic_t pending_gps_enabled;
+static atomic_t pending_buzzer_quiet;
+static atomic_t pending_offgrid_enabled;
 
 extern "C" void ui_mesh_actions_init(struct k_event *mesh_events,
 				     uint32_t mesh_event_ui_action,
@@ -87,7 +89,7 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 	gps_enable(enable);
 
 	/* Defer the flash write (savePrefs) to mesh thread */
-	pending_gps_enabled = enable;
+	atomic_set(&pending_gps_enabled, enable ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_GPS_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
@@ -100,7 +102,7 @@ extern "C" void mesh_ble_set_enabled(bool enable)
 extern "C" void mesh_set_buzzer_quiet(bool quiet)
 {
 	/* Defer the flash write (savePrefs) to mesh thread */
-	pending_buzzer_quiet = quiet;
+	atomic_set(&pending_buzzer_quiet, quiet ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_BUZZER_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
@@ -108,7 +110,7 @@ extern "C" void mesh_set_buzzer_quiet(bool quiet)
 extern "C" void mesh_set_offgrid_mode(bool enable)
 {
 	/* Defer the flash write (savePrefs) to mesh thread */
-	pending_offgrid_enabled = enable;
+	atomic_set(&pending_offgrid_enabled, enable ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_OFFGRID_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
@@ -178,23 +180,23 @@ extern "C" void mesh_handle_ui_actions(void)
 	bool need_save = false;
 
 	if (actions & UI_ACTION_GPS_TOGGLE) {
-		s_mesh->prefs.gps_enabled =
-			pending_gps_enabled ? 1 : 0;
-		LOG_INF("GPS %s (button)", pending_gps_enabled ? "on" : "off");
+		bool gps_en = atomic_get(&pending_gps_enabled) != 0;
+		s_mesh->prefs.gps_enabled = gps_en ? 1 : 0;
+		LOG_INF("GPS %s (button)", gps_en ? "on" : "off");
 		need_save = true;
 	}
 
 	if (actions & UI_ACTION_BUZZER_TOGGLE) {
-		s_mesh->prefs.buzzer_quiet =
-			pending_buzzer_quiet ? 1 : 0;
-		LOG_INF("buzzer_quiet=%d (button)", pending_buzzer_quiet);
+		bool bq = atomic_get(&pending_buzzer_quiet) != 0;
+		s_mesh->prefs.buzzer_quiet = bq ? 1 : 0;
+		LOG_INF("buzzer_quiet=%d (button)", bq);
 		need_save = true;
 	}
 
 	if (actions & UI_ACTION_OFFGRID_TOGGLE) {
-		s_mesh->prefs.client_repeat =
-			pending_offgrid_enabled ? 1 : 0;
-		LOG_INF("client_repeat=%d (button)", pending_offgrid_enabled);
+		bool og = atomic_get(&pending_offgrid_enabled) != 0;
+		s_mesh->prefs.client_repeat = og ? 1 : 0;
+		LOG_INF("client_repeat=%d (button)", og);
 		need_save = true;
 	}
 
