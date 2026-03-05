@@ -202,11 +202,11 @@ config ZEPHCORE_BLE_ADV_FAST_INTERVAL
 
 config ZEPHCORE_BLE_ADV_SLOW_INTERVAL
 	int "BLE slow advertising interval (units: 0.625ms)"
-	default 874
-	range 400 3200
+	default 338
+	range 244 3200
 	help
 	  Slow advertising interval in 0.625ms units.
-	  874 = 546.25ms (Apple-compliant, battery-friendly).
+	  338 = 211.25ms (Apple-compliant, balanced discovery/battery).
 
 config ZEPHCORE_BLE_ADV_FAST_TIMEOUT
 	int "Duration of fast advertising mode (seconds)"
