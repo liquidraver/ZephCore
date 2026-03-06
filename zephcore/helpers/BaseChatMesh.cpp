@@ -7,7 +7,6 @@
 #include <mesh/Utils.h>
 #include <string.h>
 #include <stdio.h>
-#include <stdlib.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_basechat, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);

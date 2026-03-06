@@ -4,12 +4,10 @@
  */
 
 #include <mesh/Utils.h>
-#include <mesh/MeshCore.h>
 #include <mbedtls/aes.h>
 #include <mbedtls/sha256.h>
 #include <mbedtls/md.h>
 #include <string.h>
-#include <stdlib.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_utils, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);

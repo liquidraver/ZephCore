@@ -17,8 +17,6 @@
 LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
-#include <zephyr/drivers/regulator.h>
-#include <zephyr/settings/settings.h>
 
 #include <ZephyrDataStore.h>
 #include <adapters/clock/ZephyrRTCClock.h>
