@@ -505,117 +505,111 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
-	/* When duty cycle is active the radio alternates between short RX
-	 * windows and sleep.  GetRssiInst sent during the sleep phase hangs
-	 * the SPI bus (BUSY stuck high for the full 3 s timeout).  Briefly
-	 * switch to continuous RX for the sample, then restore duty cycle.
-	 * Use do{}while(0) so the restore runs from every exit path. */
-	if (_rx_duty_cycle_enabled) {
-		hwSetRxDutyCycle(false);
-		k_sleep(K_MSEC(2));  /* let chip settle into continuous RX */
+	/* When duty cycle is active the chip alternates between short RX
+	 * windows and sleep.  GetRssiInst during the sleep phase hangs the
+	 * SPI bus (BUSY stuck high for the full 3 s timeout).  Check the
+	 * BUSY pin directly (GPIO read, no SPI) — if the chip is sleeping,
+	 * skip this cycle and try again next housekeeping tick. */
+	if (_rx_duty_cycle_enabled && hwIsChipBusy()) {
+		return;
 	}
 
-	do {
-		/* Skip if mid-receive — don't want signal energy in the floor. */
-		if (isReceiving()) {
-			break;
+	/* Skip if mid-receive — don't want signal energy in the floor. */
+	if (isReceiving()) {
+		return;
+	}
+
+	/* Random delay 0-500 ms before sampling.  Breaks phase-lock with
+	 * periodic interference that might be synchronized with our fixed
+	 * 5-second housekeeping cadence. */
+	uint32_t jitter;
+	sys_rand_get(&jitter, sizeof(jitter));
+	k_sleep(K_MSEC(jitter % 500));
+
+	/* Re-check after the delay — a packet may have arrived. */
+	if (isReceiving()) {
+		return;
+	}
+
+	/* Median of multiple RSSI reads (~200 us).  Rejects up to N/2-1
+	 * outliers in either direction without the downward bias of min
+	 * or the spike sensitivity of average.  Insertion sort is fine
+	 * for N=8 (28 comparisons worst case, all in registers). */
+	int16_t samples[NOISE_FLOOR_SAMPLES_PER_TICK];
+	for (int i = 0; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {
+		samples[i] = hwGetCurrentRSSI();
+	}
+	/* Insertion sort — tiny array, branch-friendly on Cortex-M */
+	for (int i = 1; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {
+		int16_t key = samples[i];
+		int j = i - 1;
+		while (j >= 0 && samples[j] > key) {
+			samples[j + 1] = samples[j];
+			j--;
 		}
+		samples[j + 1] = key;
+	}
+	int16_t rssi = (samples[NOISE_FLOOR_SAMPLES_PER_TICK / 2 - 1] +
+			samples[NOISE_FLOOR_SAMPLES_PER_TICK / 2]) / 2;
 
-		/* Random delay 0-500 ms before sampling.  Breaks phase-lock with
-		 * periodic interference that might be synchronized with our fixed
-		 * 5-second housekeeping cadence.  Skip when duty cycle is active:
-		 * the chip is already out of its pattern and we want to minimise
-		 * time spent in continuous RX. */
-		if (!_rx_duty_cycle_enabled) {
-			uint32_t jitter;
-			sys_rand_get(&jitter, sizeof(jitter));
-			k_sleep(K_MSEC(jitter % 500));
-
-			/* Re-check after the delay — a packet may have arrived. */
-			if (isReceiving()) {
-				break;
-			}
-		}
-
-		/* Median of multiple RSSI reads (~200 us).  Rejects up to N/2-1
-		 * outliers in either direction without the downward bias of min
-		 * or the spike sensitivity of average.  Insertion sort is fine
-		 * for N=8 (28 comparisons worst case, all in registers). */
-		int16_t samples[NOISE_FLOOR_SAMPLES_PER_TICK];
-		for (int i = 0; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {
-			samples[i] = hwGetCurrentRSSI();
-		}
-		/* Insertion sort — tiny array, branch-friendly on Cortex-M */
-		for (int i = 1; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {
-			int16_t key = samples[i];
-			int j = i - 1;
-			while (j >= 0 && samples[j] > key) {
-				samples[j + 1] = samples[j];
-				j--;
-			}
-			samples[j + 1] = key;
-		}
-		int16_t rssi = (samples[NOISE_FLOOR_SAMPLES_PER_TICK / 2 - 1] +
-				samples[NOISE_FLOOR_SAMPLES_PER_TICK / 2]) / 2;
-
-		/* First sample after reset (DEFAULT_NOISE_FLOOR == 0): seed directly. */
-		if (_noise_floor == DEFAULT_NOISE_FLOOR) {
-			_noise_floor = rssi;
-			if (_noise_floor < -120) _noise_floor = -120;
-			if (_noise_floor > -50) _noise_floor = -50;
-			_ema_unguarded = 0;
-			LOG_DBG("noise_floor_cal: seed=%d", _noise_floor);
-			break;
-		}
-
-		/* Threshold filter with warmup and periodic bypass.
-		 *
-		 * _ema_unguarded counts up from 0 on every tick.
-		 *   Ticks 0..W-1 (warmup): all samples accepted for fast convergence
-		 *     after seed/reset — prevents a bad seed from locking out the
-		 *     real noise floor via a too-tight threshold.
-		 *   Ticks W+: threshold filter active. Every Pth tick one sample
-		 *     bypasses the filter so the floor can track sustained upward
-		 *     shifts (new interference, antenna change).
-		 *     The EMA's 1/8 weight naturally dampens isolated spikes. */
-		const int W = (1 << NOISE_FLOOR_EMA_SHIFT);             /* 8  — warmup ticks */
-		const int P = NOISE_FLOOR_UNGUARDED_INTERVAL;            /* 16 — periodic interval */
-		bool warmup = (_ema_unguarded < W);
-		bool periodic = (!warmup && (_ema_unguarded & (P - 1)) == 0);
-		_ema_unguarded++;  /* wraps at 255 — harmless */
-
-		if (!warmup && !periodic &&
-		    rssi >= _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
-			break;
-		}
-
-		/* EMA: floor += round_nearest((sample - floor) / W).
-		 * Plain >> has downward bias (-1>>3 == -1 but +1>>3 == 0).
-		 * Plain /  has a ±7 dead zone (small drifts ignored).
-		 * Round-to-nearest: add half the divisor before dividing,
-		 * with sign-aware bias so both directions are symmetric. */
-		int diff = rssi - _noise_floor;
-		int half = W / 2;                                      /* 4 */
-		int step = (diff + (diff > 0 ? half : -half)) / W;
-		_noise_floor += step;
+	/* First sample after reset (DEFAULT_NOISE_FLOOR == 0): seed directly. */
+	if (_noise_floor == DEFAULT_NOISE_FLOOR) {
+		_noise_floor = rssi;
 		if (_noise_floor < -120) _noise_floor = -120;
 		if (_noise_floor > -50) _noise_floor = -50;
-
-		LOG_DBG("noise_floor_cal: rssi=%d, floor=%d, tick=%u",
-			rssi, _noise_floor, _ema_unguarded - 1);
-	} while (0);
-
-	if (_rx_duty_cycle_enabled) {
-		hwSetRxDutyCycle(true);
+		_ema_unguarded = 0;
+		LOG_DBG("noise_floor_cal: seed=%d", _noise_floor);
+		return;
 	}
+
+	/* Threshold filter with warmup and periodic bypass.
+	 *
+	 * _ema_unguarded counts up from 0 on every tick.
+	 *   Ticks 0..W-1 (warmup): all samples accepted for fast convergence
+	 *     after seed/reset — prevents a bad seed from locking out the
+	 *     real noise floor via a too-tight threshold.
+	 *   Ticks W+: threshold filter active. Every Pth tick one sample
+	 *     bypasses the filter so the floor can track sustained upward
+	 *     shifts (new interference, antenna change).
+	 *     The EMA's 1/8 weight naturally dampens isolated spikes. */
+	const int W = (1 << NOISE_FLOOR_EMA_SHIFT);             /* 8  — warmup ticks */
+	const int P = NOISE_FLOOR_UNGUARDED_INTERVAL;            /* 16 — periodic interval */
+	bool warmup = (_ema_unguarded < W);
+	bool periodic = (!warmup && (_ema_unguarded & (P - 1)) == 0);
+	_ema_unguarded++;  /* wraps at 255 — harmless */
+
+	if (!warmup && !periodic &&
+	    rssi >= _noise_floor + NOISE_FLOOR_SAMPLING_THRESHOLD) {
+		return;
+	}
+
+	/* EMA: floor += round_nearest((sample - floor) / W).
+	 * Plain >> has downward bias (-1>>3 == -1 but +1>>3 == 0).
+	 * Plain /  has a ±7 dead zone (small drifts ignored).
+	 * Round-to-nearest: add half the divisor before dividing,
+	 * with sign-aware bias so both directions are symmetric. */
+	int diff = rssi - _noise_floor;
+	int half = W / 2;                                      /* 4 */
+	int step = (diff + (diff > 0 ? half : -half)) / W;
+	_noise_floor += step;
+	if (_noise_floor < -120) _noise_floor = -120;
+	if (_noise_floor > -50) _noise_floor = -50;
+
+	LOG_DBG("noise_floor_cal: rssi=%d, floor=%d, tick=%u",
+		rssi, _noise_floor, _ema_unguarded - 1);
 }
 
 void LoRaRadioBase::resetAGC()
 {
 	/* Don't reset AGC while transmitting or receiving — warm sleep would
 	 * abort the TX or corrupt the incoming packet.  maintenanceLoop()
-	 * will retry next housekeeping cycle. */
+	 * will retry next housekeeping cycle.
+	 * Also skip if the chip is in its duty-cycle sleep phase: hwResetAGC()
+	 * holds the SPI mutex with K_FOREVER and would hang for 3 s. */
 	if (atomic_get(&_tx_active) || isReceiving()) {
+		return;
+	}
+	if (_rx_duty_cycle_enabled && hwIsChipBusy()) {
 		return;
 	}
 

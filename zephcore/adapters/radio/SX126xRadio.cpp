@@ -95,4 +95,9 @@ void SX126xRadio::hwResetAGC()
 	sx126x_reset_agc(_dev);
 }
 
+bool SX126xRadio::hwIsChipBusy()
+{
+	return sx126x_is_chip_busy(_dev);
+}
+
 } /* namespace mesh */

@@ -400,11 +400,16 @@ index 37807cebe38..7d2f95b277e 100644
  	/* Start transmission with 10 second timeout */
  	ret = sx126x_set_tx(dev, 10000);
  	if (ret < 0) {
-@@ -927,6 +1156,116 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -927,6 +1156,121 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
 +/* ── Extension API (sx126x_ext.h) ──────────────────────────────────── */
++
++bool sx126x_is_chip_busy(const struct device *dev)
++{
++	return sx126x_hal_is_busy(dev);
++}
 +
 +int16_t sx126x_get_rssi_inst(const struct device *dev)
 +{
@@ -517,7 +522,7 @@ index 37807cebe38..7d2f95b277e 100644
  static DEVICE_API(lora, sx126x_lora_api) = {
  	.config = sx126x_lora_config,
  	.send = sx126x_lora_send,
-@@ -952,6 +1291,14 @@ static int sx126x_init(const struct device *dev)
+@@ -952,6 +1296,14 @@ static int sx126x_init(const struct device *dev)
  	data->dev = dev;
  	atomic_set(&data->state, SX126X_STATE_IDLE);
  	data->config_valid = false;

@@ -28,6 +28,7 @@ protected:
 	void hwSetRxBoost(bool enable) override;
 	void hwSetRxDutyCycle(bool enable) override;
 	void hwResetAGC() override;
+	bool hwIsChipBusy() override;
 };
 
 } /* namespace mesh */

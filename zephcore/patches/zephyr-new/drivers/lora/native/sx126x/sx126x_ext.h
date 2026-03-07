@@ -62,6 +62,18 @@ void sx126x_set_rx_duty_cycle(const struct device *dev, bool enable);
 void sx126x_set_rx_boost(const struct device *dev, bool enable);
 
 /**
+ * @brief Check if the radio chip is busy (cannot accept SPI commands)
+ *
+ * Reads the BUSY GPIO pin directly — no SPI, no blocking.
+ * Returns true when the chip is in its duty-cycle sleep phase.
+ * Safe to call at any time.
+ *
+ * @param dev LoRa device
+ * @return true if BUSY pin is high (chip sleeping / processing)
+ */
+bool sx126x_is_chip_busy(const struct device *dev);
+
+/**
  * @brief Reset AGC by performing warm sleep + full recalibration
  *
  * Warm sleep powers down the analog frontend (resets AGC gain state),

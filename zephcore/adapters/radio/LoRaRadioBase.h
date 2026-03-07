@@ -104,6 +104,10 @@ protected:
 	/** Reset AGC (chip-specific, may be no-op) */
 	virtual void hwResetAGC() = 0;
 
+	/** Check if chip BUSY pin is high — no SPI, safe to call any time.
+	 *  Returns false on chips without a duty-cycle sleep phase (LR1110). */
+	virtual bool hwIsChipBusy() { return false; }
+
 	/* ── Shared helpers available to subclasses ────────────────── */
 
 	void buildModemConfig(struct lora_modem_config &cfg, bool tx);
