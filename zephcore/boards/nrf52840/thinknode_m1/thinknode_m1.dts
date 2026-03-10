@@ -210,8 +210,17 @@
 			width = <200>;
 			height = <200>;
 			rotation = <0>;
-			gate-inverted;
 			busy-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+
+			/* Use internal temperature sensor for OTP waveform selection. */
+			tssv = <0x80>;
+
+			/* OTP waveforms — no explicit LUT needed for SSD1681.
+			 * border-waveform controls the 1-px border during refresh:
+			 *   full    0x05 = border follows source (clean full reset)
+			 *   partial 0x3c = Hi-Z (border held, no border flash) */
+			full    { border-waveform = <0x05>; };
+			partial { border-waveform = <0x3c>; };
 		};
 	};
 };

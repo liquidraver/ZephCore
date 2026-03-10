@@ -442,7 +442,7 @@ config ZEPHCORE_UI_DISPLAY
 
 config ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS
 	int "Display auto-off timeout (ms)"
-	default 15000
+	default 10000
 	depends on ZEPHCORE_UI_DISPLAY
 	help
 	  Time in milliseconds before the display turns off

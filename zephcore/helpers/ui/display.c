@@ -110,7 +110,17 @@ static int display_early_blank(void)
 		dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(ssd1306));
 	}
 	if (dev && device_is_ready(dev)) {
-		display_blanking_on(dev);
+		/* EPD displays are bistable and already show clean white after
+		 * driver init's full refresh.  Calling blanking_on here would
+		 * leave blanking_on=true so the subsequent blanking_off in
+		 * mc_display_init() triggers an extra unnecessary full refresh.
+		 * Skip blanking for EPD; OLED still needs it to hide stale VRAM. */
+		struct display_capabilities caps;
+
+		display_get_capabilities(dev, &caps);
+		if (!(caps.screen_info & SCREEN_INFO_EPD)) {
+			display_blanking_on(dev);
+		}
 	}
 	return 0;
 }
@@ -150,8 +160,13 @@ int mc_display_init(void)
 	LOG_INF("display: %ux%u%s", disp_width, disp_height,
 		is_epd ? " (e-paper)" : "");
 
-	/* Blank display before CFB init to hide stale VRAM */
-	display_blanking_on(disp_dev);
+	/* OLED: blank before CFB init so stale VRAM isn't visible while we
+	 * build the first frame.  EPD: driver init already performed a clean
+	 * full refresh — the panel shows white.  Skip blanking to avoid the
+	 * extra full refresh that blanking_off would trigger. */
+	if (!is_epd) {
+		display_blanking_on(disp_dev);
+	}
 
 	/* Initialize CFB */
 	int ret = cfb_framebuffer_init(disp_dev);
@@ -191,11 +206,16 @@ int mc_display_init(void)
 	 * SSD1306 OLED reports MONO01 by default, which CFB now handles
 	 * correctly (white pixels on black background) without manual invert. */
 
-	/* Push a blank frame to clear stale VRAM, then unblank. */
+	/* Clear CPU-side framebuffer (zeroes the RAM buffer — no SPI transfer). */
 	cfb_framebuffer_clear(disp_dev, false);
-	cfb_framebuffer_finalize(disp_dev);
 
-	display_blanking_off(disp_dev);
+	/* OLED: push the blank frame to hardware and unblank.
+	 * EPD: skip — the first ui_pages_render() will push real content via
+	 * partial refresh (fast, no visible flash). */
+	if (!is_epd) {
+		cfb_framebuffer_finalize(disp_dev);
+		display_blanking_off(disp_dev);
+	}
 	backlight_set(true);
 	disp_on = true;
 	disp_initialized = true;
