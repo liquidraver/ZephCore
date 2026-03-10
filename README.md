@@ -85,6 +85,8 @@ west build -b rak4631/nrf52840 zephcore --pristine -- -DCONFIG_ZEPHCORE_BLE_LOG_
 
 Output binaries are in `build/zephyr/` -- `.hex`, `.uf2`, and DFU `.zip` as applicable.
 
+For exact `west build -b` board strings, flash methods, and special setup (MG24 pyocd, nRF54L15 `--no-sysbuild`), see the [Board Porting Guide](zephcore/boards/example_board/README.md).
+
 ## Architecture Overview
 
 ```
@@ -107,13 +109,12 @@ All code paths are event-driven. The CPU sleeps in WFI between events.
 
 | | Arduino | Zephyr |
 |---|---------|--------|
-| Main loop | 50ms polling | `k_event_wait()` (blocks until event) |
-| LoRa TX | Blocking `transmit()` | Async thread with `k_poll()` |
-| BLE queues | Ring buffer + mutex | `k_msgq` (lock-free, ISR-safe) |
-| Drivers | Arduino libraries | Zephyr subsystem drivers |
-| Configuration | `#define` constants | Kconfig + devicetree |
-| Threading | Single-threaded `loop()` | Multi-threaded with explicit sync |
-| Power | Always-on loop | WFI sleep between events |
+| Idle behavior | Cooperative loop; CPU busy-waits unless `board.sleep()` called explicitly | `k_event_wait(K_FOREVER)` yields to idle thread → WFI between events |
+| LoRa TX completion | ISR sets flag, polled in `loop()` via `isSendComplete()` | ISR signals `k_poll_signal`, dedicated thread blocks on `k_poll()` |
+| BLE transport | Platform-specific (ESP-IDF BLE, Adafruit nRF52 lib) | Unified `bt_gatt` API across all SoCs |
+| LoRa driver | RadioLib (userspace SPI bit-bang) | Zephyr subsystem driver (DTS-configured, kernel-managed SPI) |
+| Configuration | `platformio.ini` + `variant.h` per board | Kconfig + devicetree overlays, hierarchical config inheritance |
+| Threading | Single `loop()` + ISRs | Explicit threads (main mesh, TX wait) + system work queue |
 
 ## Power Saving
 
@@ -131,7 +132,7 @@ Key Kconfig options (set in board configs or via `-D` flags):
 | `CONFIG_ZEPHCORE_ROLE_REPEATER` | n | USB CLI repeater mode |
 | `CONFIG_ZEPHCORE_RADIO_NATIVE` | y | SX126x, SX127x, LLCC68, STM32WL |
 | `CONFIG_ZEPHCORE_RADIO_LR1110` | n | LR1110/LR1120/LR1121 (custom driver) |
-| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | n | CAD-based RX power saving (enabled on WisMesh Tag, ThinkNode M1) |
+| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | auto | CAD-based RX power saving (auto ON for companion+SX1262, OFF for LR1110/repeater) |
 | `CONFIG_ZEPHCORE_MAX_CONTACTS` | 350 | Contact storage slots (companion) |
 | `CONFIG_ZEPHCORE_MAX_CHANNELS` | 40 | Channel slots (companion) |
 | `CONFIG_ZEPHCORE_BLE_PASSKEY` | 123456 | BLE pairing PIN |
