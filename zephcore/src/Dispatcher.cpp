@@ -256,13 +256,7 @@ void Dispatcher::checkRecv()
 		logRx(pkt, pkt->getRawLength(), score);
 		if (pkt->isRouteFlood()) {
 			n_recv_flood++;
-			int delay = calcRxDelay(score, air_time);
-			if (delay < 50) {
-				processRecvPacket(pkt);
-			} else {
-				if (delay > (int)MAX_RX_DELAY_MILLIS) delay = MAX_RX_DELAY_MILLIS;
-				_mgr->queueInbound(pkt, futureMillis(delay));
-			}
+			processRecvPacket(pkt);
 		} else {
 			n_recv_direct++;
 			processRecvPacket(pkt);
@@ -291,7 +285,10 @@ void Dispatcher::checkSend()
 {
 	uint32_t now = (uint32_t)_ms->getMillis();
 	int count = _mgr->getOutboundCount(now);
-	if (count == 0) return;
+	if (count == 0) {
+		cad_busy_start = 0;
+		return;
+	}
 
 	if (_radio->isReceiving()) {
 		/* Channel busy — enforce retry timer so we don't hammer the check */

@@ -27,6 +27,35 @@ void Mesh::loop()
 	Dispatcher::loop();
 }
 
+void Mesh::maintenanceLoop()
+{
+	Dispatcher::maintenanceLoop();
+	_contention.tick((uint32_t)_ms->getMillis());
+}
+
+void Mesh::extendPendingRetransmit(uint32_t hash32)
+{
+	uint32_t now = (uint32_t)_ms->getMillis();
+	int total = _mgr->getOutboundTotal();
+	for (int i = 0; i < total; i++) {
+		Packet *pkt = _mgr->getOutboundByIdx(i);
+		if (pkt && pkt->isRouteFlood()
+		    && ContentionTracker::computePacketHash32(pkt) == hash32) {
+			uint32_t airtime = _radio->getEstAirtimeFor(pkt->getRawLength());
+			uint16_t headroom = _contention.getReactiveHeadroom(hash32, airtime);
+			if (headroom == 0) break;
+			uint32_t extra = _rng->nextInt(0, (int)headroom + 1);
+			/* Reschedule from NOW, not from the original EMA-based schedule.
+			 * Hearing a dupe means the channel was just used — defer from
+			 * this moment, don't compound on top of the base delay. */
+			_mgr->rescheduleOutbound(i, now + extra);
+			_contention.addReactiveExtension(hash32, (uint16_t)extra);
+			notifyTxQueued(extra);
+			break;
+		}
+	}
+}
+
 bool Mesh::allowPacketForward(const Packet *packet)
 {
 	(void)packet;
@@ -36,7 +65,7 @@ bool Mesh::allowPacketForward(const Packet *packet)
 uint32_t Mesh::getRetransmitDelay(const Packet *packet)
 {
 	uint32_t t = (_radio->getEstAirtimeFor(packet->getRawLength()) * 52 / 50) / 2;
-	return _rng->nextInt(0, 7) * t;
+	return _rng->nextInt(0, 5) * t;
 }
 
 uint32_t Mesh::getCADFailRetryDelay() const
@@ -62,6 +91,8 @@ DispatcherAction Mesh::routeRecvPacket(Packet *packet)
 		// append this node's hash to 'path'
 		self_id.copyHashTo(&packet->path[n * packet->getPathHashSize()], packet->getPathHashSize());
 		packet->setPathHashCount(n + 1);
+		uint32_t h = ContentionTracker::computePacketHash32(packet);
+		_contention.trackRetransmit(h, (uint32_t)_ms->getMillis());
 		uint32_t d = getRetransmitDelay(packet);
 		return ACTION_RETRANSMIT_DELAYED(packet->getPathHashCount(), d);  // give priority to closer sources
 	}
@@ -169,6 +200,14 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 	}
 
 	if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
+
+	/* Record dupes for contention tracking + reactive backoff */
+	if (pkt->isRouteFlood()) {
+		uint32_t h = ContentionTracker::computePacketHash32(pkt);
+		if (_contention.recordDupeIfTracked(h, (uint32_t)_ms->getMillis())) {
+			extendPendingRetransmit(h);
+		}
+	}
 
 	DispatcherAction action = ACTION_RELEASE;
 

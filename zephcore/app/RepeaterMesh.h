@@ -128,8 +128,6 @@ protected:
     void logRx(mesh::Packet* pkt, int len, float score) override;
     void logTx(mesh::Packet* pkt, int len) override;
     void logTxFail(mesh::Packet* pkt, int len) override;
-    int calcRxDelay(float score, uint32_t air_time) const override;
-
     uint32_t getRetransmitDelay(const mesh::Packet* packet) override;
     uint32_t getDirectRetransmitDelay(const mesh::Packet* packet) override;
 
@@ -187,6 +185,17 @@ public:
     mesh::LocalIdentity& getSelfId() override { return self_id; }
     void saveIdentity(const mesh::LocalIdentity& new_id) override;
     void clearStats() override;
+
+    /* Adaptive contention window callbacks */
+    float getContentionEstimate() const override {
+        return getContentionTracker().getContentionEstimate();
+    }
+    float getFloodDelayFactor() const override {
+        return getContentionTracker().getFloodDelayFactor();
+    }
+    void setBackoffMultiplier(float m) override {
+        getContentionTracker().setBackoffMultiplier(m);
+    }
 
     void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
     void loop();

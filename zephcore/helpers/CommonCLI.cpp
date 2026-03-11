@@ -82,7 +82,7 @@ void CommonCLI::loadPrefs(const char* path) {
     ok = ok && prefs_read(&file, &_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor)); // 84
     ok = ok && prefs_read(&file, &_prefs->guest_password[0], sizeof(_prefs->guest_password)); // 88
     ok = ok && prefs_read(&file, &_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor)); // 104
-    ok = ok && prefs_read(&file, pad, 4);                                                     // 108
+    ok = ok && prefs_read(&file, &_prefs->backoff_multiplier, sizeof(_prefs->backoff_multiplier)); // 108
     ok = ok && prefs_read(&file, &_prefs->sf, sizeof(_prefs->sf));                           // 112
     ok = ok && prefs_read(&file, &_prefs->cr, sizeof(_prefs->cr));                           // 113
     ok = ok && prefs_read(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only)); // 114
@@ -122,6 +122,11 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0.0f, 20.0f);
     _prefs->tx_delay_factor = constrain(_prefs->tx_delay_factor, 0.0f, 2.0f);
     _prefs->direct_tx_delay_factor = constrain(_prefs->direct_tx_delay_factor, 0.0f, 2.0f);
+    /* Migrate uninitialized pad bytes (0.0f or NaN) to default 0.5 */
+    if (_prefs->backoff_multiplier == 0.0f || _prefs->backoff_multiplier != _prefs->backoff_multiplier) {
+        _prefs->backoff_multiplier = 0.5f;
+    }
+    _prefs->backoff_multiplier = constrain(_prefs->backoff_multiplier, 0.0f, 2.0f);
     /* Migrate old AF multiplier (0-9) to duty cycle percentage (0-99) */
     if (_prefs->airtime_factor > 0.0f && _prefs->airtime_factor <= 9.0f) {
         _prefs->airtime_factor *= 10.0f;
@@ -179,7 +184,7 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->tx_delay_factor, sizeof(_prefs->tx_delay_factor));
     fs_write(&file, &_prefs->guest_password[0], sizeof(_prefs->guest_password));
     fs_write(&file, &_prefs->direct_tx_delay_factor, sizeof(_prefs->direct_tx_delay_factor));
-    fs_write(&file, pad, 4);
+    fs_write(&file, &_prefs->backoff_multiplier, sizeof(_prefs->backoff_multiplier));
     fs_write(&file, &_prefs->sf, sizeof(_prefs->sf));
     fs_write(&file, &_prefs->cr, sizeof(_prefs->cr));
     fs_write(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only));
@@ -417,13 +422,18 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                    (double)_prefs->freq, (double)_prefs->bw,
                    (uint32_t)_prefs->sf, (uint32_t)_prefs->cr);
         } else if (memcmp(config, "rxdelay", 7) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->rx_delay_base);
+            snprintf(reply, CLI_REPLY_SIZE, "> adaptive (rxdelay deprecated)");
         } else if (memcmp(config, "txdelay", 7) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->tx_delay_factor);
+            float est = _callbacks->getContentionEstimate();
+            float ff = _callbacks->getFloodDelayFactor();
+            snprintf(reply, CLI_REPLY_SIZE, "> adaptive (est=%.1f flood=%.2f)",
+                     (double)est, (double)ff);
         } else if (memcmp(config, "flood.max", 9) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max);
         } else if (memcmp(config, "direct.txdelay", 14) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->direct_tx_delay_factor);
+            snprintf(reply, CLI_REPLY_SIZE, "> adaptive (direct.txdelay deprecated)");
+        } else if (memcmp(config, "backoff.multiplier", 18) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->backoff_multiplier);
         } else if (memcmp(config, "owner.info", 10) == 0) {
             *reply++ = '>';
             *reply++ = ' ';
@@ -578,23 +588,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             savePrefs();
             strcpy(reply, "OK");
         } else if (memcmp(config, "rxdelay ", 8) == 0) {
-            float db = atof(&config[8]);
-            if (db >= 0) {
-                _prefs->rx_delay_base = db;
-                savePrefs();
-                strcpy(reply, "OK");
-            } else {
-                strcpy(reply, "Error, cannot be negative");
-            }
+            _prefs->rx_delay_base = atof(&config[8]);
+            savePrefs();
+            strcpy(reply, "OK (ignored: rxdelay is now adaptive)");
         } else if (memcmp(config, "txdelay ", 8) == 0) {
-            float f = atof(&config[8]);
-            if (f >= 0) {
-                _prefs->tx_delay_factor = f;
-                savePrefs();
-                strcpy(reply, "OK");
-            } else {
-                strcpy(reply, "Error, cannot be negative");
-            }
+            _prefs->tx_delay_factor = atof(&config[8]);
+            savePrefs();
+            strcpy(reply, "OK (ignored: txdelay is now adaptive)");
         } else if (memcmp(config, "flood.max ", 10) == 0) {
             uint8_t m = atoi(&config[10]);
             if (m <= 64) {
@@ -605,13 +605,18 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error, max 64");
             }
         } else if (memcmp(config, "direct.txdelay ", 15) == 0) {
-            float f = atof(&config[15]);
-            if (f >= 0) {
-                _prefs->direct_tx_delay_factor = f;
+            _prefs->direct_tx_delay_factor = atof(&config[15]);
+            savePrefs();
+            strcpy(reply, "OK (ignored: direct.txdelay is now adaptive)");
+        } else if (memcmp(config, "backoff.multiplier ", 19) == 0) {
+            float f = atof(&config[19]);
+            if (f >= 0.0f && f <= 2.0f) {
+                _prefs->backoff_multiplier = f;
+                _callbacks->setBackoffMultiplier(f);
                 savePrefs();
                 strcpy(reply, "OK");
             } else {
-                strcpy(reply, "Error, cannot be negative");
+                strcpy(reply, "Error, range 0.0-2.0");
             }
         } else if (memcmp(config, "owner.info ", 11) == 0) {
             config += 11;

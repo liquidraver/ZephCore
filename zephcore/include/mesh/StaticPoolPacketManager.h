@@ -20,6 +20,8 @@ public:
 	int getFreeCount() const override;
 	Packet *getOutboundByIdx(int i) override;
 	Packet *removeOutboundByIdx(int i) override;
+	uint32_t getOutboundSchedule(int i) const override;
+	bool rescheduleOutbound(int i, uint32_t new_scheduled_for) override;
 	void queueInbound(Packet *packet, uint32_t scheduled_for) override;
 	Packet *getNextInbound(uint32_t now) override;
 };

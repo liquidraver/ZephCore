@@ -92,6 +92,16 @@ struct PacketQueue {
 		return idx;
 	}
 
+	uint32_t scheduleAt(int i) const {
+		return (i < _num) ? _schedule_table[i] : 0;
+	}
+
+	bool reschedule(int i, uint32_t new_scheduled_for) {
+		if (i >= _num) return false;
+		_schedule_table[i] = new_scheduled_for;
+		return true;
+	}
+
 	int count() const { return _num; }
 	Packet *itemAt(int i) const { return (i < _num) ? _table[i] : nullptr; }
 };
@@ -171,6 +181,16 @@ Packet *StaticPoolPacketManager::getOutboundByIdx(int i)
 Packet *StaticPoolPacketManager::removeOutboundByIdx(int i)
 {
 	return _send_queue.removeByIdx(i);
+}
+
+uint32_t StaticPoolPacketManager::getOutboundSchedule(int i) const
+{
+	return _send_queue.scheduleAt(i);
+}
+
+bool StaticPoolPacketManager::rescheduleOutbound(int i, uint32_t new_scheduled_for)
+{
+	return _send_queue.reschedule(i, new_scheduled_for);
 }
 
 void StaticPoolPacketManager::queueInbound(Packet *packet, uint32_t scheduled_for)

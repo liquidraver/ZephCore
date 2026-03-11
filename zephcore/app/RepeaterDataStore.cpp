@@ -147,7 +147,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.tx_delay_factor, sizeof(prefs.tx_delay_factor));
     fs_read(&file, &prefs.guest_password, sizeof(prefs.guest_password));
     fs_read(&file, &prefs.direct_tx_delay_factor, sizeof(prefs.direct_tx_delay_factor));
-    fs_read(&file, pad, 4);
+    fs_read(&file, &prefs.backoff_multiplier, sizeof(prefs.backoff_multiplier));
     fs_read(&file, &prefs.sf, sizeof(prefs.sf));
     fs_read(&file, &prefs.cr, sizeof(prefs.cr));
     fs_read(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
@@ -169,6 +169,12 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, prefs.owner_info, sizeof(prefs.owner_info));
 
     fs_close(&file);
+
+    /* Migrate uninitialized backoff_multiplier (0.0 or NaN) to default */
+    if (prefs.backoff_multiplier == 0.0f || prefs.backoff_multiplier != prefs.backoff_multiplier) {
+        prefs.backoff_multiplier = 0.5f;
+    }
+
     LOG_INF("Loaded prefs from %s", path);
     LOG_INF("  name='%s' freq=%.3f sf=%u bw=%.1f tx_pwr=%d",
             prefs.node_name, (double)prefs.freq, prefs.sf, (double)prefs.bw, prefs.tx_power_dbm);
@@ -224,7 +230,7 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.tx_delay_factor, sizeof(prefs.tx_delay_factor));
     fs_write(&file, &prefs.guest_password, sizeof(prefs.guest_password));
     fs_write(&file, &prefs.direct_tx_delay_factor, sizeof(prefs.direct_tx_delay_factor));
-    fs_write(&file, pad, 4);
+    fs_write(&file, &prefs.backoff_multiplier, sizeof(prefs.backoff_multiplier));
     fs_write(&file, &prefs.sf, sizeof(prefs.sf));
     fs_write(&file, &prefs.cr, sizeof(prefs.cr));
     fs_write(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));

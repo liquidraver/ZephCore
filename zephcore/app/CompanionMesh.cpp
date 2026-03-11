@@ -1111,17 +1111,27 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 	sendPush(buf[0], &buf[1], i - 1);
 }
 
-/* Dispatcher tuning - hard-coded for companion repeat mode (matches Arduino) */
 uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.5f);
-	return getRNG()->nextInt(0, 7 * t + 1);
+	float factor = getContentionTracker().getFloodDelayFactor();
+	uint32_t t = (uint32_t)(_radio->getEstAirtimeFor(
+		packet->getPathByteLen() + packet->payload_len + 2) * factor);
+	uint32_t max_jitter = 5 * t;
+	/* Cap jitter to 2000ms to avoid excessive latency in very dense areas.
+	 * Reactive backoff will fine-tune further if needed. */
+	if (max_jitter > 2000) max_jitter = 2000;
+	/* Floor: give downstream nodes time to finish RX processing
+	 * and return to RX mode before we TX (~20ms settle) */
+	return 20 + getRNG()->nextInt(0, max_jitter + 1);
 }
 
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * 0.2f);
-	return getRNG()->nextInt(0, 7 * t + 1);
+	uint32_t t = _radio->getEstAirtimeFor(
+		packet->getPathByteLen() + packet->payload_len + 2);
+	/* Floor: give downstream nodes time to finish RX processing
+	 * and return to RX mode before we TX (~20ms settle + jitter) */
+	return 20 + getRNG()->nextInt(0, t / 10 + 1);
 }
 
 uint8_t CompanionMesh::getDutyCyclePercent() const

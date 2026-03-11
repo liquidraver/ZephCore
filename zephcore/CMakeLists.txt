@@ -358,6 +358,7 @@ target_include_directories(app PRIVATE
 
 # ========== Core Sources (both roles) ==========
 target_sources(app PRIVATE
+  src/ContentionTracker.cpp
   src/Dispatcher.cpp
   src/Identity.cpp
   src/Mesh.cpp

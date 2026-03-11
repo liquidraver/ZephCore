@@ -62,6 +62,8 @@ public:
 	virtual int getFreeCount() const = 0;
 	virtual Packet *getOutboundByIdx(int i) = 0;
 	virtual Packet *removeOutboundByIdx(int i) = 0;
+	virtual uint32_t getOutboundSchedule(int i) const = 0;
+	virtual bool rescheduleOutbound(int i, uint32_t new_scheduled_for) = 0;
 	virtual void queueInbound(Packet *packet, uint32_t scheduled_for) = 0;
 	virtual Packet *getNextInbound(uint32_t now) = 0;
 };
@@ -104,6 +106,9 @@ protected:
 	uint16_t _err_flags;
 
 	Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr);
+	void notifyTxQueued(uint32_t delay_ms) {
+		if (_tx_queued_cb) _tx_queued_cb(delay_ms, _tx_queued_user_data);
+	}
 	virtual DispatcherAction onRecvPacket(Packet *pkt) = 0;
 	virtual void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) { (void)snr; (void)rssi; (void)raw; (void)len; }
 	virtual void logRx(Packet *packet, int len, float score) { (void)packet; (void)len; (void)score; }

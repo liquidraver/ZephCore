@@ -43,6 +43,7 @@ struct NodePrefs {
 	float tx_delay_factor;
 	char guest_password[16];
 	float direct_tx_delay_factor;
+	float backoff_multiplier;       // reactive backoff cap (0.0 = sentinel → use default 0.5)
 	uint32_t guard;
 	uint8_t sf;
 	uint8_t cr;

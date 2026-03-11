@@ -116,6 +116,28 @@ All code paths are event-driven. The CPU sleeps in WFI between events.
 | Configuration | `platformio.ini` + `variant.h` per board | Kconfig + devicetree overlays, hierarchical config inheritance |
 | Threading | Single `loop()` + ISRs | Explicit threads (main mesh, TX wait) + system work queue |
 
+### Adaptive Contention Window (ZephCore-only)
+
+Arduino MeshCore uses three static delay knobs (`txdelay`, `rxdelay`, `direct.txdelay`) that add the same retransmit jitter regardless of local conditions. In a linear chain of repeaters where each only hears its neighbor, this adds latency for zero benefit. In dense areas with 50+ neighbors, the same value may be too low to avoid collisions.
+
+ZephCore replaces all three with a self-tuning system based on **observed retransmit contention**:
+
+1. **Dupe counting**: When a node retransmits a flood packet, it counts how many times it hears that same packet retransmitted by neighbors within a 10-second window. This is a direct measurement of local contention -- 0 dupes means a quiet linear chain, 15+ means a dense cluster.
+
+2. **EMA-based delay sizing**: Dupe counts feed into a rolling exponential moving average. This drives a sqrt-curve delay factor for future retransmits: near-zero delay in sparse areas, scaling up in dense ones. At ~15 dupes (moderate density), the factor matches the old Arduino default of 0.5.
+
+3. **Reactive per-packet backoff**: When a node is waiting to retransmit and hears a neighbor retransmit the same packet, it pushes its own TX back by a random amount (up to `backoff.multiplier` x airtime). This is real-time CSMA -- you hear the channel being used for your packet, so you defer.
+
+**Direct packets** (routed, single next-hop) use minimal fixed jitter (~0-45ms) instead of adaptive delay, since only the next hop retransmits them.
+
+The old `txdelay`, `rxdelay`, and `direct.txdelay` commands are still accepted for binary compatibility with Arduino prefs but are ignored -- the system is fully adaptive.
+
+**CLI commands:**
+- `get txdelay` -- shows adaptive status: contention estimate and current flood delay factor
+- `get/set backoff.multiplier` -- reactive backoff cap (default 0.5, range 0.0-2.0). Set to 0 to disable reactive backoff (EMA window still works). Higher values allow more per-packet deferral in dense areas.
+
+**Compatibility**: Purely local behavior, no wire protocol changes. Works alongside Arduino MeshCore repeaters -- their retransmits are counted as dupes just the same.
+
 ## Power Saving
 
 - **LoRa RX duty cycle**: CAD-based receive windowing reduces LoRa RX current from ~10-15mA to ~3-5mA (configurable via `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE`)

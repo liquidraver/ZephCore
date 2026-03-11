@@ -47,6 +47,11 @@ public:
     virtual void clearStats() = 0;
     virtual void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) = 0;
 
+    // Adaptive contention window
+    virtual float getContentionEstimate() const { return -1.0f; }
+    virtual float getFloodDelayFactor() const { return 0.5f; }
+    virtual void setBackoffMultiplier(float m) { (void)m; }
+
     // Sensor manager interface (for GPS)
     virtual double getNodeLat() const { return 0.0; }
     virtual double getNodeLon() const { return 0.0; }

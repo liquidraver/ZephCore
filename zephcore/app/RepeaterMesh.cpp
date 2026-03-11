@@ -485,35 +485,25 @@ void RepeaterMesh::logTxFail(mesh::Packet* pkt, int len) {
     }
 }
 
-/* Fast base^x approximation using IEEE 754 float bit tricks.
- * Avoids linking pow()/powf() (~1.9KB). Accuracy ~5% which is
- * more than sufficient for RX delay jitter calculation. */
-static float fast_powf(float base, float exp)
-{
-    /* log2(base) via IEEE 754: float bits ≈ 2^23 * (log2(x) + 127) */
-    union { float f; uint32_t i; } bx = { .f = base };
-    float log2_base = (float)(int32_t)(bx.i - 0x3F800000) * (1.0f / 8388608.0f);  /* 1/2^23 */
-
-    /* exp2(exp * log2_base) via IEEE 754 */
-    float y = exp * log2_base;
-    union { float f; uint32_t i; } ex;
-    ex.i = (uint32_t)((int32_t)(y * 8388608.0f) + 0x3F800000);
-    return ex.f;
-}
-
-int RepeaterMesh::calcRxDelay(float score, uint32_t air_time) const {
-    if (_prefs.rx_delay_base <= 0.0f) return 0;
-    return (int)((fast_powf(_prefs.rx_delay_base, 0.85f - score) - 1.0f) * air_time);
-}
-
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.tx_delay_factor);
-    return getRNG()->nextInt(0, 7 * t + 1);
+    float factor = getContentionTracker().getFloodDelayFactor();
+    uint32_t t = (uint32_t)(_radio->getEstAirtimeFor(
+        packet->getPathByteLen() + packet->payload_len + 2) * factor);
+    uint32_t max_jitter = 5 * t;
+    /* Cap jitter to 2000ms to avoid excessive latency in very dense areas.
+     * Reactive backoff will fine-tune further if needed. */
+    if (max_jitter > 2000) max_jitter = 2000;
+    /* Floor: give downstream nodes time to finish RX processing
+     * and return to RX mode before we TX (~20ms settle) */
+    return 20 + getRNG()->nextInt(0, max_jitter + 1);
 }
 
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = (_radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2) * _prefs.direct_tx_delay_factor);
-    return getRNG()->nextInt(0, 7 * t + 1);
+    uint32_t t = _radio->getEstAirtimeFor(
+        packet->getPathByteLen() + packet->payload_len + 2);
+    /* Floor: give downstream nodes time to finish RX processing
+     * and return to RX mode before we TX (~20ms settle + jitter) */
+    return 20 + getRNG()->nextInt(0, t / 10 + 1);
 }
 
 bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
@@ -816,6 +806,7 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
      * NOTE: Identity is loaded in main_repeater.cpp before begin() is called,
      * so we skip loading it here (self_id should already be set). */
     _store->loadPrefs(_prefs);
+    _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
     acl.load(_store->getAclPath(), self_id);
     region_map.load(_store->getRegionsPath());
 

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <mesh/Dispatcher.h>
+#include <mesh/ContentionTracker.h>
 #include <mesh/RTC.h>
 
 namespace mesh {
@@ -31,6 +32,11 @@ class Mesh : public Dispatcher {
 	DispatcherAction forwardMultipartDirect(Packet *pkt);
 
 protected:
+	ContentionTracker _contention;
+	ContentionTracker& getContentionTracker() { return _contention; }
+	const ContentionTracker& getContentionTracker() const { return _contention; }
+	void extendPendingRetransmit(uint32_t hash32);
+
 	DispatcherAction onRecvPacket(Packet *pkt) override;
 	virtual uint32_t getCADFailRetryDelay() const override;
 	virtual DispatcherAction routeRecvPacket(Packet *packet);
@@ -57,6 +63,7 @@ public:
 	Mesh(Radio &radio, MillisecondClock &ms, RNG &rng, RTCClock &rtc, PacketManager &mgr, MeshTables &tables);
 	void begin();
 	void loop();
+	void maintenanceLoop();
 
 	LocalIdentity self_id;
 
