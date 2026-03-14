@@ -57,6 +57,8 @@ public:
     virtual float getAPCMargin() const { return 0.0f; }
     virtual bool isAPCEnabled() const { return true; }
     virtual void setAPCEnabled(bool en) { (void)en; }
+    virtual uint8_t getAPCTargetMargin() const { return 16; }
+    virtual void setAPCTargetMargin(uint8_t margin_db) { (void)margin_db; }
 
     // Sensor manager interface (for GPS)
     virtual double getNodeLat() const { return 0.0; }

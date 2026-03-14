@@ -428,13 +428,16 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             float ff = _callbacks->getFloodDelayFactor();
             snprintf(reply, CLI_REPLY_SIZE, "> adaptive (est=%.1f flood=%.2f)",
                      (double)est, (double)ff);
+        } else if (memcmp(config, "apc.margin", 10) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %d dB", (int)_callbacks->getAPCTargetMargin());
         } else if (memcmp(config, "txpower", 7) == 0) {
             if (_callbacks->isAPCEnabled()) {
                 int8_t apc = _callbacks->getAPCReduction();
                 float margin = _callbacks->getAPCMargin();
                 int effective = (int)_prefs->tx_power_dbm - (int)apc;
-                snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (max=%d apc=-%d margin=%.1f)",
-                         effective, (int)_prefs->tx_power_dbm, (int)apc, (double)margin);
+                snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (max=%d apc=-%d margin=%.1f target=%d)",
+                         effective, (int)_prefs->tx_power_dbm, (int)apc, (double)margin,
+                         (int)_callbacks->getAPCTargetMargin());
             } else {
                 snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (apc=off)",
                          (int)_prefs->tx_power_dbm);
@@ -668,6 +671,14 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 _prefs->loop_detect = mode;
                 savePrefs();
                 strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "apc.margin ", 11) == 0) {
+            int val = atoi(&config[11]);
+            if (val >= 6 && val <= 30) {
+                _callbacks->setAPCTargetMargin((uint8_t)val);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - APC target margin=%d dB", val);
+            } else {
+                strcpy(reply, "Error, range 6-30 dB");
             }
         } else if (memcmp(config, "tx ", 3) == 0) {
             if (memcmp(&config[3], "apc", 3) == 0) {

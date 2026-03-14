@@ -25,7 +25,7 @@ namespace mesh {
 PowerController::PowerController()
 	: _next_idx(0), _margin_ema_x256(0), _finalized_count(0),
 	  _last_echo_ms(0), _power_reduction_db(0), _enabled(true),
-	  _sf(8), _last_source_count(0)
+	  _sf(8), _last_source_count(0), _target_margin_x4(DEFAULT_TARGET_MARGIN_X4)
 {
 	memset(_ring, 0, sizeof(_ring));
 }
@@ -203,7 +203,7 @@ void PowerController::tick(uint32_t now_ms)
 	if (!isWarmedUp()) return;
 
 	int32_t margin_x256 = _margin_ema_x256;
-	int32_t target_x256 = TARGET_MARGIN_X4 << 6;
+	int32_t target_x256 = _target_margin_x4 << 6;
 	int32_t hyst_x256 = HYSTERESIS_X4 << 6;
 
 	int8_t old_reduction = _power_reduction_db;

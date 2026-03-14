@@ -211,6 +211,12 @@ public:
     void setAPCEnabled(bool en) override {
         getPowerController().setEnabled(en);
     }
+    uint8_t getAPCTargetMargin() const override {
+        return getPowerController().getTargetMargin();
+    }
+    void setAPCTargetMargin(uint8_t margin_db) override {
+        getPowerController().setTargetMargin(margin_db);
+    }
 #endif
 
     void handleCommand(uint32_t sender_timestamp, char* command, char* reply);

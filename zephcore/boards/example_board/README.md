@@ -178,6 +178,9 @@ should ONLY contain settings that can't be inferred from hardware:
     CONFIG_ESPTOOLPY_FLASHSIZE_16MB     ESP32 boards with 16MB flash
     CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM  Boards with external PA
     CONFIG_ZEPHCORE_MAX_TX_POWER_DBM      Boards with external PA
+    CONFIG_ZEPHCORE_APC                   Adaptive Power Control — OFF by default.
+                                          Reduces TX power when echo SNR shows excess margin.
+                                          See apc.md for details on target margin tuning.
 
   AUTO-DETECTED (do NOT set in board.conf):
     CONFIG_PWM                          Auto from DT buzzer nodelabel
@@ -186,8 +189,6 @@ should ONLY contain settings that can't be inferred from hardware:
     CONFIG_SPI                          Auto from ZEPHCORE_RADIO_LR1110
     CONFIG_NORDIC_QSPI_NOR             Auto from DT nordic,qspi-nor node
     CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE  Auto: ON for companion+SX1262, OFF for repeater/LR1110
-    CONFIG_ZEPHCORE_APC                 Adaptive Power Control — ON by default for all boards/roles.
-                                        Set to n in board.conf to disable for a specific board.
 
 
 Config Inheritance

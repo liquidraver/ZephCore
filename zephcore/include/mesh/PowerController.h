@@ -31,6 +31,11 @@ public:
 	/* Set current spreading factor (needed for margin calculation). */
 	void setSF(uint8_t sf) { _sf = sf; }
 
+	/* Set target link margin in dB.  Higher = more conservative
+	 * (better for networks with poor-RX hardware).  Default 16 dB. */
+	void setTargetMargin(uint8_t margin_db) { _target_margin_x4 = (int)margin_db * 4; }
+	uint8_t getTargetMargin() const { return (uint8_t)(_target_margin_x4 / 4); }
+
 	/* Called when we send or retransmit a flood packet. */
 	void trackTransmit(uint32_t hash32, uint32_t now_ms);
 
@@ -69,9 +74,7 @@ private:
 	static constexpr int8_t MAX_REDUCTION_DB = 12;
 	static constexpr int8_t MIN_TX_POWER_DBM = -9;      /* SX1262 hw min */
 	static constexpr int CLUSTER_WIDTH_X4 = 24;          /* 6 dB in x4 */
-	/* TARGET_MARGIN: 16 dB above SF threshold.
-	 * For SF8 (threshold -10 dB): reduce at SNR > +7, increase at SNR < +5 */
-	static constexpr int TARGET_MARGIN_X4 = 64;          /* 16 dB * 4 */
+	static constexpr int DEFAULT_TARGET_MARGIN_X4 = 64;  /* 16 dB * 4 */
 	static constexpr int HYSTERESIS_X4 = 4;              /* 1 dB * 4 */
 
 	struct Source {
@@ -97,6 +100,7 @@ private:
 	bool _enabled;
 	uint8_t _sf;
 	uint8_t _last_source_count;
+	int _target_margin_x4;
 
 	void finalizeEntry(int idx);
 	int findEntry(uint32_t hash32) const;
