@@ -1,5 +1,5 @@
 diff --git a/scripts/west_commands/blobs.py b/scripts/west_commands/blobs.py
-index 14f0412cda5..615ba602a6b 100644
+index 651fa0288ff..45d66593421 100644
 --- a/scripts/west_commands/blobs.py
 +++ b/scripts/west_commands/blobs.py
 @@ -288,7 +288,7 @@ class Blobs(WestCommand):
