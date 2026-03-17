@@ -96,6 +96,26 @@ struct lr20xx_data {
 	uint8_t rx_buf[256];
 };
 
+/* ── Debug: dump full chip state ────────────────────────────────────── */
+
+static void dump_chip_state(void *ctx, struct lr20xx_hal_context *hal,
+			    const char *label)
+{
+	lr20xx_system_stat1_t s1 = {0};
+	lr20xx_system_stat2_t s2 = {0};
+	lr20xx_system_irq_mask_t irq = 0;
+	lr20xx_system_errors_t err = 0;
+
+	lr20xx_system_get_status(ctx, &s1, &s2, &irq);
+	lr20xx_system_get_errors(ctx, &err);
+
+	int busy = gpio_pin_get_dt(&hal->busy);
+	int dio9 = gpio_pin_get_dt(&hal->dio1);
+
+	LOG_INF("[%s] cmd=%d mode=%d err=0x%04x irq=0x%08x BUSY=%d DIO9=%d",
+		label, s1.command_status, s2.chip_mode, err, irq, busy, dio9);
+}
+
 /* ── Helpers ────────────────────────────────────────────────────────── */
 
 static lr20xx_radio_lora_bw_t bw_enum_to_lr20xx(enum lora_signal_bandwidth bw)
@@ -205,41 +225,48 @@ struct lr20xx_pa_pwr_entry {
 #define LR20XX_LF_MAX_PWR 22
 
 /* Calibrated per-dBm PA config — each row is [half_power, duty_cycle, slices]
- * for the corresponding output power from -10 to +22 dBm inclusive. */
+ * for the corresponding output power from -10 to +22 dBm inclusive.
+ *
+ * 10–22 dBm: from LR2021 datasheet Rev 1.1, Table 7-16 (915MHz ref design).
+ *   TX_PARAM is in 0.5dB steps; half_power = TX_PARAM * 2.
+ *   For integer dBm targets, we take the exact row from the table.
+ *
+ * -10 to +9 dBm: from Semtech SDK lr20xx_pa_pwr_cfg.h (not in datasheet).
+ */
 static const struct lr20xx_pa_pwr_entry pa_lf_table[] = {
-	{ -18, 3, 6 }, /* -10 dBm */
-	{ -13, 2, 5 }, /*  -9 dBm */
-	{ -13, 6, 1 }, /*  -8 dBm */
-	{  -6, 6, 0 }, /*  -7 dBm */
-	{   4, 1, 0 }, /*  -6 dBm */
-	{   4, 2, 0 }, /*  -5 dBm */
-	{   2, 1, 3 }, /*  -4 dBm */
-	{  14, 0, 0 }, /*  -3 dBm */
-	{   9, 0, 3 }, /*  -2 dBm */
-	{  11, 3, 0 }, /*  -1 dBm */
-	{  16, 1, 0 }, /*   0 dBm */
-	{  11, 7, 0 }, /*   1 dBm */
-	{  18, 2, 0 }, /*   2 dBm */
-	{  16, 5, 0 }, /*   3 dBm */
-	{  17, 7, 0 }, /*   4 dBm */
-	{  21, 1, 2 }, /*   5 dBm */
-	{  25, 3, 0 }, /*   6 dBm */
-	{  32, 0, 1 }, /*   7 dBm */
-	{  32, 2, 0 }, /*   8 dBm */
-	{  27, 3, 1 }, /*   9 dBm */
-	{  32, 2, 1 }, /*  10 dBm */
-	{  28, 5, 1 }, /*  11 dBm */
-	{  30, 5, 1 }, /*  12 dBm */
-	{  34, 4, 1 }, /*  13 dBm */
-	{  31, 5, 4 }, /*  14 dBm */
-	{  34, 4, 4 }, /*  15 dBm */
-	{  34, 5, 6 }, /*  16 dBm */
-	{  39, 3, 5 }, /*  17 dBm */
-	{  37, 6, 6 }, /*  18 dBm */
-	{  40, 5, 5 }, /*  19 dBm */
-	{  41, 7, 4 }, /*  20 dBm */
-	{  43, 7, 4 }, /*  21 dBm */
-	{  44, 7, 7 }, /*  22 dBm */
+	{ -18, 3, 6 }, /* -10 dBm  (SDK) */
+	{ -13, 2, 5 }, /*  -9 dBm  (SDK) */
+	{ -13, 6, 1 }, /*  -8 dBm  (SDK) */
+	{  -6, 6, 0 }, /*  -7 dBm  (SDK) */
+	{   4, 1, 0 }, /*  -6 dBm  (SDK) */
+	{   4, 2, 0 }, /*  -5 dBm  (SDK) */
+	{   2, 1, 3 }, /*  -4 dBm  (SDK) */
+	{  14, 0, 0 }, /*  -3 dBm  (SDK) */
+	{   9, 0, 3 }, /*  -2 dBm  (SDK) */
+	{  11, 3, 0 }, /*  -1 dBm  (SDK) */
+	{  16, 1, 0 }, /*   0 dBm  (SDK) */
+	{  11, 7, 0 }, /*   1 dBm  (SDK) */
+	{  18, 2, 0 }, /*   2 dBm  (SDK) */
+	{  16, 5, 0 }, /*   3 dBm  (SDK) */
+	{  17, 7, 0 }, /*   4 dBm  (SDK) */
+	{  21, 1, 2 }, /*   5 dBm  (SDK) */
+	{  25, 3, 0 }, /*   6 dBm  (SDK) */
+	{  32, 0, 1 }, /*   7 dBm  (SDK) */
+	{  32, 2, 0 }, /*   8 dBm  (SDK) */
+	{  27, 3, 1 }, /*   9 dBm  (SDK) */
+	{  32, 2, 1 }, /*  10 dBm  (DS Table 7-16: TX_PARAM=16) */
+	{  32, 2, 2 }, /*  11 dBm  (DS Table 7-16: TX_PARAM=16) */
+	{  30, 5, 1 }, /*  12 dBm  (DS Table 7-16: TX_PARAM=15) */
+	{  31, 4, 3 }, /*  13 dBm  (DS Table 7-16: TX_PARAM=15.5) */
+	{  34, 4, 2 }, /*  14 dBm  (DS Table 7-16: TX_PARAM=17) */
+	{  33, 5, 4 }, /*  15 dBm  (DS Table 7-16: TX_PARAM=16.5) */
+	{  36, 4, 4 }, /*  16 dBm  (DS Table 7-16: TX_PARAM=18) */
+	{  36, 5, 6 }, /*  17 dBm  (DS Table 7-16: TX_PARAM=18) */
+	{  38, 5, 6 }, /*  18 dBm  (DS Table 7-16: TX_PARAM=19) */
+	{  39, 6, 6 }, /*  19 dBm  (DS Table 7-16: TX_PARAM=19.5) */
+	{  41, 6, 6 }, /*  20 dBm  (DS Table 7-16: TX_PARAM=20.5) */
+	{  42, 7, 7 }, /*  21 dBm  (DS Table 7-16: TX_PARAM=21) */
+	{  44, 7, 6 }, /*  22 dBm  (DS Table 7-16: TX_PARAM=22) */
 };
 
 static void lr20xx_get_pa_cfg_for_power(int8_t power_dbm,
@@ -276,27 +303,21 @@ static void lr20xx_hardware_reset(struct lr20xx_data *data,
 
 	lr20xx_hal_reset(ctx);
 
-	/* SIMO DC-DC workaround — immediately after reset */
-	{
-		const uint32_t simo_freq = (uint32_t)(2.8e6 * 1.048576);
-		lr20xx_regmem_write_regmem32(ctx, 0x80004c, &simo_freq, 1);
-	}
+	/* SIMO workaround skipped — LDO mode (see DS §22.6) */
 
 	if (cfg->tcxo_voltage_mv > 0) {
-		/* Timeout in 32 MHz ticks (31.25 ns/tick): 1 ms = 32000 ticks */
+		/* Timeout in RTC ticks (30.52 µs/tick) */
 		lr20xx_system_set_tcxo_mode(ctx,
 					    get_tcxo_voltage(cfg->tcxo_voltage_mv),
-					    cfg->tcxo_startup_delay_ms * 32000U);
+					    (cfg->tcxo_startup_delay_ms * 1000U) / 31U);
 	}
 
-	lr20xx_system_cfg_lfclk(ctx, LR20XX_SYSTEM_LFCLK_RC);
-
-	lr20xx_system_set_reg_mode(ctx, LR20XX_SYSTEM_REG_MODE_DCDC);
+	/* LDO mode — no cfg_lfclk, no set_reg_mode, no DCDC workarounds */
 
 	lr20xx_configure_rfswitch(ctx, cfg);
 
-	/* DIO5 is the physical IRQ line — always override to FUNC_IRQ */
-	lr20xx_system_set_dio_function(ctx, LR20XX_SYSTEM_DIO_5,
+	/* DIO9 is the physical IRQ line (pin 15 on NiceRF module → MCU P0.10) */
+	lr20xx_system_set_dio_function(ctx, LR20XX_SYSTEM_DIO_9,
 				       LR20XX_SYSTEM_DIO_FUNC_IRQ,
 				       LR20XX_SYSTEM_DIO_DRIVE_NONE);
 
@@ -305,23 +326,19 @@ static void lr20xx_hardware_reset(struct lr20xx_data *data,
 
 	lr20xx_radio_common_set_pkt_type(ctx, LR20XX_RADIO_COMMON_PKT_TYPE_LORA);
 
-	/* DCDC errata: reset after set_pkt_type */
-	lr20xx_workarounds_dcdc_reset(ctx);
-
 	lr20xx_system_clear_errors(ctx);
 	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
 
-	/* Front-end calibration — same 3 frequencies as hw_init */
+	lr20xx_system_calibrate(ctx, 0x6F);
+	k_msleep(5);
+
+	/* Front-end calibration — single LF frequency (RadioLib approach) */
 	{
-		lr20xx_radio_common_front_end_calibration_value_t fe_cal[3] = {
-			{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
-			  .frequency_in_hertz = 470000000 },
-			{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
-			  .frequency_in_hertz = 897500000 },
-			{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_HF,
-			  .frequency_in_hertz = 2441000000UL },
+		lr20xx_radio_common_front_end_calibration_value_t fe_cal = {
+			.rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
+			.frequency_in_hertz = 868000000,
 		};
-		lr20xx_radio_common_calibrate_front_end_helper(ctx, fe_cal, 3);
+		lr20xx_radio_common_calibrate_front_end_helper(ctx, &fe_cal, 1);
 	}
 
 	data->rx_boost_applied = false;
@@ -373,9 +390,7 @@ static void lr20xx_apply_modem_config(struct lr20xx_data *data,
 	LOG_INF("modem_cfg: set_mod(SF%d BW%d CR%d PPM%d)=%d",
 		mod.sf, mod.bw, mod.cr, mod.ppm, rc);
 
-	/* DCDC errata: reconfigure DCDC switcher after set_modulation_params
-	 * when using DCDC mode at sub-GHz for RX */
-	lr20xx_workarounds_dcdc_configure(ctx);
+	/* DCDC workaround removed — LDO mode, RadioLib doesn't do it */
 
 	lr20xx_radio_lora_pkt_params_t pkt = {
 		.preamble_len_in_symb = mc->preamble_len,
@@ -397,36 +412,49 @@ static void lr20xx_apply_modem_config(struct lr20xx_data *data,
 		mc->public_network ? 0x34 : 0x12, rc);
 
 	if (tx_mode) {
-		/* Use calibrated PA config from Semtech lookup table.
-		 * Reference: set_pa_cfg → set_tx_params (no select_pa). */
+		/* PA config: Semtech SDK 3-byte packed format is CORRECT per
+		 * datasheet Table 7-15 (p132):
+		 *   Byte 2: (pa_sel<<7) | rfu(4:0) | pa_lf_mode(1:0)
+		 *   Byte 3: pa_lf_duty_cycle(3:0) | pa_lf_slices(3:0)
+		 *   Byte 4: rfu(2:0) | pa_hf_duty_cycle(4:0)
+		 *
+		 * RadioLib's 5-byte format was WRONG (misread the datasheet).
+		 * The SDK's lr20xx_radio_common_set_pa_cfg() packs correctly.
+		 *
+		 * PA values from datasheet Table 7-16 (915MHz ref design).
+		 */
 		lr20xx_radio_common_pa_cfg_t pa;
 		int8_t half_power;
 
 		lr20xx_get_pa_cfg_for_power(mc->tx_power, &pa, &half_power);
 		rc = lr20xx_radio_common_set_pa_cfg(ctx, &pa);
-		LOG_INF("modem_cfg: set_pa_cfg(duty=%d slices=%d)=%d",
-			pa.pa_lf_duty_cycle, pa.pa_lf_slices, rc);
+		LOG_INF("modem_cfg: set_pa_cfg(sel=%d mode=%d duty=%d slices=%d hf_duty=%d)=%d",
+			pa.pa_sel, pa.pa_lf_mode, pa.pa_lf_duty_cycle,
+			pa.pa_lf_slices, pa.pa_hf_duty_cycle, rc);
+		LOG_INF("modem_cfg: PA SPI bytes: 0x%02x 0x%02x 0x%02x",
+			(uint8_t)((pa.pa_sel << 7) | pa.pa_lf_mode),
+			(uint8_t)((pa.pa_lf_duty_cycle << 4) | pa.pa_lf_slices),
+			pa.pa_hf_duty_cycle);
 
 		rc = lr20xx_radio_common_set_tx_params(ctx, half_power,
 						  LR20XX_RADIO_COMMON_RAMP_48_US);
-		LOG_INF("modem_cfg: set_tx_params(half_pwr=%d)=%d",
+		LOG_INF("modem_cfg: set_tx_params(half_pwr=%d ramp=0x05)=%d",
 			half_power, rc);
+
+		dump_chip_state(ctx, &data->hal_ctx, "post-PA");
 	}
 
-	/* Route all IRQ events except FIFO to DIO5 (physical DIO1 pin),
-	 * matching the Semtech reference: 0xFFFFFFFF & ~(FIFO_RX | FIFO_TX) */
-	rc = lr20xx_system_set_dio_irq_cfg(ctx, LR20XX_SYSTEM_DIO_5,
+	rc = lr20xx_system_set_dio_irq_cfg(ctx, LR20XX_SYSTEM_DIO_9,
 		LR20XX_SYSTEM_IRQ_ALL_MASK &
 		~(LR20XX_SYSTEM_IRQ_FIFO_RX | LR20XX_SYSTEM_IRQ_FIFO_TX));
 	LOG_INF("modem_cfg: set_dio_irq=%d", rc);
 
-	/* Read back system errors after full config */
-	lr20xx_system_errors_t errs = 0;
-	lr20xx_system_get_errors(ctx, &errs);
-	if (errs) {
-		LOG_WRN("modem_cfg: sys_errors=0x%04x after config", errs);
-		lr20xx_system_clear_errors(ctx);
-	}
+	/* Verify packet type is still LoRa after all config */
+	lr20xx_radio_common_pkt_type_t pkt_check = 0xFF;
+	lr20xx_radio_common_get_pkt_type(ctx, &pkt_check);
+
+	dump_chip_state(ctx, &data->hal_ctx, tx_mode ? "modem-TX" : "modem-RX");
+	LOG_INF("modem_cfg: pkt_type_verify=%d (1=LORA)", pkt_check);
 }
 
 /* ── RX duty cycle ──────────────────────────────────────────────────── */
@@ -550,14 +578,7 @@ static void lr20xx_start_rx(struct lr20xx_data *data,
 	data->in_rx_mode = true;
 	data->tx_active = false;
 
-	/* Check DIO1 state and system errors after entering RX */
-	int dio1 = gpio_pin_get_dt(&data->hal_ctx.dio1);
-	lr20xx_system_errors_t errs = 0;
-	lr20xx_system_get_errors(ctx, &errs);
-	LOG_INF("start_rx: done — DIO1=%d sys_err=0x%04x", dio1, errs);
-	if (errs) {
-		lr20xx_system_clear_errors(ctx);
-	}
+	dump_chip_state(ctx, &data->hal_ctx, "start-RX");
 }
 
 /* ── Lightweight RX restart (no modem reconfig) ─────────────────────── */
@@ -756,13 +777,20 @@ static int lr20xx_lora_config(const struct device *dev,
 
 	/* Image calibration at operating frequency */
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	/* FE cal raw value: ceil(freq / 4MHz), bit 15 = HF flag */
+	uint16_t fe_raw = (uint16_t)((config->frequency + 3999999U) / 4000000U);
+	LOG_INF("config: FE cal freq=%uHz raw=0x%04x", config->frequency, fe_raw);
+
 	lr20xx_radio_common_front_end_calibration_value_t cal = {
 		.rx_path          = LR20XX_RADIO_COMMON_RX_PATH_LF,
 		.frequency_in_hertz = config->frequency,
 	};
 	lr20xx_status_t cal_rc = lr20xx_radio_common_calibrate_front_end_helper(
 		&data->hal_ctx, &cal, 1);
-	LOG_INF("config: FE cal(%uHz)=%d", config->frequency, cal_rc);
+	LOG_INF("config: FE cal=%d", cal_rc);
+
+	dump_chip_state(&data->hal_ctx, &data->hal_ctx, "config-FEcal");
 	k_mutex_unlock(&data->spi_mutex);
 
 	LOG_INF("config: %uHz SF%d BW%d CR%d pwr=%d tx=%d",
@@ -817,15 +845,23 @@ static int lr20xx_lora_send_async(const struct device *dev,
 
 	lr20xx_hal_disable_dio1_irq(&data->hal_ctx);
 
-	/* Standby — transition from RX to standby.
-	 * radio_is_sleeping is managed by the HAL when sleep command is sent;
-	 * don't set it here since we're coming from RX, not sleep. */
+	LOG_INF("=== TX BEGIN len=%u ===", data_len);
+	dump_chip_state(ctx, &data->hal_ctx, "TX-enter");
+
+	/* Standby */
 	lr20xx_status_t rc = lr20xx_system_set_standby_mode(ctx,
 							    LR20XX_SYSTEM_STANDBY_MODE_RC);
+	LOG_INF("TX: standby=%d", rc);
 	if (rc != LR20XX_STATUS_OK) {
 		LOG_ERR("TX standby failed — HW reset");
 		lr20xx_hardware_reset(data, cfg);
 	}
+
+	dump_chip_state(ctx, &data->hal_ctx, "TX-standby");
+
+	/* Clear errors before modem config */
+	lr20xx_system_clear_errors(ctx);
+	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
 
 	lr20xx_apply_modem_config(data, cfg, true);
 
@@ -841,21 +877,37 @@ static int lr20xx_lora_send_async(const struct device *dev,
 			? LR20XX_RADIO_LORA_IQ_INVERTED
 			: LR20XX_RADIO_LORA_IQ_STANDARD,
 	};
-	lr20xx_radio_lora_set_packet_params(ctx, &pkt);
+	rc = lr20xx_radio_lora_set_packet_params(ctx, &pkt);
+	LOG_INF("TX: set_pkt_params(len=%d)=%d", data_len, rc);
 
 	/* Write to TX FIFO */
-	lr20xx_radio_fifo_write_tx(ctx, buf, (uint16_t)data_len);
+	rc = lr20xx_radio_fifo_write_tx(ctx, buf, (uint16_t)data_len);
+	LOG_INF("TX: fifo_write(%u bytes)=%d", data_len, rc);
 
+	/* Clear ALL errors + IRQs right before set_tx */
+	lr20xx_system_clear_errors(ctx);
 	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
+
+	dump_chip_state(ctx, &data->hal_ctx, "TX-pre-setTX");
+
 	lr20xx_hal_enable_dio1_irq(&data->hal_ctx);
 
 	data->tx_signal = async;
 	data->tx_active = true;
-	lr20xx_radio_common_set_tx(ctx, 5000);
+
+	/* THE CRITICAL CALL — set_tx sends opcode 0x020D */
+	lr20xx_status_t tx_rc = lr20xx_radio_common_set_tx(ctx, 5000);
+	LOG_INF("TX: set_tx(5000ms)=%d (0=OK, HAL-level)", tx_rc);
+
+	dump_chip_state(ctx, &data->hal_ctx, "TX-post-setTX");
+
+	/* Wait 10ms and re-check — did the chip stay in TX or fall out? */
+	k_msleep(10);
+	dump_chip_state(ctx, &data->hal_ctx, "TX-10ms-later");
 
 	k_mutex_unlock(&data->spi_mutex);
 
-	LOG_DBG("TX started: len=%u", data_len);
+	LOG_INF("=== TX END ===");
 	return 0;
 }
 
@@ -1000,8 +1052,6 @@ void lr20xx_set_rx_boost(const struct device *dev, bool enable)
 			&data->hal_ctx, LR20XX_RADIO_COMMON_RX_PATH_LF,
 			enable ? LR20XX_RADIO_COMMON_RX_PATH_BOOST_MODE_4
 			       : LR20XX_RADIO_COMMON_RX_PATH_BOOST_MODE_NONE);
-		/* DCDC errata: reconfigure after set_rx_path */
-		lr20xx_workarounds_dcdc_configure(&data->hal_ctx);
 		data->rx_boost_applied = enable;
 		k_mutex_unlock(&data->spi_mutex);
 	} else {
@@ -1057,8 +1107,6 @@ void lr20xx_reset_agc(const struct device *dev)
 		lr20xx_radio_common_set_rx_path(
 			ctx, LR20XX_RADIO_COMMON_RX_PATH_LF,
 			LR20XX_RADIO_COMMON_RX_PATH_BOOST_MODE_4);
-		/* DCDC errata: reconfigure after set_rx_path */
-		lr20xx_workarounds_dcdc_configure(ctx);
 		data->rx_boost_applied = true;
 	}
 
@@ -1100,88 +1148,122 @@ static int lr20xx_hw_init(struct lr20xx_data *data,
 		return -EIO;
 	}
 
-	LOG_INF("LR20xx v%u.%u", ver.major, ver.minor);
+	LOG_INF("LR20xx SDK get_version: major=%u minor=%u", ver.major, ver.minor);
 
-	/* SIMO DC-DC workaround — must be applied immediately after reset.
-	 * Sets the SIMO switching frequency to prevent power supply issues.
-	 * From Semtech reference ral_lr20xx_init(). */
+	/* CRITICAL: Read raw 4 bytes from GET_VERSION (opcode 0x0101) to
+	 * determine if this is LR11x0 or LR20xx silicon.
+	 * LR11x0 returns: [hw_type, device_use, fw_major, fw_minor] (4 bytes)
+	 * LR20xx returns: [major, minor] (2 bytes, extra bytes would be 0x00)
+	 * If byte[0]=0x01/0x02/0x03, it's LR1110/LR1120/LR1121 (LR11x0!) */
 	{
-		const uint32_t simo_freq = (uint32_t)(2.8e6 * 1.048576);
-		lr20xx_status_t simo_rc = lr20xx_regmem_write_regmem32(ctx, 0x80004c, &simo_freq, 1);
-		LOG_INF("init: SIMO workaround(0x%08x)=%d", simo_freq, simo_rc);
+		const uint8_t cmd[2] = { 0x01, 0x01 };
+		uint8_t raw[4] = { 0 };
+		lr20xx_hal_read(ctx, cmd, 2, raw, 4);
+		LOG_INF("GET_VERSION raw bytes: 0x%02x 0x%02x 0x%02x 0x%02x",
+			raw[0], raw[1], raw[2], raw[3]);
+		if (raw[0] == 0x01) {
+			LOG_WRN("*** CHIP IDENTIFIES AS LR1110 (LR11x0 family!) ***");
+		} else if (raw[0] == 0x02) {
+			LOG_WRN("*** CHIP IDENTIFIES AS LR1120 (LR11x0 family!) ***");
+		} else if (raw[0] == 0x03) {
+			LOG_WRN("*** CHIP IDENTIFIES AS LR1121 (LR11x0 family!) ***");
+		} else {
+			LOG_INF("Chip type byte=0x%02x (LR20xx if not 0x01-0x03)", raw[0]);
+		}
 	}
 
+	dump_chip_state(ctx, &data->hal_ctx, "post-reset");
+
+	/* SIMO DC-DC workaround REMOVED — datasheet §22.6 says it's only
+	 * needed when SetRegMode simo_usage=0x02 (SIMO_NORMAL).
+	 * We run in LDO mode (default, simo_usage=0x00). */
+	LOG_INF("init: LDO mode — SIMO workaround skipped (per DS §22.6)");
+
 	if (cfg->tcxo_voltage_mv > 0) {
-		/* Timeout in 32 MHz ticks (31.25 ns/tick): 1 ms = 32000 ticks */
-		uint32_t tcxo_ticks = cfg->tcxo_startup_delay_ms * 32000U;
+		uint32_t tcxo_ticks = (cfg->tcxo_startup_delay_ms * 1000U) / 31U;
 		lr20xx_status_t tcxo_rc = lr20xx_system_set_tcxo_mode(ctx,
 					    get_tcxo_voltage(cfg->tcxo_voltage_mv),
 					    tcxo_ticks);
-		LOG_INF("init: set_tcxo(%dmV, %u ticks = %ums)=%d",
-			cfg->tcxo_voltage_mv, tcxo_ticks,
-			cfg->tcxo_startup_delay_ms, tcxo_rc);
+		LOG_INF("init: set_tcxo(%dmV, %u ticks)=%d",
+			cfg->tcxo_voltage_mv, tcxo_ticks, tcxo_rc);
+	} else {
+		LOG_INF("init: TCXO disabled (XTAL mode)");
 	}
 
-	/* Configure LF clock source (reference init requires this) */
+	/* RadioLib does NOT call cfg_lfclk or set_reg_mode.
+	 * Stay in LDO mode (chip default after reset).
+	 * DCDC mode + wrong SET_REG_MODE encoding was likely
+	 * preventing TX. */
 	lr20xx_status_t st;
-	st = lr20xx_system_cfg_lfclk(ctx, LR20XX_SYSTEM_LFCLK_RC);
-	LOG_INF("init: cfg_lfclk(RC)=%d", st);
-
-	st = lr20xx_system_set_reg_mode(ctx, LR20XX_SYSTEM_REG_MODE_DCDC);
-	LOG_INF("init: set_reg_mode(DCDC)=%d", st);
+	LOG_INF("init: LDO mode (RadioLib-compatible, no DCDC)");
 
 	lr20xx_configure_rfswitch(ctx, cfg);
+	LOG_INF("RF switch: en=0x%02x stby=0x%02x rx=0x%02x tx=0x%02x txhp=0x%02x",
+		cfg->rfswitch_enable, cfg->rfswitch_standby, cfg->rfswitch_rx,
+		cfg->rfswitch_tx, cfg->rfswitch_tx_hp);
 
-	/* DIO5 is the physical IRQ line to the MCU.  configure_rfswitch may
-	 * have set it to FUNC_RF_SWITCH if bit 0 of rfswitch_enable was set.
-	 * Always override to FUNC_IRQ so set_dio_irq_cfg routes events here. */
-	st = lr20xx_system_set_dio_function(ctx, LR20XX_SYSTEM_DIO_5,
+	st = lr20xx_system_set_dio_function(ctx, LR20XX_SYSTEM_DIO_9,
 				       LR20XX_SYSTEM_DIO_FUNC_IRQ,
 				       LR20XX_SYSTEM_DIO_DRIVE_NONE);
-	LOG_INF("init: set_dio5_func(IRQ)=%d", st);
-
-	LOG_INF("RF switch: en=0x%02x rx=0x%02x tx=0x%02x txhp=0x%02x",
-		cfg->rfswitch_enable, cfg->rfswitch_rx,
-		cfg->rfswitch_tx, cfg->rfswitch_tx_hp);
+	LOG_INF("init: set_dio9_func(IRQ)=%d", st);
 
 	st = lr20xx_radio_common_set_rx_tx_fallback_mode(ctx,
 						    LR20XX_RADIO_FALLBACK_STDBY_RC);
 	LOG_INF("init: set_fallback(STDBY_RC)=%d", st);
 
-	lr20xx_system_errors_t sys_errors = 0;
-	lr20xx_system_get_errors(ctx, &sys_errors);
-	if (sys_errors) {
-		LOG_WRN("System errors at init: 0x%04x — clearing", sys_errors);
-	}
+	dump_chip_state(ctx, &data->hal_ctx, "pre-cal");
+
 	lr20xx_system_clear_errors(ctx);
 	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
 
-	/* Front-end calibration at 3 standard frequencies (Semtech reference).
-	 * Calibrates ADC offset, poly-phase filter, and image rejection.
-	 * RF operations should be within 50 MHz of a calibrated point. */
-	lr20xx_radio_common_front_end_calibration_value_t fe_cal[3] = {
-		{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
-		  .frequency_in_hertz = 470000000 },
-		{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
-		  .frequency_in_hertz = 897500000 },
-		{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_HF,
-		  .frequency_in_hertz = 2441000000UL },
-	};
-	st = lr20xx_radio_common_calibrate_front_end_helper(ctx, fe_cal, 3);
-	LOG_INF("init: front_end_cal(3 freq)=%d", st);
+	/* Calibrate all analog blocks: 0x6F = LF_RC|HF_RC|PLL|AAF|MU|PA_OFF */
+	st = lr20xx_system_calibrate(ctx, 0x6F);
+	LOG_INF("init: calibrate(0x6F)=%d", st);
 
-	/* Check for errors after calibration */
-	lr20xx_system_errors_t cal_errs = 0;
-	lr20xx_system_get_errors(ctx, &cal_errs);
-	if (cal_errs) {
-		LOG_WRN("init: errors after FE cal: 0x%04x", cal_errs);
-		lr20xx_system_clear_errors(ctx);
+	/* RadioLib waits for BUSY to go LOW after calibrate.
+	 * We poll the BUSY pin (max 500ms timeout). */
+	{
+		int64_t cal_start = k_uptime_get();
+		while (gpio_pin_get_dt(&data->hal_ctx.busy)) {
+			k_msleep(1);
+			if ((k_uptime_get() - cal_start) > 500) {
+				LOG_ERR("BUSY stuck HIGH after calibrate!");
+				break;
+			}
+		}
+		LOG_INF("init: calibrate BUSY wait %lldms",
+			k_uptime_get() - cal_start);
 	}
 
-	lr20xx_hal_enable_dio1_irq(&data->hal_ctx);
+	dump_chip_state(ctx, &data->hal_ctx, "post-cal");
 
-	int dio1_state = gpio_pin_get_dt(&data->hal_ctx.dio1);
-	LOG_INF("init: DIO1 pin state=%d after init", dio1_state);
+	/* Front-end calibration at 868 MHz LF.
+	 * raw_value = ceil(868000000/4000000) = 217 = 0x00D9 */
+	lr20xx_radio_common_front_end_calibration_value_t fe_cal[3] = {
+		{ .rx_path = LR20XX_RADIO_COMMON_RX_PATH_LF,
+		  .frequency_in_hertz = 868000000 },
+		{ .rx_path = 0, .frequency_in_hertz = 0 },
+		{ .rx_path = 0, .frequency_in_hertz = 0 },
+	};
+	st = lr20xx_radio_common_calibrate_front_end_helper(ctx, fe_cal, 1);
+	LOG_INF("init: FE_cal(868MHz LF, raw=0x00D9)=%d", st);
+
+	dump_chip_state(ctx, &data->hal_ctx, "post-FEcal");
+
+	/* Verify: set packet type to LoRa and read it back */
+	st = lr20xx_radio_common_set_pkt_type(ctx, LR20XX_RADIO_COMMON_PKT_TYPE_LORA);
+	LOG_INF("init: set_pkt_type(LORA)=%d", st);
+
+	/* dcdc_reset removed — not needed in LDO mode, RadioLib doesn't do it */
+
+	lr20xx_radio_common_pkt_type_t pkt_readback = 0xFF;
+	lr20xx_radio_common_get_pkt_type(ctx, &pkt_readback);
+	LOG_INF("init: pkt_type readback=%d (expect 1=LORA)", pkt_readback);
+
+	dump_chip_state(ctx, &data->hal_ctx, "init-done");
+
+	lr20xx_system_clear_errors(ctx);
+	lr20xx_hal_enable_dio1_irq(&data->hal_ctx);
 
 	data->rx_boost_enabled = cfg->rx_boosted;
 	data->rx_boost_applied = false;

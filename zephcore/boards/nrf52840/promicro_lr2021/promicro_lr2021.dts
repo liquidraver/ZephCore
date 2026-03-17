@@ -139,23 +139,21 @@
 		busy-gpios  = <&gpio0 29 GPIO_ACTIVE_HIGH>;
 		dio1-gpios  = <&gpio0 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
-		tcxo-voltage-mv = <1800>;
-		tcxo-startup-delay-ms = <5>;
+		/* NiceRF LoRa2021 module uses internal crystal (XTAL), no TCXO.
+		 * tcxo-voltage-mv defaults to 0 (disabled). */
 		rx-boosted;
 
-		/* RF switch via LR2021 internal DIOs (DIO5=bit0..DIO8=bit3).
-		 * DIO5 is the IRQ line to the MCU — it must be FUNC_IRQ, not
-		 * FUNC_RF_SWITCH.  Exclude DIO5 (bit 0) from rfswitch-enable so
-		 * configure_rfswitch does not claim it, and the driver overrides
-		 * DIO5 to FUNC_IRQ unconditionally after rfswitch setup.
-		 *   DIO6: TX_SW  (high in TX — bit 1)
-		 *   DIO7: unused (bit 2)
-		 *   DIO8: RX_SW  (high in RX — bit 3) */
-		rfswitch-enable  = <0x0E>;
+		/* RF switch via NiceRF module internal DIOs (DIO5=bit0, DIO6=bit1).
+		 * DIO5/DIO6 are not exposed on the module — wired internally
+		 * to the on-module RF switch.  DIO9 (pin 15) is IRQ to MCU.
+		 * Config from Semtech reference ral_lr20xx_bsp.c:
+		 *   DIO5: RX_LF | TX_HF
+		 *   DIO6: RX_LF | TX_LF | RX_HF | TX_HF (always on) */
+		rfswitch-enable  = <0x03>;
 		rfswitch-standby = <0x00>;
-		rfswitch-rx      = <0x08>;
+		rfswitch-rx      = <0x03>;
 		rfswitch-tx      = <0x02>;
-		rfswitch-tx-hp   = <0x02>;
+		rfswitch-tx-hp   = <0x03>;
 
 		pa-hp-sel    = <7>;
 		pa-duty-cycle = <4>;
