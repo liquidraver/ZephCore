@@ -3,7 +3,7 @@
  * BQ Station G2 — ESP32-S3, 16MB flash, 8MB PSRAM
  *
  * Hardware:
- *   MCU:     ESP32-S3 (Xtensa LX7, dual-core @ 80 MHz)
+ *   MCU:     ESP32-S3 (Xtensa LX7, dual-core @ 160 MHz)
  *   Flash:   16 MB (QIO)
  *   PSRAM:   8 MB (OPI)
  *   Radio:   SX1262 + PA (~27 dBm output) on SPI2
@@ -40,13 +40,13 @@
 	};
 };
 
-/* Reduce CPU clock from 240 MHz to 80 MHz — plenty for mesh node, saves power */
+/* Reduce CPU clock from 240 MHz to 160 MHz — HAL Kconfig minimum supported */
 &cpu0 {
-	clock-frequency = <DT_FREQ_M(80)>;
+	clock-frequency = <DT_FREQ_M(160)>;
 };
 
 &cpu1 {
-	clock-frequency = <DT_FREQ_M(80)>;
+	clock-frequency = <DT_FREQ_M(160)>;
 };
 
 &usb_serial {
