@@ -51,6 +51,8 @@ Other benefits:
 
 Prerequisites: [Zephyr SDK](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) and `west` installed.
 
+Optional: [adafruit-nrfutil](https://github.com/adafruit/Adafruit_nRF52_nrfutil) to allow DFU zip generation for OTA updates on nRF52 
+
 ```bash
 # Initialize workspace (first time only)
 cd %cloned folder%
