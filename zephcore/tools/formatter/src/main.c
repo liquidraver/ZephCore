@@ -4,16 +4,23 @@
  * Erases all filesystem partitions and reboots into Adafruit UF2 DFU mode
  * for clean firmware installation.
  *
- * All platforms use DTS FIXED_PARTITION_EXISTS guards — no hardcoded addresses.
- * nRF52 boards sharing the same SoftDevice version use the same partition dtsi,
- * so a single UF2 works on every board with that SoftDevice version.
- * QSPI is compile-time conditional — included only when building for a
- * QSPI-capable board target (pin config is board-specific).
+ * Only TWO UF2 binaries are needed for all nRF52840 boards:
+ *   - SDv6: covers RAK4631, ThinkNode M1/M3/M6, ProMicro LR2021, RAK WisMesh Tag
+ *   - SDv7: covers T1000-E, Wio Tracker L1, Ikoka Nano 30dBm
+ *
+ * Internal flash uses DTS FIXED_PARTITION_EXISTS — partition layout is identical
+ * across all boards with the same SoftDevice version.
+ *
+ * QSPI external flash uses bare-metal register probing (qspi_probe.c) — no
+ * Zephyr QSPI driver needed. The probe table contains known pin configurations
+ * for all QSPI-capable boards; it auto-detects which board is running and
+ * erases the external flash if present, or silently skips if not.
  *
  * Build:
- *   SD v7:        west build -b t1000_e/nrf52840        zephcore/tools/formatter --pristine
- *   SD v6:        west build -b rak4631/nrf52840         zephcore/tools/formatter --pristine
- *   SD v7 + QSPI: west build -b wio_tracker_l1/nrf52840 zephcore/tools/formatter --pristine
+ *   SDv6:  west build -b rak4631/nrf52840  zephcore/tools/formatter --pristine
+ *   SDv7:  west build -b t1000_e/nrf52840  zephcore/tools/formatter --pristine
+ *
+ * Flash: drag-drop build/zephyr/zephyr.uf2 onto UF2 drive
  *
  * SPDX-License-Identifier: Apache-2.0
  */
@@ -24,6 +31,7 @@
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/sys/reboot.h>
+#include "qspi_probe.h"
 
 #if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
 #include <hal/nrf_power.h>
@@ -113,14 +121,8 @@ int main(void)
 	}
 #endif
 
-	/* ── QSPI external flash (boards with external QSPI) ── */
-#if FIXED_PARTITION_EXISTS(qspi_storage_partition)
-	if (erase_partition(FIXED_PARTITION_ID(qspi_storage_partition), "QSPI external (/ext)")) {
-		errors++;
-	}
-#else
-	printk("  QSPI: not present in build target — skipped\n");
-#endif
+	/* ── QSPI external flash (auto-detect via pin probing) ── */
+	qspi_probe_and_erase();  /* Probes all known boards; skips if no flash found */
 
 	led_off();
 

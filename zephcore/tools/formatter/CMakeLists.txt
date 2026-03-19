@@ -57,4 +57,4 @@ message(STATUS "Formatter board conf: ${FMT_BOARD_CONF}")
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(zephcore_formatter)
 
-target_sources(app PRIVATE src/main.c)
+target_sources(app PRIVATE src/main.c src/qspi_probe.c)

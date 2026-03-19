@@ -1,0 +1,30 @@
+/*
+ * T1000-E formatter overlay — USB console only.
+ * Strips GPS/sensor nodes from the main board overlay
+ * to avoid driver init hangs in the minimal formatter environment.
+ *
+ * This overlay is used as the SDv7 universal build target.
+ * The resulting UF2 works on ALL nRF52840 boards with SoftDevice v7:
+ *   T1000-E, Wio Tracker L1, Ikoka Nano 30dBm
+ */
+
+/ {
+	chosen {
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+	};
+
+	/* Delete GPS control nodes from main board overlay */
+	/delete-node/ gps-enable;
+	/delete-node/ gps-vrtc-enable;
+	/delete-node/ gps-reset;
+	/delete-node/ gps-sleep-int;
+	/delete-node/ gps-rtc-int;
+	/delete-node/ gps-resetb;
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
