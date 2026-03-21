@@ -1,5 +1,5 @@
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 7b0b67f89d5..49b0a563138 100644
+index 7b0b67f89d5..a6c1ceba162 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -9,10 +9,19 @@
@@ -90,33 +90,21 @@ index 7b0b67f89d5..49b0a563138 100644
  }
  
  static int sx126x_set_sync_word(const struct device *dev, bool public_network)
-@@ -245,8 +267,24 @@ static int sx126x_set_sync_word(const struct device *dev, bool public_network)
- static int sx126x_set_rx_gain(const struct device *dev, bool boosted)
+@@ -246,6 +268,13 @@ static int sx126x_set_rx_gain(const struct device *dev, bool boosted)
  {
  	uint8_t val = boosted ? SX126X_RX_GAIN_BOOSTED : SX126X_RX_GAIN_POWER_SAVING;
-+	int ret;
-+
-+	ret = sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
-+	if (ret < 0) {
-+		return ret;
-+	}
  
--	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
-+	/* Add RX gain register to retention list (DS §9.6) so the chip
-+	 * preserves the setting across mode transitions.  Without this,
-+	 * register 0x08AC resets to power-saving on every SetRx. */
-+	const uint8_t retention[] = {
-+		0x01,
-+		(uint8_t)(SX126X_REG_RX_GAIN >> 8),
-+		(uint8_t)(SX126X_REG_RX_GAIN & 0xFF),
-+	};
-+
-+	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN_RETENTION_0,
-+				     retention, sizeof(retention));
++	/* Retention NOT used: without writing SX126X_REG_RX_GAIN_RETENTION_0,
++	 * the chip resets 0x08AC to power-saving (0x94) on every SetRx command.
++	 * This clears any residual AGC state accumulated during strong-signal
++	 * reception (near-far problem: strong first relay locks AGC, weaker
++	 * second relay missed).  sx126x_restart_rx() and hwStartReceive() both
++	 * re-apply the desired gain after SetRx, after BUSY goes low and before
++	 * any preamble can arrive (~3.4 ms RC startup window). */
+ 	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
  }
  
- static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
-@@ -261,6 +299,7 @@ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
+@@ -261,6 +290,7 @@ static int sx126x_set_tx(const struct device *dev, uint32_t timeout_ms)
  static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
  {
  	uint32_t timeout;
@@ -124,7 +112,7 @@ index 7b0b67f89d5..49b0a563138 100644
  
  	if (timeout_ms == 0) {
  		timeout = SX126X_RX_TIMEOUT_CONTINUOUS;
-@@ -271,7 +310,23 @@ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
+@@ -271,7 +301,23 @@ static int sx126x_set_rx(const struct device *dev, uint32_t timeout_ms)
  	uint8_t buf[3];
  
  	sys_put_be24(timeout, buf);
@@ -149,7 +137,7 @@ index 7b0b67f89d5..49b0a563138 100644
  }
  
  static int sx126x_get_rx_buffer_status(const struct device *dev,
-@@ -295,7 +350,7 @@ static int sx126x_get_packet_status(const struct device *dev,
+@@ -295,7 +341,7 @@ static int sx126x_get_packet_status(const struct device *dev,
  	uint8_t buf[3];
  	int ret;
  
@@ -158,7 +146,7 @@ index 7b0b67f89d5..49b0a563138 100644
  	if (ret == 0) {
  		/* RSSI is -value/2 dBm */
  		*rssi = -((int16_t)buf[0] >> 1);
-@@ -366,6 +421,21 @@ static int sx126x_chip_init(const struct device *dev)
+@@ -366,6 +412,21 @@ static int sx126x_chip_init(const struct device *dev)
  		return ret;
  	}
  
@@ -180,7 +168,7 @@ index 7b0b67f89d5..49b0a563138 100644
  	/* Set packet type to LoRa */
  	ret = sx126x_set_packet_type(dev, SX126X_PACKET_TYPE_LORA);
  	if (ret < 0) {
-@@ -397,7 +467,7 @@ static void sx126x_dio1_callback(const struct device *dev)
+@@ -397,7 +458,7 @@ static void sx126x_dio1_callback(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
  
@@ -189,7 +177,7 @@ index 7b0b67f89d5..49b0a563138 100644
  }
  
  static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
-@@ -405,11 +475,107 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
+@@ -405,11 +466,133 @@ static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
  	const struct sx126x_hal_config *config = dev->config;
  
  	sx126x_hal_set_antenna_enable(dev, enable);
@@ -283,6 +271,25 @@ index 7b0b67f89d5..49b0a563138 100644
 +static void sx126x_restart_rx(const struct device *dev, struct sx126x_data *data)
 +{
 +	if (data->rx_duty_cycle_enabled) {
++		const struct sx126x_hal_config *config = dev->config;
++
++		/* AGC reset: after RxDone in duty cycle mode the chip is in
++		 * STDBY_RC — the analog frontend (incl. AGC) is already
++		 * powered down.  Calibrate(ALL) re-initialises ADC/PLL/RC
++		 * so the receiver starts clean.  Without this, a strong
++		 * signal can desensitise the receiver until reboot (the
++		 * "near-far" gain-lock problem).
++		 * Cost: ~5 ms per received packet — well within the 32.8 ms
++		 * preamble budget (16-sym preamble, need 8 to lock). */
++		sx126x_calibrate(dev, SX126X_CALIBRATE_ALL);
++		k_busy_wait(5000);
++		sx126x_hal_wait_busy(dev, 50);
++
++		/* Re-apply DIO2 as RF switch — Calibrate resets it */
++		if (config->dio2_tx_enable) {
++			sx126x_set_dio2_as_rf_switch(dev, true);
++		}
++
 +		sx126x_apply_rx_duty_cycle(data);
 +	} else {
 +		uint8_t buf[3];
@@ -291,14 +298,21 @@ index 7b0b67f89d5..49b0a563138 100644
 +		sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, buf, 3);
 +	}
 +
-+	/* RX gain is preserved by hardware retention registers (§9.6) —
-+	 * no need to re-apply on every restart. */
++	/* Re-apply RX gain: SetRx resets 0x08AC to power-saving without retention.
++	 * sx126x_hal_write_cmd() above waits for BUSY before issuing the command;
++	 * sx126x_hal_write_regs() below also waits for BUSY (the ~3.4 ms RC startup
++	 * after SetRx) before writing.  The gain is therefore applied after the radio
++	 * has entered RX but before any preamble can arrive — giving a clean AGC
++	 * state for each new packet regardless of the previous packet's signal level. */
++	uint8_t gain = data->rx_boost_enabled ? SX126X_RX_GAIN_BOOSTED
++					      : SX126X_RX_GAIN_POWER_SAVING;
++	sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &gain, 1);
 +}
 +
  static int sx126x_set_sleep(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
-@@ -521,19 +687,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
+@@ -521,19 +704,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
  
  	/* Handle async callback or signal sync receiver */
  	if (data->rx_cb != NULL) {
@@ -331,7 +345,7 @@ index 7b0b67f89d5..49b0a563138 100644
  	} else {
  		/* Sync mode */
  		sx126x_set_sleep(dev);
-@@ -653,6 +823,29 @@ static int sx126x_lora_config(const struct device *dev,
+@@ -653,6 +840,29 @@ static int sx126x_lora_config(const struct device *dev,
  		goto out;
  	}
  
@@ -361,7 +375,7 @@ index 7b0b67f89d5..49b0a563138 100644
  	/* Set sync word */
  	ret = sx126x_set_sync_word(dev, config->public_network);
  	if (ret < 0) {
-@@ -732,6 +925,29 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -732,6 +942,29 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -391,7 +405,7 @@ index 7b0b67f89d5..49b0a563138 100644
  	/* Start transmission with 10 second timeout */
  	ret = sx126x_set_tx(dev, 10000);
  	if (ret < 0) {
-@@ -1038,6 +1254,126 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1038,6 +1271,126 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -518,7 +532,7 @@ index 7b0b67f89d5..49b0a563138 100644
  static DEVICE_API(lora, sx126x_lora_api) = {
  	.config = sx126x_lora_config,
  	.send = sx126x_lora_send,
-@@ -1063,6 +1399,14 @@ static int sx126x_init(const struct device *dev)
+@@ -1063,6 +1416,14 @@ static int sx126x_init(const struct device *dev)
  	data->dev = dev;
  	atomic_set(&data->state, SX126X_STATE_IDLE);
  	data->config_valid = false;

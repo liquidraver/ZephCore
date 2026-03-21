@@ -339,16 +339,19 @@ menu "LoRa Power Saving"
 
 config ZEPHCORE_LORA_RX_DUTY_CYCLE
 	bool "Enable LoRa RX duty cycle power saving"
-	default y if ZEPHCORE_ROLE_COMPANION && !ZEPHCORE_RADIO_LR1110 && !ZEPHCORE_RADIO_LR2021
+	default y if (ZEPHCORE_ROLE_COMPANION || ZEPHCORE_ROLE_REPEATER) && !ZEPHCORE_RADIO_LR1110 && !ZEPHCORE_RADIO_LR2021
 	default n
 	help
 	  Enable RX duty cycling for power saving on battery-powered devices.
 	  Uses RadioLib's algorithm to calculate optimal timing based on SF/BW.
 
-	  Auto-enabled for companion devices with SX1262/LLCC68 radios.
-	  Disabled for repeaters (latency matters more than battery life),
-	  LR1110 (cannot lock on mid-preamble, causes packet loss), and
-	  LR2021 (untested — enable manually after verifying no packet loss).
+	  Auto-enabled for companion and repeater devices with SX1262/LLCC68
+	  radios.  Duty cycle mode also resets AGC state after every received
+	  packet via Calibrate(ALL), preventing the "near-far" gain-lock
+	  problem where a strong signal desensitises the receiver.
+	  Disabled for LR1110 (cannot lock on mid-preamble, causes packet
+	  loss) and LR2021 (untested — enable manually after verifying no
+	  packet loss).  Can be toggled at runtime via CLI.
 
 	  The key insight is that LoRa preamble symbols are all identical,
 	  so CAD/RX can detect preamble even if we wake mid-stream. The
