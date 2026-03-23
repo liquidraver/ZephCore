@@ -466,6 +466,14 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 		return false;
 	}
 
+	/* Last-moment hardware check before killing active RX.
+	 * Closes the race between the Dispatcher's isReceiving() guard
+	 * and hwCancelReceive() — if a preamble arrived in that gap,
+	 * abort TX and let the Dispatcher re-queue. */
+	if (hwIsPreambleDetected()) {
+		return false;
+	}
+
 	_board->onBeforeTransmit();
 	atomic_set(&_tx_active, 1);
 	atomic_set(&_in_recv_mode, 0);
