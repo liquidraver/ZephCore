@@ -14,7 +14,6 @@ cmake_minimum_required(VERSION 3.20.0)
 # Directory layout:
 #   patches/zephyr/*.patch       - unified diffs applied to the Zephyr tree
 #   patches/zephyr-new/          - new files copied to the Zephyr tree (no upstream)
-#   patches/espressif/*.patch    - unified diffs for modules/hal/espressif
 #
 # Zephyr patches:
 #   0001-lora-lr11xx-build       - CMakeLists.txt + Kconfig (lr11xx subdirectory)
@@ -26,8 +25,6 @@ cmake_minimum_required(VERSION 3.20.0)
 #   drivers/lora/lr11xx/*        - LR11xx Zephyr LoRa driver
 #   drivers/lora/native/sx126x/sx126x_ext.h - SX126x extension API header
 #   dts/bindings/lora/semtech,lr1110.yaml - LR1110 DTS binding
-# Module patches:
-#   espressif: MCUboot config flexibility (mbedtls, validation, sector count)
 #
 
 # --- Helper: apply unified diff patches via git apply ---
@@ -160,16 +157,6 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
         configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
         message(STATUS "  [zephyr-new] ${REL_PATH}")
     endforeach()
-endif()
-
-# Apply unified diff patches to espressif module
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/espressif)
-    message(STATUS "Applying ZephCore patches to espressif...")
-    zephcore_apply_patches(
-        "${CMAKE_CURRENT_SOURCE_DIR}/patches/espressif"
-        "${MODULES_DIR}/hal/espressif"
-        "espressif"
-    )
 endif()
 
 # Add custom boards directory (for Wio Tracker L1, etc.)

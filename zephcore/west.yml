@@ -6,11 +6,11 @@ manifest:
   projects:
     - name: hal_espressif
       remote: zephyrproject-rtos
-      revision: e994fd973c2d8eab1ed2c8278c04e841b3a5217a
+      revision: cbf74978350266a45edbfb4508553a3990341dd2
       path: modules/hal/espressif
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: 56f8a30c7fd7521e5eeab186b2f425f295376905
+      revision: b104f826ca8e3a85cb205d2962189287f59d3174
       import: true
 
   self:
