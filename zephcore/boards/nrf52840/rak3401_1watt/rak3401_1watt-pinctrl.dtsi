@@ -1,0 +1,68 @@
+/*
+ * RAK3401 1W pin control definitions
+ * Copyright (c) 2025 ZephCore
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pin mappings (from Meshtastic/MeshCore variant.h):
+ *
+ * SPI1 (LoRa SX1262):  SCK=P0.03, MISO=P0.29, MOSI=P0.30, CS=P0.26
+ *   NOTE: These pins are shared with QSPI flash — QSPI must be disabled.
+ * I2C0 (WisBlock sensors): SDA=P0.13, SCL=P0.14
+ * UART0 (GPS 9600):    TX=P0.16 (→GPS RX), RX=P0.15 (←GPS TX)
+ */
+
+&pinctrl {
+	/* UART0 for GPS module (RAK1910 u-blox MAX-7Q) at 9600 baud */
+	uart0_default: uart0_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 16)>;   /* P0.16 → GPS RX */
+		};
+		group2 {
+			psels = <NRF_PSEL(UART_RX, 0, 15)>;   /* P0.15 ← GPS TX */
+			bias-pull-up;
+		};
+	};
+
+	uart0_sleep: uart0_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 16)>,
+				<NRF_PSEL(UART_RX, 0, 15)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C0 for WisBlock sensors */
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 13)>,   /* P0.13 WB_I2C1_SDA */
+				<NRF_PSEL(TWIM_SCL, 0, 14)>;   /* P0.14 WB_I2C1_SCL */
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 13)>,
+				<NRF_PSEL(TWIM_SCL, 0, 14)>;
+			low-power-enable;
+		};
+	};
+
+	/* SPI1 for LoRa SX1262 (IO-slot SPI bus) */
+	spi1_default: spi1_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,    /* P0.03 PIN_SPI1_SCK  */
+				<NRF_PSEL(SPIM_MOSI, 0, 30)>,   /* P0.30 PIN_SPI1_MOSI */
+				<NRF_PSEL(SPIM_MISO, 0, 29)>;   /* P0.29 PIN_SPI1_MISO */
+		};
+	};
+
+	spi1_sleep: spi1_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 30)>,
+				<NRF_PSEL(SPIM_MISO, 0, 29)>;
+			low-power-enable;
+		};
+	};
+};

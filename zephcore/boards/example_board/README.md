@@ -10,6 +10,7 @@ Supported Boards
 | Board               | Build string                              | Flash                         |
 |----------------------|-------------------------------------------|-------------------------------|
 | RAK4631              | `west build -b rak4631 zephcore`          | UF2 drag-drop or `west flash` |
+| RAK3401 1W           | `west build -b rak3401_1watt zephcore`    | UF2 drag-drop or `west flash` |
 | Wio Tracker L1       | `west build -b wio_tracker_l1 zephcore`   | UF2 drag-drop or `west flash` |
 | T1000-E              | `west build -b t1000_e zephcore`          | UF2 drag-drop or `west flash` |
 | ThinkNode M1         | `west build -b thinknode_m1 zephcore`     | UF2 drag-drop or `west flash` |

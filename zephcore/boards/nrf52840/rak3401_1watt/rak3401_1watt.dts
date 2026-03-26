@@ -1,0 +1,219 @@
+/*
+ * RAK3401 1W — nRF52840 + SX1262 + SKY66122 1W PA (WisMesh Booster)
+ * Copyright (c) 2025 ZephCore
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Hardware:
+ * - nRF52840 SoC with BLE 5
+ * - SX1262 LoRa radio on RAK13302 IO-slot module (30 dBm, SKY66122 FEM)
+ *   DIO2 as RF switch, TCXO 1.8V via DIO3
+ * - RAK1910 GPS module (optional) on UART0 at 9600 baud
+ * - Battery ADC on AIN3 (P0.05)
+ * - I2C0 for WisBlock sensors (auto-detected)
+ * - LEDs: GREEN=P1.03 (TX, active HIGH), BLUE=P1.04 (status, active HIGH)
+ * - QSPI flash disabled (pins conflict with LoRa SPI bus)
+ * - SoftDevice s140 v6.1.1, UF2 bootloader
+ *
+ * Pin mappings (from Meshtastic/MeshCore variant.h):
+ * - LoRa SPI:  SCK=P0.03, MOSI=P0.30, MISO=P0.29, CS=P0.26
+ * - LoRa ctl:  DIO1=P0.10 (NFC2), BUSY=P0.09 (NFC1), RESET=P0.04
+ * - FEM:       SX126X_POWER_EN=P0.21 (SKY66122 CSD+CPS)
+ * - 3V3_S:     WB_IO2=P1.02 (3V3_S rail, powers GPS + PA boost)
+ * - I2C:       SDA=P0.13, SCL=P0.14
+ * - GPS:       TX=P0.16, RX=P0.15
+ * - Battery:   AIN3=P0.05
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "rak3401_1watt-pinctrl.dtsi"
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+
+/ {
+	model = "RAK3401 1W";
+	compatible = "rak,rak3401-1watt";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+	};
+
+	aliases {
+		lora0 = &lora;
+		led0 = &led_green;
+		led1 = &led_blue;
+		lora-tx-led = &led_green;
+		watchdog0 = &wdt0;
+	};
+
+	/* ---- LEDs (active HIGH per variant.h LED_STATE_ON=HIGH) ---- */
+	leds {
+		compatible = "gpio-leds";
+
+		led_green: led_0 {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "Green LED";
+		};
+
+		led_blue: led_1 {
+			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+	};
+
+	/* ---- Power control ---- */
+
+	/* 3V3_S rail — must be HIGH for GPS and IO-slot peripherals.
+	 * WB_IO2 (P1.02) doubles as GPS_RESET on the RAK1910 slot,
+	 * so it must remain HIGH when GPS is active. */
+	v3v3s_enable: v3v3s-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "v3v3s-enable";
+		enable-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
+	/* SKY66122 FEM enable — must be HIGH before SX1262 can transmit.
+	 * SX126X_POWER_EN = P0.21 (IO3 on WisBlock base). */
+	lora_pwr_enable: lora-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "lora-pwr-enable";
+		enable-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
+	};
+
+	/* ---- Battery ADC ---- */
+	/* P0.05 (AIN3), 150K+150K divider — same circuit as RAK4631.
+	 * Arduino ADC_MULTIPLIER=1.73, AREF=3.0V:
+	 * vbat-mv-multiplier = round(3 * 1.73 * 1.187 * 1000) = 6161 */
+	zephyr,user {
+		io-channels = <&adc 3>;
+		vbat-mv-multiplier = <6161>;
+	};
+};
+
+/* ---- SoC configuration ---- */
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* Battery voltage on P0.05 (AIN3) */
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN3>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* Enable NFC1 (P0.09) and NFC2 (P0.10) as plain GPIOs.
+ * P0.09 → SX1262 BUSY, P0.10 → SX1262 DIO1. */
+&uicr {
+	nfct-pins-as-gpios;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* ---- GPS on UART0 (RAK1910 u-blox MAX-7Q, 9600 baud) ---- */
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/* ---- I2C0 for WisBlock sensors ---- */
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	/* All supported environment & power sensors — auto-detected at runtime */
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* ---- SPI1 for LoRa SX1262 (RAK13302 IO-slot module) ---- */
+&spi1 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;   /* P0.26 LORA_CS */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;     /* P0.04 WB_IO4 */
+		busy-gpios = <&gpio0 9 GPIO_ACTIVE_HIGH>;     /* P0.09 NFC1 */
+		dio1-gpios = <&gpio0 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* P0.10 NFC2 */
+
+		/* DIO2 drives SKY66122 CTX (TX/RX switch) */
+		dio2-tx-enable;
+
+		/* TCXO 1.8V reference via DIO3 */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+
+		/* RX boosted LNA for improved sensitivity */
+		rx-boosted;
+	};
+};
+
+/* ---- QSPI flash — disabled (pins shared with LoRa SPI) ---- */
+&qspi {
+	status = "disabled";
+};
+
+/* ---- USB CDC for console/CLI ---- */
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* ---- Flash partitions (SoftDevice v6, app@0x26000) ---- */
+#include "../../common/nrf52_partitions_sdv6.dtsi"

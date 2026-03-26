@@ -1,0 +1,6 @@
+# RAK3401 1W board configuration
+# Copyright (c) 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_RAK3401_1WATT
+	select SOC_NRF52840_QIAA

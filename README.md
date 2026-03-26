@@ -22,6 +22,7 @@ Other benefits:
 | **Wio Tracker L1** | SX1262 | GPS (L76KB), OLED (SH1106), joystick, buzzer, QSPI flash |
 | **Seeed T1000-E** | LR1110 | GPS (AG3335), LEDs, button |
 | **RAK4631** | SX1262 | GPS (u-blox MAX-7Q), I2C sensors (SHTC3, LPS22HB, BME680) |
+| **RAK3401 1W** | SX1262 + SKY66122 (30 dBm) | GPS (u-blox MAX-7Q, optional), I2C sensors |
 | **RAK WisMesh Tag** | SX1262 | GPS (AT6558R), accelerometer, RGB LEDs, buzzer |
 | **ThinkNode M1** | SX1262 | GPS, e-paper display (SSD1681), QSPI flash, buzzer, RGB LEDs |
 | **Ikoka Nano 30dBm** | SX1262 (E22-900M30S, 30dBm PA) | RGB LEDs |

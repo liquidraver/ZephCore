@@ -512,6 +512,7 @@ prj.conf (base: console, logging)
 | Board | SoC | Radio | GPS | Display | Buzzer | Buttons | QSPI | Max Contacts |
 |-------|-----|-------|-----|---------|--------|---------|------|-------------|
 | RAK4631 | nRF52840 | SX1262 | gnss-nmea | - | - | - | - | 350 |
+| RAK3401 1W | nRF52840 | SX1262+SKY66122 (30dBm) | gnss-nmea (opt) | - | - | - | - | 350 |
 | WisMesh Tag | nRF52840 | SX1262 | Air530Z | - | Yes | 1+multitap | - | 350 |
 | T1000-E | nRF52840 | **LR1110** | AG3335 | - | Yes | 1+multitap | - | 350 |
 | ThinkNode M1 | nRF52840 | SX1262 | Air530Z | EPD 200x200 | Yes | 2+multitap | 2MB | 510 |

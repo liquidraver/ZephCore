@@ -6,6 +6,7 @@ Board strings for use with `west build -b <board> zephcore`.
 
 ```
 rak4631
+rak3401_1watt
 wio_tracker_l1
 t1000_e
 thinknode_m1

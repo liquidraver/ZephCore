@@ -1,0 +1,6 @@
+board:
+  name: rak3401_1watt
+  full_name: RAK3401 1W (nRF52840 + SX1262 + SKY66122 PA)
+  vendor: rakwireless
+  socs:
+    - name: nrf52840
