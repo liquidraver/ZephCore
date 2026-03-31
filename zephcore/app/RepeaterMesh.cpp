@@ -235,35 +235,36 @@ int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, u
         /* CayenneLPP telemetry response using SimpleLPP encoder */
         SimpleLPP lpp(&reply_data[4], sizeof(reply_data) - 4);
 
-        /* Battery voltage - channel 0 = self */
+        /* Battery voltage — channel 1 = TELEM_CHANNEL_SELF (matches Arduino) */
+        const uint8_t CH_SELF = 1;
         uint16_t batt_mv = _board.getBattMilliVolts();
-        lpp.addVoltage(0, batt_mv / 1000.0f);
+        lpp.addVoltage(CH_SELF, batt_mv / 1000.0f);
 
         /* Environment sensors — prefer external, fallback to MCU die temp */
         struct env_data env;
         if (env_sensors_read(&env) == 0) {
             if (env.has_temperature) {
-                lpp.addTemperature(0, env.temperature_c);
+                lpp.addTemperature(CH_SELF, env.temperature_c);
             } else if (env.has_mcu_temperature) {
-                lpp.addTemperature(0, env.mcu_temperature_c);
+                lpp.addTemperature(CH_SELF, env.mcu_temperature_c);
             } else {
                 /* Last resort: MCU temp from board API */
                 float mcu_temp = _board.getMCUTemperature();
                 if (!isnan(mcu_temp)) {
-                    lpp.addTemperature(0, mcu_temp);
+                    lpp.addTemperature(CH_SELF, mcu_temp);
                 }
             }
             if (env.has_humidity) {
-                lpp.addRelativeHumidity(0, env.humidity_pct);
+                lpp.addRelativeHumidity(CH_SELF, env.humidity_pct);
             }
             if (env.has_pressure) {
-                lpp.addBarometricPressure(0, env.pressure_hpa);
+                lpp.addBarometricPressure(CH_SELF, env.pressure_hpa);
             }
         } else {
             /* No env sensors at all — try MCU temp directly */
             float mcu_temp = _board.getMCUTemperature();
             if (!isnan(mcu_temp)) {
-                lpp.addTemperature(0, mcu_temp);
+                lpp.addTemperature(CH_SELF, mcu_temp);
             }
         }
 
@@ -271,7 +272,7 @@ int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, u
         if (power_sensors_available()) {
             struct power_data pwr;
             if (power_sensors_read(&pwr) == 0) {
-                uint8_t ch = 1;
+                uint8_t ch = CH_SELF + 1;
                 for (int j = 0; j < pwr.num_channels; j++) {
                     if (pwr.channels[j].valid) {
                         lpp.addVoltage(ch, pwr.channels[j].voltage_v);
