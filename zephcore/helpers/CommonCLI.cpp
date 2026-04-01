@@ -396,9 +396,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
      */
     } else if (memcmp(command, "get ", 4) == 0) {
         const char* config = &command[4];
-        if (memcmp(config, "af", 2) == 0) {
-            int dc = (_prefs->airtime_factor == 0.0f) ? 100 : (int)_prefs->airtime_factor;
-            snprintf(reply, CLI_REPLY_SIZE, "> Duty Cycle: %d%%", dc);
+        if (memcmp(config, "dutycycle", 9) == 0) {
+            float dc = 100.0f / (_prefs->airtime_factor + 1.0f);
+            int dc_int = (int)dc;
+            int dc_frac = (int)((dc - dc_int) * 10.0f + 0.5f);
+            snprintf(reply, CLI_REPLY_SIZE, "> %d.%d%%", dc_int, dc_frac);
+        } else if (memcmp(config, "af", 2) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->airtime_factor);
         } else if (memcmp(config, "int.thresh", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->interference_threshold);
         } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
@@ -511,19 +515,22 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
      */
     } else if (memcmp(command, "set ", 4) == 0) {
         const char* config = &command[4];
-        if (memcmp(config, "af ", 3) == 0) {
-            int val = atoi(&config[3]);
-            if (val < 0 || val > 99) {
-                strcpy(reply, "Error: range 0-99 (0=unlimited)");
-            } else if (val == 0) {
-                _prefs->airtime_factor = 0.0f;
-                savePrefs();
-                strcpy(reply, "Duty Cycle set: 100% (unlimited)");
+        if (memcmp(config, "dutycycle ", 10) == 0) {
+            float dc = atof(&config[10]);
+            if (dc < 1 || dc > 100) {
+                strcpy(reply, "ERROR: dutycycle must be 1-100");
             } else {
-                _prefs->airtime_factor = (float)val;
+                _prefs->airtime_factor = (100.0f / dc) - 1.0f;
                 savePrefs();
-                snprintf(reply, CLI_REPLY_SIZE, "Duty Cycle set: %d%%", val);
+                float actual = 100.0f / (_prefs->airtime_factor + 1.0f);
+                int a_int = (int)actual;
+                int a_frac = (int)((actual - a_int) * 10.0f + 0.5f);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - %d.%d%%", a_int, a_frac);
             }
+        } else if (memcmp(config, "af ", 3) == 0) {
+            _prefs->airtime_factor = atof(&config[3]);
+            savePrefs();
+            strcpy(reply, "OK");
         } else if (memcmp(config, "int.thresh ", 11) == 0) {
             _prefs->interference_threshold = atoi(&config[11]);
             savePrefs();

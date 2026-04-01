@@ -146,7 +146,8 @@ Regions control which flood packets the repeater forwards. The region tree is hi
 | `get tx` | TX power: fixed dBm or APC status |
 | `get lat` | Stored latitude |
 | `get lon` | Stored longitude |
-| `get af` | Duty cycle percentage (100 = unlimited) |
+| `get dutycycle` | Duty cycle as percentage (e.g. "50.0%") |
+| `get af` | Raw airtime factor value |
 | `get txdelay` | Adaptive TX delay status: contention estimate and flood delay factor |
 | `get rxdelay` | *(deprecated)* Always returns "adaptive (rxdelay deprecated)" |
 | `get direct.txdelay` | *(deprecated)* Always returns "adaptive (direct.txdelay deprecated)" |
@@ -185,7 +186,8 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set tx <dbm\|apc>` | −9 to board max (default 30), or `apc` | Set TX power fixed or enable Adaptive Power Control |
 | `set lat <latitude>` | | Set stored latitude |
 | `set lon <longitude>` | | Set stored longitude |
-| `set af <duty>` | 0–99 (0 = unlimited) | Duty cycle limit in percent |
+| `set dutycycle <pct>` | 1–100 | Set duty cycle percentage (converted to airtime factor internally) |
+| `set af <value>` | float | Set raw airtime factor directly |
 | `set txdelay <value>` | | Accepted for prefs compatibility — **ignored** (txdelay is adaptive) |
 | `set rxdelay <value>` | | Accepted for prefs compatibility — **ignored** (rxdelay is adaptive) |
 | `set direct.txdelay <value>` | | Accepted for prefs compatibility — **ignored** (direct.txdelay is adaptive) |
