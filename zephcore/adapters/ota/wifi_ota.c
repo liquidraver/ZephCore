@@ -29,7 +29,7 @@
 #include <stdio.h>
 #include <string.h>
 
-LOG_MODULE_REGISTER(wifi_ota, LOG_LEVEL_DEFAULT);
+LOG_MODULE_REGISTER(wifi_ota);
 
 /* ========== Configuration ========== */
 
