@@ -25,6 +25,7 @@ xiao_esp32c6/esp32c6/hpcore
 xiao_esp32s3/esp32s3/procpu
 lilygo_tlora_c6/esp32c6/hpcore
 station_g2/esp32s3/procpu
+heltec_wifi_lora32_v3/esp32s3/procpu
 ```
 
 > ESP32 boards require `west blobs fetch hal_espressif` before first build.
