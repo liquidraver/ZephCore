@@ -29,6 +29,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
 	  _rx_boost_enabled(true),
 	  _tx_power_reduction_db(0),
+	  _loramac_node(false),
 	  _config_cached(false),
 	  _rx_cb(nullptr), _rx_cb_user_data(nullptr),
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
@@ -272,8 +273,12 @@ void LoRaRadioBase::configureRx()
 	 * RX config (RadioSetRxConfig) from a previous cycle — Radio.Rx(0)
 	 * in hwStartReceive() will use those register values directly.
 	 * This avoids the modem_acquire → modem_release → Radio.Sleep()
-	 * round-trip that wastes ~5 ms on every TX→RX transition. */
-	if (_config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
+	 * round-trip that wastes ~5 ms on every TX→RX transition.
+	 *
+	 * Not used for loramac-node: Radio.SetTxConfig() and Radio.SetRxConfig()
+	 * configure completely disjoint internal state (including TxTimeout).
+	 * Skipping either on a direction change leaves that state uninitialized. */
+	if (!_loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
 		LOG_DBG("configureRx: direction-only change, skip hwConfigure");
 		_last_cfg = cfg;
 		return;
@@ -300,8 +305,9 @@ void LoRaRadioBase::configureTx()
 
 	/* Fast path: direction-only change (RX→TX).  The driver already
 	 * has a valid TX config (RadioSetTxConfig with TxTimeout=4000)
-	 * from a previous cycle — Radio.Send() will use those values. */
-	if (_config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
+	 * from a previous cycle — Radio.Send() will use those values.
+	 * Not used for loramac-node (see configureRx comment above). */
+	if (!_loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
 		LOG_DBG("configureTx: direction-only change, skip hwConfigure");
 		_last_cfg = cfg;
 		return;

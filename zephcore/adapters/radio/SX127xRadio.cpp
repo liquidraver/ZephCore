@@ -32,6 +32,10 @@ SX127xRadio::SX127xRadio(const struct device *lora_dev, MainBoard &board,
 {
 	/* SX127x has no RX boost feature — start with boost disabled */
 	_rx_boost_enabled = false;
+	/* loramac-node requires full lora_config() on every TX/RX direction
+	 * change — Radio.SetTxConfig() and Radio.SetRxConfig() configure
+	 * completely disjoint internal state in the loramac-node library. */
+	_loramac_node = true;
 }
 
 void SX127xRadio::begin()
@@ -91,8 +95,18 @@ void SX127xRadio::hwResetAGC()
 {
 	/* The loramac-node SX127x driver manages AGC recalibration internally
 	 * (RadioSetRxConfig re-programs all gain registers on every RX config
-	 * call).  No explicit AGC reset is needed or possible via the
-	 * standard API.  The base class will restart RX after this call. */
+	 * call).  No explicit AGC reset is needed or possible via the standard
+	 * API. */
+}
+
+void SX127xRadio::resetAGC()
+{
+	/* hwResetAGC() is a no-op, so skip the base-class resetAGC() entirely.
+	 * The base class calls startReceive() after hwResetAGC(), but the
+	 * loramac-node modem mutex (STATE_BUSY during async RX) causes
+	 * lora_recv_async() to return -EBUSY, setting _in_recv_mode = 0 and
+	 * corrupting the state machine.  The loramac-node driver self-manages
+	 * AGC, so nothing needs to happen here. */
 }
 
 } /* namespace mesh */

@@ -121,6 +121,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr)
     )
 endif()
 
+# Apply patches to loramac-node module
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/loramac-node)
+    message(STATUS "Applying ZephCore patches to loramac-node...")
+    zephcore_apply_patches(
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/loramac-node"
+        "${MODULES_DIR}/lib/loramac-node"
+        "loramac-node"
+    )
+endif()
+
 # Copy new files into Zephyr tree
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
     file(GLOB_RECURSE ZEPHCORE_NEW_FILES

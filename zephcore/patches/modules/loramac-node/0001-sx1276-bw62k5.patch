@@ -1,0 +1,85 @@
+diff --git a/src/radio/sx1276/sx1276.c b/src/radio/sx1276/sx1276.c
+index 7dd9b122..3ea5320d 100644
+--- a/src/radio/sx1276/sx1276.c
++++ b/src/radio/sx1276/sx1276.c
+@@ -523,12 +523,14 @@ void SX1276SetRxConfig( RadioModems_t modem, uint32_t bandwidth,
+         break;
+     case MODEM_LORA:
+         {
+-            if( bandwidth > 2 )
++            if( bandwidth > 3 )
+             {
+-                // Fatal error: When using LoRa modem only bandwidths 125, 250 and 500 kHz are supported
++                // Fatal error: When using LoRa modem only bandwidths 62.5, 125, 250 and 500 kHz are supported
+                 while( 1 );
+             }
+-            bandwidth += 7;
++            // Map loramac-node index to SX1276 BW register value:
++            // 0=125kHz->7, 1=250kHz->8, 2=500kHz->9, 3=62.5kHz->6
++            bandwidth = ( bandwidth == 3 ) ? 6 : ( bandwidth + 7 );
+             SX1276.Settings.LoRa.Bandwidth = bandwidth;
+             SX1276.Settings.LoRa.Datarate = datarate;
+             SX1276.Settings.LoRa.Coderate = coderate;
+@@ -550,7 +552,9 @@ void SX1276SetRxConfig( RadioModems_t modem, uint32_t bandwidth,
+                 datarate = 6;
+             }
+ 
+-            if( ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++            // BW 62.5kHz (reg 6): LDRO required for SF10/11/12 (symbol time >16ms)
++            if( ( ( bandwidth == 6 ) && ( ( datarate == 10 ) || ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++                ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+                 ( ( bandwidth == 8 ) && ( datarate == 12 ) ) )
+             {
+                 SX1276.Settings.LoRa.LowDatarateOptimize = 0x01;
+@@ -687,12 +691,14 @@ void SX1276SetTxConfig( RadioModems_t modem, int8_t power, uint32_t fdev,
+     case MODEM_LORA:
+         {
+             SX1276.Settings.LoRa.Power = power;
+-            if( bandwidth > 2 )
++            if( bandwidth > 3 )
+             {
+-                // Fatal error: When using LoRa modem only bandwidths 125, 250 and 500 kHz are supported
++                // Fatal error: When using LoRa modem only bandwidths 62.5, 125, 250 and 500 kHz are supported
+                 while( 1 );
+             }
+-            bandwidth += 7;
++            // Map loramac-node index to SX1276 BW register value:
++            // 0=125kHz->7, 1=250kHz->8, 2=500kHz->9, 3=62.5kHz->6
++            bandwidth = ( bandwidth == 3 ) ? 6 : ( bandwidth + 7 );
+             SX1276.Settings.LoRa.Bandwidth = bandwidth;
+             SX1276.Settings.LoRa.Datarate = datarate;
+             SX1276.Settings.LoRa.Coderate = coderate;
+@@ -712,7 +718,9 @@ void SX1276SetTxConfig( RadioModems_t modem, int8_t power, uint32_t fdev,
+             {
+                 datarate = 6;
+             }
+-            if( ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++            // BW 62.5kHz (reg 6): LDRO required for SF10/11/12 (symbol time >16ms)
++            if( ( ( bandwidth == 6 ) && ( ( datarate == 10 ) || ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
++                ( ( bandwidth == 7 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+                 ( ( bandwidth == 8 ) && ( datarate == 12 ) ) )
+             {
+                 SX1276.Settings.LoRa.LowDatarateOptimize = 0x01;
+@@ -1437,6 +1445,9 @@ static uint32_t SX1276GetLoRaBandwidthInHz( uint32_t bw )
+     case 2: // 500 kHz
+         bandwidthInHz = 500000UL;
+         break;
++    case 3: // 62.5 kHz
++        bandwidthInHz = 62500UL;
++        break;
+     }
+ 
+     return bandwidthInHz;
+@@ -1475,8 +1486,11 @@ static uint32_t SX1276GetLoRaTimeOnAirNumerator( uint32_t bandwidth,
+         }
+     }
+ 
++    // index 0=125kHz: LDRO for SF11/12; index 1=250kHz: LDRO for SF12
++    // index 3=62.5kHz: LDRO for SF10/11/12 (symbol time >16ms)
+     if( ( ( bandwidth == 0 ) && ( ( datarate == 11 ) || ( datarate == 12 ) ) ) ||
+-        ( ( bandwidth == 1 ) && ( datarate == 12 ) ) )
++        ( ( bandwidth == 1 ) && ( datarate == 12 ) ) ||
++        ( ( bandwidth == 3 ) && ( ( datarate == 10 ) || ( datarate == 11 ) || ( datarate == 12 ) ) ) )
+     {
+         lowDatareOptimize = true;
+     }

@@ -90,6 +90,13 @@ protected:
 	/** GPIO-only BUSY check (no SPI). Default false for chips without duty-cycle sleep. */
 	virtual bool hwIsChipBusy() { return false; }
 
+	/* Set to true by subclasses using the loramac-node driver backend.
+	 * Disables the direction-only fast path in configureTx()/configureRx():
+	 * loramac-node calls Radio.SetTxConfig() and Radio.SetRxConfig() which
+	 * configure completely disjoint internal state — skipping either leaves
+	 * TxTimeout/RxConfig uninitialized in the loramac-node library. */
+	bool _loramac_node;
+
 	/* ── Shared helpers available to subclasses ────────────────── */
 
 	void buildModemConfig(struct lora_modem_config &cfg, bool tx);

@@ -43,6 +43,12 @@ protected:
 	/* SX127x loramac-node driver manages AGC automatically. No-op. */
 	void hwResetAGC() override;
 
+	/* Override public resetAGC(): hwResetAGC() is a no-op, and the
+	 * loramac-node modem mutex makes the base-class startReceive() call
+	 * fail with -EBUSY (modem STATE_BUSY during async RX), which would
+	 * set _in_recv_mode = 0 and corrupt the state machine. */
+	void resetAGC() override;
+
 	/* SX127x has no BUSY pin. Default (false) from base is correct. */
 	/* bool hwIsChipBusy() — inherited, returns false */
 };
