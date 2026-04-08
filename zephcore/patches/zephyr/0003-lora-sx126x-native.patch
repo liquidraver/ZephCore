@@ -1,5 +1,74 @@
+diff --git a/drivers/lora/CMakeLists.txt b/drivers/lora/CMakeLists.txt
+index 9cd035fcf2b..18d04ec099a 100644
+--- a/drivers/lora/CMakeLists.txt
++++ b/drivers/lora/CMakeLists.txt
+@@ -1,7 +1,11 @@
+ # SPDX-License-Identifier: Apache-2.0
++# ZephCore patch: adds lr11xx driver subdirectory.
+ 
+ zephyr_sources_ifdef(CONFIG_LORA_SHELL shell.c)
+ 
++add_subdirectory_ifdef(CONFIG_LORA_LR11XX lr11xx)
++add_subdirectory_ifdef(CONFIG_LORA_LR20XX lr20xx)
++
+ # zephyr-keep-sorted-start
+ add_subdirectory_ifdef(CONFIG_LORA_MODULE_BACKEND_LORAMAC_NODE loramac-node)
+ add_subdirectory_ifdef(CONFIG_LORA_MODULE_BACKEND_LORA_BASICS_MODEM lora-basics-modem)
+diff --git a/drivers/lora/Kconfig b/drivers/lora/Kconfig
+index 657bdb9ce28..f8513b37044 100644
+--- a/drivers/lora/Kconfig
++++ b/drivers/lora/Kconfig
+@@ -5,6 +5,7 @@
+ #
+ 
+ # Top-level configuration file for LORA drivers.
++# ZephCore patch: adds lr11xx driver Kconfig.
+ 
+ menuconfig LORA
+ 	bool "LoRa drivers"
+@@ -60,6 +61,8 @@ config LORA_INIT_PRIORITY
+ 
+ rsource "Kconfig.sx12xx"
+ rsource "Kconfig.rylrxxx"
++rsource "lr11xx/Kconfig"
++rsource "lr20xx/Kconfig"
+ rsource "lora-basics-modem/Kconfig"
+ rsource "native/Kconfig"
+ 
+diff --git a/drivers/lora/loramac-node/sx12xx_common.c b/drivers/lora/loramac-node/sx12xx_common.c
+index 17689720dd2..09982dc2e70 100644
+--- a/drivers/lora/loramac-node/sx12xx_common.c
++++ b/drivers/lora/loramac-node/sx12xx_common.c
+@@ -195,8 +195,15 @@ static void sx12xx_ev_rx_error(void)
+ /**
+  * @brief Convert Zephyr bandwidth enum to loramac-node bandwidth index
+  *
+- * The loramac-node library expects bandwidth as an index (0, 1, 2) into its
+- * internal Bandwidths[] array, not the actual kHz value.
++ * The loramac-node library expects bandwidth as an index into its internal
++ * Bandwidths[] array (not the actual kHz value).  The SX127x hardware
++ * supports sub-125 kHz LoRa bandwidths; index 3 maps to 62.5 kHz (reg BW=6).
++ *
++ * Index mapping (kept in sync with sx1276.c / sx1272.c):
++ *   0 → 125 kHz (reg BW 7)
++ *   1 → 250 kHz (reg BW 8)
++ *   2 → 500 kHz (reg BW 9)
++ *   3 → 62.5 kHz (reg BW 6) — SX127x only
+  *
+  * @param bandwidth Zephyr lora_signal_bandwidth enum value
+  * @param bw_idx Pointer to store the resulting bandwidth index
+@@ -215,6 +222,9 @@ static int sx12xx_get_bandwidth_idx(enum lora_signal_bandwidth bandwidth,
+ 	case BW_500_KHZ:
+ 		*bw_idx = 2;
+ 		break;
++	case BW_62_KHZ:
++		*bw_idx = 3;
++		break;
+ 	default:
+ 		return -EINVAL;
+ 	}
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 30243ba5dc7..0ba41d05da0 100644
+index 30243ba5dc7..ddc4ce19660 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -10,10 +10,19 @@
@@ -423,7 +492,7 @@ index 30243ba5dc7..0ba41d05da0 100644
  
  	/* Set packet parameters */
  	ret = sx126x_set_packet_params(dev,
-@@ -1083,14 +1303,407 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1303,423 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -526,6 +595,22 @@ index 30243ba5dc7..0ba41d05da0 100644
 +	 * because state was still SX126X_STATE_RX from before the reset. */
 +	atomic_set(&data->state, SX126X_STATE_IDLE);
 +
++	k_mutex_unlock(&data->lock);
++}
++
++void sx126x_apply_heltec_reg_patch(const struct device *dev)
++{
++	struct sx126x_data *data = dev->data;
++	uint8_t val = 0;
++
++	/* Set LSB of undocumented register 0x8B5 to improve RX performance.
++	 * Described by Heltec engineer @Quency-D in MeshCore PR#1398 —
++	 * consistently improves reception on boards with GC1109/KCT8103L PA
++	 * (Heltec V4/V4.3). Must be called after lora_config(). */
++	k_mutex_lock(&data->lock, K_FOREVER);
++	sx126x_hal_read_regs(dev, 0x08B5, &val, 1);
++	val |= 0x01;
++	sx126x_hal_write_regs(dev, 0x08B5, &val, 1);
 +	k_mutex_unlock(&data->lock);
 +}
 +
@@ -838,7 +923,7 @@ index 30243ba5dc7..0ba41d05da0 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1121,9 +1734,18 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1750,18 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);

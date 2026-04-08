@@ -29,6 +29,13 @@ void SX126xRadio::begin()
 	startTxThread(sx126x_tx_wait_stack,
 		      K_THREAD_STACK_SIZEOF(sx126x_tx_wait_stack));
 	LoRaRadioBase::begin();
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)
+	/* Apply undocumented register 0x8B5 RX improvement (MeshCore PR#1398).
+	 * Must run after lora_config() has been called (via startReceive above). */
+	sx126x_apply_heltec_reg_patch(_dev);
+	LOG_INF("Applied Heltec reg 0x8B5 RX patch");
+#endif
 }
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */

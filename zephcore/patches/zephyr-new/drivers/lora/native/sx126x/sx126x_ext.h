@@ -63,6 +63,19 @@ void sx126x_set_rx_boost(const struct device *dev, bool enable);
 bool sx126x_is_chip_busy(const struct device *dev);
 
 /**
+ * @brief Apply undocumented register 0x8B5 RX improvement for Heltec V4
+ *
+ * Sets the LSB of register 0x8B5 which consistently improves RX reception
+ * on boards with GC1109 or KCT8103L PA (Heltec V4/V4.3). Described by
+ * Heltec engineer @Quency-D in MeshCore PR#1398.
+ *
+ * Must be called after the first lora_config() completes.
+ *
+ * @param dev LoRa device
+ */
+void sx126x_apply_heltec_reg_patch(const struct device *dev);
+
+/**
  * @brief Reset AGC by performing warm sleep + full recalibration
  *
  * Warm sleep powers down the analog frontend (resets AGC gain state),

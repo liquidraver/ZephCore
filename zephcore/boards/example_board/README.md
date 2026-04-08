@@ -32,6 +32,13 @@ SWD flash: `west flash` (requires J-Link, pyocd, or nrfjprog connected).
 | XIAO ESP32-S3        | `west build -b xiao_esp32s3/esp32s3/procpu zephcore`     | `west flash`    |
 | Station G2           | `west build -b station_g2/esp32s3/procpu zephcore`       | `west flash`    |
 | Heltec V3            | `west build -b heltec_wifi_lora32_v3/esp32s3/procpu zephcore` | `west flash` |
+| Heltec V4.2 (GC1109 PA)  | `west build -b heltec_wifi_lora32_v4/esp32s3/procpu zephcore`  | `west flash` |
+| Heltec V4.3 (KCT8103L PA) | `west build -b heltec_wifi_lora32_v43/esp32s3/procpu zephcore` | `west flash` |
+
+**Heltec V4.2 vs V4.3:** The hardware revision is printed on the PCB silkscreen. If
+unclear, check GPIO2's default pull: the V4.2 GC1109 PA has an internal pull-down
+(GPIO2 reads LOW at boot), while the V4.3 KCT8103L PA has an internal pull-up
+(GPIO2 reads HIGH). Only difference in firmware: TX control pin GPIO46→GPIO5.
 
 ESP32 flash uses esptool over USB. Hold BOOT button if device doesn't enter download mode.
 

@@ -1,0 +1,234 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Heltec WiFi LoRa 32 V4.3 — ZephCore procpu DTS
+ *
+ * Hardware:
+ *   MCU:    ESP32-S3 (16 MB flash, 2 MB QSPI PSRAM)
+ *   Radio:  SX1262 on SPI2, KCT8103L external PA/FEM
+ *   OLED:   SSD1306 128x64 on I2C0
+ *   Button: GPIO0
+ *   LED:    GPIO35 (PWM via LEDC0)
+ *   Vext:   GPIO36 active-HIGH (powers OLED and sensors)
+ *   BatADC: GPIO1 (ADC1 ch0), enable GPIO37 active-LOW
+ *
+ * V4.3 vs V4.2 difference — FEM chip changed:
+ *   V4.2: GC1109 PA  — TX_EN on GPIO46 (CPS)
+ *   V4.3: KCT8103L PA — CTX  on GPIO5  (HIGH=TX, LOW=RX/LNA)
+ *   Detection: GPIO2 default pull differs (GC1109: pull-down, KCT8103L: pull-up)
+ *   (See MeshCore PR#1867, Heltec schematic HTIT-WB32LAF_V4.3)
+ *
+ * All other hardware is identical to V4.2:
+ *   GPIO7  = VFEM_Ctrl LDO power (active-HIGH, always-on)
+ *   GPIO2  = KCT8103L CSD (chip enable, active-HIGH)
+ *   GPIO5  = KCT8103L CTX (TX/RX select: HIGH=TX, LOW=RX/LNA)  ← V4.3 change
+ *
+ * LoRa SPI2:  SCLK=9, MOSI=10, MISO=11, NSS=8
+ * LoRa ctrl:  DIO1=14, BUSY=13, RESET=12
+ * FEM:        POWER=7, CSD=2, CTX=5
+ * Display I2C0: SDA=17, SCL=18, RST=21
+ */
+
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_wroom_n16r2.dtsi>
+#include "heltec_wifi_lora32_v43-pinctrl.dtsi"
+#include <zephyr/dt-bindings/pwm/pwm.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <espressif/partitions_0x0_amp_16M.dtsi>
+
+/ {
+	model = "Heltec WiFi LoRa 32 V4.3 PROCPU";
+	compatible = "heltec,wifi-lora32-v4_3";
+
+	aliases {
+		led0 = &led0;
+		pwm-0 = &ledc0;
+		pwm-led0 = &pwm_led_white;
+		uart-0 = &uart0;
+		i2c-0 = &i2c0;
+		lora0 = &lora0;
+		sw0 = &button0;
+		watchdog0 = &wdt0;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		led0: led {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;  /* GPIO35 = gpio1 pin 3 */
+			label = "White LED";
+		};
+	};
+
+	pwmleds {
+		compatible = "pwm-leds";
+		pwm_led_white: pwm_led_gpio35 {
+			label = "White PWM LED";
+			pwms = <&ledc0 0 PWM_MSEC(10) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+		button0: button_0 {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "USER Key";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	vbatt {
+		compatible = "voltage-divider";
+		io-channels = <&adc1 0>;  /* GPIO1 = ADC1 ch0 */
+		output-ohms = <100000>;
+		full-ohms = <(100000 + 390000)>;
+	};
+
+	/* Vext — powers OLED and external peripherals (active-HIGH, same as V4.2) */
+	vext_ctrl: vext_ctrl {
+		compatible = "power-domain-gpio";
+		enable-gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;  /* GPIO36 = gpio1 pin 4 */
+		#power-domain-cells = <0>;
+		label = "Vext Control";
+	};
+
+	/* ADC enable — GPIO37 (gpio1 pin 5) must be driven HIGH to read battery */
+	adc_ctrl: adc_ctrl {
+		compatible = "power-domain-gpio";
+		enable-gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;   /* GPIO37 = gpio1 pin 5, active-LOW */
+		#power-domain-cells = <0>;
+		label = "ADC Control";
+	};
+
+	/* FEM LDO power supply — GPIO7 powers the KCT8103L LDO.
+	 * Must be HIGH before any radio operation. Keep always-on. */
+	fem_power: fem-power {
+		compatible = "regulator-fixed";
+		regulator-name = "fem-power";
+		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;  /* VFEM_Ctrl = GPIO7 */
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &uart0;
+		zephyr,shell-uart = &uart0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+		zephyr,display = &ssd1306_128x64;
+	};
+};
+
+&adc1 {
+	status = "okay";
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* Reduce CPU clock from 240 MHz to 160 MHz — saves power, HAL minimum */
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(160)>;
+};
+
+&cpu1 {
+	clock-frequency = <DT_FREQ_M(160)>;
+};
+
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+
+	ssd1306_128x64: display-controller@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		inversion-on;
+		prechargep = <0x22>;
+		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;   /* RST_OLED = GPIO21 */
+		power-domains = <&vext_ctrl>;
+	};
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+
+	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;  /* NSS = GPIO8 */
+
+	lora0: modem@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;  /* RESET = GPIO12 */
+		busy-gpios    = <&gpio0 13 GPIO_ACTIVE_HIGH>;                      /* BUSY  = GPIO13 */
+		dio1-gpios    = <&gpio0 14 GPIO_ACTIVE_HIGH>;                      /* DIO1  = GPIO14 */
+
+		/* External PA/FEM control (KCT8103L, V4.3):
+		 *   GPIO2 = CSD (chip enable): driven HIGH during radio, LOW in sleep
+		 *   GPIO5 = CTX (TX/RX select): HIGH during TX, LOW during RX/LNA
+		 * V4.3 CHANGE: CTX moved from GPIO46 (GC1109 CPS) to GPIO5 (KCT8103L CTX). */
+		antenna-enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;        /* KCT8103L CSD = GPIO2 */
+		tx-enable-gpios      = <&gpio0 5 GPIO_ACTIVE_HIGH>;        /* KCT8103L CTX = GPIO5 */
+
+		/* DIO2 drives the SX1262 internal RF switch (TX path select).
+		 * Combined with tx-enable-gpios, this keeps both the internal and
+		 * external PA switch in sync with no software intervention needed. */
+		dio2-tx-enable;
+
+		/* TCXO 1.8V via DIO3 — same as V4.2 */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+
+		spi-max-frequency = <4000000>;
+	};
+};
+
+&timer0 { status = "okay"; };
+&timer1 { status = "okay"; };
+&timer2 { status = "okay"; };
+&timer3 { status = "okay"; };
+
+&wdt0 { status = "okay"; };
+&trng0 { status = "okay"; };
+
+&esp32_bt_hci { status = "okay"; };
+&wifi { status = "okay"; };

@@ -1,0 +1,6 @@
+board:
+  name: heltec_wifi_lora32_v43
+  full_name: Heltec WiFi LoRa 32 V4.3
+  vendor: heltec
+  socs:
+    - name: esp32s3
