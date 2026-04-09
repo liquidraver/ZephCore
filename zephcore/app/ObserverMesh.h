@@ -53,6 +53,8 @@ class ObserverMesh : public Dispatcher {
 	/* Private helpers */
 	void buildTopics();
 	void enqueuePacket(Packet *pkt);
+	void buildStatusJson(const char *status, char *out, size_t out_size);
+	uint32_t _start_uptime_secs;
 
 protected:
 	/* Capture RSSI + raw bytes before packet is parsed */
@@ -78,6 +80,7 @@ public:
 	 * topic so that CoreScope can place it on the map.  No-op if lat/lon
 	 * are not configured in the creds struct. */
 	void publishSelfAdvert();
+	void publishStatus(const char *status);
 
 	/* Accessors used by main_observer.cpp */
 	NodePrefs *getNodePrefs()               { return &_prefs; }

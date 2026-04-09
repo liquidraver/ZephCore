@@ -118,6 +118,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     float _uplink_last_rssi;
     uint8_t _uplink_last_raw[MAX_TRANS_UNIT];
     int _uplink_last_raw_len;
+    unsigned long _uplink_next_status_at;
 #endif
 
     void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
@@ -177,6 +178,7 @@ protected:
     }
     bool saveUplinkCreds();
     void publishUplinkPacket(mesh::Packet *pkt);
+    void publishUplinkStatus(const char *status);
 #endif
 
 public:

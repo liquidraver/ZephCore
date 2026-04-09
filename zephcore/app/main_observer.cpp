@@ -43,7 +43,8 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 #define MESH_EVENT_LORA_RX   BIT(0)
 #define MESH_EVENT_CLI_RX    BIT(1)
-#define MESH_EVENT_ALL       (MESH_EVENT_LORA_RX | MESH_EVENT_CLI_RX)
+#define MESH_EVENT_STATUS    BIT(2)
+#define MESH_EVENT_ALL       (MESH_EVENT_LORA_RX | MESH_EVENT_CLI_RX | MESH_EVENT_STATUS)
 
 static struct k_event mesh_events;
 
@@ -93,6 +94,14 @@ static void lora_rx_callback(void *user_data)
 	ARG_UNUSED(user_data);
 	k_event_post(&mesh_events, MESH_EVENT_LORA_RX);
 }
+
+static void status_timer_fn(struct k_timer *timer)
+{
+	ARG_UNUSED(timer);
+	k_event_post(&mesh_events, MESH_EVENT_STATUS);
+}
+
+K_TIMER_DEFINE(status_timer, status_timer_fn, NULL);
 
 /* Observer never transmits — TX done callback not needed */
 
@@ -326,9 +335,11 @@ int main(void)
 	 * this observer on the map (requires lat/lon to be configured). */
 	mqtt_publisher_set_connect_cb([]() {
 		if (s_mesh_ptr) {
+			s_mesh_ptr->publishStatus("online");
 			s_mesh_ptr->publishSelfAdvert();
 		}
 	});
+	k_timer_start(&status_timer, K_SECONDS(300), K_SECONDS(300));
 
 	LOG_INF("Observer event loop running");
 
@@ -344,6 +355,9 @@ int main(void)
 
 		if (ev & MESH_EVENT_CLI_RX) {
 			process_cli_rx();
+		}
+		if (ev & MESH_EVENT_STATUS) {
+			observer_mesh.publishStatus("online");
 		}
 	}
 

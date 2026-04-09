@@ -39,7 +39,7 @@ namespace mesh {
 ObserverMesh::ObserverMesh(Radio &radio, MillisecondClock &ms, RNG &rng, RTCClock &rtc)
 	: Dispatcher(radio, ms, _pkt_mgr),
 	  _last_rssi(0.0f), _last_score(0.0f), _last_raw_len(0),
-	  _store(nullptr), _creds(nullptr), _rng(&rng), _rtc(&rtc)
+	  _store(nullptr), _creds(nullptr), _rng(&rng), _rtc(&rtc), _start_uptime_secs(0)
 {
 	memset(_pubkey_hex, 0, sizeof(_pubkey_hex));
 	memset(_packets_topic, 0, sizeof(_packets_topic));
@@ -52,6 +52,7 @@ void ObserverMesh::begin(RepeaterDataStore *store, struct ObserverCreds *creds)
 {
 	_store = store;
 	_creds = creds;
+	_start_uptime_secs = (uint32_t)(k_uptime_get() / 1000);
 
 	/* Initialize prefs with observer-specific defaults */
 	initNodePrefs(&_prefs);
@@ -90,6 +91,82 @@ void ObserverMesh::begin(RepeaterDataStore *store, struct ObserverCreds *creds)
 
 	/* Start radio in continuous RX mode */
 	Dispatcher::begin();
+}
+
+void ObserverMesh::buildStatusJson(const char *status, char *out, size_t out_size)
+{
+	uint32_t now_epoch = _rtc ? _rtc->getCurrentTime() : 0;
+	struct tm tm_now;
+	time_t t = (time_t)now_epoch;
+	gmtime_r(&t, &tm_now);
+
+	char ts_buf[48];
+	snprintf(ts_buf, sizeof(ts_buf), "%04d-%02d-%02dT%02d:%02d:%02d.000000",
+		 tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+		 tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+	char radio_buf[48];
+	snprintf(radio_buf, sizeof(radio_buf), "%.3f,%.1f,%u,%u",
+		 (double)_prefs.freq, (double)_prefs.bw,
+		 (unsigned)_prefs.sf, (unsigned)_prefs.cr);
+
+	uint32_t uptime_secs = (uint32_t)(k_uptime_get() / 1000);
+	if (uptime_secs >= _start_uptime_secs) {
+		uptime_secs -= _start_uptime_secs;
+	} else {
+		uptime_secs = 0;
+	}
+
+	int noise_floor = ((LoRaRadioBase *)_radio)->getNoiseFloor();
+	uint32_t recv_errors = ((LoRaRadioBase *)_radio)->getPacketsRecvErrors();
+
+	snprintf(out, out_size,
+		"{"
+		"\"status\":\"%s\","
+		"\"timestamp\":\"%s\","
+		"\"origin\":\"%s\","
+		"\"origin_id\":\"%s\","
+		"\"radio\":\"%s\","
+		"\"model\":\"%s\","
+		"\"firmware_version\":\"%s\","
+		"\"client_version\":\"zephcoretomqtt/1.1\","
+		"\"stats\":{"
+			"\"battery_mv\":%u,"
+			"\"uptime_secs\":%u,"
+			"\"debug_flags\":%u,"
+			"\"queue_len\":%u,"
+			"\"noise_floor\":%d,"
+			"\"tx_air_secs\":%u,"
+			"\"rx_air_secs\":%u,"
+			"\"recv_errors\":%u"
+		"}"
+		"}",
+		status,
+		ts_buf,
+		_prefs.node_name,
+		_pubkey_hex,
+		radio_buf,
+#ifdef CONFIG_ZEPHCORE_BOARD_NAME
+		CONFIG_ZEPHCORE_BOARD_NAME,
+#else
+		"unknown",
+#endif
+		FIRMWARE_VERSION,
+		0u,
+		uptime_secs,
+		0u,
+		0u,
+		noise_floor,
+		0u,
+		0u,
+		recv_errors);
+}
+
+void ObserverMesh::publishStatus(const char *status)
+{
+	static char json_buf[768];
+	buildStatusJson(status, json_buf, sizeof(json_buf));
+	mqtt_publisher_enqueue(_status_topic, json_buf, strlen(json_buf));
 }
 
 void ObserverMesh::buildTopics()

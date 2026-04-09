@@ -841,6 +841,7 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     _uplink_last_score = 0.0f;
     _uplink_last_rssi = 0.0f;
     _uplink_last_raw_len = 0;
+    _uplink_next_status_at = 0;
 #endif
 }
 
@@ -890,6 +891,12 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
         zc_wifi_station_start(&_uplink_creds, uplink_time_sync_cb);
         mqtt_publisher_start(&_uplink_creds, _prefs.node_name,
                              _uplink_status_topic, _uplink_packets_topic);
+        mqtt_publisher_set_connect_cb([]() {
+            if (s_uplink_mesh) {
+                s_uplink_mesh->publishUplinkStatus("online");
+            }
+        });
+        _uplink_next_status_at = futureMillis(300000);
         LOG_INF("Repeater uplink active: %s", _uplink_packets_topic);
     } else {
         LOG_INF("Repeater uplink inactive");
@@ -1430,6 +1437,75 @@ void RepeaterMesh::publishUplinkPacket(mesh::Packet *pkt)
     }
     mqtt_publisher_enqueue(_uplink_packets_topic, json_buf, json_len);
 }
+
+void RepeaterMesh::publishUplinkStatus(const char *status)
+{
+    if (!isUplinkEnabled()) return;
+    if (_uplink_status_topic[0] == '\0') return;
+
+    auto& radio_driver = getRadioDriver(_radio);
+    uint32_t now_epoch = getRTCClock()->getCurrentTime();
+    struct tm tm_now;
+    time_t t = (time_t)now_epoch;
+    gmtime_r(&t, &tm_now);
+
+    char ts_buf[48];
+    snprintf(ts_buf, sizeof(ts_buf), "%04d-%02d-%02dT%02d:%02d:%02d.000000",
+             tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+    char radio_buf[48];
+    snprintf(radio_buf, sizeof(radio_buf), "%.3f,%.1f,%u,%u",
+             (double)_prefs.freq, (double)_prefs.bw,
+             (unsigned)_prefs.sf, (unsigned)_prefs.cr);
+
+    static char json_buf[768];
+    int json_len = snprintf(json_buf, sizeof(json_buf),
+        "{"
+        "\"status\":\"%s\","
+        "\"timestamp\":\"%s\","
+        "\"origin\":\"%s\","
+        "\"origin_id\":\"%s\","
+        "\"radio\":\"%s\","
+        "\"model\":\"%s\","
+        "\"firmware_version\":\"%s\","
+        "\"client_version\":\"zephcoretomqtt/1.1\","
+        "\"stats\":{"
+            "\"battery_mv\":%u,"
+            "\"uptime_secs\":%u,"
+            "\"debug_flags\":%u,"
+            "\"queue_len\":%u,"
+            "\"noise_floor\":%d,"
+            "\"tx_air_secs\":%u,"
+            "\"rx_air_secs\":%u,"
+            "\"recv_errors\":%u"
+        "}"
+        "}",
+        status,
+        ts_buf,
+        _prefs.node_name,
+        _uplink_pubkey_hex,
+        radio_buf,
+#ifdef CONFIG_ZEPHCORE_BOARD_NAME
+        CONFIG_ZEPHCORE_BOARD_NAME,
+#else
+        "unknown",
+#endif
+        FIRMWARE_VERSION,
+        (unsigned)_board.getBattMilliVolts(),
+        (unsigned)(uptime_millis / 1000),
+        (unsigned)_err_flags,
+        (unsigned)_mgr->getOutboundTotal(),
+        _radio->getNoiseFloor(),
+        (unsigned)(getTotalAirTime() / 1000),
+        (unsigned)(getReceiveAirTime() / 1000),
+        (unsigned)radio_driver.getPacketsRecvErrors());
+
+    if (json_len <= 0 || json_len >= (int)sizeof(json_buf)) {
+        return;
+    }
+    mqtt_publisher_enqueue(_uplink_status_topic, json_buf, json_len);
+}
 #endif
 
 void RepeaterMesh::loop() {
@@ -1462,6 +1538,13 @@ void RepeaterMesh::loop() {
         acl.save(_store->getAclPath());
         dirty_contacts_expiry = 0;
     }
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+    if (_uplink_next_status_at && millisHasNowPassed(_uplink_next_status_at)) {
+        publishUplinkStatus("online");
+        _uplink_next_status_at = futureMillis(300000);
+    }
+#endif
 
     uint32_t now = k_uptime_get();
     uptime_millis += now - last_millis;
