@@ -35,6 +35,9 @@ Other benefits:
 | **XIAO ESP32-C6** | ESP32-C6 | SX1262 | BLE 5.0, Wi-Fi 6 |
 | **Station G2** | ESP32-S3 | SX1262 (+PA) | OLED (SH1106), GPS, 16MB flash, 8MB PSRAM |
 | **LilyGo TLoRa C6** | ESP32-C6 | SX1262 | BLE 5.0, Wi-Fi 6 |
+| **Heltec V3** | ESP32-S3 | SX1262 | OLED (SSD1306), 8MB flash |
+| **Heltec V4.2** | ESP32-S3 | SX1262 (+PA) | OLED (SSD1306), 16MB flash |
+| **Heltec V4.3** | ESP32-S3 | SX1262 (+PA) | OLED (SSD1306), 16MB flash |
 
 ### Other
 
@@ -89,6 +92,8 @@ west build -b rak4631/nrf52840 zephcore --pristine -- -DCONFIG_ZEPHCORE_BLE_LOG_
 Output binaries are in `build/zephyr/` -- `.hex`, `.uf2`, and DFU `.zip` as applicable.
 
 For exact `west build -b` board strings, flash methods, and special setup (MG24 pyocd, nRF54L15 `--no-sysbuild`), see the [Board Porting Guide](zephcore/boards/example_board/README.md).
+
+Heltec V3 note: console and shell are routed to `uart0` in ZephCore. Use the UART serial port for logs/CLI.
 
 ## Architecture Overview
 

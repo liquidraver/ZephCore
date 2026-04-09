@@ -35,6 +35,8 @@ SWD flash: `west flash` (requires J-Link, pyocd, or nrfjprog connected).
 | Heltec V4.2 (GC1109 PA)  | `west build -b heltec_wifi_lora32_v4/esp32s3/procpu zephcore`  | `west flash` |
 | Heltec V4.3 (KCT8103L PA) | `west build -b heltec_wifi_lora32_v43/esp32s3/procpu zephcore` | `west flash` |
 
+**Heltec V3 console:** ZephCore routes console/shell to `uart0` on V3. Use the UART serial port for boot logs and CLI.
+
 **Heltec V4.2 vs V4.3:** The hardware revision is printed on the PCB silkscreen. If
 unclear, check GPIO2's default pull: the V4.2 GC1109 PA has an internal pull-down
 (GPIO2 reads LOW at boot), while the V4.3 KCT8103L PA has an internal pull-up
