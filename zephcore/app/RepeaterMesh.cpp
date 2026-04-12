@@ -920,6 +920,47 @@ double RepeaterMesh::getNodeLon() const {
     return _prefs.node_lon;
 }
 
+bool RepeaterMesh::setGpsEnabled(bool enabled) {
+    if (!gps_is_available()) return false;
+    gps_enable(enabled);
+    return true;
+}
+
+bool RepeaterMesh::isGpsEnabled() const {
+    return gps_is_enabled();
+}
+
+void RepeaterMesh::formatGpsStatsReply(char* reply) {
+    if (!gps_is_enabled()) {
+        strcpy(reply, "off");
+        return;
+    }
+
+    struct gps_state_info gsi;
+    gps_get_state_info(&gsi);
+
+    static const char* const state_str[] = { "off", "standby", "acquiring" };
+    const char* state = gsi.state < 3 ? state_str[gsi.state] : "unknown";
+
+    struct gps_position pos;
+    bool has_pos = gps_get_last_known_position(&pos);
+
+    if (has_pos) {
+        snprintf(reply, CLI_REPLY_SIZE,
+            "on state=%s sats=%u fix=%us ago lat=%.6f lon=%.6f",
+            state, gsi.satellites, gsi.last_fix_age_s,
+            pos.latitude_ndeg / 1e9, pos.longitude_ndeg / 1e9);
+    } else if (gsi.next_search_s > 0) {
+        snprintf(reply, CLI_REPLY_SIZE,
+            "on state=%s sats=%u no fix next=%us",
+            state, gsi.satellites, gsi.next_search_s);
+    } else {
+        snprintf(reply, CLI_REPLY_SIZE,
+            "on state=%s sats=%u no fix",
+            state, gsi.satellites);
+    }
+}
+
 void RepeaterMesh::savePrefs() {
     if (_store) {
         _store->savePrefs(_prefs);

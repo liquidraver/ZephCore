@@ -1,0 +1,241 @@
+/*
+ * Seeed SenseCAP Solar Node (P1 / P1-Pro) — nRF52840 + SX1262
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Pin map from MeshCore variants/sensecap_solar (variant.cpp, platformio.ini):
+ * - SX1262: CS=P0.04, DIO1=P0.03, RST=P0.28, BUSY=P0.29, RXEN=P0.05,
+ *   SPI SCK/MOSI/MISO=P1.13/15/14, DIO2 RF switch, TCXO 1.8V
+ * - Quectel L76K GNSS: UART0 9600, TX/RX=P1.11/12, enable=P1.05, reset=P1.03
+ * - P25Q16H 2MB QSPI
+ * - Battery: AIN7=P0.31, divider enable P0.14 (active low)
+ * - Buttons P1.01, P1.07; LEDs white P0.15 (TX activity), blue P0.19
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include <nordic/nrf52840_partition.dtsi>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include "sensecap_solar_nrf52840-pinctrl.dtsi"
+
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/ {
+	model = "Seeed SenseCAP Solar Node";
+	compatible = "seeed,sensecap-solar";
+
+	chosen {
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* MeshCore P_LORA_TX_LED / LED_WHITE */
+		white_led: led_0 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+			label = "White LED";
+		};
+
+		blue_led: led_1 {
+			gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		user_button: button_0 {
+			gpios = <&gpio1 1 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "User Button";
+		};
+
+		aux_button: button_1 {
+			gpios = <&gpio1 7 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_1>;
+			label = "Aux Button";
+		};
+	};
+
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_POWER>;
+		long-delay-ms = <1000>;
+	};
+
+	user_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C INPUT_KEY_E>;
+		tap-delay-ms = <400>;
+	};
+
+	/* P0.14 LOW enables battery divider (MeshCore SenseCapSolarBoard) */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+	};
+
+	zephyr,user {
+		io-channels = <&adc 7>;
+		/* Zephyr: ADC_GAIN_1_6 + ADC_REF_INTERNAL = 3600mV full-scale; 1:3 voltage divider → 3600*3 */
+		vbat-mv-multiplier = <10800>;
+	};
+
+	aliases {
+		led0 = &white_led;
+		led1 = &blue_led;
+		lora-tx-led = &white_led;
+		sw0 = &user_button;
+		lora0 = &lora;
+		watchdog0 = &wdt0;
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@7 {
+		reg = <7>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN7>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&uicr {
+	nfct-pins-as-gpios;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		reset-gpios = <&gpio0 28 GPIO_ACTIVE_LOW>;
+		busy-gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+		dio1-gpios = <&gpio0 3 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+		rx-enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		dio2-tx-enable;
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+		spi-max-frequency = <8000000>;
+		rx-boosted;
+	};
+};
+
+&qspi {
+	status = "okay";
+	pinctrl-0 = <&qspi_default>;
+	pinctrl-1 = <&qspi_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	qspi_flash: qspi_flash@0 {
+		compatible = "nordic,qspi-nor";
+		reg = <0>;
+		writeoc = "pp";
+		readoc = "fastread";
+		sck-frequency = <16000000>;
+		jedec-id = [85 60 15];
+		sfdp-bfp = [
+			e5 20 f1 ff  ff ff ff 01  44 eb 08 6b  08 3b 04 bb
+			ee ff ff ff  ff ff 00 ff  ff ff 00 ff  0c 20 0f 52
+			10 d8 00 ff
+		];
+		size = <16777216>;
+		has-dpd;
+		t-enter-dpd = <3000>;
+		t-exit-dpd = <50000>;
+	};
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+#include "../../common/nrf52_partitions_sdv7.dtsi"
+
+&qspi_flash {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		qspi_storage_partition: partition@0 {
+			label = "qspi_storage";
+			reg = <0x00000000 0x00200000>;
+		};
+	};
+};
+#include "../../common/nrf52_wakeup.dtsi"

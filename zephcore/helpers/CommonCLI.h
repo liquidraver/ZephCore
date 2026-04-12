@@ -65,6 +65,7 @@ public:
     virtual double getNodeLon() const { return 0.0; }
     virtual bool setGpsEnabled(bool enabled) { return false; }
     virtual bool isGpsEnabled() const { return false; }
+    virtual void formatGpsStatsReply(char* reply) { strcpy(reply, "off"); }
     virtual int getNumSensorSettings() const { return 0; }
     virtual const char* getSensorSettingName(int idx) const { return nullptr; }
     virtual const char* getSensorSettingValue(int idx) const { return nullptr; }

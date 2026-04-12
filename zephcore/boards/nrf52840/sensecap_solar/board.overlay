@@ -1,0 +1,32 @@
+/*
+ * SenseCAP Solar — ZephCore overlay
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * GPS aliases for ZephyrGPSManager. gnss-nmea-generic has no on-off-gpios,
+ * so ZephyrGPSManager owns P1.05 (gps-enable alias) exclusively.
+ */
+
+#include "../../common/qspi-ext.dtsi"
+
+/ {
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "GNSS Reset";
+		};
+	};
+
+	aliases {
+		gps-enable = &gps_enable_pin;
+		gps-reset = &gps_reset_pin;
+	};
+};

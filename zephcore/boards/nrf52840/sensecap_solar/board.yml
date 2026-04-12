@@ -1,0 +1,9 @@
+# Copyright (c) 2025 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: sensecap_solar
+  full_name: Seeed SenseCAP Solar Node (P1 / P1-Pro)
+  vendor: seeed
+  socs:
+  - name: nrf52840

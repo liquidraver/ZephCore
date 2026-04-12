@@ -765,13 +765,15 @@ void gps_power_off_for_shutdown(void)
  * Works for any GNSS-on-UART node regardless of compatible string. */
 #if DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \
     DT_NODE_HAS_STATUS(DT_BUS(DT_NODELABEL(gnss)), okay)
-static const struct device *gps_uart_dev = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(gnss)));
 #define HAS_GPS_UART 1
+#if !HAS_GPS_POWER_CONTROL
+static const struct device *gps_uart_dev = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(gnss)));
+#endif
 #else
 #define HAS_GPS_UART 0
 #endif
 
-#if HAS_GPS_UART
+#if HAS_GPS_UART && !HAS_GPS_POWER_CONTROL
 /* Send raw bytes to the GPS UART using blocking poll_out.
  * Safe to call even though modem_chat/modem_ubx owns the UART pipe:
  * uart_poll_out writes one byte at a time through the TX register,
@@ -842,7 +844,7 @@ static void gps_software_wake(void)
 	/* Give the module time to boot and start NMEA output */
 	k_msleep(200);
 }
-#endif /* HAS_GPS_UART */
+#endif /* HAS_GPS_UART && !HAS_GPS_POWER_CONTROL */
 
 /* Go to standby and schedule next wake.
  * GPIO power control only — keep VRTC for warm start on T1000-E,

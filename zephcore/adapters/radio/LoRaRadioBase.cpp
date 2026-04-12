@@ -21,8 +21,8 @@ namespace mesh {
 
 LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 			     NodePrefs *prefs)
-	: _dev(lora_dev), _prefs(prefs), _board(&board),
-	  _loramac_node(false),
+	: _loramac_node(false),
+	  _dev(lora_dev), _prefs(prefs), _board(&board),
 	  _in_recv_mode(0), _tx_active(0),
 	  _last_rssi(0), _last_snr(0),
 	  _rx_head(0), _rx_tail(0),

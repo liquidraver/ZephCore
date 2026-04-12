@@ -888,11 +888,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             strcpy(reply, "error");
         }
     } else if (memcmp(command, "gps", 3) == 0) {
-        if (_callbacks->isGpsEnabled()) {
-            strcpy(reply, "on");
-        } else {
-            strcpy(reply, "off");
-        }
+        _callbacks->formatGpsStatsReply(reply);
     } else if (memcmp(command, "powersaving", 11) == 0) {
         strcpy(reply, "Not implemented");
     } else if (memcmp(command, "log start", 9) == 0) {

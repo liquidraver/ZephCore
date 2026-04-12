@@ -193,6 +193,9 @@ public:
     const char* getRole() override { return FIRMWARE_ROLE; }
     double getNodeLat() const override;
     double getNodeLon() const override;
+    bool setGpsEnabled(bool enabled) override;
+    bool isGpsEnabled() const override;
+    void formatGpsStatsReply(char* reply) override;
     const char* getNodeName() { return _prefs.node_name; }
     NodePrefs* getNodePrefs() { return &_prefs; }
 
