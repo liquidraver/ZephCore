@@ -16,6 +16,7 @@
  */
 
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/adc/adc.h>
 
 / {
 	chosen {
@@ -72,6 +73,24 @@
 		input-codes = <INPUT_KEY_A>;
 		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C>;
 		tap-delay-ms = <400>;
+	};
+};
+
+/* Battery ADC channel configuration — required by espressif,esp32-adc driver.
+ * Without this child node, ADC_DT_SPEC_GET yields a zero-initialised
+ * channel_cfg where reference=ADC_REF_VDD_1, which the driver rejects
+ * with -ENOTSUP (-134).  ADC_GAIN_1_4 → ADC_ATTEN_DB_12 matches
+ * Arduino's default 11 dB attenuation (used to derive the 5.42x multiplier). */
+&adc1 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
 	};
 };
 
