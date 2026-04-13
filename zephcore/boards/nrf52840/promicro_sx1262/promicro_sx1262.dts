@@ -75,10 +75,10 @@
 		};
 	};
 
-	/* Battery ADC: P0.31 (AIN7), 1M+1.5M voltage divider (5:3) */
+	/* Battery ADC: P0.31 (AIN7), 2:1 voltage devider, 3.6V ref */
 	zephyr,user {
 		io-channels = <&adc 7>;
-		vbat-mv-multiplier = <6000>;
+		vbat-mv-multiplier = <7200>;
 	};
 };
 
