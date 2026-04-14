@@ -29,7 +29,11 @@
 
 / {
 	aliases {
-		led1 = &green_led;
+		/* Upstream: led0=blue only. ZephCore: green=heartbeat (led0), blue=unread+TX flash.
+		 * lora-tx-led drives blue during LoRa TX (repeater: TX-only on blue; companion: + msg). */
+		led0 = &green_led;
+		led1 = &blue_led;
+		lora-tx-led = &blue_led;
 	};
 	chosen {
 		zephyr,code-partition = &code_partition;
@@ -69,6 +73,15 @@
 &lora {
        dio1-gpios = <&gpio1 15 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
        rx-boosted;
+};
+
+/* Upstream board uses GPIO_ACTIVE_LOW; hardware matches MeshCore Arduino LED_STATE_ON=HIGH. */
+&green_led {
+	gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+};
+
+&blue_led {
+	gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
 };
 
 /*

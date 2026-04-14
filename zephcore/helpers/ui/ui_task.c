@@ -102,10 +102,10 @@ static const struct gpio_dt_spec heartbeat_led =
 #define HAS_HEARTBEAT_LED 0
 #endif
 
-/* Message indicator LED — solid ON while offline queue is non-empty.
- * Uses led1 only when led0 is already taken by the heartbeat. */
+/* Second LED: unread pulse (companion only). Repeaters use led1 for LoRa TX via
+ * lora-tx-led alias — no offline queue, so ui_task leaves led1 alone. */
 #if HAS_HEARTBEAT_LED && DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && \
-    DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios)
+    DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios) && !defined(ZEPHCORE_REPEATER)
 static const struct gpio_dt_spec msg_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
 #define HAS_MSG_LED 1

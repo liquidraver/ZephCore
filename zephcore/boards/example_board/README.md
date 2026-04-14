@@ -280,3 +280,21 @@ All XIAO boards use the same D-pin assignment for Wio-SX1262:
 
 Note: nRF52840 D-pin mapping varies by board (XIAO nRF52840 shown).
 RAK4631 has SX1262 integrated — different pinout entirely.
+
+
+RAK4631 user LEDs (upstream board + overlay)
+--------------------------------------------
+
+ZephCore’s `boards/nrf52840/rak4631/board.overlay` augments Zephyr’s stock RAK4631
+definition. Future changes to that overlay should keep the following in mind:
+
+**Polarity:** Upstream Zephyr marks the WisBlock user LEDs (`green_led` / `blue_led`
+on P1.3 / P1.4) as `GPIO_ACTIVE_LOW`. On actual RAK4631 + base-board hardware they
+match MeshCore / Arduino (`LED_STATE_ON` = HIGH). If the polarity in devicetree is
+wrong, both LEDs stay **on** most of the time and the heartbeat looks like a **short
+off** pulse (inverted). Override both nodes in the overlay with `GPIO_ACTIVE_HIGH`.
+
+**Aliases:** Upstream defines only `led0` → blue. ZephCore sets `led0` → green
+(heartbeat), `led1` → blue (companion unread pulse), and `lora-tx-led` → blue (LoRa
+TX activity). Repeaters disable the unread-LED path in firmware so blue is TX-only
+alongside green heartbeat.
