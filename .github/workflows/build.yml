@@ -1,0 +1,221 @@
+name: build firmware
+
+on:
+  push:
+    branches: [ "master" ]
+
+env:
+  zephyr_sdk: 1.0.1
+  python_version: 3.12
+  toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:riscv64-zephyr-elf
+
+jobs:
+  setup-zephyr:
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+        cache: 'pip'
+    - run: pip install -r requirements.txt
+
+    - name: Setup Zephyr project
+      uses: zephyrproject-rtos/action-zephyr-setup@v1
+      with:
+        app-path: zephcore
+        toolchains: ${{ env.toolchains }}
+        sdk-version: ${{ env.zephyr_sdk }}
+
+    - name: Cache Espressif BLE controller blobs
+      id: cache-espressif-blobs
+      uses: actions/cache@v5
+      with:
+        path: modules/hal/espressif
+        key: ${{ runner.os }}-espressif-blobs-${{ hashFiles('modules/hal/espressif/.git/HEAD') }}
+
+    - name: Download Espressif BLE controller blobs
+      if: steps.cache-espressif-blobs.outputs.cache-hit != 'true'
+      run: west blobs fetch hal_espressif
+
+    - uses: actions/cache@v5
+      with:
+        path: modules
+        key: cache-zephyr-modules-${{ github.sha }}
+
+  build-nrf:
+    needs: setup-zephyr
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+        cache: 'pip'
+    - run: pip install -r requirements.txt
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: modules
+        key: cache-zephyr-modules-${{ github.sha }}
+
+    - name: Setup Zephyr project
+      uses: zephyrproject-rtos/action-zephyr-setup@v1
+      with:
+        app-path: zephcore
+        toolchains: ${{ env.toolchains }}
+        sdk-version: ${{ env.zephyr_sdk }}
+
+    - name: Cache Espressif BLE controller blobs
+      id: cache-espressif-blobs
+      uses: actions/cache@v5
+      with:
+        path: modules/hal/espressif
+        key: ${{ runner.os }}-espressif-blobs-${{ hashFiles('modules/hal/espressif/.git/HEAD') }}
+
+    - name: Download Espressif BLE controller blobs
+      if: steps.cache-espressif-blobs.outputs.cache-hit != 'true'
+      run: west blobs fetch hal_espressif
+
+    - name: build firmwares
+      run: bash build.sh nrf
+
+    - uses: actions/cache@v5
+      with:
+        path: firmware
+        key: cache-firmware-nrf-${{ github.sha }}
+
+  build-esp32-repeaters:
+    needs: setup-zephyr
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+        cache: 'pip'
+    - run: pip install -r requirements.txt
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: modules
+        key: cache-zephyr-modules-${{ github.sha }}
+
+    - name: Setup Zephyr project
+      uses: zephyrproject-rtos/action-zephyr-setup@v1
+      with:
+        app-path: zephcore
+        toolchains: ${{ env.toolchains }}
+        sdk-version: ${{ env.zephyr_sdk }}
+
+    - name: Cache Espressif BLE controller blobs
+      id: cache-espressif-blobs
+      uses: actions/cache@v5
+      with:
+        path: modules/hal/espressif
+        key: ${{ runner.os }}-espressif-blobs-${{ hashFiles('modules/hal/espressif/.git/HEAD') }}
+
+    - name: Download Espressif BLE controller blobs
+      if: steps.cache-espressif-blobs.outputs.cache-hit != 'true'
+      run: west blobs fetch hal_espressif
+
+    - name: build firmwares
+      run: bash build.sh esp32 repeaters
+
+    - uses: actions/cache@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-repeaters-${{ github.sha }}
+
+  build-esp32-companions:
+    needs: setup-zephyr
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+        cache: 'pip'
+    - run: pip install -r requirements.txt
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: modules
+        key: cache-zephyr-modules-${{ github.sha }}
+
+    - name: Setup Zephyr project
+      uses: zephyrproject-rtos/action-zephyr-setup@v1
+      with:
+        app-path: zephcore
+        toolchains: ${{ env.toolchains }}
+        sdk-version: ${{ env.zephyr_sdk }}
+
+    - name: Cache Espressif BLE controller blobs
+      id: cache-espressif-blobs
+      uses: actions/cache@v5
+      with:
+        path: modules/hal/espressif
+        key: ${{ runner.os }}-espressif-blobs-${{ hashFiles('modules/hal/espressif/.git/HEAD') }}
+
+    - name: Download Espressif BLE controller blobs
+      if: steps.cache-espressif-blobs.outputs.cache-hit != 'true'
+      run: west blobs fetch hal_espressif
+
+    - name: build firmwares
+      run: bash build.sh esp32 companions
+
+    - uses: actions/cache@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-companions-${{ github.sha }}
+
+  create-release:
+    needs: [build-nrf, build-esp32-companions, build-esp32-repeaters]
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: generate release tag
+      id: tag
+      run: |
+        version=v$(date +"%Y%m%d.%H%M%S")
+        echo "release_tag=$version" >> $GITHUB_OUTPUT
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-nrf-${{ github.sha }}
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-companions-${{ github.sha }}
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-repeaters-${{ github.sha }}
+
+    - name: upload firmware artifacts
+      uses: actions/upload-artifact@v7
+      with:
+        name: firmware-${{ steps.tag.outputs.release_tag }}
+        path: firmware
+
+    - name: create release
+      uses: softprops/action-gh-release@v2
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      with:
+        tag_name: ${{ steps.tag.outputs.release_tag }}
+        name: Firmware ${{ steps.tag.outputs.release_tag }}
+        body: ""
+        draft: false
+        files: firmware/*
