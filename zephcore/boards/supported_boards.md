@@ -14,7 +14,6 @@ thinknode_m3
 thinknode_m6
 rak_wismesh_tag
 ikoka_nano_30dbm
-promicro_lr2021
 sensecap_solar
 ```
 
