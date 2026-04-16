@@ -8,14 +8,14 @@
  *
  * Input flow (after longpress + multi-tap filter chain):
  *   KEY_1     → action_page_next()       (1 tap, 400ms delayed)
- *   KEY_B     → action_flood_advert()    (2 taps, 400ms delayed)
- *   KEY_D     → action_buzzer_toggle()   (3 taps, 400ms delayed)
+ *   KEY_LEFT  → action_page_prev()       (2 taps — RAK4631 / Pocket / Heltec V3–V4.3)
+ *   KEY_B     → action_flood_advert()    (2 taps on extended multitap overlays)
+ *   KEY_D     → action_buzzer_toggle()   (3 taps)
  *   KEY_C     → action_gps_toggle()      (4 taps, immediate)
  *   KEY_G     → GPS switch on/off        (hardware toggle, ThinkNode M1)
- *   KEY_POWER  → action_deep_sleep()      (long press ≥1s)
- *   KEY_RIGHT  → action_page_next()       (joystick, Wio Tracker)
- *   KEY_LEFT   → action_page_prev()       (joystick, Wio Tracker)
- *   KEY_ENTER  → action_page_enter()      (joystick center, Wio Tracker)
+ *   KEY_POWER / KEY_F → action_deep_sleep() (long press — boards that emit these)
+ *   KEY_ENTER → action_page_enter()      (long press — Pocket / Heltec; joystick center Wio)
+ *   KEY_RIGHT → action_page_next()       (joystick, Wio Tracker)
  *
  * Notification flow:
  *   LoRa RX → CompanionMesh → ui_notify(UI_EVENT_CONTACT_MSG)
@@ -753,11 +753,9 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 
 	/* Map input key codes to UI actions.
 	 *
-	 * KEY_1:     1 tap  (from multi-tap, 400ms delayed)
-	 * KEY_B:     2 taps (from multi-tap, 400ms delayed)
-	 * KEY_D:     3 taps (from multi-tap, 400ms delayed)
-	 * KEY_C:     4 taps (from multi-tap, immediate — max count)
-	 * KEY_POWER: long press (from longpress filter, ≥1s)
+	 * RAK4631 / WisMesh Pocket / Heltec V3–V4.3: 1 tap KEY_1, 2 taps KEY_LEFT;
+	 * long press KEY_ENTER (page enter). Other boards: up to 4–5 tap codes
+	 * (KEY_B/D/C/E) and KEY_POWER or KEY_F long → deep sleep.
 	 * KEY_RIGHT/LEFT/ENTER/UP/DOWN: joystick (Wio Tracker)
 	 *
 	 * NOTE: KEY_A (raw short-press from longpress filter) is NOT handled

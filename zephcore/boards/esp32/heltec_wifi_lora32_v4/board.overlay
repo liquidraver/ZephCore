@@ -3,7 +3,7 @@
  * Heltec WiFi LoRa 32 V4 — ZephCore overlay
  *
  * The DTS already defines: SX1262 (lora0), SSD1306 OLED, button, LED, PWM,
- * vext_ctrl, adc_ctrl, fem_power, I2C0, SPI2, BLE, WiFi.
+ * vext_enable, adc_ctrl, fem_power, I2C0, SPI2, BLE, WiFi.
  * This overlay adds ZephCore-specific integration on top.
  *
  * LoRa SPI2:  SCLK=9, MOSI=10, MISO=11, NSS=8
@@ -43,30 +43,20 @@
 		enable-gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;  /* GPIO37 = gpio1 pin 5 */
 	};
 
-	/* ---- Button input filter chain ----
-	 * Button emits INPUT_KEY_0. Split into:
-	 *   short press → KEY_A (consumed by multi-tap)
-	 *   long press (1 s) → KEY_POWER (deep sleep) */
+	/* Button chain — same mapping as RAK4631 / WisMesh Pocket (rak4631/board.overlay). */
 	user_btn_longpress {
 		compatible = "zephyr,input-longpress";
 		input = <&buttons>;
 		input-codes = <INPUT_KEY_0>;
 		short-codes = <INPUT_KEY_A>;
-		long-codes = <INPUT_KEY_POWER>;
+		long-codes = <INPUT_KEY_ENTER>;
 		long-delay-ms = <1000>;
 	};
 
-	/* Multi-tap decodes short presses:
-	 * 1 tap  (400 ms wait) → KEY_1 = page next
-	 * 2 taps (400 ms wait) → KEY_B = flood advert
-	 * 3 taps (400 ms wait) → KEY_D = buzzer mute toggle
-	 * 4 taps (immediate)   → KEY_C = GPS on/off */
-	user_btn_multitap {
+	page_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
-		/* No 'input' phandle — listen to ALL devices.
-		 * KEY_A is emitted by the longpress pseudo-device. */
 		input-codes = <INPUT_KEY_A>;
-		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
 		tap-delay-ms = <400>;
 	};
 };

@@ -85,14 +85,15 @@
 		full-ohms = <(100000 + 390000)>;
 	};
 
-	/* Vext — powers OLED and external peripherals.
-	 * V4 DIFFERENCE: active-HIGH (GPIO36 HIGH = power on).
-	 * V3 was active-LOW on the same GPIO. */
-	vext_ctrl: vext_ctrl {
-		compatible = "power-domain-gpio";
+	/* Vext — powers OLED and external peripherals (active-HIGH on GPIO36).
+	 * regulator-fixed + SSD1306 vin-supply: powers rail at boot without relying on
+	 * power-domains (CONFIG_PM_DEVICE is disabled in prj.conf). */
+	vext_enable: vext-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vext";
 		enable-gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;  /* GPIO36 = gpio1 pin 4 */
-		#power-domain-cells = <0>;
-		label = "Vext Control";
+		regulator-boot-on;
+		regulator-always-on;
 	};
 
 	/* ADC enable — GPIO37 (gpio1 pin 5) must be driven HIGH to read battery.
@@ -186,7 +187,7 @@
 		inversion-on;
 		prechargep = <0x22>;
 		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;   /* RST_OLED = GPIO21 */
-		power-domains = <&vext_ctrl>;
+		vin-supply = <&vext_enable>;
 	};
 };
 

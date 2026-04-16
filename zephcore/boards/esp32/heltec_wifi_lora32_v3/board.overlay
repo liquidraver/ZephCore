@@ -10,7 +10,7 @@
  * LoRa control:    DIO1=14, BUSY=13, RESET=12
  * Display I2C0:    SDA=17, SCL=18 (SSD1306 @ 0x3C)
  * Battery ADC:     GPIO1 (ADC1 ch0), enable GPIO37, divider 100K/390K
- * Vext:            GPIO36 (active-LOW, powers OLED)
+ * Vext:            GPIO36 (active-LOW, powers OLED) — regulator + vin-supply in overlay
  * Button:          GPIO0
  * LED:             GPIO35
  */
@@ -46,31 +46,31 @@
 		enable-gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;
 	};
 
-	/* ---- Button input filter chain ----
-	 * Upstream button emits INPUT_KEY_0. Split into:
-	 *   short press → KEY_A (consumed by multi-tap)
-	 *   long press (1s) → KEY_POWER (deep sleep) */
+	/* Vext — GPIO36, active-LOW enables rail (matches Arduino periph_power / MeshCore
+	 * PIN_VEXT_EN). Replaces upstream vext_ctrl power-domain so SSD1306 init works with
+	 * CONFIG_PM_DEVICE=n. */
+	vext_enable: vext-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vext";
+		enable-gpios = <&gpio1 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+		regulator-boot-on;
+		regulator-always-on;
+	};
+
+	/* Button chain — same mapping as RAK4631 / WisMesh Pocket (rak4631/board.overlay). */
 	user_btn_longpress {
 		compatible = "zephyr,input-longpress";
 		input = <&buttons>;
 		input-codes = <INPUT_KEY_0>;
 		short-codes = <INPUT_KEY_A>;
-		long-codes = <INPUT_KEY_POWER>;
+		long-codes = <INPUT_KEY_ENTER>;
 		long-delay-ms = <1000>;
 	};
 
-	/* Multi-tap decodes short presses:
-	 * 1 tap  (400ms wait) → KEY_1 = page next
-	 * 2 taps (400ms wait) → KEY_B = flood advert
-	 * 3 taps (400ms wait) → KEY_D = buzzer mute toggle
-	 * 4 taps (immediate)  → KEY_C = GPS on/off */
-	user_btn_multitap {
+	page_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
-		/* No 'input' phandle — listen to ALL devices.
-		 * KEY_A is emitted by the longpress pseudo-device,
-		 * not by &buttons, so we must not filter by device. */
 		input-codes = <INPUT_KEY_A>;
-		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
 		tap-delay-ms = <400>;
 	};
 };
@@ -99,6 +99,11 @@
 /* I2C sensors — auto-detected at runtime */
 &i2c0 {
 	#include "../../common/sensors-i2c.dtsi"
+
+	ssd1306_128x64: display-controller@3c {
+		/delete-property/ power-domains;
+		vin-supply = <&vext_enable>;
+	};
 };
 
 /*
@@ -124,3 +129,6 @@
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
+
+/* After SSD1306 no longer references vext_ctrl, remove upstream power-domain node. */
+/delete-node/ &vext_ctrl;
