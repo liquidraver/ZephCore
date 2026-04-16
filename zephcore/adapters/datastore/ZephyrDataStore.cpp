@@ -770,25 +770,9 @@ bool ZephyrDataStore::putBlobByKey(const uint8_t key[], int key_len, const uint8
 
 bool ZephyrDataStore::deleteBlobByKey(const uint8_t key[], int key_len)
 {
+	(void)key;
 	(void)key_len;
-	const char *path = advBlobsFile();
-	struct fs_file_t file;
-	fs_file_t_init(&file);
-	if (fs_open(&file, path, FS_O_RDWR) < 0) {
-		return true;  /* no blob file = nothing to delete */
-	}
-	BlobRec tmp;
-	uint32_t pos = 0;
-	while (fs_read(&file, (uint8_t *)&tmp, sizeof(tmp)) == (ssize_t)sizeof(tmp)) {
-		if (memcmp(key, tmp.key, 7) == 0) {
-			memset(&tmp, 0, sizeof(tmp));
-			fs_seek(&file, pos, FS_SEEK_SET);
-			fs_write(&file, (uint8_t *)&tmp, sizeof(tmp));
-			break;
-		}
-		pos += sizeof(tmp);
-	}
-	fs_close(&file);
+	/* Stub: MeshCore nRF-style — slot reused on next putBlobByKey, no erase. */
 	return true;
 }
 
