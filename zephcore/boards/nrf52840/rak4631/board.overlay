@@ -76,8 +76,7 @@
 / {
 	zephyr,user {
 		io-channels = <&adc 3>;
-		/* mV = raw * mult / 4096; 7200 = 3.6 V FS at pin × 2 (2:1 divider), same as thinknode_m3 */
-		vbat-mv-multiplier = <7200>;
+		vbat-mv-multiplier = <6161>;  /* matches RAK4631 divider + SAADC ref */
 	};
 };
 
