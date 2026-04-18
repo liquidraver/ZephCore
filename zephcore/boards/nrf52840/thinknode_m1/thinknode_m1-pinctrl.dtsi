@@ -7,8 +7,7 @@
  * Pin mappings (from Arduino MeshCore variant.h):
  *
  * SPI2 (LoRa SX1262):  SCK=P0.19, MISO=P0.23, MOSI=P0.22, CS=P0.24
- * SPI3 (EPD SSD1681):  SCK=P0.31, MISO=P1.06, MOSI=P0.29
- *                       (MISO shared with LED_RED — unused by write-only EPD)
+ * SPI3 (EPD SSD1681):  SCK=P0.31, MISO=NC, MOSI=P0.29
  * I2C0 (RTC/sensors):  SDA=P0.26, SCL=P0.27
  * UART0 (GPS 9600):    TX=P1.08 (→GPS RX), RX=P1.09 (←GPS TX)
  * PWM0 (buzzer):       P0.06
@@ -71,13 +70,12 @@
 	};
 
 	/* SPI3 for E-Paper display SSD1681
-	 * MISO on P1.06 is shared with LED_RED — e-ink is write-only so
-	 * MISO is never driven, but nRF SPIM requires all three pins. */
+	 * Display MISO is not connected on ThinkNode M1. */
 	spi3_default: spi3_default {
 		group1 {
 			psels = <NRF_PSEL(SPIM_SCK,  0, 31)>,   /* P0.31 */
 				<NRF_PSEL(SPIM_MOSI, 0, 29)>,  /* P0.29 */
-				<NRF_PSEL(SPIM_MISO, 1, 6)>;   /* P1.06 (shared LED_RED) */
+				<NRF_PSEL_DISCONNECTED(SPIM_MISO)>;
 		};
 	};
 
@@ -85,7 +83,7 @@
 		group1 {
 			psels = <NRF_PSEL(SPIM_SCK,  0, 31)>,
 				<NRF_PSEL(SPIM_MOSI, 0, 29)>,
-				<NRF_PSEL(SPIM_MISO, 1, 6)>;
+				<NRF_PSEL_DISCONNECTED(SPIM_MISO)>;
 			low-power-enable;
 		};
 	};
