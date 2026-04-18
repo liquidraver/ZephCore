@@ -9,6 +9,7 @@
 #include <string.h>
 
 #include <zephyr/logging/log.h>
+#include <zephyr/random/random.h>
 LOG_MODULE_REGISTER(zephcore_dispatcher, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
@@ -81,7 +82,10 @@ int Dispatcher::calcRxDelay(float score, uint32_t air_time) const
 
 uint32_t Dispatcher::getCADFailRetryDelay() const
 {
-	return 200; /* ms between CAD retries; ~2 LoRa symbol periods at SF8/62.5k */
+	/* 100-200ms jittered retry: tighter than one SF8 flood airtime so we
+	 * sample multiple RX duty-cycle windows, and randomized so two nodes
+	 * contending on the same channel don't retry in lockstep. */
+	return 100 + (sys_rand32_get() % 101);
 }
 
 uint32_t Dispatcher::getCADFailMaxDuration() const

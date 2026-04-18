@@ -878,13 +878,12 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
 }
 
 void RepeaterMesh::begin(RepeaterDataStore* store) {
-    mesh::Mesh::begin();
     _store = store;
 
-    /* Load persisted data.
-     * NOTE: Identity is loaded in main_repeater.cpp before begin() is called,
-     * so we skip loading it here (self_id should already be set). */
-    _store->loadPrefs(_prefs);
+    /* Prefs and identity are loaded by the caller (main_repeater.cpp) before
+     * begin() — the radio reads freq/bw/sf/cr through _prefs during
+     * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
+    mesh::Mesh::begin();
     _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
 #ifdef CONFIG_ZEPHCORE_APC
     _power_ctrl.setSF(_prefs.sf);

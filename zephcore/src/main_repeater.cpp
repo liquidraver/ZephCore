@@ -276,22 +276,21 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 #ifdef ZEPHCORE_LORA
 static mesh::ZephyrBoard zephyr_board;
 
-/* Radio prefs — initialized with defaults in main(), updated after mesh.begin()
- * loads persisted prefs. Passed to radio adapter at static construction time. */
-static NodePrefs radio_prefs;
+/* Radio is constructed with no prefs pointer; main() binds it to
+ * repeater_mesh._prefs via setPrefs() before repeater_mesh.begin(). */
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
 /* LR1110 via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::LR1110Radio lora_radio(lora_dev, zephyr_board, &radio_prefs);
+static mesh::LR1110Radio lora_radio(lora_dev, zephyr_board);
 #elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
 /* SX127x via Zephyr loramac-node driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX127xRadio lora_radio(lora_dev, zephyr_board, &radio_prefs);
+static mesh::SX127xRadio lora_radio(lora_dev, zephyr_board);
 #else
 /* SX126x via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board, &radio_prefs);
+static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board);
 #endif
 
 static mesh::ZephyrMillisecondClock ms_clock;
@@ -375,10 +374,6 @@ static void repeater_event_loop(void)
 
 int main(void)
 {
-	/* Initialize radio prefs with safe defaults before anything else */
-	initNodePrefs(&radio_prefs);
-	strcpy(radio_prefs.node_name, "Repeater");
-
 #ifdef ZEPHCORE_LORA
 	/* Clear any stale bootloader magic from previous sessions.
 	 * Prevents nRF52 boards from re-entering bootloader after reboot. */
@@ -470,38 +465,17 @@ int main(void)
 		self_identity.pub_key[4], self_identity.pub_key[5],
 		self_identity.pub_key[6], self_identity.pub_key[7]);
 
-	/* Pre-load persisted prefs into radio_prefs BEFORE repeater_mesh.begin().
-	 *
-	 * Rationale: lora_radio was constructed at static-init time with a pointer
-	 * to radio_prefs (see line ~286).  When repeater_mesh.begin() runs, it
-	 * calls Mesh::begin() -> Dispatcher::begin() -> _radio->begin(), which
-	 * reads freq/bw/sf/cr through that pointer to configure the hardware.
-	 *
-	 * Without this pre-load, the radio boots on the compile-time defaults
-	 * from initNodePrefs() (freq=869.618, EU ISM band) regardless of what the
-	 * user configured.  RepeaterMesh::begin() then loads the persisted prefs
-	 * into its own _prefs member, so CLI/UI readback shows the correct saved
-	 * values — but the hardware is already configured on the stale defaults
-	 * and never gets reconfigured.  The result: device appears operational on
-	 * the configured frequency but is physically tuned to 869.618 MHz, so
-	 * transmissions are not heard and no packets can be received.
-	 *
-	 * This went unnoticed in the EU because 869.618 happens to match the
-	 * default; US/CA users on 910.525 (and any other non-default freq) hit it.
-	 *
-	 * Mirrors the temp_prefs pattern in main_companion.cpp.  The subsequent
-	 * setPrefs() rebind (after begin()) points the radio at the live prefs in
-	 * RepeaterMesh so CLI `set radio` changes take effect on reconfigure(). */
-	data_store.loadPrefs(radio_prefs);
-
-	/* Start mesh with data store - this loads prefs, ACL, regions */
-	repeater_mesh.begin(&data_store);
-
-	/* Rebind radio prefs pointer to the live prefs inside repeater_mesh.
-	 * radio_prefs above was a one-time copy for static init; from here on,
-	 * the radio must read from the same struct RepeaterMesh mutates so that
-	 * CLI-driven reconfigure() calls see current values. */
+	/* Load persisted prefs and bind the radio to _prefs BEFORE begin() — the
+	 * radio reads freq/bw/sf/cr through this pointer during Mesh::begin() →
+	 * Dispatcher::begin() → Radio::begin().  Without this, the radio would
+	 * configure on NodePrefs defaults (869.618 MHz) regardless of saved
+	 * settings: CLI readback looked correct but the hardware stayed on EU.
+	 * Mirrors the temp_prefs pattern in main_companion.cpp. */
+	data_store.loadPrefs(*repeater_mesh.getNodePrefs());
 	lora_radio.setPrefs(repeater_mesh.getNodePrefs());
+
+	/* Start mesh with data store - loads ACL, regions */
+	repeater_mesh.begin(&data_store);
 
 	/* Generate default node name from hardware device ID if not set */
 	NodePrefs* prefs = repeater_mesh.getNodePrefs();

@@ -216,7 +216,7 @@ loop():
      - Flood packets: compute RX delay based on score → defer or process immediately
      - Direct packets: process immediately
   4. checkSend(): Check outbound queue
-     - CAD: if channel busy, retry with random backoff (120-480ms)
+     - CAD: if channel busy, retry every 100-200ms (jittered) up to 4s total
      - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
      - Final LBT check right before TX (closes timing gap)
      - Serialize and transmit
@@ -313,10 +313,9 @@ Compile-time selection via `CONFIG_ZEPHCORE_RADIO_LR1110` in `RadioIncludes.h`.
 ### 5.3 Noise Floor EMA
 
 Algorithm in `triggerNoiseFloorCalibrate()`:
-- Random 0-500ms jitter to break phase-lock with interference
-- 4 RSSI samples per tick, take minimum
+- 8 RSSI samples per tick, take median (insertion-sort midpoint)
 - Threshold filter: reject samples ≥ floor + 14dB (after 8-tick warmup)
-- Periodic bypass: every 8th tick accepts unconditionally
+- Periodic bypass: every 16th tick accepts unconditionally
 - EMA: `floor += round_nearest((sample - floor) / 8)`, clamped to [-120, -50] dBm
 
 ### 5.4 LR1110 Driver Errata Workarounds
@@ -405,7 +404,7 @@ Power: `powersaving on/off`
 - **Internal**: LittleFS on flash (`/lfs`), 256-byte cache for reduced flash I/O
 - **External**: Optional LittleFS on QSPI (`/ext`) with auto-migration
 - **BLE bonds**: File-based settings on LittleFS (`/lfs/settings/`) — all platforms (no NVS)
-- **Prefs**: 93-byte binary format, Arduino-compatible, field-by-field I/O
+- **Prefs**: 292-byte binary format, Arduino-compatible, field-by-field I/O (see §13)
 - **Contacts**: 152-byte records, stored on external flash if available
 - **Channels**: 68-byte records (4 pad + 32 name + 32 secret)
 - **Blobs**: Fixed-size records with LRU eviction by timestamp
@@ -688,11 +687,10 @@ Dispatcher::checkRecv() → Mesh::onRecvPacket()
 main event loop (every 5s) → Dispatcher::maintenanceLoop()
   → radio->triggerNoiseFloorCalibrate(threshold)
     → guards: in RX? TX active? duty cycle? mid-receive?
-    → random 0-500ms jitter
-    → read 4 RSSI samples, take min
+    → read 8 RSSI samples, take median
     → first sample: seed directly
     → warmup (<8 ticks): accept unconditionally
-    → periodic bypass (every 8th): accept unconditionally
+    → periodic bypass (every 16th): accept unconditionally
     → otherwise: reject if sample ≥ floor + 14dB
     → EMA: floor += round((sample - floor) / 8)
     → clamp [-120, -50] dBm
