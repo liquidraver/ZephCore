@@ -85,7 +85,7 @@ enum gps_state {
 
 static enum gps_state gps_current_state = GPS_STATE_OFF;
 static uint8_t consecutive_good_fixes = 0;
-static bool first_fix_acquired = false;  /* True after first successful fix since enable */
+static bool first_fix_acquired = false;  /* True after first 3-good-fix cycle since enable. Cleared on gps_enable(false) and at boot. */
 static bool gps_time_synced = false;     /* True after GPS syncs RTC. Starts false at boot (RTC reset),
                                           * set true after 3 good fixes, cleared when GPS disabled. */
 static int64_t last_fix_uptime_ms = 0;  /* k_uptime when last validated fix was acquired */
@@ -1296,6 +1296,12 @@ void gps_enable(bool enable)
 #endif
 		gps_current_state = GPS_STATE_OFF;
 		consecutive_good_fixes = 0;
+
+		/* Clear first-fix flag so the next enable gets the "no timeout"
+		 * grace period again — in marginal signal, a 30–120s timeout may
+		 * never be enough, and the user explicitly toggled GPS expecting
+		 * it to try hard for a fix. */
+		first_fix_acquired = false;
 
 		/* Clear time sync flag - time will drift, allow phone sync again */
 		gps_time_synced = false;

@@ -445,11 +445,15 @@ config ZEPHCORE_GPS_POLL_INTERVAL_SEC
 
 config ZEPHCORE_GPS_FIX_TIMEOUT_SEC
 	int "GPS fix acquisition timeout in seconds"
-	default 30
+	default 120
 	range 10 300
 	help
 	  Maximum time to wait for GPS fix before giving up.
 	  GPS will be powered off after this timeout.
+	  Default 120s — 30s was too aggressive for Air530Z / MAX-7Q warm
+	  starts in marginal sky conditions; the acquire loop would time out
+	  before the 3-consecutive-good-fix gate could promote. Only applies
+	  to wake cycles after the first successful fix since enable.
 
 endmenu
 
