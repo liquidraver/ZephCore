@@ -669,6 +669,9 @@ int main(void)
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
 	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
 
+	/* Restore runtime ADC multiplier override (0 = keep DT default) */
+	zephyr_board.setAdcMultiplier(companion_mesh.prefs.adc_multiplier);
+
 	/* Initialize mesh event object */
 	k_event_init(&mesh_events);
 
