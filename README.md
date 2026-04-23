@@ -206,3 +206,4 @@ Same license as the upstream MeshCore project.
 
 ![aXa0YNLq_700w_0](https://github.com/user-attachments/assets/ddce17fd-7b83-4dc7-999f-0519593fcc3d)
 
+(FYI this is sarcasm, the whole project is 99,9% claude and cursor backed, relying heavily on the [official meshcore repo](https://github.com/meshcore-dev/MeshCore/) and the work they do in it)
