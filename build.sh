@@ -15,6 +15,9 @@ nRF_boards=(
     thinknode_m6
     rak_wismesh_tag
     ikoka_nano_30dbm
+    ikoka_stick_22dbm
+    ikoka_stick_30dbm
+    ikoka_stick_33dbm
     sensecap_solar
     xiao_nrf52840
 )
