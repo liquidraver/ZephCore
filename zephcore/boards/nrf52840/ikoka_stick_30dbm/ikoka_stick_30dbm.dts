@@ -1,0 +1,257 @@
+/*
+ * SPDX-License-Identifier: Apache-2.0
+ * Ikoka Stick 30dBm - XIAO nRF52840 + E22-900M30S LoRa module
+ *
+ * Reference: https://ndoo.sg/projects:amateur_radio:meshtastic:diy_devices:ikoka_stick
+ *
+ * E22-900M30S LoRa Module:
+ * - SX1262 with external ~10 dB PA, 30 dBm (1 W) output
+ * - RXEN (P0.05 / D5) control: HIGH for RX, LOW for TX
+ * - SX1262 input limited to 20 dBm (datasheet-typical drive for 30 dBm out)
+ * - DIO2 as RF switch, TCXO 1.8V
+ *
+ * Pin Mapping (XIAO D-pins to nRF52840 GPIOs):
+ *   D0  = P0.02 (User button)   D4 = P0.04 (SX1262 NSS)   D8  = P1.13 (SCK)
+ *   D1  = P0.03 (SX1262 DIO1)   D5 = P0.05 (PA RXEN)      D9  = P1.14 (MISO)
+ *   D2  = P0.28 (SX1262 RESET)  D6 = P1.11 (I2C SDA)      D10 = P1.15 (MOSI)
+ *   D3  = P0.29 (SX1262 BUSY)   D7 = P1.12 (I2C SCL)
+ *
+ * Peripherals:
+ * - User button on D0 with long-press (deep sleep) + multi-tap actions
+ * - Optional SSD1306 0.96" OLED @ 0x3C on I2C1 (auto-detected at boot)
+ * - Battery ADC on AIN7 (P0.31), enable on P0.14
+ * - LEDs: RED=P0.26/D11, BLUE=P0.06/D12, GREEN=P0.30/D13
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "ikoka_stick_30dbm-pinctrl.dtsi"
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
+/ {
+	model = "Ikoka Stick 30dBm";
+	compatible = "ikoka,stick-30dbm";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &ssd1306;
+	};
+
+	aliases {
+		lora0 = &lora;
+		led0 = &led_red;
+		led1 = &led_green;
+		led2 = &led_blue;
+		watchdog0 = &wdt0;
+	};
+
+	/* Status LEDs - active LOW on XIAO */
+	leds {
+		compatible = "gpio-leds";
+		led_red: led_0 {
+			gpios = <&gpio0 26 GPIO_ACTIVE_LOW>;
+			label = "Red LED";
+		};
+		led_green: led_1 {
+			gpios = <&gpio0 30 GPIO_ACTIVE_LOW>;
+			label = "Green LED";
+		};
+		led_blue: led_2 {
+			gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+			label = "Blue LED";
+		};
+	};
+
+	/* User button on D0 (P0.02), active LOW with internal pull-up.
+	 * Matches the pinout of the Seeed XIAO nRF52840 base board. */
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		user_button: button_0 {
+			gpios = <&gpio0 2 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "User Button";
+		};
+	};
+
+	/* Long-press = deep sleep (≥1 s), short = feeds into multi-tap */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_POWER>;
+		long-delay-ms = <1000>;
+	};
+
+	/* Multi-tap — standard ZephCore mapping:
+	 *   1 tap → page next        2 taps → flood advert
+	 *   3 taps → buzzer mute     4 taps → GPS toggle
+	 *   5 taps → LED heartbeat   */
+	user_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C INPUT_KEY_E>;
+		tap-delay-ms = <400>;
+	};
+
+	/* Battery ADC enable - P0.14 must be LOW to read battery */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+	};
+
+	/* Battery ADC channel */
+	zephyr,user {
+		io-channels = <&adc 7>;
+		vbat-mv-multiplier = <10650>;  /* 1M/510k divider (2.96x), 3.6V ref */
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@7 {
+		reg = <7>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN7>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&uicr {
+	gpio-as-nreset;
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* UART0 is not wired on this board — console/shell use USB-CDC */
+&uart0 {
+	status = "disabled";
+};
+
+/* I2C1 on D6/D7 for optional SSD1306 OLED and any external sensors.
+ *
+ * Uses TWIM (not TWI) so the driver can issue SSD1306 page writes
+ * (1 cmd + 128 data = 129 bytes) in a single transaction — the
+ * concat-buf-size of 256 covers the full page.
+ */
+&i2c1 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-1 = <&i2c1_sleep>;
+	pinctrl-names = "default", "sleep";
+	zephyr,concat-buf-size = <256>;
+
+	/* Optional SSD1306 0.96" OLED at 0x3C.
+	 *
+	 * The Stick's OLED is optional per the ndoo.sg design. If the
+	 * physical part is absent, zephcore's display helper returns
+	 * -ENODEV and the firmware continues without a display —
+	 * leaving the node declared unconditionally is safe. */
+	ssd1306: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		inversion-on;
+		prechargep = <0x22>;
+	};
+
+	/* All supported environment & power sensors — auto-detected at runtime */
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* SPI2 for LoRa module */
+&spi2 {
+	compatible = "nordic,nrf-spi";
+	status = "okay";
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;  /* D4 = P0.04 NSS */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpio0 28 GPIO_ACTIVE_LOW>;    /* D2 = P0.28 */
+		busy-gpios  = <&gpio0 29 GPIO_ACTIVE_HIGH>;   /* D3 = P0.29 */
+		dio1-gpios  = <&gpio0 3 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* D1 = P0.03 */
+
+		/* E22-900M30S PA control: HIGH = RX, LOW = TX */
+		rx-enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;  /* D5 = P0.05 RXEN */
+
+		/* Use DIO2 to drive TX enable on the internal RF switch */
+		dio2-tx-enable;
+
+		/* TCXO voltage 1.8V */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/* Enable RX boosted mode for better sensitivity */
+		rx-boosted;
+	};
+};
+
+/* QSPI Flash - disabled, matching the 30 dBm sibling. XIAO nRF52840's
+ * onboard P25Q16H is not used in this firmware; the internal nRF52840
+ * flash provides storage. Re-enable with status = "okay" if needed. */
+&qspi {
+	status = "disabled";
+};
+
+/* USB CDC for console/CLI */
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* Arduino MeshCore compatible partition layout (SoftDevice v7) */
+#include "../../common/nrf52_partitions_sdv7.dtsi"
+
+/* Mark the 'buttons' node as a System OFF wakeup source.
+ * Only valid when the board has a `buttons` label (i.e. a user button). */
+#include "../../common/nrf52_wakeup.dtsi"

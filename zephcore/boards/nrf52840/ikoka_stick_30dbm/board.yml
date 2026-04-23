@@ -1,0 +1,6 @@
+board:
+  name: ikoka_stick_30dbm
+  full_name: Ikoka Stick 30dBm (XIAO nRF52840 + E22-900M30S)
+  vendor: ikoka
+  socs:
+    - name: nrf52840
