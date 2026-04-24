@@ -368,7 +368,11 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 {
 	bool prefs_exists = exists(PREFS_FILE);
 	if (!prefs_exists) {
-		LOG_DBG("loadPrefs: no prefs file found");
+		LOG_DBG("loadPrefs: no prefs file found, persisting defaults");
+		/* Persist defaults so flash always has a prefs file from boot 1.
+		 * Lets later code (e.g. tempradio revert) trust that flash is
+		 * authoritative without a "first run" special case. */
+		savePrefs(prefs);
 		return;
 	}
 

@@ -137,6 +137,10 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.flood_advert_interval = 25;
         prefs.loop_detect = LOOP_DETECT_MINIMAL;
         prefs.path_hash_mode = 1;
+        /* Persist defaults so flash always has a prefs file from boot 1.
+         * Lets later code (e.g. tempradio revert) trust that flash is
+         * authoritative without a "first run" special case. */
+        savePrefs(prefs);
         return true;
     }
 

@@ -31,6 +31,9 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	  _rx_boost_enabled(true),
 	  _tx_power_reduction_db(0),
 	  _config_cached(false),
+	  _has_radio_override(false),
+	  _override_freq(0), _override_bw(0),
+	  _override_sf(0), _override_cr(0),
 	  _rx_cb(nullptr), _rx_cb_user_data(nullptr),
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
 	  _tx_thread_running(false),
@@ -186,14 +189,20 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 {
 	memset(&cfg, 0, sizeof(cfg));
-	cfg.frequency = _prefs ? (uint32_t)(_prefs->freq * 1000000.0f)
-			       : LoRaConfig::FREQ_HZ;
-	cfg.bandwidth = bw_khz_to_enum(
-		_prefs ? (uint16_t)(_prefs->bw) : (uint16_t)LoRaConfig::BANDWIDTH);
-	cfg.datarate = (enum lora_datarate)(
-		_prefs ? _prefs->sf : LoRaConfig::SPREADING_FACTOR);
-	cfg.coding_rate = cr_to_enum(
-		_prefs ? _prefs->cr : LoRaConfig::CODING_RATE);
+	/* Override wins for freq/bw/sf/cr (tempradio).  Power, preamble, and
+	 * other fields still come from _prefs. */
+	float freq_mhz = _has_radio_override ? _override_freq
+			 : (_prefs ? _prefs->freq : (LoRaConfig::FREQ_HZ / 1000000.0f));
+	float bw_khz = _has_radio_override ? _override_bw
+		       : (_prefs ? _prefs->bw : (float)LoRaConfig::BANDWIDTH);
+	uint8_t sf = _has_radio_override ? _override_sf
+		     : (_prefs ? _prefs->sf : LoRaConfig::SPREADING_FACTOR);
+	uint8_t cr = _has_radio_override ? _override_cr
+		     : (_prefs ? _prefs->cr : LoRaConfig::CODING_RATE);
+	cfg.frequency = (uint32_t)(freq_mhz * 1000000.0f);
+	cfg.bandwidth = bw_khz_to_enum((uint16_t)bw_khz);
+	cfg.datarate = (enum lora_datarate)sf;
+	cfg.coding_rate = cr_to_enum(cr);
 	cfg.preamble_len = LoRaConfig::PREAMBLE_LEN;
 	cfg.tx_power = _prefs ? (int8_t)_prefs->tx_power_dbm
 			      : LoRaConfig::TX_POWER_DBM;
@@ -372,12 +381,30 @@ void LoRaRadioBase::reconfigure()
 
 void LoRaRadioBase::reconfigureWithParams(float freq, float bw, uint8_t sf, uint8_t cr)
 {
-	if (_prefs) {
-		_prefs->freq = freq;
-		_prefs->bw = bw;
-		_prefs->sf = sf;
-		_prefs->cr = cr;
+	/* Callers (ObserverMesh CLI handlers) write to _prefs and call
+	 * savePrefs() before invoking us — the radio just needs to pick up
+	 * the new params.  Tempradio uses setRadioOverride() instead so it
+	 * never touches _prefs. */
+	(void)freq; (void)bw; (void)sf; (void)cr;
+	reconfigure();
+}
+
+void LoRaRadioBase::setRadioOverride(float freq, float bw, uint8_t sf, uint8_t cr)
+{
+	_override_freq = freq;
+	_override_bw = bw;
+	_override_sf = sf;
+	_override_cr = cr;
+	_has_radio_override = true;
+	reconfigure();
+}
+
+void LoRaRadioBase::clearRadioOverride()
+{
+	if (!_has_radio_override) {
+		return;
 	}
+	_has_radio_override = false;
 	reconfigure();
 }
 

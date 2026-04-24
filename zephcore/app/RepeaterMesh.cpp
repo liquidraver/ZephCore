@@ -1638,13 +1638,13 @@ void RepeaterMesh::loop() {
 
     if (set_radio_at && millisHasNowPassed(set_radio_at)) {
         set_radio_at = 0;
-        getRadioDriver(_radio).reconfigureWithParams(pending_freq, pending_bw, pending_sf, pending_cr);
+        getRadioDriver(_radio).setRadioOverride(pending_freq, pending_bw, pending_sf, pending_cr);
         LOG_INF("Temp radio params applied");
     }
 
     if (revert_radio_at && millisHasNowPassed(revert_radio_at)) {
         revert_radio_at = 0;
-        getRadioDriver(_radio).reconfigureWithParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+        getRadioDriver(_radio).clearRadioOverride();
         LOG_INF("Radio params restored");
     }
 
