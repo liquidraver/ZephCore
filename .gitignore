@@ -15,7 +15,7 @@ build-*/
 /modules/
 /tools/
 /zephyr/
-
+zephyr-sdk*/
 # Python
 .venv/
 __pycache__/

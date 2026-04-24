@@ -1,1 +1,6 @@
-adafruit-nrfutil==0.5.3.post16
+adafruit-nrfutil
+west
+zephyr-sdk
+jsonschema
+ninja
+cmake
