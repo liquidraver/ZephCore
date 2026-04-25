@@ -466,7 +466,7 @@ config ZEPHCORE_WIFI_OTA
 	  Enable WiFi AP + HTTP server for OTA firmware updates.
 	  Auto-enabled for ESP32 repeater builds via wifi_ota.conf.
 
-	  When "start ota" is issued, starts WiFi AP "MeshCore-OTA"
+	  When "start ota" is issued, starts WiFi AP "ZephCore-OTA"
 	  and HTTP server. User uploads firmware via browser at
 	  http://192.168.100.1/update. Requires MCUboot (--sysbuild).
 
@@ -474,7 +474,7 @@ if ZEPHCORE_WIFI_OTA
 
 config ZEPHCORE_OTA_AP_SSID
 	string "WiFi AP SSID for OTA"
-	default "MeshCore-OTA"
+	default "ZephCore-OTA"
 	help
 	  SSID of the WiFi access point started for OTA updates.
 	  Open network (no password), matching Arduino behavior.

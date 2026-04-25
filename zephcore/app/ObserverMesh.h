@@ -19,7 +19,7 @@
 #include "observer_creds.h"
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.15.0-zephyr"
+  #define FIRMWARE_VERSION   "v1.15.1-zephyr"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
