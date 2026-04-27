@@ -430,6 +430,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lat);
         } else if (memcmp(config, "lon", 3) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lon);
+        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "radio", 5) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.3f,%.1f,%u,%u",
                    (double)_prefs->freq, (double)_prefs->bw,
@@ -503,8 +505,6 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             } else {
                 snprintf(reply, CLI_REPLY_SIZE, "> %.3f", (double)adc_mult);
             }
-        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "rxduty", 6) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_duty_cycle);
         } else if (memcmp(config, "dc.restarts", 11) == 0) {

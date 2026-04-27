@@ -137,6 +137,9 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.flood_advert_interval = 25;
         prefs.loop_detect = LOOP_DETECT_MINIMAL;
         prefs.path_hash_mode = 1;
+#if IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)
+        prefs.rx_duty_cycle = 1;
+#endif
         /* Persist defaults so flash always has a prefs file from boot 1.
          * Lets later code (e.g. tempradio revert) trust that flash is
          * authoritative without a "first run" special case. */
@@ -148,7 +151,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     ret = fs_stat(path, &entry);
     LOG_DBG("loadPrefs: file size = %d bytes", ret < 0 ? 0 : (int)entry.size);
 
-    uint8_t pad[8];
+    uint8_t pad[25];
 
     /* Read prefs in same format as Arduino CommonCLI for compatibility */
     fs_read(&file, &prefs.airtime_factor, sizeof(prefs.airtime_factor));
@@ -173,7 +176,9 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_read(&file, &prefs.bw, sizeof(prefs.bw));
     fs_read(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
-    fs_read(&file, pad, 3);
+    fs_read(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
+    fs_read(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
+    fs_read(&file, pad, 1);
     fs_read(&file, &prefs.flood_max, sizeof(prefs.flood_max));
     fs_read(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
     fs_read(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
@@ -186,6 +191,13 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
     fs_read(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
     fs_read(&file, prefs.owner_info, sizeof(prefs.owner_info));
+    /* ZephCore extensions — absent in old 290-byte files; fs_read returns 0 at EOF,
+     * leaving these fields at 0. The upgrade block below corrects any that have
+     * non-zero repeater defaults (rx_boost, rx_duty_cycle, path_hash_mode, loop_detect). */
+    fs_read(&file, &prefs.rx_boost, sizeof(prefs.rx_boost));
+    fs_read(&file, &prefs.rx_duty_cycle, sizeof(prefs.rx_duty_cycle));
+    fs_read(&file, &prefs.apc_enabled, sizeof(prefs.apc_enabled));
+    fs_read(&file, &prefs.apc_margin, sizeof(prefs.apc_margin));
 
     fs_close(&file);
 
@@ -209,6 +221,26 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.sf = 8;
         prefs.cr = 8;
         prefs.tx_power_dbm = 22;
+    }
+    if (prefs.path_hash_mode > 2) prefs.path_hash_mode = 0;
+    if (prefs.loop_detect > LOOP_DETECT_STRICT) prefs.loop_detect = LOOP_DETECT_MINIMAL;
+    if (prefs.rx_boost > 1) prefs.rx_boost = 0;
+    if (prefs.rx_duty_cycle > 1) prefs.rx_duty_cycle = 0;
+    if (prefs.apc_enabled > 1) prefs.apc_enabled = 0;
+    if (prefs.apc_margin < 6 || prefs.apc_margin > 30) prefs.apc_margin = 16;
+
+    /* One-time format upgrade: old files (< 294 bytes) never saved the ZephCore
+     * extension fields, and stored path_hash_mode/loop_detect as zero padding.
+     * Apply repeater defaults and re-save so values survive subsequent reboots. */
+    if (ret >= 0 && entry.size < 294) {
+        prefs.rx_boost = 1;
+        prefs.path_hash_mode = 1;
+        prefs.loop_detect = LOOP_DETECT_MINIMAL;
+#if IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)
+        prefs.rx_duty_cycle = 1;
+#endif
+        savePrefs(prefs);
+        LOG_INF("loadPrefs: upgraded prefs format (%d -> 294 bytes)", (int)entry.size);
     }
     return true;
 }
@@ -260,7 +292,9 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_write(&file, &prefs.bw, sizeof(prefs.bw));
     fs_write(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
-    fs_write(&file, pad, 3);
+    fs_write(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
+    fs_write(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
+    fs_write(&file, pad, 1);
     fs_write(&file, &prefs.flood_max, sizeof(prefs.flood_max));
     fs_write(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
     fs_write(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
@@ -273,6 +307,11 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
     fs_write(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
     fs_write(&file, prefs.owner_info, sizeof(prefs.owner_info));
+    /* ZephCore extensions */
+    fs_write(&file, &prefs.rx_boost, sizeof(prefs.rx_boost));
+    fs_write(&file, &prefs.rx_duty_cycle, sizeof(prefs.rx_duty_cycle));
+    fs_write(&file, &prefs.apc_enabled, sizeof(prefs.apc_enabled));
+    fs_write(&file, &prefs.apc_margin, sizeof(prefs.apc_margin));
 
     ret = fs_sync(&file);
     fs_close(&file);
