@@ -629,22 +629,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             uint8_t cr = num > 3 ? atoi(parts[3]) : 0;
             if (freq >= 150.0f && freq <= 2500.0f && sf >= 5 && sf <= 12 &&
                 cr >= 5 && cr <= 8 && bw >= 7.0f && bw <= 500.0f) {
-                /* Snapshot current runtime params — the radio driver reads _prefs live,
-                 * so restoring them after the disk write keeps the radio on current
-                 * settings until reboot loads the new values from flash. */
-                float old_freq = _prefs->freq;
-                float old_bw   = _prefs->bw;
-                uint8_t old_sf = _prefs->sf;
-                uint8_t old_cr = _prefs->cr;
                 _prefs->freq = freq;
                 _prefs->bw   = bw;
                 _prefs->sf   = sf;
                 _prefs->cr   = cr;
                 _callbacks->savePrefs();
-                _prefs->freq = old_freq;
-                _prefs->bw   = old_bw;
-                _prefs->sf   = old_sf;
-                _prefs->cr   = old_cr;
                 strcpy(reply, "OK - reboot to apply");
             } else {
                 strcpy(reply, "Error: freq 150-2500, bw 7-500, sf 5-12, cr 5-8");
