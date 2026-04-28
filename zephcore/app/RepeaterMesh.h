@@ -134,7 +134,8 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
 
 protected:
     uint8_t getDutyCyclePercent() const override {
-        return (uint8_t)_prefs.airtime_factor;
+        /* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
+        return (uint8_t)(100.0f / (_prefs.airtime_factor + 1.0f) + 0.5f);
     }
 
     bool allowPacketForward(const mesh::Packet* packet) override;

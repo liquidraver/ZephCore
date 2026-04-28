@@ -132,11 +132,10 @@ void CommonCLI::loadPrefs(const char* path) {
         _prefs->backoff_multiplier = 0.2f;
     }
     _prefs->backoff_multiplier = constrain(_prefs->backoff_multiplier, 0.0f, 2.0f);
-    /* Migrate old AF multiplier (0-9) to duty cycle percentage (0-99) */
-    if (_prefs->airtime_factor > 0.0f && _prefs->airtime_factor <= 9.0f) {
-        _prefs->airtime_factor *= 10.0f;
-    }
-    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 99.0f);
+    /* af is the Arduino airtime budget factor: duty% = 100 / (af + 1).
+     * Range matches upstream (0..9). Values >9 (from a previous build that
+     * stored af as a percentage) get clamped to 9 → 10% effective. */
+    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 9.0f);
     _prefs->freq = constrain(_prefs->freq, 150.0f, 2500.0f);
     _prefs->bw = constrain(_prefs->bw, 7.8f, 500.0f);
     _prefs->sf = constrain(_prefs->sf, (uint8_t)5, (uint8_t)12);

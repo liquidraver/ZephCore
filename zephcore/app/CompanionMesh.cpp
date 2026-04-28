@@ -1228,7 +1228,8 @@ uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
 
 uint8_t CompanionMesh::getDutyCyclePercent() const
 {
-	return (uint8_t)prefs.airtime_factor;
+	/* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
+	return (uint8_t)(100.0f / (prefs.airtime_factor + 1.0f) + 0.5f);
 }
 
 uint8_t CompanionMesh::getExtraAckTransmitCount() const

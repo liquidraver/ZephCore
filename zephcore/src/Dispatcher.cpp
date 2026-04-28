@@ -21,7 +21,8 @@ LOG_MODULE_REGISTER(zephcore_dispatcher, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-#define MAX_RX_DELAY_MILLIS   32000  /* upper bound for score-based RX delay */
+#define MAX_RX_DELAY_MILLIS         32000  /* upper bound for score-based RX delay */
+#define MIN_TX_BUDGET_AIRTIME_DIV   2      /* require at least 1/N MTU airtime as budget before TX */
 
 Dispatcher::Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr)
 	: _radio(&radio), _ms(&ms), _mgr(&mgr)
@@ -30,9 +31,11 @@ Dispatcher::Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr)
 	total_air_time = rx_air_time = 0;
 	next_tx_time = 0;
 	cad_busy_start = 0;
+	tx_budget_ms = 0;
+	last_budget_update = 0;
+	duty_cycle_window_ms = 0;
 	next_agc_reset_time = 0;
 	_err_flags = 0;
-	_duty_cycle.init(0);
 	radio_nonrx_start = 0;
 	prev_isrecv_mode = true;
 	n_sent_flood = n_sent_direct = 0;
@@ -46,15 +49,52 @@ void Dispatcher::begin()
 	n_sent_flood = n_sent_direct = 0;
 	n_recv_flood = n_recv_direct = 0;
 	_err_flags = 0;
-	radio_nonrx_start = (uint32_t)_ms->getMillis();
+	uint32_t now = (uint32_t)_ms->getMillis();
+	radio_nonrx_start = now;
+	duty_cycle_window_ms = getDutyCycleWindowMs();
+	tx_budget_ms = getMaxTxBudgetMs();
+	last_budget_update = now;
+	next_tx_time = now;
 	_radio->begin();
 	prev_isrecv_mode = _radio->isInRecvMode();
-	_duty_cycle.init(getDutyCyclePercent());
 }
 
 uint8_t Dispatcher::getDutyCyclePercent() const
 {
 	return 10; /* EU 868 default: 10% duty cycle */
+}
+
+uint32_t Dispatcher::getMaxTxBudgetMs() const
+{
+	uint8_t duty_pct = getDutyCyclePercent();
+	if (duty_pct == 0 || duty_cycle_window_ms == 0) {
+		return 0;
+	}
+	return (duty_cycle_window_ms * (uint32_t)duty_pct) / 100U;
+}
+
+void Dispatcher::updateTxBudget()
+{
+	uint8_t duty_pct = getDutyCyclePercent();
+	if (duty_pct == 0 || duty_cycle_window_ms == 0) {
+		return;
+	}
+
+	uint32_t now = (uint32_t)_ms->getMillis();
+	uint32_t elapsed = now - last_budget_update;
+	if (elapsed == 0) {
+		return;
+	}
+
+	uint32_t refill = (elapsed * (uint32_t)duty_pct) / 100U;
+	if (refill > 0) {
+		uint32_t max_budget = getMaxTxBudgetMs();
+		tx_budget_ms += refill;
+		if (tx_budget_ms > max_budget) {
+			tx_budget_ms = max_budget;
+		}
+		last_budget_update = now;
+	}
 }
 
 bool Dispatcher::isAdminPacket(const Packet *pkt)
@@ -99,7 +139,12 @@ void Dispatcher::loop()
 		if (_radio->isSendComplete()) {
 			uint32_t t = (uint32_t)_ms->getMillis() - outbound_start;
 			total_air_time += t;
-			_duty_cycle.recordTx(t, (uint32_t)_ms->getMillis());
+			updateTxBudget();
+			if (t >= tx_budget_ms) {
+				tx_budget_ms = 0;
+			} else {
+				tx_budget_ms -= t;
+			}
 			_radio->onSendFinished();
 			logTx(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
 			if (outbound->isRouteFlood()) {
@@ -291,6 +336,46 @@ void Dispatcher::checkSend()
 		return;
 	}
 
+	/* Duty-cycle budget gate. Matches Arduino MeshCore: defer when remaining
+	 * budget < est_airtime / MIN_TX_BUDGET_AIRTIME_DIV (i.e. half an MTU's airtime).
+	 *
+	 * Divergence from upstream: we exempt admin packets from the gate so that
+	 * remote management (admin requests, login, etc.) keeps working when a node
+	 * has burned its budget. Strictly out-of-spec for EN 300 220 — admin floods
+	 * still consume airtime — but a managed node that can't be reached to be
+	 * disabled is worse than the marginal extra airtime. Scan is O(N) over
+	 * the small (24-32) packet pool so the cost is negligible. */
+	updateTxBudget();
+	uint8_t duty_pct = getDutyCyclePercent();
+	if (duty_pct > 0) {
+		bool due_admin_queued = false;
+		int total = _mgr->getOutboundTotal();
+		for (int i = 0; i < total; i++) {
+			Packet *pkt = _mgr->getOutboundByIdx(i);
+			if (!pkt) {
+				continue;
+			}
+			if ((int32_t)(_mgr->getOutboundSchedule(i) - now) > 0) {
+				continue;
+			}
+			if (isAdminPacket(pkt)) {
+				due_admin_queued = true;
+				break;
+			}
+		}
+
+		uint32_t est_airtime = _radio->getEstAirtimeFor(MAX_TRANS_UNIT);
+		uint32_t threshold = est_airtime / MIN_TX_BUDGET_AIRTIME_DIV;
+		if (!due_admin_queued && tx_budget_ms < threshold) {
+			uint32_t needed = threshold - tx_budget_ms;
+			uint32_t delay_ms = (needed * 100U + (uint32_t)duty_pct - 1U) / (uint32_t)duty_pct;
+			if (_tx_queued_cb) {
+				_tx_queued_cb(delay_ms + 1U, _tx_queued_user_data);
+			}
+			return;
+		}
+	}
+
 	if (_radio->isReceiving()) {
 		/* Channel busy — enforce retry timer so we don't hammer the check */
 		if (!millisHasNowPassed(next_tx_time)) {
@@ -319,18 +404,6 @@ void Dispatcher::checkSend()
 
 	outbound = _mgr->getNextOutbound(now);
 	if (outbound) {
-		/* Duty cycle enforcement — exempt admin packets */
-		if (!isAdminPacket(outbound) && _duty_cycle.isExceeded(now)) {
-			LOG_WRN("checkSend: duty cycle exceeded (%u/%u ms), re-queuing type=%d",
-				_duty_cycle.window_airtime_ms, _duty_cycle.budgetMs(),
-				outbound->getPayloadType());
-			_mgr->queueOutbound(outbound, 0, futureMillis(5000));
-			outbound = nullptr;
-			if (_tx_queued_cb) {
-				_tx_queued_cb(5000, _tx_queued_user_data);
-			}
-			return;
-		}
 		uint8_t raw[MAX_TRANS_UNIT];
 		int len = 0;
 		raw[len++] = outbound->header;
