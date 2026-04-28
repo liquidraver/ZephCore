@@ -256,6 +256,9 @@ public:
     }
     void setAPCEnabled(bool en) override {
         getPowerController().setEnabled(en);
+        if (!en) {
+            _radio->setTxPowerReduction(0);
+        }
     }
     uint8_t getAPCTargetMargin() const override {
         return getPowerController().getTargetMargin();

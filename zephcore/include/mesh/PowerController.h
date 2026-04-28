@@ -24,8 +24,8 @@ class PowerController {
 public:
 	PowerController();
 
-	/* Enable/disable APC. When disabled, getPowerReduction() returns 0. */
-	void setEnabled(bool en) { _enabled = en; }
+	/* Enable/disable APC. When disabled, APC tracking/math is bypassed. */
+	void setEnabled(bool en);
 	bool isEnabled() const { return _enabled; }
 
 	/* Set current spreading factor (needed for margin calculation). */
