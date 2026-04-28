@@ -203,7 +203,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
 
     /* Migrate uninitialized backoff_multiplier (0.0 or NaN) to default */
     if (prefs.backoff_multiplier == 0.0f || prefs.backoff_multiplier != prefs.backoff_multiplier) {
-        prefs.backoff_multiplier = 0.5f;
+        prefs.backoff_multiplier = 0.2f;
     }
 
     LOG_INF("Loaded prefs from %s", path);

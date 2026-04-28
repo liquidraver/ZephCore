@@ -571,11 +571,15 @@ uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
 }
 
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = _radio->getEstAirtimeFor(
+    uint32_t airtime = _radio->getEstAirtimeFor(
         packet->getPathByteLen() + packet->payload_len + 2);
+    /* Jitter around Arduino direct factor 0.3 using a per-packet factor
+     * in the range [0.25, 0.40]. */
+    uint32_t factor_milli = (uint32_t)getRNG()->nextInt(250, 401);
+    uint32_t max_jitter = (5 * airtime * factor_milli) / 1000;
     /* Floor: give downstream nodes time to finish RX processing
-     * and return to RX mode before we TX (~20ms settle + jitter) */
-    return 20 + getRNG()->nextInt(0, t / 10 + 1);
+     * and return to RX mode before we TX (~20ms settle + jitter). */
+    return 20 + getRNG()->nextInt(0, max_jitter + 1);
 }
 
 bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
