@@ -438,7 +438,7 @@ void LoRaRadioBase::startReceive()
 			uint32_t preamble_us = (preamble_len + 1) * symbol_us;
 			int32_t w1 = ((int32_t)preamble_us -
 				      ((int32_t)sleep_us - 1000)) / 2;
-			uint32_t w2 = (min_symbols + 1) * symbol_us;
+			uint32_t w2 = (min_symbols + 2) * symbol_us;
 			uint32_t rx_us = (w1 > 0 && (uint32_t)w1 > w2)
 					  ? (uint32_t)w1 : w2;
 
