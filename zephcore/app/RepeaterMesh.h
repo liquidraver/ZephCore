@@ -208,6 +208,7 @@ public:
 
     void savePrefs() override;
     void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;
+    void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) override;
     bool formatFileSystem() override;
     void sendSelfAdvertisement(int delay_millis, bool flood) override;
     void updateAdvertTimer() override;

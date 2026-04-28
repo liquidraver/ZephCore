@@ -191,9 +191,10 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
     fs_read(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
     fs_read(&file, prefs.owner_info, sizeof(prefs.owner_info));
-    /* ZephCore extensions — absent in old 290-byte files; fs_read returns 0 at EOF,
-     * leaving these fields at 0. The upgrade block below corrects any that have
-     * non-zero repeater defaults (rx_boost, rx_duty_cycle, path_hash_mode, loop_detect). */
+    /* ZephCore extensions — absent in old 290-byte files; fs_read past EOF is a
+     * no-op so these fields keep the initNodePrefs() defaults the caller passed
+     * in (rx_boost=1, rx_duty_cycle=0, apc_enabled=0, apc_margin=16). The
+     * upgrade block below forces repeater-specific values for old files. */
     fs_read(&file, &prefs.rx_boost, sizeof(prefs.rx_boost));
     fs_read(&file, &prefs.rx_duty_cycle, sizeof(prefs.rx_duty_cycle));
     fs_read(&file, &prefs.apc_enabled, sizeof(prefs.apc_enabled));

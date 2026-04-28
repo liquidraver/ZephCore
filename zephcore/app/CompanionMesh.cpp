@@ -1205,7 +1205,7 @@ uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 	/* Jitter around Arduino direct factor 0.3 using a per-packet factor
 	 * in the range [0.25, 0.40]. */
 	uint32_t factor_milli = (uint32_t)getRNG()->nextInt(250, 401);
-	uint32_t max_jitter = (5 * airtime * factor_milli) / 1000;
+	uint32_t max_jitter = (airtime * factor_milli) / 1000;
 	/* Floor: give downstream nodes time to finish RX processing
 	 * and return to RX mode before we TX (~20ms settle + jitter) */
 	return 20 + getRNG()->nextInt(0, max_jitter + 1);

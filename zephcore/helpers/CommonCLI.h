@@ -46,6 +46,11 @@ public:
     virtual void saveIdentity(const mesh::LocalIdentity& new_id) = 0;
     virtual void clearStats() = 0;
     virtual void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) = 0;
+    /* Freeze the live radio on the given (old) params via radio override so the
+     * caller can mutate _prefs to new values, savePrefs(), and have any later
+     * savePrefs() call write the new values without clobbering the running radio.
+     * No-op if an override is already active (tempradio takes precedence). */
+    virtual void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) { (void)freq; (void)bw; (void)sf; (void)cr; }
 
     // Adaptive contention window
     virtual float getContentionEstimate() const { return -1.0f; }
