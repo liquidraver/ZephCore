@@ -68,7 +68,7 @@ index 17689720dd2..09982dc2e70 100644
  		return -EINVAL;
  	}
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 30243ba5dc7..4f2254c1f79 100644
+index 30243ba5dc7..57813d4c7d9 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -10,10 +10,19 @@
@@ -449,27 +449,51 @@ index 30243ba5dc7..4f2254c1f79 100644
  static int sx126x_lora_send_async(const struct device *dev,
  				  uint8_t *data_buf, uint32_t data_len,
  				  struct k_poll_signal *async)
-@@ -752,6 +943,34 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -752,6 +943,65 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return ret;
  	}
  
 +	/* LBT: perform blocking CAD before transmitting */
 +	if (data->config.cad.mode == LORA_CAD_MODE_LBT) {
++		bool was_rx = (atomic_get(&data->state) == SX126X_STATE_RX);
++		bool was_rx_dc = was_rx && data->rx_duty_cycle_enabled;
++
 +		k_mutex_unlock(&data->lock);
 +		atomic_set(&data->state, SX126X_REST_STATE);
 +		int cad_ret = sx126x_lora_cad(dev, K_MSEC(200));
 +		if (cad_ret > 0) {
 +			LOG_DBG("LBT: channel busy");
++			k_mutex_lock(&data->lock, K_FOREVER);
++			data->rx_duty_cycle_enabled = was_rx_dc;
++			if (was_rx && data->rx_cb != NULL &&
++			    atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
++				sx126x_restart_rx(dev, data);
++			}
++			k_mutex_unlock(&data->lock);
 +			return -EBUSY;
 +		}
 +		if (cad_ret < 0 && cad_ret != -ENOSYS) {
-+			LOG_WRN("LBT: CAD failed (%d), proceeding with TX",
-+				cad_ret);
++			LOG_WRN("LBT: CAD failed (%d), restoring RX", cad_ret);
++			k_mutex_lock(&data->lock, K_FOREVER);
++			data->rx_duty_cycle_enabled = was_rx_dc;
++			if (was_rx && data->rx_cb != NULL &&
++			    atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
++				sx126x_restart_rx(dev, data);
++			}
++			k_mutex_unlock(&data->lock);
++			return cad_ret;
 +		}
 +		/* Re-acquire state and lock for TX */
 +		if (!atomic_cas(&data->state, SX126X_REST_STATE,
 +				SX126X_STATE_TX)) {
 +			LOG_ERR("Busy after CAD");
++			k_mutex_lock(&data->lock, K_FOREVER);
++			data->rx_duty_cycle_enabled = was_rx_dc;
++			if (was_rx && data->rx_cb != NULL &&
++			    atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
++				sx126x_restart_rx(dev, data);
++			}
++			k_mutex_unlock(&data->lock);
 +			return -EBUSY;
 +		}
 +		k_mutex_lock(&data->lock, K_FOREVER);
@@ -477,6 +501,13 @@ index 30243ba5dc7..4f2254c1f79 100644
 +		if (ret < 0) {
 +			k_mutex_unlock(&data->lock);
 +			atomic_set(&data->state, SX126X_REST_STATE);
++			k_mutex_lock(&data->lock, K_FOREVER);
++			data->rx_duty_cycle_enabled = was_rx_dc;
++			if (was_rx && data->rx_cb != NULL &&
++			    atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
++				sx126x_restart_rx(dev, data);
++			}
++			k_mutex_unlock(&data->lock);
 +			return ret;
 +		}
 +	}
@@ -484,7 +515,7 @@ index 30243ba5dc7..4f2254c1f79 100644
  	data->tx_async_signal = async;
  	k_msgq_purge(&data->tx_msgq);
  
-@@ -777,6 +996,29 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -777,6 +1027,29 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -514,7 +545,7 @@ index 30243ba5dc7..4f2254c1f79 100644
  	/* Start transmission with 10 second timeout */
  	ret = sx126x_set_tx(dev, 10000);
  	if (ret < 0) {
-@@ -947,6 +1189,7 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -947,6 +1220,7 @@ static int sx126x_lora_recv_async(const struct device *dev,
  
  	data->rx_cb = cb;
  	data->rx_cb_user_data = user_data;
@@ -522,7 +553,7 @@ index 30243ba5dc7..4f2254c1f79 100644
  
  	/* Set packet parameters */
  	ret = sx126x_set_packet_params(dev,
-@@ -1083,14 +1326,454 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1357,454 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -984,7 +1015,7 @@ index 30243ba5dc7..4f2254c1f79 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1121,9 +1804,19 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1835,19 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);
@@ -1071,10 +1102,10 @@ index 34f7089584f..e2253cf8193 100644
  
  	return sx126x_hal_write_cmd(dev, SX126X_CMD_SET_TX_PARAMS, buf, 2);
 diff --git a/drivers/lora/native/sx126x/sx126x_hal_common.c b/drivers/lora/native/sx126x/sx126x_hal_common.c
-index b2dfc0d75b5..8c2c35dccbe 100644
+index b2dfc0d75b5..8ab8a0f5738 100644
 --- a/drivers/lora/native/sx126x/sx126x_hal_common.c
 +++ b/drivers/lora/native/sx126x/sx126x_hal_common.c
-@@ -41,8 +41,16 @@ static int spi_transfer(const struct spi_dt_spec *spi,
+@@ -41,11 +41,29 @@ static int spi_transfer(const struct spi_dt_spec *spi,
  
  int sx126x_hal_wait_busy(const struct device *dev, uint32_t timeout_ms)
  {
@@ -1090,8 +1121,23 @@ index b2dfc0d75b5..8c2c35dccbe 100644
 -		      timeout_ms * 1000,
 +		      (timeout_ms * 1000) - 1000,
  		      k_msleep(1))) {
- 		LOG_WRN("Busy timeout after %u ms", timeout_ms);
- 		return -ETIMEDOUT;
+-		LOG_WRN("Busy timeout after %u ms", timeout_ms);
+-		return -ETIMEDOUT;
++		/* One-shot recovery: wake the chip and retry once. */
++		LOG_WRN("Busy timeout after %u ms, wake+retry", timeout_ms);
++		sx126x_hal_wakeup(dev);
++		if (WAIT_FOR(!sx126x_hal_is_busy(dev), 2000, k_busy_wait(10))) {
++			return 0;
++		}
++		if (!WAIT_FOR(!sx126x_hal_is_busy(dev),
++			      timeout_ms * 1000,
++			      k_msleep(1))) {
++			LOG_WRN("Busy timeout after wake retry (%u ms)", timeout_ms);
++			return -ETIMEDOUT;
++		}
+ 	}
+ 
+ 	return 0;
 diff --git a/drivers/lora/native/sx126x/sx126x_regs.h b/drivers/lora/native/sx126x/sx126x_regs.h
 index 7f55c9b96e2..76c5319a73c 100644
 --- a/drivers/lora/native/sx126x/sx126x_regs.h
