@@ -94,6 +94,7 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len)
 	if (!isValidPathLen(path_len)) return false;
 
 	uint8_t bl = getPathByteLen();
+	if ((uint16_t)i + bl > len) return false;
 	memcpy(path, &src[i], bl); i += bl;
 	if (i >= len) return false;
 	payload_len = len - i;
