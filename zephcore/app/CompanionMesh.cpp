@@ -189,6 +189,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_dirty_contacts_expiry = 0;
 	_dirty_channels_expiry = 0;
 	memset(_send_scope.key, 0, sizeof(_send_scope.key));
+	_send_scope_force_unscoped = false;
 	memset(&prefs, 0, sizeof(prefs));
 	prefs.node_lat = 0;
 	prefs.node_lon = 0;
@@ -225,6 +226,13 @@ void CompanionMesh::sendFloodScoped(const TransportKey &scope, mesh::Packet *pkt
 void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *pkt, uint32_t delay_millis)
 {
 	/* TODO: dynamic _send_scope, depending on recipient and current 'home' Region */
+	if (_send_scope_force_unscoped) {
+		TransportKey no_scope;
+		memset(no_scope.key, 0, sizeof(no_scope.key));
+		sendFloodScoped(no_scope, pkt, delay_millis);
+		return;
+	}
+
 	TransportKey default_scope;
 	memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
 
@@ -235,6 +243,13 @@ void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *
 void CompanionMesh::sendFloodScoped(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t delay_millis)
 {
 	/* TODO: have per-channel send_scope */
+	if (_send_scope_force_unscoped) {
+		TransportKey no_scope;
+		memset(no_scope.key, 0, sizeof(no_scope.key));
+		sendFloodScoped(no_scope, pkt, delay_millis);
+		return;
+	}
+
 	TransportKey default_scope;
 	memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
 
@@ -2671,13 +2686,36 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		return true;
 
 	case CMD_SET_FLOOD_SCOPE_KEY:
-		/* Set current send_scope key: [cmd][0][16-byte key] or [cmd][0] (null key) */
+		/* Set send scope mode:
+		 * [cmd][0][16-byte key] = explicit scoped override
+		 * [cmd][0]             = inherit default scope (empty channel scope)
+		 * [cmd][0]["none"]     = explicit unscoped
+		 * [cmd][0]["#none"]    = explicit unscoped (leading '#' ignored)
+		 * [cmd][1]             = explicit unscoped (legacy internal mode)
+		 */
 		if (len >= 2 && data[1] == 0) {
-			if (len >= 2 + 16) {
-				memcpy(_send_scope.key, &data[2], sizeof(_send_scope.key));
-			} else {
-				memset(_send_scope.key, 0, sizeof(_send_scope.key));
+			const uint8_t *scope_name = &data[2];
+			size_t scope_len = len - 2;
+			if (scope_len > 0 && scope_name[0] == '#') {
+				scope_name++;
+				scope_len--;
 			}
+			if ((scope_len == 4 && memcmp(scope_name, "none", 4) == 0) ||
+			    (scope_len == 5 && memcmp(scope_name, "none\0", 5) == 0)) {
+				_send_scope_force_unscoped = true;
+				memset(_send_scope.key, 0, sizeof(_send_scope.key));
+			} else {
+				_send_scope_force_unscoped = false;
+				if (len >= 2 + 16) {
+					memcpy(_send_scope.key, &data[2], sizeof(_send_scope.key));
+				} else {
+					memset(_send_scope.key, 0, sizeof(_send_scope.key));
+				}
+			}
+			sendPacketOk();
+		} else if (len == 2 && data[1] == 1) {
+			_send_scope_force_unscoped = true;
+			memset(_send_scope.key, 0, sizeof(_send_scope.key));
 			sendPacketOk();
 		} else {
 			sendPacketError(ERR_ILLEGAL_ARG);

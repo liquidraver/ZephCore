@@ -334,6 +334,7 @@ private:
 
 	/* Flood scope for transport filtering (all zeros = disabled) */
 	TransportKey _send_scope;
+	bool _send_scope_force_unscoped;
 
 	void clearPendingReqs() {
 		_pending_login = _pending_status = _pending_telemetry = _pending_discovery = _pending_req = 0;
