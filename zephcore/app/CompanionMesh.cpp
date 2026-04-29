@@ -182,6 +182,9 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_pending_telemetry = 0;
 	_pending_discovery = 0;
 	_pending_req = 0;
+	_pending_channel_head = 0;
+	_pending_channel_tail = 0;
+	_pending_channel_count = 0;
 	_app_target_ver = 0;
 	_dirty_contacts_expiry = 0;
 	_dirty_channels_expiry = 0;
@@ -278,6 +281,7 @@ bool CompanionMesh::onContactPathRecv(ContactInfo &from, uint8_t *in_path, uint8
 void CompanionMesh::loop()
 {
 	BaseChatMesh::loop();
+	drainPendingChannelInfos();
 
 	/* Check for pending lazy contact/channel writes */
 	int64_t now = _ms->getMillis();
@@ -300,9 +304,9 @@ void CompanionMesh::markContactsDirty()
 
 void CompanionMesh::markChannelsDirty()
 {
-	if (!_dirty_channels_expiry) {
-		_dirty_channels_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
-	}
+	/* Channels import arrives as a burst of CMD_SET_CHANNEL writes.
+	 * Keep pushing the flush deadline so we save once after the burst. */
+	_dirty_channels_expiry = _ms->getMillis() + LAZY_WRITE_DELAY_MS;
 }
 
 void CompanionMesh::flushDirtyContacts()
@@ -323,12 +327,13 @@ void CompanionMesh::flushDirtyChannels()
 	}
 }
 
-void CompanionMesh::writeFrame(const uint8_t *data, size_t len)
+bool CompanionMesh::writeFrame(const uint8_t *data, size_t len)
 {
 	LOG_DBG("RSP: 0x%02x len=%u", data[0], (unsigned)len);
 	if (_write_cb) {
-		_write_cb(data, len);
+		return _write_cb(data, len) == len;
 	}
+	return false;
 }
 
 void CompanionMesh::sendPacketOk()
@@ -376,6 +381,46 @@ static bool isChannelMessage(const uint8_t *buf)
 {
 	// Channel messages have PACKET_CHANNEL_MSG_V3 (0x11) or PACKET_CHANNEL_MSG_RECV (0x08) or PACKET_CHANNEL_DATA_RECV (0x1B)
 	return buf[0] == PACKET_CHANNEL_MSG_V3 || buf[0] == PACKET_CHANNEL_MSG_RECV || buf[0] == PACKET_CHANNEL_DATA_RECV;
+}
+
+bool CompanionMesh::enqueuePendingChannelInfo(uint8_t idx)
+{
+	if (_pending_channel_count >= MAX_GROUP_CHANNELS) {
+		return false;
+	}
+	_pending_channel_idx[_pending_channel_tail] = idx;
+	_pending_channel_tail = (uint8_t)((_pending_channel_tail + 1) % MAX_GROUP_CHANNELS);
+	_pending_channel_count++;
+	return true;
+}
+
+bool CompanionMesh::sendChannelInfoFrame(uint8_t idx)
+{
+	ChannelDetails ch;
+	if (!getChannel(idx, ch)) {
+		return false;
+	}
+	uint8_t rsp[50];
+	int i = 0;
+	rsp[i++] = PACKET_CHANNEL_INFO;
+	rsp[i++] = idx;
+	memcpy(&rsp[i], ch.name, 32);
+	i += 32;
+	memcpy(&rsp[i], ch.channel.secret, 16);
+	i += 16;
+	return writeFrame(rsp, i);
+}
+
+void CompanionMesh::drainPendingChannelInfos()
+{
+	while (_pending_channel_count > 0) {
+		uint8_t idx = _pending_channel_idx[_pending_channel_head];
+		if (!sendChannelInfoFrame(idx)) {
+			return;
+		}
+		_pending_channel_head = (uint8_t)((_pending_channel_head + 1) % MAX_GROUP_CHANNELS);
+		_pending_channel_count--;
+	}
 }
 
 void CompanionMesh::queueOfflineMessage(const uint8_t *data, size_t len)
@@ -465,7 +510,9 @@ bool CompanionMesh::continueContactIteration()
 				}
 				uint8_t rsp[CONTACT_FRAME_SIZE];
 				size_t n = serializeContact(rsp, c, PACKET_CONTACT);
-				writeFrame(rsp, n);
+				if (!writeFrame(rsp, n)) {
+					return true;
+				}
 			}
 		}
 		_contact_iter_idx++;
@@ -475,7 +522,9 @@ bool CompanionMesh::continueContactIteration()
 		uint8_t rsp[5];
 		rsp[0] = PACKET_CONTACT_END;
 		put_le32(&rsp[1], _contact_iter_lastmod);
-		writeFrame(rsp, sizeof(rsp));
+		if (!writeFrame(rsp, sizeof(rsp))) {
+			return true;
+		}
 		_contact_iter_active = false;
 		return false;
 	}
@@ -1511,20 +1560,16 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		// Response: [code][idx][32 name][16 secret] = 50 bytes (matches Arduino)
 		// Arduino returns channel info even if slot is empty (name[0]=='\0')
 		if (len >= 2 && data[1] < MAX_GROUP_CHANNELS) {
-			ChannelDetails ch;
-			if (getChannel(data[1], ch)) {
-				uint8_t rsp[50];
-				int i = 0;
-				rsp[i++] = PACKET_CHANNEL_INFO;
-				rsp[i++] = data[1];
-				memcpy(&rsp[i], ch.name, 32);
-				i += 32;
-				memcpy(&rsp[i], ch.channel.secret, 16);  // return 128-bit secret
-				i += 16;
-				writeFrame(rsp, i);
-			} else {
-				sendPacketError(ERR_NOT_FOUND);  // Only if index out of range
+			static int64_t last_get_channel_ms;
+			int64_t now_ms = _ms->getMillis();
+			uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
+			last_get_channel_ms = now_ms;
+			LOG_DBG("CMD_GET_CHANNEL idx=%u dt=%ums", data[1], dt_ms);
+			if (!enqueuePendingChannelInfo(data[1])) {
+				sendPacketError(ERR_BAD_STATE);
+				return true;
 			}
+			drainPendingChannelInfos();
 			return true;
 		}
 		break;
@@ -1826,12 +1871,15 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		size_t msg_len;
 		if (peekOfflineMessage(buf, msg_len)) {
 			LOG_DBG("CMD_SYNC_NEXT_MESSAGE: peeked msg_len=%u type=0x%02x", (unsigned)msg_len, buf[0]);
-			writeFrame(buf, msg_len);
-			_sync_pending = true;  /* will be confirmed on next request or lost on disconnect */
+			if (writeFrame(buf, msg_len)) {
+				_sync_pending = true;  /* confirmed on next request or lost on disconnect */
+			}
 		} else {
 			LOG_DBG("CMD_SYNC_NEXT_MESSAGE: queue empty, sending NO_MORE_MSGS");
 			uint8_t rsp[] = { PACKET_NO_MORE_MSGS };
-			writeFrame(rsp, sizeof(rsp));
+			if (!writeFrame(rsp, sizeof(rsp))) {
+				return true;
+			}
 
 			/* Initial sync is done — safe to apply deferred
 			 * connection parameters now without disrupting

@@ -129,6 +129,7 @@ static void ble_on_rx_frame(const uint8_t *data, uint16_t len)
 static void ble_on_tx_idle(void)
 {
 	k_work_submit(&contact_iter_work);
+	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
 }
 
 /* BLE connected callback — notify UI, clear USB state if needed */
