@@ -124,19 +124,18 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0.0f, 20.0f);
     _prefs->tx_delay_factor = constrain(_prefs->tx_delay_factor, 0.0f, 2.0f);
     _prefs->direct_tx_delay_factor = constrain(_prefs->direct_tx_delay_factor, 0.0f, 2.0f);
-    /* Migrate uninitialized pad bytes: NaN or out-of-range → default 0.5.
+    /* Migrate uninitialized pad bytes: NaN or out-of-range → default 0.2.
      * 0.0 is valid (disables reactive backoff). Old firmware upgrading
      * with zeroed pad bytes will get 0.0 = disabled; user can set explicitly. */
     if (_prefs->backoff_multiplier != _prefs->backoff_multiplier ||
         _prefs->backoff_multiplier < 0.0f || _prefs->backoff_multiplier > 10.0f) {
-        _prefs->backoff_multiplier = 0.5f;
+        _prefs->backoff_multiplier = 0.2f;
     }
     _prefs->backoff_multiplier = constrain(_prefs->backoff_multiplier, 0.0f, 2.0f);
-    /* Migrate old AF multiplier (0-9) to duty cycle percentage (0-99) */
-    if (_prefs->airtime_factor > 0.0f && _prefs->airtime_factor <= 9.0f) {
-        _prefs->airtime_factor *= 10.0f;
-    }
-    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 99.0f);
+    /* af is the Arduino airtime budget factor: duty% = 100 / (af + 1).
+     * Range matches upstream (0..9). Values >9 (from a previous build that
+     * stored af as a percentage) get clamped to 9 → 10% effective. */
+    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 9.0f);
     _prefs->freq = constrain(_prefs->freq, 150.0f, 2500.0f);
     _prefs->bw = constrain(_prefs->bw, 7.8f, 500.0f);
     _prefs->sf = constrain(_prefs->sf, (uint8_t)5, (uint8_t)12);
@@ -430,6 +429,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lat);
         } else if (memcmp(config, "lon", 3) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lon);
+        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "radio", 5) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.3f,%.1f,%u,%u",
                    (double)_prefs->freq, (double)_prefs->bw,
@@ -503,8 +504,6 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             } else {
                 snprintf(reply, CLI_REPLY_SIZE, "> %.3f", (double)adc_mult);
             }
-        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "rxduty", 6) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_duty_cycle);
         } else if (memcmp(config, "dc.restarts", 11) == 0) {
@@ -629,11 +628,21 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             uint8_t cr = num > 3 ? atoi(parts[3]) : 0;
             if (freq >= 150.0f && freq <= 2500.0f && sf >= 5 && sf <= 12 &&
                 cr >= 5 && cr <= 8 && bw >= 7.0f && bw <= 500.0f) {
-                _prefs->sf = sf;
-                _prefs->cr = cr;
+                /* Snapshot old params, then mutate _prefs and save so later
+                 * savePrefs() calls (set af, set name, ...) don't clobber
+                 * the new values with stale RAM. Freeze the running radio on
+                 * the old params via override so the on-air config doesn't
+                 * change until reboot. */
+                float   old_freq = _prefs->freq;
+                float   old_bw   = _prefs->bw;
+                uint8_t old_sf   = _prefs->sf;
+                uint8_t old_cr   = _prefs->cr;
                 _prefs->freq = freq;
-                _prefs->bw = bw;
+                _prefs->bw   = bw;
+                _prefs->sf   = sf;
+                _prefs->cr   = cr;
                 _callbacks->savePrefs();
+                _callbacks->freezeRadioParams(old_freq, old_bw, old_sf, old_cr);
                 strcpy(reply, "OK - reboot to apply");
             } else {
                 strcpy(reply, "Error: freq 150-2500, bw 7-500, sf 5-12, cr 5-8");
@@ -755,8 +764,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         } else if (sender_timestamp == 0 && memcmp(config, "freq ", 5) == 0) {
             float f = atof(&config[5]);
             if (f >= 150.0f && f <= 2500.0f) {
+                float old_freq = _prefs->freq;
                 _prefs->freq = f;
                 savePrefs();
+                _prefs->freq = old_freq;
                 strcpy(reply, "OK - reboot to apply");
             } else {
                 strcpy(reply, "Error: range 150-2500 MHz");

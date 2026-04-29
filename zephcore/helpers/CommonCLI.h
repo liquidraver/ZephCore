@@ -46,6 +46,11 @@ public:
     virtual void saveIdentity(const mesh::LocalIdentity& new_id) = 0;
     virtual void clearStats() = 0;
     virtual void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) = 0;
+    /* Freeze the live radio on the given (old) params via radio override so the
+     * caller can mutate _prefs to new values, savePrefs(), and have any later
+     * savePrefs() call write the new values without clobbering the running radio.
+     * No-op if an override is already active (tempradio takes precedence). */
+    virtual void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) { (void)freq; (void)bw; (void)sf; (void)cr; }
 
     // Adaptive contention window
     virtual float getContentionEstimate() const { return -1.0f; }
@@ -59,7 +64,7 @@ public:
     // Adaptive Power Control
     virtual int8_t getAPCReduction() const { return 0; }
     virtual float getAPCMargin() const { return 0.0f; }
-    virtual bool isAPCEnabled() const { return true; }
+    virtual bool isAPCEnabled() const { return false; }
     virtual void setAPCEnabled(bool en) { (void)en; }
     virtual uint8_t getAPCTargetMargin() const { return 16; }
     virtual void setAPCTargetMargin(uint8_t margin_db) { (void)margin_db; }

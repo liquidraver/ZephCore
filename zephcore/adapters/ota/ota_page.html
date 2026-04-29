@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>MeshCore OTA</title>
+<title>ZephCore OTA</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:system-ui,sans-serif;background:#1a1a2e;color:#eee;display:flex;justify-content:center;align-items:center;min-height:100vh}
@@ -27,7 +27,7 @@ input[type=file]{display:none}
 </head>
 <body>
 <div class="c">
-<h2>MeshCore OTA Update</h2>
+<h2>ZephCore OTA Update</h2>
 <div class="id" id="devid"></div>
 <div>
 <button class="btn sel" onclick="document.getElementById('f').click()">Select Firmware</button>
@@ -53,7 +53,7 @@ b.style.display='block';
 document.getElementById('ub').disabled=true;
 s.className='st';s.textContent='Uploading...';
 x.upload.onprogress=function(e){if(e.lengthComputable){var pc=Math.round(e.loaded/e.total*100);f.style.width=pc+'%';p.textContent=pc+'% ('+Math.round(e.loaded/1024)+'/'+Math.round(e.total/1024)+'KB)';}};
-x.onload=function(){if(x.status==200){s.className='st ok';s.textContent='Success! Rebooting...';f.style.width='100%';}else{s.className='st er';s.textContent='Error: '+x.responseText;document.getElementById('ub').disabled=false;}};
+x.onload=function(){if(x.status==200){s.className='st ok';s.textContent='Finished... Rebooting...';f.style.width='100%';}else{s.className='st er';s.textContent='Error: '+x.responseText;document.getElementById('ub').disabled=false;}};
 x.onerror=function(){s.className='st er';s.textContent='Upload failed — connection error';document.getElementById('ub').disabled=false;};
 x.open('POST','/upload');
 x.send(file);

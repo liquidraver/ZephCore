@@ -341,6 +341,11 @@ static void repeater_event_loop(void)
 			 * on packet-driven events. */
 			if (repeater_mesh_ptr) {
 				repeater_mesh_ptr->maintenanceLoop();
+				/* Also drive loop() so time-based actions (advert
+				 * timers, tempradio set/revert, contacts flush,
+				 * uplink status) still fire when no LoRa/CLI
+				 * traffic wakes the event loop. */
+				repeater_mesh_ptr->loop();
 			}
 #endif
 

@@ -1,0 +1,14 @@
+# LilyGo T-Echo board configuration
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_LILYGO_TECHO
+	select SOC_NRF52840_QIAA
+
+# Board power enable (P0.12) + LoRa power enable (P1.05) must go HIGH
+# before the SX1262 and QSPI flash respond. QSPI NOR init priority is 41 —
+# the fixed regulators that drive these rails have to run first.
+if REGULATOR_FIXED
+config REGULATOR_FIXED_INIT_PRIORITY
+	default 30
+endif

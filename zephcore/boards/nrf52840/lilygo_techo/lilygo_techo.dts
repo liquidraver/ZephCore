@@ -1,35 +1,46 @@
 /*
- * Elecrow ThinkNode M1 — nRF52840 + SX1262 + SSD1681 1.54" EPD
- * Copyright (c) 2025 ZephCore
+ * LilyGo T-Echo — nRF52840 + SX1262 + SSD1681 1.54" EPD + L76K GPS
+ * Copyright (c) 2026 ZephCore
  *
  * SPDX-License-Identifier: Apache-2.0
  *
  * Hardware:
  * - nRF52840 SoC with BLE 5
- * - SX1262 LoRa radio (DIO2 as RF switch, external TCXO 1.8V)
- * - SSD1681 1.54" 200x200 monochrome e-paper display (SPI)
+ * - SX1262 LoRa radio (22 dBm, DIO2 as RF switch, external TCXO 1.8V)
+ * - SSD1681 1.54" 200x200 mono e-paper display (SPI) with front-light (P1.11)
  * - MX25R1635F 2MB QSPI flash
- * - GPS module on UART0 (9600 baud, multi-constellation)
- * - 1200 mAh battery with ADC on AIN2 (150K+150K divider)
- * - Buzzer on PWM0, user button (P1.10), page button (P1.07), GPS hardware switch
- * - LEDs: RED=P1.04, BLUE=P0.13
+ * - L76K GPS on UART0 (9600 baud, on/off via P1.02)
+ * - BME280 environment sensor on I2C0 @ 0x77 (alt address)
+ * - Battery ADC on AIN2 (P0.04), 150K+150K voltage divider
+ * - Single user button (P1.10, active-low, INPUT_PULLUP)
+ * - 3-color LEDs active-low: RED=P0.13, BLUE=P0.14, GREEN=P0.15
  *
- * Not connected on this target:
- * - Display SPI MISO
- * - GPS PPS
+ * Power rails (all must be HIGH for peripherals to function):
+ * - Board power enable  P0.12  (main peripheral power)
+ * - LoRa power enable   P1.05  (also gates GPS reset — shared signal)
+ * - TCXO power enable   P0.21  (external 32 MHz TCXO for SX1262)
+ *
+ * Secondary "backlight" touch input (P0.11):
+ * - Capacitive touch pad (TTP223-style) that presents an active-low
+ *   momentary output. Its only job is to wake the e-paper front-light:
+ *   emits INPUT_KEY_BRIGHTNESSUP, which hits ui_task's default branch —
+ *   no page action, but the display-on / auto-off-reset path still runs,
+ *   so the backlight lights up for CONFIG_ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS.
+ *
+ * Note: Arduino ENV_INCLUDE_BME280 sits at 0x77; sensors-i2c.dtsi default
+ * is 0x76 — we override below.
  */
 
 /dts-v1/;
 #include <nordic/nrf52840_qiaa.dtsi>
-#include "thinknode_m1-pinctrl.dtsi"
+#include "lilygo_techo-pinctrl.dtsi"
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/adc/nrf-saadc.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/pwm/pwm.h>
 
 / {
-	model = "Elecrow ThinkNode M1";
-	compatible = "elecrow,thinknode-m1";
+	model = "LilyGo T-Echo";
+	compatible = "lilygo,techo";
 
 	chosen {
 		zephyr,sram = &sram0;
@@ -42,63 +53,99 @@
 
 	aliases {
 		lora0 = &lora;
-		led0 = &led_red;
-		led1 = &led_blue;
-		lora-tx-led = &led_blue;
+		/* LEDs: green blinks on LoRa TX (matches Arduino P_LORA_TX_LED=LED_GREEN),
+		 * blue acts as activity/heartbeat. Red stays available for errors. */
+		led0 = &led_blue;
+		led1 = &led_green;
+		lora-tx-led = &led_green;
 		sw0 = &user_button;
 		watchdog0 = &wdt0;
-		buzzer = &buzzer;
 		gps-enable = &gps_enable_pin;
 	};
 
-	/* ---- LEDs (active-high, matches MeshCore LED_STATE_ON=HIGH) ---- */
+	/* ---- LEDs (active-LOW per Arduino variant.cpp: LED_STATE_ON=LOW) ---- */
 	leds {
 		compatible = "gpio-leds";
 
 		led_red: led_0 {
-			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
 			label = "Red LED";
 		};
 
 		led_blue: led_1 {
-			gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
 			label = "Blue LED";
+		};
+
+		led_green: led_2 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+			label = "Green LED (LoRa TX)";
 		};
 	};
 
-	/* ---- Buttons ---- */
+	/* ---- Main user button (P1.10) ----
+	 *
+	 * Button interaction scheme (matches RAK4631's single-button mapping):
+	 *   short press (release < 1s) → KEY_A  → feeds multi-tap filter:
+	 *       1 tap  → KEY_1    = next page
+	 *       2 taps → KEY_LEFT = previous page
+	 *   long press (≥1s)         → KEY_ENTER = activate / confirm */
 	buttons: buttons {
 		compatible = "gpio-keys";
 
-		/* Action / enter button (P1.07) — KEY_ENTER direct, no filter.
-		 * action_page_enter() handles double-press confirmation internally. */
 		user_button: button_0 {
-			gpios = <&gpio1 7 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			zephyr,code = <INPUT_KEY_ENTER>;
-			label = "User Button";
-		};
-
-		/* Page turn button (P1.10) — raw KEY_0, consumed by multi-tap below. */
-		page_button: button_1 {
 			gpios = <&gpio1 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
 			zephyr,code = <INPUT_KEY_0>;
-			label = "Page Button";
+			label = "User Button";
 		};
 	};
 
-	/* Input filter: page button multi-tap
-	 * 1 tap  → KEY_1     = next page
-	 * 2 taps → KEY_LEFT  = previous page */
+	/* short-press → KEY_A (multi-tap), long-press (≥1s) → KEY_ENTER */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
 	page_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
-		input-codes = <INPUT_KEY_0>;
+		input-codes = <INPUT_KEY_A>;
 		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
 		tap-delay-ms = <400>;
 	};
 
-	/* ---- Power control ---- */
+	/* ---- Backlight touch input (P0.11) ----
+	 *
+	 * Separate gpio-keys node (not under `buttons`) so this event does
+	 * NOT feed the longpress/multitap filter chain above. Emits
+	 * INPUT_KEY_BRIGHTNESSUP — ui_task.c treats unknown codes as
+	 * display-wake only: a tap lights the front-light for
+	 * CONFIG_ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS, just like any other
+	 * board's "tap to wake display". */
+	backlight_btn: backlight-btn {
+		compatible = "gpio-keys";
 
-	/* Board power enable — must be HIGH for peripherals to function */
+		backlight_button: button_0 {
+			gpios = <&gpio0 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_BRIGHTNESSUP>;
+			label = "Backlight Touch";
+		};
+	};
+
+	/* ---- Power control ----
+	 *
+	 * Three rails must come up in order:
+	 *   1. pwr_enable  (P0.12)  — board-wide peripheral power
+	 *   2. lora_pwr_enable (P1.05) — SX1262 power (shared with GPS reset;
+	 *      HIGH releases GPS from reset too — active-LOW GPS reset)
+	 *   3. tcxo_enable (P0.21) — external TCXO for SX1262
+	 *
+	 * These are all regulator-fixed with regulator-boot-on so Zephyr's
+	 * regulator framework brings them up before the SX1262 driver init. */
+
 	pwr_enable: pwr-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "pwr-enable";
@@ -106,7 +153,6 @@
 		regulator-boot-on;
 	};
 
-	/* LoRa radio power enable — must be HIGH before SX1262 can communicate */
 	lora_pwr_enable: lora-pwr-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "lora-pwr-enable";
@@ -115,8 +161,6 @@
 		startup-delay-us = <10000>;
 	};
 
-	/* External TCXO power enable — SX1262 DIO3 provides reference voltage,
-	 * but the TCXO itself is powered through this separate GPIO */
 	tcxo_enable: tcxo-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "tcxo-enable";
@@ -124,21 +168,15 @@
 		regulator-boot-on;
 	};
 
-	/* ---- GPS hardware switch (P1.01) ----
-	 * Physical toggle switch on the board.
-	 * HIGH = GPS ON, LOW = GPS OFF.
-	 * Separate from the buttons node so it doesn't feed
-	 * the page button multi-tap filter. */
-	gps_switch: gps-switch {
-		compatible = "gpio-keys";
-		gps_sw: gps_sw {
-			gpios = <&gpio1 1 GPIO_ACTIVE_HIGH>;
-			zephyr,code = <INPUT_KEY_G>;
-			label = "GPS Switch";
-		};
+	/* E-paper front-light enable (P1.11). Boot-on so the display is lit
+	 * out of the box; display.c can drive this off when entering auto-off. */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
 	};
 
-	/* GPS power control */
+	/* ---- GPS power control ---- */
 	gps_en: gps-enable {
 		compatible = "gpio-leds";
 		gps_enable_pin: gps_enable {
@@ -147,36 +185,16 @@
 		};
 	};
 
-	/* ---- Battery ADC ---- */
-	/* 150K+150K voltage divider (2:1) on AIN2 (P0.04) */
+	/* ---- Battery ADC ----
+	 * 150K+150K voltage divider (2:1) on AIN2 (P0.04). Full-scale 7.2V
+	 * with ADC_REF_INTERNAL (0.6V) × gain 1/6 × divider 2.0. */
 	zephyr,user {
 		io-channels = <&adc 2>;
 		vbat-mv-multiplier = <7200>;
 	};
 
-	/* ---- Buzzer on PWM0 ---- */
-	pwmbuzzer {
-		compatible = "pwm-leds";
-		buzzer: buzzer {
-			pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
-		};
-	};
-
-	/* Display backlight enable (P1.11) — powers the e-paper frontlight.
-	 * The hardware knob dims brightness; this GPIO gates the circuit.
-	 * Controlled dynamically by display.c (on with display, off on auto-off)
-	 * so the backlight is fully off when not needed. */
-	disp_pwr_enable: disp-pwr-enable {
-		compatible = "regulator-fixed";
-		regulator-name = "disp-pwr-enable";
-		enable-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-	};
-
 	/* ---- E-Paper display (MIPI DBI SPI) ----
-	 * SSD1681 1.54" 200x200 monochrome EPD on SPI3.
-	 * The MIPI DBI node wraps the SPI bus with DC and RST GPIOs.
-	 * Display is auto-detected by ZephCore display.c via the
-	 * zephyr,display chosen node — EPD flag set automatically. */
+	 * SSD1681 1.54" 200x200 monochrome EPD on SPI3. */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi3>;
@@ -191,7 +209,7 @@
 			reg = <0>;
 			width = <200>;
 			height = <200>;
-			rotation = <270>;
+			rotation = <180>;
 			busy-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 
 			/* Use internal temperature sensor for OTP waveform selection. */
@@ -200,9 +218,9 @@
 			/* OTP waveforms — no explicit LUT needed for SSD1681.
 			 * border-waveform controls the 1-px border during refresh:
 			 *   full    0x05 = border follows source (clean full reset)
-			 *   partial 0x80 = HiZ (GxEPD convention; avoids the 1-px
-			 *                  edge residue that 0x3C leaves on this
-			 *                  SSD1681 revision). */
+			 *   partial 0x80 = HiZ (GxEPD convention; prevents the
+			 *                  1-px left/bottom edge residue that 0x3C
+			 *                  leaves on this SSD1681 revision). */
 			full    { border-waveform = <0x05>; };
 			partial { border-waveform = <0x80>; };
 		};
@@ -251,17 +269,9 @@
 	status = "okay";
 };
 
-/* ---- PWM0 for buzzer ---- */
-&pwm0 {
-	status = "okay";
-	pinctrl-0 = <&pwm0_default>;
-	pinctrl-1 = <&pwm0_sleep>;
-	pinctrl-names = "default", "sleep";
-};
-
 /* ---- GPS on UART0 (9600 baud) ----
- * Uses luatos,air530z driver (PCAS/NMEA protocol).
- * GPS power controlled via on-off-gpios (P1.02 = GPS_EN). */
+ * L76K behaves like Air530Z (PCAS/NMEA). Driver manages power via
+ * on-off-gpios (P1.02 = GPS_EN); no deferred-init needed at 9600 baud. */
 &uart0 {
 	compatible = "nordic,nrf-uarte";
 	status = "okay";
@@ -276,7 +286,7 @@
 	};
 };
 
-/* ---- I2C0 for RTC and external sensors ---- */
+/* ---- I2C0 for environment sensors ---- */
 &i2c0 {
 	compatible = "nordic,nrf-twim";
 	status = "okay";
@@ -285,8 +295,22 @@
 	pinctrl-1 = <&i2c0_sleep>;
 	pinctrl-names = "default", "sleep";
 
-	/* All supported environment & power sensors — auto-detected at runtime */
+	/* Pull in the full sensor list — runtime auto-detect takes care of
+	 * devices that aren't populated. T-Echo factory sensor is BME280 at
+	 * the alt address 0x77, added separately below. */
 	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* T-Echo BME280 sits at I2C 0x77 (alt address), conflicting with the
+ * BMP388 node from sensors-i2c.dtsi. Remove BMP388 and replace with
+ * BME280 at 0x77 (same bosch,bme280 driver). */
+/delete-node/ &bmp388;
+
+&i2c0 {
+	bme280_alt: bme280@77 {
+		compatible = "bosch,bme280";
+		reg = <0x77>;
+	};
 };
 
 /* ---- SPI2 for LoRa SX1262 ---- */
@@ -306,16 +330,17 @@
 		/* LoRa control pins */
 		reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;    /* P0.25 */
 		busy-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;    /* P0.17 */
-		dio1-gpios = <&gpio0 20 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* P0.20 */
+		dio1-gpios = <&gpio0 20 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* P0.20 */
 
 		/* DIO2 drives RF switch for TX */
 		dio2-tx-enable;
 
-		/* TCXO voltage 1.8V via DIO3 */
+		/* External TCXO on DIO3 — 1.8V reference */
 		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
 		tcxo-power-startup-delay-ms = <10>;
 
-		/* RX boosted mode for better sensitivity */
+		/* RX boosted mode for better sensitivity (matches
+		 * Arduino SX126X_RX_BOOSTED_GAIN=1). */
 		rx-boosted;
 	};
 };

@@ -28,7 +28,7 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.15.0-zephyr"
+  #define FIRMWARE_VERSION   "v1.15.1-zephyr"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -134,7 +134,8 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
 
 protected:
     uint8_t getDutyCyclePercent() const override {
-        return (uint8_t)_prefs.airtime_factor;
+        /* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
+        return (uint8_t)(100.0f / (_prefs.airtime_factor + 1.0f) + 0.5f);
     }
 
     bool allowPacketForward(const mesh::Packet* packet) override;
@@ -152,6 +153,9 @@ protected:
         return _prefs.interference_threshold;
     }
     int getAGCResetInterval() const override {
+        if (_prefs.rx_duty_cycle) {
+            return 0;
+        }
         return ((int)_prefs.agc_reset_interval) * 4000;
     }
     uint8_t getExtraAckTransmitCount() const override {
@@ -205,6 +209,7 @@ public:
 
     void savePrefs() override;
     void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;
+    void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) override;
     bool formatFileSystem() override;
     void sendSelfAdvertisement(int delay_millis, bool flood) override;
     void updateAdvertTimer() override;
@@ -252,6 +257,9 @@ public:
     }
     void setAPCEnabled(bool en) override {
         getPowerController().setEnabled(en);
+        if (!en) {
+            _radio->setTxPowerReduction(0);
+        }
     }
     uint8_t getAPCTargetMargin() const override {
         return getPowerController().getTargetMargin();

@@ -30,6 +30,22 @@ PowerController::PowerController()
 	memset(_ring, 0, sizeof(_ring));
 }
 
+void PowerController::setEnabled(bool en)
+{
+	if (_enabled == en) return;
+	_enabled = en;
+	if (!_enabled) {
+		/* Drop APC runtime state while disabled so no tracking work runs. */
+		memset(_ring, 0, sizeof(_ring));
+		_next_idx = 0;
+		_margin_ema_x256 = 0;
+		_finalized_count = 0;
+		_last_echo_ms = 0;
+		_last_source_count = 0;
+		_power_reduction_db = 0;
+	}
+}
+
 int8_t PowerController::sfThresholdX4(uint8_t sf)
 {
 	int idx = (int)sf - 7;
@@ -50,6 +66,8 @@ int PowerController::findEntry(uint32_t hash32) const
 
 void PowerController::trackTransmit(uint32_t hash32, uint32_t now_ms)
 {
+	if (!_enabled) return;
+
 	/* If ring slot is occupied, finalize it first */
 	if (_ring[_next_idx].active) {
 		finalizeEntry(_next_idx);
@@ -69,6 +87,8 @@ void PowerController::trackTransmit(uint32_t hash32, uint32_t now_ms)
 bool PowerController::recordEcho(uint32_t hash32, int8_t snr_x4,
 				 uint8_t first_hop_hash, uint32_t now_ms)
 {
+	if (!_enabled) return false;
+
 	int idx = findEntry(hash32);
 	if (idx < 0) return false;
 
@@ -193,6 +213,8 @@ void PowerController::finalizeEntry(int idx)
 
 void PowerController::tick(uint32_t now_ms)
 {
+	if (!_enabled) return;
+
 	/* Finalize expired entries */
 	for (int i = 0; i < RING_SIZE; i++) {
 		if (_ring[i].active && now_ms - _ring[i].timestamp_ms > ECHO_WINDOW_MS) {

@@ -370,7 +370,7 @@ Autonomous operation features:
 - **Region filtering**: `RegionMap` with transport key matching per flood packet
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous)
 - **Neighbor tracking**: 16-slot table with RSSI/SNR/name/timestamp
-- **Temporary radio params**: `tempradio` command with auto-revert timer
+- **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadioBase::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
 
 ### 6.4 CommonCLI Commands
 

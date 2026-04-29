@@ -309,6 +309,15 @@ int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, u
                 gpos.altitude_mm / 1000.0f);
         }
 
+        /* Wake GPS / extend acquire window so the next telemetry poll has
+         * a fresher fix. In repeater mode GPS is normally off between the
+         * 48h time-sync cycles — this opportunistically rearms acquire
+         * when someone actually cares about our position. No-op if GPS
+         * is disabled in prefs. */
+        if (gps_is_available() && gps_is_enabled()) {
+            gps_request_fresh_fix();
+        }
+
         return 4 + lpp.getSize();
     }
 
@@ -562,11 +571,15 @@ uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
 }
 
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t t = _radio->getEstAirtimeFor(
+    uint32_t airtime = _radio->getEstAirtimeFor(
         packet->getPathByteLen() + packet->payload_len + 2);
+    /* Jitter around Arduino direct factor 0.3 using a per-packet factor
+     * in the range [0.25, 0.40]. */
+    uint32_t factor_milli = (uint32_t)getRNG()->nextInt(250, 401);
+    uint32_t max_jitter = (airtime * factor_milli) / 1000;
     /* Floor: give downstream nodes time to finish RX processing
-     * and return to RX mode before we TX (~20ms settle + jitter) */
-    return 20 + getRNG()->nextInt(0, t / 10 + 1);
+     * and return to RX mode before we TX (~20ms settle + jitter). */
+    return 20 + getRNG()->nextInt(0, max_jitter + 1);
 }
 
 bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
@@ -1013,6 +1026,13 @@ void RepeaterMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_
     pending_sf = sf;
     pending_cr = cr;
     revert_radio_at = futureMillis(2000 + timeout_mins * 60 * 1000);
+}
+
+void RepeaterMesh::freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) {
+    auto& radio = getRadioDriver(_radio);
+    if (!radio.hasRadioOverride()) {
+        radio.setRadioOverride(freq, bw, sf, cr);
+    }
 }
 
 bool RepeaterMesh::formatFileSystem() {
@@ -1638,13 +1658,13 @@ void RepeaterMesh::loop() {
 
     if (set_radio_at && millisHasNowPassed(set_radio_at)) {
         set_radio_at = 0;
-        getRadioDriver(_radio).reconfigureWithParams(pending_freq, pending_bw, pending_sf, pending_cr);
+        getRadioDriver(_radio).setRadioOverride(pending_freq, pending_bw, pending_sf, pending_cr);
         LOG_INF("Temp radio params applied");
     }
 
     if (revert_radio_at && millisHasNowPassed(revert_radio_at)) {
         revert_radio_at = 0;
-        getRadioDriver(_radio).reconfigureWithParams(_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+        getRadioDriver(_radio).clearRadioOverride();
         LOG_INF("Radio params restored");
     }
 

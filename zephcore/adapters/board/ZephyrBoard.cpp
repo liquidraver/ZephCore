@@ -135,11 +135,38 @@ uint16_t ZephyrBoard::getBattMilliVolts()
 		return 0;
 	}
 	raw /= valid_samples;
-	uint16_t mv = (uint16_t)((VBAT_MV_MULTIPLIER * (int64_t)raw) / 4096);
-	LOG_DBG("Battery: raw=%d multiplier=%d mv=%u", (int)raw, VBAT_MV_MULTIPLIER, mv);
+	int64_t mult = (_adc_multiplier_override != 0.0f)
+		? (int64_t)_adc_multiplier_override
+		: (int64_t)VBAT_MV_MULTIPLIER;
+	uint16_t mv = (uint16_t)((mult * (int64_t)raw) / 4096);
+	LOG_DBG("Battery: raw=%d multiplier=%lld mv=%u", (int)raw, (long long)mult, mv);
 	return mv;
 #else
 	return 0;
+#endif
+}
+
+bool ZephyrBoard::setAdcMultiplier(float multiplier)
+{
+#if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
+    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	_adc_multiplier_override = multiplier;
+	return true;
+#else
+	(void)multiplier;
+	return false;
+#endif
+}
+
+float ZephyrBoard::getAdcMultiplier() const
+{
+#if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
+    DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
+	return (_adc_multiplier_override != 0.0f)
+		? _adc_multiplier_override
+		: (float)VBAT_MV_MULTIPLIER;
+#else
+	return 0.0f;
 #endif
 }
 

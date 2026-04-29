@@ -339,7 +339,7 @@ private:
 		_pending_login = _pending_status = _pending_telemetry = _pending_discovery = _pending_req = 0;
 	}
 
-	void writeFrame(const uint8_t *data, size_t len);
+	bool writeFrame(const uint8_t *data, size_t len);
 	void sendPacketOk();
 	void sendPacketError(uint8_t code);
 	void sendPush(uint8_t code, const uint8_t *data = nullptr, size_t len = 0);
@@ -352,10 +352,18 @@ private:
 	bool dequeueOfflineMessage(uint8_t *dest, size_t &len);
 	bool peekOfflineMessage(uint8_t *dest, size_t &len);
 	void confirmOfflineMessage();
+	bool enqueuePendingChannelInfo(uint8_t idx);
+	bool sendChannelInfoFrame(uint8_t idx);
+	void drainPendingChannelInfos();
 
 	void queueContactMessage(const ContactInfo &contact, mesh::Packet *pkt,
 		uint8_t txt_type, uint32_t sender_timestamp, const uint8_t *extra, int extra_len, const char *text);
 
 	void addPendingAck(uint32_t expected, int contact_idx);
 	int findAndRemoveAck(uint32_t ack, uint32_t *out_sent_time = nullptr);
+
+	uint8_t _pending_channel_idx[MAX_GROUP_CHANNELS];
+	uint8_t _pending_channel_head;
+	uint8_t _pending_channel_tail;
+	uint8_t _pending_channel_count;
 };

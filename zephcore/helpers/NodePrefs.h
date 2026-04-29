@@ -83,7 +83,7 @@ struct NodePrefs {
 /* Default prefs -- must match LoRaConfig.h defaults for radio interop. */
 static inline void initNodePrefs(NodePrefs* prefs) {
 	memset(prefs, 0, sizeof(NodePrefs));
-	prefs->airtime_factor = 10.0f;  /* 10% duty cycle */
+	prefs->airtime_factor = 9.0f;  /* Arduino formula: duty% = 100 / (af + 1) → 10% */
 	prefs->node_lat = 0.0;
 	prefs->node_lon = 0.0;
 #ifdef CONFIG_ZEPHCORE_ADMIN_PASSWORD

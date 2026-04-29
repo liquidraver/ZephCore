@@ -24,6 +24,7 @@
 #include <zephyr/kernel.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_display, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
@@ -41,6 +42,11 @@ static uint8_t  font_w;
 static uint8_t  font_h;
 static bool     is_epd;       /* true for e-paper displays */
 
+/* Optional symmetric inset (pixels).  Shrinks reported width/height and
+ * offsets all draw primitives so panels with edge artefacts can hide them
+ * behind a clean background margin. */
+#define DISP_INSET ((int)CONFIG_ZEPHCORE_DISPLAY_INSET)
+
 /* Optional display backlight regulator (e.g. e-paper frontlight).
  * Boards define a "disp_pwr_enable" regulator-fixed node to gate the
  * backlight circuit.  When present, backlight follows display on/off. */
@@ -52,6 +58,31 @@ static const struct device *backlight_reg;
 #endif
 
 static bool backlight_on;
+
+/* EPD frame change detection (Arduino-style):
+ * hash draw calls across a frame and skip hardware flush if unchanged. */
+static uint32_t epd_frame_hash;
+static uint32_t epd_last_frame_hash = UINT_MAX;
+
+static inline void epd_hash_bytes(const void *data, size_t len)
+{
+	if (!is_epd || !data || len == 0) {
+		return;
+	}
+
+	const uint8_t *p = (const uint8_t *)data;
+
+	for (size_t i = 0; i < len; i++) {
+		/* FNV-1a */
+		epd_frame_hash ^= p[i];
+		epd_frame_hash *= 16777619u;
+	}
+}
+
+static inline void epd_hash_u32(uint32_t v)
+{
+	epd_hash_bytes(&v, sizeof(v));
+}
 
 static inline void backlight_set(bool on)
 {
@@ -179,14 +210,19 @@ int mc_display_init(void)
 		return ret;
 	}
 
-	/* Select smallest font — scan all registered fonts and pick the one
-	 * with the smallest height for best text density.  Our custom 6x8
-	 * Latin-1 font will typically win. */
+	/* Font selection.
+	 * Default: smallest height for best text density — our custom 6x8
+	 * Latin-1 font typically wins on OLEDs.
+	 * LARGE_FONT: smallest font whose height is >= 16 — picks Zephyr's
+	 * built-in 10x16 (cfb_fonts.c) for larger e-paper panels where 6x8
+	 * is too small to read.  Falls back to smallest-overall if no tall
+	 * font is compiled in. */
+	const bool want_large = IS_ENABLED(CONFIG_ZEPHCORE_DISPLAY_LARGE_FONT);
 	int num_fonts = cfb_get_numof_fonts(disp_dev);
 
 	LOG_DBG("display: %d fonts available", num_fonts);
 
-	int best_idx = 0;
+	int best_idx = -1;
 	uint8_t best_h = 255;
 
 	for (int i = 0; i < num_fonts; i++) {
@@ -194,9 +230,30 @@ int mc_display_init(void)
 
 		cfb_get_font_size(disp_dev, i, &fw, &fh);
 		LOG_DBG("  font[%d]: %ux%u", i, fw, fh);
-		if (fh < best_h) {
-			best_h = fh;
-			best_idx = i;
+		if (want_large) {
+			if (fh >= 16 && fh < best_h) {
+				best_h = fh;
+				best_idx = i;
+			}
+		} else {
+			if (fh < best_h) {
+				best_h = fh;
+				best_idx = i;
+			}
+		}
+	}
+	if (best_idx < 0) {
+		/* No font satisfied the LARGE_FONT threshold — fall back to
+		 * the smallest so we still render something. */
+		best_idx = 0;
+		for (int i = 0; i < num_fonts; i++) {
+			uint8_t fw = 0, fh = 0;
+
+			cfb_get_font_size(disp_dev, i, &fw, &fh);
+			if (fh < best_h) {
+				best_h = fh;
+				best_idx = i;
+			}
 		}
 	}
 
@@ -235,12 +292,16 @@ int mc_display_init(void)
 
 uint16_t mc_display_width(void)
 {
-	return disp_width;
+	int w = (int)disp_width - 2 * DISP_INSET;
+
+	return (w > 0) ? (uint16_t)w : 0;
 }
 
 uint16_t mc_display_height(void)
 {
-	return disp_height;
+	int h = (int)disp_height - 2 * DISP_INSET;
+
+	return (h > 0) ? (uint16_t)h : 0;
 }
 
 uint8_t mc_display_font_width(void)
@@ -301,6 +362,9 @@ void mc_display_clear(void)
 		return;
 	}
 
+	if (is_epd) {
+		epd_frame_hash = 2166136261u;
+	}
 	cfb_framebuffer_clear(disp_dev, false);
 }
 
@@ -314,7 +378,13 @@ void mc_display_text(int x, int y, const char *text, bool invert)
 		cfb_framebuffer_invert(disp_dev);
 	}
 
-	cfb_print(disp_dev, text, x, y);
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32(invert ? 1u : 0u);
+		epd_hash_bytes(text, strlen(text));
+	}
+	cfb_print(disp_dev, text, x + DISP_INSET, y + DISP_INSET);
 
 	if (invert) {
 		cfb_framebuffer_invert(disp_dev);
@@ -328,9 +398,17 @@ void mc_display_fill_rect(int x, int y, int w, int h)
 	}
 
 	/* CFB doesn't have a native fill_rect, so we draw line by line */
-	for (int row = y; row < y + h && row < disp_height; row++) {
-		struct cfb_position start = { .x = x, .y = row };
-		struct cfb_position end = { .x = x + w - 1, .y = row };
+	const int row_clamp = (int)disp_height - DISP_INSET;
+
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+		epd_hash_u32((uint32_t)h);
+	}
+	for (int row = y + DISP_INSET; row < y + h + DISP_INSET && row < row_clamp; row++) {
+		struct cfb_position start = { .x = x + DISP_INSET, .y = row };
+		struct cfb_position end = { .x = x + w - 1 + DISP_INSET, .y = row };
 		cfb_draw_line(disp_dev, &start, &end);
 	}
 }
@@ -341,8 +419,14 @@ void mc_display_hline(int x, int y, int w)
 		return;
 	}
 
-	struct cfb_position start = { .x = x, .y = y };
-	struct cfb_position end = { .x = x + w - 1, .y = y };
+	struct cfb_position start = { .x = x + DISP_INSET, .y = y + DISP_INSET };
+	struct cfb_position end = { .x = x + w - 1 + DISP_INSET, .y = y + DISP_INSET };
+
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+	}
 	cfb_draw_line(disp_dev, &start, &end);
 }
 
@@ -356,6 +440,15 @@ void mc_display_xbm(int x, int y, const uint8_t *data, int w, int h)
 	 * This matches the Arduino MeshCore logo data from icons.h.
 	 * Each row is padded to byte boundary: bytes_per_row = (w+7)/8 */
 	int bytes_per_row = (w + 7) / 8;
+	size_t bitmap_len = (size_t)bytes_per_row * (size_t)h;
+
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+		epd_hash_u32((uint32_t)h);
+		epd_hash_bytes(data, bitmap_len);
+	}
 
 	for (int row = 0; row < h; row++) {
 		for (int col = 0; col < w; col++) {
@@ -364,8 +457,8 @@ void mc_display_xbm(int x, int y, const uint8_t *data, int w, int h)
 
 			if (data[byte_idx] & (1 << bit_idx)) {
 				struct cfb_position pos = {
-					.x = (int16_t)(x + col),
-					.y = (int16_t)(y + row)
+					.x = (int16_t)(x + col + DISP_INSET),
+					.y = (int16_t)(y + row + DISP_INSET)
 				};
 				cfb_draw_point(disp_dev, &pos);
 			}
@@ -384,7 +477,13 @@ void mc_display_finalize(void)
 		return;
 	}
 
+	if (is_epd && epd_frame_hash == epd_last_frame_hash) {
+		return;
+	}
 	cfb_framebuffer_finalize(disp_dev);
+	if (is_epd) {
+		epd_last_frame_hash = epd_frame_hash;
+	}
 }
 
 void mc_display_reset_auto_off(void)
@@ -400,6 +499,24 @@ void mc_display_reset_auto_off(void)
 		k_work_reschedule(&auto_off_work, K_MSEC(timeout));
 	}
 #endif
+}
+
+void mc_display_epd_full_reset(void)
+{
+	if (!disp_initialized || !is_epd) {
+		return;
+	}
+
+	/* Force the SSD16xx path back through a full-refresh cycle before
+	 * entering steady-state partial updates for page rendering. */
+	display_blanking_on(disp_dev);
+	display_blanking_off(disp_dev);
+	epd_last_frame_hash = UINT_MAX;
+
+	/* After splash handoff, keep frontlight off; next user interaction
+	 * wakes it via mc_display_on(). */
+	backlight_set(false);
+	disp_on = false;
 }
 
 const struct device *mc_display_get_device(void)

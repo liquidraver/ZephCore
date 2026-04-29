@@ -368,7 +368,11 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 {
 	bool prefs_exists = exists(PREFS_FILE);
 	if (!prefs_exists) {
-		LOG_DBG("loadPrefs: no prefs file found");
+		LOG_DBG("loadPrefs: no prefs file found, persisting defaults");
+		/* Persist defaults so flash always has a prefs file from boot 1.
+		 * Lets later code (e.g. tempradio revert) trust that flash is
+		 * authoritative without a "first run" special case. */
+		savePrefs(prefs);
 		return;
 	}
 
@@ -387,10 +391,6 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 	size_t off = 0;
 	memcpy(&prefs.airtime_factor, &buf[off], sizeof(float));
 	off += 4;
-	/* Migrate old AF multiplier (0-9) to duty cycle percentage (0-99) */
-	if (prefs.airtime_factor > 0.0f && prefs.airtime_factor <= 9.0f) {
-		prefs.airtime_factor *= 10.0f;
-	}
 	memcpy(prefs.node_name, &buf[off], 32);
 	off += 36;  /* 32 name + 4 pad */
 	memcpy(&prefs.node_lat, &buf[off], sizeof(double));

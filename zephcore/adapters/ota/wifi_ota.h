@@ -17,7 +17,7 @@ extern "C" {
 /**
  * Start WiFi AP + HTTP OTA server.
  *
- * Creates WiFi AP "MeshCore-OTA" with static IP 192.168.100.1,
+ * Creates WiFi AP "ZephCore-OTA" with static IP 192.168.100.1,
  * starts DHCP server and HTTP server with upload page at /update.
  * The mesh continues running — LoRa is independent of WiFi.
  *

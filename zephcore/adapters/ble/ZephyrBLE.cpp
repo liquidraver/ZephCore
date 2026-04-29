@@ -53,6 +53,9 @@ LOG_MODULE_REGISTER(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
  * BLE stack when the link is marginal, fast enough to recover quickly. */
 #define BLE_TX_OVERFLOW_RETRY_MS 250
 
+/* App push notifications are 0x80+; protocol response packets are < 0x80. */
+#define PUSH_CODE_BASE 0x80
+
 /* Advertising intervals (Apple Accessory Design Guidelines §5.5) */
 #define BT_ADV_FAST_INTERVAL     32            /* 20ms in 0.625ms units */
 #define BT_ADV_FAST_DURATION_MS  (60 * 1000)  /* fast window after boot/disconnect */
@@ -138,6 +141,14 @@ static uint32_t ble_passkey = CONFIG_ZEPHCORE_BLE_PASSKEY;
 
 /* NUS TX characteristic attribute — resolved at init, avoids hard-coded offset */
 static const struct bt_gatt_attr *nus_tx_attr;
+
+static bool is_lossless_protocol_frame(const uint8_t *data, uint16_t len)
+{
+	if (!data || len == 0) {
+		return false;
+	}
+	return data[0] < PUSH_CODE_BASE;
+}
 
 /* ========== Forward declarations ========== */
 
@@ -845,6 +856,13 @@ size_t zephcore_ble_send(const uint8_t *data, uint16_t len)
 				k_msgq_num_used_get(&ble_send_queue),
 				(unsigned)FRAME_QUEUE_SIZE);
 			ble_tx_congested = true;
+		}
+
+		/* Protocol response frames are lossless. If queue is full, report
+		 * failure so the caller can retry instead of overflow replacement. */
+		if (is_lossless_protocol_frame(data, len)) {
+			LOG_DBG("TX queue full for lossless protocol frame hdr=0x%02x, retry later", data[0]);
+			return 0;
 		}
 
 		/* Save to overflow — retried at 250ms intervals.

@@ -129,6 +129,7 @@ static void ble_on_rx_frame(const uint8_t *data, uint16_t len)
 static void ble_on_tx_idle(void)
 {
 	k_work_submit(&contact_iter_work);
+	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
 }
 
 /* BLE connected callback — notify UI, clear USB state if needed */
@@ -532,7 +533,7 @@ int main(void)
 	companion_mesh.prefs.cr = 8;
 	companion_mesh.prefs.tx_power_dbm = 22;
 	companion_mesh.prefs.rx_delay_base = 0.0f;  /* Disabled for companion */
-	companion_mesh.prefs.airtime_factor = 10.0f; /* 10% duty cycle (EU 868 default) */
+	companion_mesh.prefs.airtime_factor = 9.0f; /* Arduino formula: 100/(af+1) → 10% (EU 868 default) */
 	companion_mesh.prefs.rx_duty_cycle = 1;     /* Companions: duty cycle ON by default (power save) */
 	companion_mesh.prefs.rx_boost = 1;          /* Default: boosted RX (+3dB sensitivity, +2mA) */
 	companion_mesh.prefs.apc_enabled = 0;       /* Default: APC off */
@@ -668,6 +669,9 @@ int main(void)
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
 	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
+
+	/* Restore runtime ADC multiplier override (0 = keep DT default) */
+	zephyr_board.setAdcMultiplier(companion_mesh.prefs.adc_multiplier);
 
 	/* Initialize mesh event object */
 	k_event_init(&mesh_events);

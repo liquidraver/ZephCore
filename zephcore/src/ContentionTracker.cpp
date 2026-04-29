@@ -5,7 +5,6 @@
 
 #include <mesh/ContentionTracker.h>
 #include <mesh/Packet.h>
-#include <math.h>
 #include <string.h>
 
 namespace mesh {
@@ -156,7 +155,10 @@ float ContentionTracker::getFloodDelayFactor() const
 	float est = getContentionEstimate();
 	if (est <= 0.0f) return MIN_FLOOD_FACTOR;
 
-	float factor = MIN_FLOOD_FACTOR + FLOOD_SCALE * sqrtf(est);
+	/* Arduino-like center near 0.5 in light contention, rising smoothly
+	 * toward 0.8 as contention increases. */
+	float factor = MIN_FLOOD_FACTOR + (MAX_FLOOD_FACTOR - MIN_FLOOD_FACTOR) *
+		       (est / (est + FLOOD_EST_HALFPOINT));
 	if (factor > MAX_FLOOD_FACTOR) factor = MAX_FLOOD_FACTOR;
 	return factor;
 }

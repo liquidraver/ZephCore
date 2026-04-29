@@ -17,6 +17,7 @@ nRF_boards=(
     ikoka_nano_30dbm
     sensecap_solar
     xiao_nrf52840
+    lilygo_techo
 )
 
 ESP32_boards=(

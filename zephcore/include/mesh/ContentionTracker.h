@@ -37,7 +37,7 @@ public:
 
 	float getContentionEstimate() const;
 
-	/* sqrt curve: MIN_FLOOD_FACTOR + FLOOD_SCALE * sqrt(est), cap 2.0.
+	/* Saturating curve: MIN + (MAX-MIN) * est/(est+HALFPOINT).
 	 * Returns 0.5 during warmup. */
 	float getFloodDelayFactor() const;
 
@@ -51,10 +51,10 @@ private:
 	static constexpr uint32_t WINDOW_MS = 10000;      /* dupe observation window; covers SF12 2-hop */
 	static constexpr int EMA_SHIFT = 3;               /* alpha = 1/8 */
 	static constexpr int WARMUP_PACKETS = 4;          /* min samples before EMA is trusted */
-	static constexpr float MIN_FLOOD_FACTOR = 0.05f;  /* floor: near-zero delay in quiet networks */
-	static constexpr float FLOOD_SCALE = 0.170f;      /* (0.5 - 0.05) / sqrt(15) */
-	static constexpr float MAX_FLOOD_FACTOR = 2.0f;   /* ceiling: 2x base airtime */
-	static constexpr float DEFAULT_BACKOFF_MULT = 0.5f; /* half-airtime per dupe heard */
+	static constexpr float MIN_FLOOD_FACTOR = 0.40f;  /* sparse mesh baseline */
+	static constexpr float MAX_FLOOD_FACTOR = 1.00f;  /* dense mesh ceiling */
+	static constexpr float FLOOD_EST_HALFPOINT = 4.0f; /* midpoint: factor=0.60 at est=4 */
+	static constexpr float DEFAULT_BACKOFF_MULT = 0.2f; /* airtime*0.2 per dupe heard */
 	static constexpr uint32_t REACTIVE_HARD_CAP_MS = 2000; /* max cumulative reactive extension */
 	static constexpr uint32_t STALE_MS = 300000;      /* 5 min: reset EMA if no traffic */
 

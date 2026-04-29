@@ -131,7 +131,7 @@ Regions control which flood packets the repeater forwards. The region tree is hi
 
 | Command | Description |
 |---------|-------------|
-| `tempradio <freq> <bw> <sf> <cr> <timeout_mins>` | Apply temporary radio parameters; automatically reverts after `timeout_mins`. Constraints: freq 150–2500 MHz, bw 7–500 kHz, sf 5–12, cr 5–8 |
+| `tempradio <freq> <bw> <sf> <cr> <timeout_mins>` | Apply temporary radio parameters; automatically reverts after `timeout_mins`. Constraints: freq 150–2500 MHz, bw 7–500 kHz, sf 5–12, cr 5–8. Saved prefs are never mutated — concurrent `set` commands and reboots both restore the real saved values. |
 
 ---
 

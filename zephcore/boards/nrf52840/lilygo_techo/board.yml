@@ -1,0 +1,9 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: lilygo_techo
+  full_name: LilyGo T-Echo (nRF52840 + SX1262 + SSD1681 EPD + L76K GPS)
+  vendor: lilygo
+  socs:
+    - name: nrf52840

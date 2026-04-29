@@ -142,6 +142,23 @@ void utf8_to_latin1(char *dst, const char *src, size_t dst_size)
 #define CONTENT_Y    (SEP_Y + 4)            /* below separator */
 #define MAX_CHARS    (DISP_W / (FONT_W ? FONT_W : 1))
 
+/* Vertically center `total` rows of text within the content area and
+ * return the y pixel position for row `idx` (0-based).  This replaces
+ * the old hand-picked offsets (CONTENT_Y+16, +28, +34, ...) that were
+ * calibrated for the 6x8 font and broke when switching to 10x16.
+ * Works for any font size / display resolution. */
+static inline int centered_row(int idx, int total)
+{
+	int content_h = (int)DISP_H - CONTENT_Y;
+	int used_h = total * LINE_H;
+	int top = (content_h - used_h) / 2;
+
+	if (top < 0) {
+		top = 0;
+	}
+	return CONTENT_Y + top + idx * LINE_H;
+}
+
 /* ========== Global State ========== */
 static struct ui_state state;
 
@@ -284,29 +301,27 @@ static void draw_centered(int y, const char *text)
 
 static void render_messages(void)
 {
-	/* Large centered message count (matching Arduino "MSG: X") */
+	/* 3 centered rows: msg count, BLE status, offgrid status */
 	char buf[24];
 
 	snprintf(buf, sizeof(buf), "MSG: %u", state.msg_count);
-	draw_centered(CONTENT_Y + 2, buf);
+	draw_centered(centered_row(0, 3), buf);
 
-	/* Connection status centered below */
 	if (state.ble_connected) {
-		draw_centered(CONTENT_Y + 16, "< Connected >");
+		draw_centered(centered_row(1, 3), "< Connected >");
 	} else {
-		draw_centered(CONTENT_Y + 16, "Waiting for app...");
+		draw_centered(centered_row(1, 3), "Waiting for app...");
 	}
 
-	/* Offgrid mode status */
 	snprintf(buf, sizeof(buf), "Offgrid: %s",
 		 state.offgrid_enabled ? "ON" : "OFF");
-	draw_centered(CONTENT_Y + 32, buf);
+	draw_centered(centered_row(2, 3), buf);
 }
 
 static void render_recent(void)
 {
 	if (state.recent_count == 0) {
-		draw_centered(CONTENT_Y + 10, "(no contacts heard)");
+		draw_centered(centered_row(0, 1), "(no contacts heard)");
 		return;
 	}
 
@@ -384,17 +399,17 @@ static void render_radio(void)
 static void render_bluetooth(void)
 {
 	if (!state.ble_enabled) {
-		draw_centered(CONTENT_Y + 10, "BLE: OFF");
-		draw_centered(CONTENT_Y + 28, "Press to Enable");
+		draw_centered(centered_row(0, 2), "BLE: OFF");
+		draw_centered(centered_row(1, 2), "Press to Enable");
 		return;
 	}
 
 	if (state.ble_connected) {
-		draw_centered(CONTENT_Y + 4, "BLE: Connected");
-		draw_centered(CONTENT_Y + 20, "Press to Disable");
+		draw_centered(centered_row(0, 2), "BLE: Connected");
+		draw_centered(centered_row(1, 2), "Press to Disable");
 	} else {
-		draw_centered(CONTENT_Y + 4, "BLE: Advertising");
-		draw_centered(CONTENT_Y + 20, "Press to Disable");
+		draw_centered(centered_row(0, 2), "BLE: Advertising");
+		draw_centered(centered_row(1, 2), "Press to Disable");
 	}
 }
 
@@ -405,19 +420,19 @@ static void render_advert(void)
 	bool just_sent = (state.advert_sent_time > 0 &&
 			  (now - state.advert_sent_time) < 2000);
 
-	draw_centered(CONTENT_Y, "Send Zero-Hop Advert");
+	draw_centered(centered_row(0, 3), "Send Zero-Hop Advert");
 
 	if (just_sent) {
 		if (state.advert_was_flood) {
-			draw_centered(CONTENT_Y + 16, ">> Flood Sent! <<");
+			draw_centered(centered_row(1, 3), ">> Flood Sent! <<");
 		} else {
-			draw_centered(CONTENT_Y + 16, ">>> Sent! <<<");
+			draw_centered(centered_row(1, 3), ">>> Sent! <<<");
 		}
 	} else {
-		draw_centered(CONTENT_Y + 16, "Press to Send");
+		draw_centered(centered_row(1, 3), "Press to Send");
 	}
 
-	draw_centered(CONTENT_Y + 34, "(Double Press: Flood)");
+	draw_centered(centered_row(2, 3), "(2x Press: Flood)");
 }
 
 /* Format seconds into compact time string: "3m20s", "1h05m", "12s" */
@@ -574,24 +589,24 @@ static void render_sensors(void)
 
 static void render_offgrid(void)
 {
-	/* Check if confirmation has expired (500ms) */
+	/* Check if confirmation has expired */
 	if (state.offgrid_confirm_time != 0 &&
-	    (k_uptime_get_32() - state.offgrid_confirm_time) > 500) {
+	    (k_uptime_get_32() - state.offgrid_confirm_time) > CONFIG_ZEPHCORE_UI_CONFIRM_WINDOW_MS) {
 		state.offgrid_confirm_time = 0;
 	}
 
-	draw_centered(CONTENT_Y + 2, "Offgrid Mode");
+	draw_centered(centered_row(0, 3), "Offgrid Mode");
 
 	char buf[24];
 
 	snprintf(buf, sizeof(buf), "Status: %s",
 		 state.offgrid_enabled ? "ON" : "OFF");
-	draw_centered(CONTENT_Y + 16, buf);
+	draw_centered(centered_row(1, 3), buf);
 
 	if (state.offgrid_confirm_time != 0) {
-		draw_centered(CONTENT_Y + 34, "Press to confirm");
+		draw_centered(centered_row(2, 3), "Press to confirm");
 	} else {
-		draw_centered(CONTENT_Y + 34,
+		draw_centered(centered_row(2, 3),
 			      state.offgrid_enabled ? "Press to Disable"
 						    : "Press to Enable");
 	}
@@ -599,33 +614,33 @@ static void render_offgrid(void)
 
 static void render_dfu(void)
 {
-	/* Check if confirmation has expired (500ms) */
+	/* Check if confirmation has expired */
 	if (state.dfu_confirm_time != 0 &&
-	    (k_uptime_get_32() - state.dfu_confirm_time) > 500) {
+	    (k_uptime_get_32() - state.dfu_confirm_time) > CONFIG_ZEPHCORE_UI_CONFIRM_WINDOW_MS) {
 		state.dfu_confirm_time = 0;
 	}
 
-	draw_centered(CONTENT_Y + 10, "BLE DFU Update");
+	draw_centered(centered_row(0, 2), "BLE DFU Update");
 	if (state.dfu_confirm_time != 0) {
-		draw_centered(CONTENT_Y + 28, "Press to confirm");
+		draw_centered(centered_row(1, 2), "Press to confirm");
 	} else {
-		draw_centered(CONTENT_Y + 28, "Press to Run");
+		draw_centered(centered_row(1, 2), "Press to Run");
 	}
 }
 
 static void render_shutdown(void)
 {
-	/* Check if confirmation has expired (500ms) */
+	/* Check if confirmation has expired */
 	if (state.shutdown_confirm_time != 0 &&
-	    (k_uptime_get_32() - state.shutdown_confirm_time) > 500) {
+	    (k_uptime_get_32() - state.shutdown_confirm_time) > CONFIG_ZEPHCORE_UI_CONFIRM_WINDOW_MS) {
 		state.shutdown_confirm_time = 0;
 	}
 
-	draw_centered(CONTENT_Y + 10, "Power Off");
+	draw_centered(centered_row(0, 2), "Power Off");
 	if (state.shutdown_confirm_time != 0) {
-		draw_centered(CONTENT_Y + 28, "Press to confirm");
+		draw_centered(centered_row(1, 2), "Press to confirm");
 	} else {
-		draw_centered(CONTENT_Y + 28, "Press to Run");
+		draw_centered(centered_row(1, 2), "Press to Run");
 	}
 }
 

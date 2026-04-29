@@ -36,6 +36,14 @@ public:
 	void begin() override;
 	void reconfigure();
 	void reconfigureWithParams(float freq, float bw, uint8_t sf, uint8_t cr);
+
+	/* Temporary radio override — applies freq/bw/sf/cr without mutating
+	 * _prefs.  Used by tempradio so the saved prefs survive intact and
+	 * concurrent savePrefs() calls don't poison flash.  clearRadioOverride()
+	 * reverts to whatever _prefs holds at that moment. */
+	void setRadioOverride(float freq, float bw, uint8_t sf, uint8_t cr);
+	void clearRadioOverride();
+	bool hasRadioOverride() const { return _has_radio_override; }
 	int recvRaw(uint8_t *bytes, int sz) override;
 	uint32_t getEstAirtimeFor(int len_bytes) override;
 	float packetScore(float snr, int packet_len) override;
@@ -152,6 +160,15 @@ protected:
 	/* Config cache — skip redundant hwConfigure() */
 	struct lora_modem_config _last_cfg;
 	bool _config_cached;
+
+	/* Radio param override — when set, buildModemConfig() uses these
+	 * for freq/bw/sf/cr instead of _prefs.  Everything else (tx_power,
+	 * preamble, APC reduction) still comes from _prefs. */
+	bool _has_radio_override;
+	float _override_freq;
+	float _override_bw;
+	uint8_t _override_sf;
+	uint8_t _override_cr;
 
 	/* ISR RX callback — passed to lora_recv_async() / lora_recv_duty_cycle() */
 	static void rxCallbackStatic(const struct device *dev, uint8_t *data,

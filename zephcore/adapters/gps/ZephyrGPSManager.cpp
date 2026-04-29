@@ -85,7 +85,7 @@ enum gps_state {
 
 static enum gps_state gps_current_state = GPS_STATE_OFF;
 static uint8_t consecutive_good_fixes = 0;
-static bool first_fix_acquired = false;  /* True after first successful fix since enable */
+static bool first_fix_acquired = false;  /* True after first 3-good-fix cycle since enable. Cleared on gps_enable(false) and at boot. */
 static bool gps_time_synced = false;     /* True after GPS syncs RTC. Starts false at boot (RTC reset),
                                           * set true after 3 good fixes, cleared when GPS disabled. */
 static int64_t last_fix_uptime_ms = 0;  /* k_uptime when last validated fix was acquired */
@@ -104,6 +104,8 @@ static uint32_t gps_wake_interval_ms   = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC *
 #define GPS_REPEATER_SYNC_TIMEOUT_MS   (5 * 60 * 1000)           /* 5 minutes */
 
 static bool gps_repeater_mode = false;  /* True = repeater (time sync only), False = companion */
+static bool gnss_activity_seen_this_cycle = false;  /* Runtime-only: set by GNSS callback while acquiring */
+static bool gps_runtime_no_gnss_activity = false;   /* Runtime-only: repeater disables periodic GPS until reboot */
 
 /* Forward declarations for work handlers and state functions */
 static void gps_wake_work_fn(struct k_work *work);
@@ -213,12 +215,44 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 		return;
 	}
 
+	if (gps_current_state == GPS_STATE_ACQUIRING) {
+		/* Any callback means GNSS hardware/UART path is alive, even without a fix. */
+		gnss_activity_seen_this_cycle = true;
+	}
+
 	LOG_DBG("GNSS callback: fix=%d sats=%d state=%d",
 		data->info.fix_status, data->info.satellites_cnt, gps_current_state);
 
 	k_mutex_lock(&gps_mutex, K_FOREVER);
 
 	if (data->info.fix_status >= GNSS_FIX_STATUS_GNSS_FIX) {
+		/* Reject "Null Island" (0,0) fixes. Zephyr's NMEA parser splits
+		 * data across callbacks: gnss_nmea0183_parse_gga fills altitude +
+		 * fix_status but NOT lat/lon; gnss_nmea0183_parse_rmc fills
+		 * lat/lon. A merged publish fires when both GGA and RMC share a
+		 * UTC. If the chip emits GGA quality=1 while RMC is still 'V'
+		 * (or reports null-island coords), parse_rmc's early-exit on 'V'
+		 * leaves lat/lon at their previous value (zero at first boot, or
+		 * stale) while altitude advances — the caller sees valid
+		 * fix_status + altitude-only motion + (0,0) coords. Observed on
+		 * AT6558R (RAK WisMesh Tag) during early acquisition; Air530Z
+		 * (ThinkNode M1) doesn't desync GGA/RMC this way. (0,0) is never
+		 * a real fix — skip so we don't poison current_pos, persist
+		 * zeros to flash, or promote consecutive_good_fixes. */
+		if (data->nav_data.latitude == 0 && data->nav_data.longitude == 0) {
+			LOG_DBG("GPS: Ignoring (0,0) fix — GGA/RMC desync "
+				"(fix=%d sats=%d alt_mm=%d)",
+				data->info.fix_status,
+				data->info.satellites_cnt,
+				data->nav_data.altitude);
+			if (gps_current_state == GPS_STATE_ACQUIRING &&
+			    consecutive_good_fixes > 0) {
+				consecutive_good_fixes = 0;
+			}
+			k_mutex_unlock(&gps_mutex);
+			return;
+		}
+
 		current_pos.latitude_ndeg = data->nav_data.latitude;
 		current_pos.longitude_ndeg = data->nav_data.longitude;
 		current_pos.altitude_mm = data->nav_data.altitude;
@@ -851,6 +885,21 @@ static void gps_software_wake(void)
  * FORCE_ON pin LOW for L76K hardware standby. */
 static void gps_go_to_standby(void)
 {
+	if (gps_repeater_mode && gps_runtime_no_gnss_activity) {
+		LOG_WRN("GPS: No GNSS activity detected; disabling repeater GPS cycles until reboot");
+		gps_current_state = GPS_STATE_OFF;
+		consecutive_good_fixes = 0;
+		standby_start_ms = 0;
+		standby_interval_ms = 0;
+
+#if HAS_GPS_POWER_CONTROL
+		gps_power_control(false, true);
+#elif HAS_GPS_UART
+		gps_software_sleep();
+#endif
+		return;
+	}
+
 	uint64_t wake_interval = gps_repeater_mode ?
 		GPS_REPEATER_SYNC_INTERVAL_MS : gps_wake_interval_ms;
 
@@ -894,9 +943,15 @@ static void gps_go_to_standby(void)
  * queue which may be processing stale UART data. */
 static void gps_start_acquiring(void)
 {
+	if (gps_repeater_mode && gps_runtime_no_gnss_activity) {
+		LOG_INF("GPS: Repeater cycles are runtime-disabled (no GNSS activity detected)");
+		return;
+	}
+
 	LOG_INF("GPS: Waking for %s", gps_repeater_mode ? "time sync" : "position fix");
 	gps_current_state = GPS_STATE_ACQUIRING;
 	consecutive_good_fixes = 0;
+	gnss_activity_seen_this_cycle = false;
 
 #if HAS_GPS_POWER_CONTROL
 	gps_power_control(true);
@@ -948,6 +1003,11 @@ static void gps_timeout_work_fn(struct k_work *work)
 
 	LOG_WRN("GPS: Timeout after %d/%d fixes, deferring standby to main thread",
 		consecutive_good_fixes, GPS_GOOD_FIX_COUNT);
+
+	if (gps_repeater_mode && !gnss_activity_seen_this_cycle) {
+		LOG_WRN("GPS: Repeater acquire window had no GNSS callbacks; disabling periodic GPS until reboot");
+		gps_runtime_no_gnss_activity = true;
+	}
 
 	atomic_or(&pending_gps_actions, GPS_ACTION_TIMEOUT);
 	if (gps_event_cb) {
@@ -1230,6 +1290,7 @@ void gps_set_repeater_mode(bool repeater)
 		LOG_INF("GPS: Repeater mode - starting initial time sync, then every 48h");
 
 		gps_enabled = true;  /* Logically enabled */
+		gps_runtime_no_gnss_activity = false;
 
 		/* Start acquiring immediately for initial time sync at boot.
 		 * GPS hardware is already powered from bootloader, so we just
@@ -1296,6 +1357,12 @@ void gps_enable(bool enable)
 #endif
 		gps_current_state = GPS_STATE_OFF;
 		consecutive_good_fixes = 0;
+
+		/* Clear first-fix flag so the next enable gets the "no timeout"
+		 * grace period again — in marginal signal, a 30–120s timeout may
+		 * never be enough, and the user explicitly toggled GPS expecting
+		 * it to try hard for a fix. */
+		first_fix_acquired = false;
 
 		/* Clear time sync flag - time will drift, allow phone sync again */
 		gps_time_synced = false;
@@ -1431,7 +1498,27 @@ void gps_request_fresh_fix(void)
 		k_work_cancel_delayable(&gps_wake_work);
 		gps_start_acquiring();
 	} else if (gps_current_state == GPS_STATE_ACQUIRING) {
-		LOG_DBG("GPS: Fresh fix requested but already acquiring");
+		/* Already acquiring — reschedule the timeout so the caller's
+		 * fresh-fix request gets a full window from now. Otherwise, a
+		 * telemetry request that arrives 25s into a 30s acquire window
+		 * only has 5s left, which in marginal signal usually means the
+		 * chip goes to standby before producing a fix the requester
+		 * could use. Repeater mode uses its own 5min timeout; companion
+		 * mode pre-first-fix has no timeout (nothing to reschedule). */
+		uint32_t timeout_ms = 0;
+		if (gps_repeater_mode) {
+			timeout_ms = GPS_REPEATER_SYNC_TIMEOUT_MS;
+		} else if (first_fix_acquired) {
+			timeout_ms = gps_acquire_timeout_ms;
+		}
+		if (timeout_ms > 0) {
+			LOG_INF("GPS: Fresh fix requested, extending acquire "
+				"timeout by %u ms", timeout_ms);
+			k_work_reschedule(&gps_timeout_work, K_MSEC(timeout_ms));
+		} else {
+			LOG_DBG("GPS: Fresh fix requested, already acquiring "
+				"(no timeout active)");
+		}
 	}
 #endif
 }

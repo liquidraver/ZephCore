@@ -15,42 +15,6 @@
 
 namespace mesh {
 
-/* EU ETSI EN 300 220 duty cycle tracker.
- * Fixed 1-hour window, tracks cumulative TX airtime in ms.
- * duty_pct=0 disables all tracking (zero overhead). */
-struct DutyCycleTracker {
-	uint32_t window_start;
-	uint32_t window_airtime_ms;
-	uint8_t  duty_pct;  /* 0=disabled, 1-99=percentage */
-
-	void init(uint8_t pct) {
-		window_start = 0;
-		window_airtime_ms = 0;
-		duty_pct = pct;
-	}
-
-	void recordTx(uint32_t duration_ms, uint32_t now) {
-		if (duty_pct == 0) return;
-		if (now - window_start > 3600000UL) { /* 1 hour window */
-			window_start = now;
-			window_airtime_ms = 0;
-		}
-		window_airtime_ms += duration_ms;
-	}
-
-	bool isExceeded(uint32_t now) const {
-		if (duty_pct == 0) return false;
-		if (now - window_start > 3600000UL) return false;  /* 1h window expired */
-		uint32_t budget_ms = (3600000UL / 100) * (uint32_t)duty_pct; /* ms per 1% of 1h */
-		return window_airtime_ms >= budget_ms;
-	}
-
-	uint32_t budgetMs() const {
-		if (duty_pct == 0) return 0;
-		return (3600000UL / 100) * (uint32_t)duty_pct; /* ms per 1% of 1h */
-	}
-};
-
 class PacketManager {
 public:
 	virtual Packet *allocNew() = 0;
@@ -87,7 +51,9 @@ class Dispatcher {
 	uint32_t outbound_expiry, outbound_start, total_air_time, rx_air_time;
 	uint32_t next_tx_time;
 	uint32_t cad_busy_start;
-	DutyCycleTracker _duty_cycle;
+	uint32_t tx_budget_ms;
+	uint32_t last_budget_update;
+	uint32_t duty_cycle_window_ms;
 	uint32_t radio_nonrx_start;
 	uint32_t next_agc_reset_time;
 	bool prev_isrecv_mode;
@@ -121,6 +87,7 @@ protected:
 	virtual uint32_t getCADFailMaxDuration() const;
 	virtual int getInterferenceThreshold() const { return 0; }
 	virtual int getAGCResetInterval() const { return 0; }
+	virtual uint32_t getDutyCycleWindowMs() const { return 3600000UL; } /* 1h default */
 
 public:
 	void begin();
@@ -150,6 +117,8 @@ public:
 	uint32_t futureMillis(int millis_from_now) const;
 
 private:
+	void updateTxBudget();
+	uint32_t getMaxTxBudgetMs() const;
 	bool tryParsePacket(Packet *pkt, const uint8_t *raw, int len);
 	void checkRecv();
 	void checkSend();
