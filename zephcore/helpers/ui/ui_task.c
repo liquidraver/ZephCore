@@ -245,6 +245,8 @@ static void splash_work_handler(struct k_work *work)
 	splash_active = false;
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+	mc_display_epd_full_reset();
+
 	/* Transition from splash to home page (first active page for this role) */
 #ifdef ZEPHCORE_REPEATER
 	ui_pages_set(UI_PAGE_STATUS);
@@ -741,6 +743,8 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 		k_work_cancel_delayable(&splash_work);
 		splash_active = false;
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+		mc_display_epd_full_reset();
+
 #ifdef ZEPHCORE_REPEATER
 		ui_pages_set(UI_PAGE_STATUS);
 #else

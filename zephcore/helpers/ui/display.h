@@ -138,6 +138,12 @@ void mc_display_finalize(void);
 void mc_display_reset_auto_off(void);
 
 /**
+ * EPD-only: force a full panel reset cycle before normal page rendering.
+ * No-op on non-EPD displays or when display is not initialized.
+ */
+void mc_display_epd_full_reset(void);
+
+/**
  * Get the raw display device pointer.
  * Used by easter egg (Doom) to bypass CFB and write directly.
  * Returns NULL if display not initialized.
