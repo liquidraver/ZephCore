@@ -24,6 +24,7 @@
 #include <zephyr/kernel.h>
 #include <string.h>
 #include <stdio.h>
+#include <limits.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_display, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
@@ -57,6 +58,31 @@ static const struct device *backlight_reg;
 #endif
 
 static bool backlight_on;
+
+/* EPD frame change detection (Arduino-style):
+ * hash draw calls across a frame and skip hardware flush if unchanged. */
+static uint32_t epd_frame_hash;
+static uint32_t epd_last_frame_hash = UINT_MAX;
+
+static inline void epd_hash_bytes(const void *data, size_t len)
+{
+	if (!is_epd || !data || len == 0) {
+		return;
+	}
+
+	const uint8_t *p = (const uint8_t *)data;
+
+	for (size_t i = 0; i < len; i++) {
+		/* FNV-1a */
+		epd_frame_hash ^= p[i];
+		epd_frame_hash *= 16777619u;
+	}
+}
+
+static inline void epd_hash_u32(uint32_t v)
+{
+	epd_hash_bytes(&v, sizeof(v));
+}
 
 static inline void backlight_set(bool on)
 {
@@ -336,6 +362,9 @@ void mc_display_clear(void)
 		return;
 	}
 
+	if (is_epd) {
+		epd_frame_hash = 2166136261u;
+	}
 	cfb_framebuffer_clear(disp_dev, false);
 }
 
@@ -349,6 +378,12 @@ void mc_display_text(int x, int y, const char *text, bool invert)
 		cfb_framebuffer_invert(disp_dev);
 	}
 
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32(invert ? 1u : 0u);
+		epd_hash_bytes(text, strlen(text));
+	}
 	cfb_print(disp_dev, text, x + DISP_INSET, y + DISP_INSET);
 
 	if (invert) {
@@ -365,6 +400,12 @@ void mc_display_fill_rect(int x, int y, int w, int h)
 	/* CFB doesn't have a native fill_rect, so we draw line by line */
 	const int row_clamp = (int)disp_height - DISP_INSET;
 
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+		epd_hash_u32((uint32_t)h);
+	}
 	for (int row = y + DISP_INSET; row < y + h + DISP_INSET && row < row_clamp; row++) {
 		struct cfb_position start = { .x = x + DISP_INSET, .y = row };
 		struct cfb_position end = { .x = x + w - 1 + DISP_INSET, .y = row };
@@ -380,6 +421,12 @@ void mc_display_hline(int x, int y, int w)
 
 	struct cfb_position start = { .x = x + DISP_INSET, .y = y + DISP_INSET };
 	struct cfb_position end = { .x = x + w - 1 + DISP_INSET, .y = y + DISP_INSET };
+
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+	}
 	cfb_draw_line(disp_dev, &start, &end);
 }
 
@@ -393,6 +440,15 @@ void mc_display_xbm(int x, int y, const uint8_t *data, int w, int h)
 	 * This matches the Arduino MeshCore logo data from icons.h.
 	 * Each row is padded to byte boundary: bytes_per_row = (w+7)/8 */
 	int bytes_per_row = (w + 7) / 8;
+	size_t bitmap_len = (size_t)bytes_per_row * (size_t)h;
+
+	if (is_epd) {
+		epd_hash_u32((uint32_t)x);
+		epd_hash_u32((uint32_t)y);
+		epd_hash_u32((uint32_t)w);
+		epd_hash_u32((uint32_t)h);
+		epd_hash_bytes(data, bitmap_len);
+	}
 
 	for (int row = 0; row < h; row++) {
 		for (int col = 0; col < w; col++) {
@@ -421,7 +477,13 @@ void mc_display_finalize(void)
 		return;
 	}
 
+	if (is_epd && epd_frame_hash == epd_last_frame_hash) {
+		return;
+	}
 	cfb_framebuffer_finalize(disp_dev);
+	if (is_epd) {
+		epd_last_frame_hash = epd_frame_hash;
+	}
 }
 
 void mc_display_reset_auto_off(void)
@@ -437,6 +499,24 @@ void mc_display_reset_auto_off(void)
 		k_work_reschedule(&auto_off_work, K_MSEC(timeout));
 	}
 #endif
+}
+
+void mc_display_epd_full_reset(void)
+{
+	if (!disp_initialized || !is_epd) {
+		return;
+	}
+
+	/* Force the SSD16xx path back through a full-refresh cycle before
+	 * entering steady-state partial updates for page rendering. */
+	display_blanking_on(disp_dev);
+	display_blanking_off(disp_dev);
+	epd_last_frame_hash = UINT_MAX;
+
+	/* After splash handoff, keep frontlight off; next user interaction
+	 * wakes it via mc_display_on(). */
+	backlight_set(false);
+	disp_on = false;
 }
 
 const struct device *mc_display_get_device(void)
