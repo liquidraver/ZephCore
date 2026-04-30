@@ -185,6 +185,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_pending_channel_head = 0;
 	_pending_channel_tail = 0;
 	_pending_channel_count = 0;
+	memset(_pending_channel_idx, 0, sizeof(_pending_channel_idx));
 	_app_target_ver = 0;
 	_dirty_contacts_expiry = 0;
 	_dirty_channels_expiry = 0;
@@ -1580,6 +1581,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
 			last_get_channel_ms = now_ms;
 			LOG_DBG("CMD_GET_CHANNEL idx=%u dt=%ums", data[1], dt_ms);
+			drainPendingChannelInfos();
 			if (!enqueuePendingChannelInfo(data[1])) {
 				sendPacketError(ERR_BAD_STATE);
 				return true;
