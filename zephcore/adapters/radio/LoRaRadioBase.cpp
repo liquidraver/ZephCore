@@ -638,6 +638,10 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 	int16_t samples[NOISE_FLOOR_SAMPLES_PER_TICK];
 	for (int i = 0; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {
 		samples[i] = hwGetCurrentRSSI();
+		if (samples[i] == -128) {
+			/* Chip busy or RSSI read contended — retry next tick. */
+			return;
+		}
 	}
 	/* Insertion sort — tiny array, branch-friendly on Cortex-M */
 	for (int i = 1; i < NOISE_FLOOR_SAMPLES_PER_TICK; i++) {

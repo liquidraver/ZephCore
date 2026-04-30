@@ -634,7 +634,7 @@ index 30243ba5dc7..3c8619ac262 100644
  	k_mutex_unlock(&data->lock);
  	return 0;
  }
-@@ -1083,14 +1408,458 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1408,469 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -651,7 +651,18 @@ index 30243ba5dc7..3c8619ac262 100644
 +	uint8_t buf[1];
 +	int ret;
 +
++	/* GPIO read — bail before stalling wait_busy on the duty-cycle
++	 * sleep phase. wait_busy's recovery would force-wake the chip and
++	 * break duty cycle. */
++	if (sx126x_hal_is_busy(dev)) {
++		return -128;
++	}
 +	if (k_mutex_lock(&data->lock, K_NO_WAIT) != 0) {
++		return -128;
++	}
++
++	if (sx126x_hal_is_busy(dev)) {
++		k_mutex_unlock(&data->lock);
 +		return -128;
 +	}
 +
