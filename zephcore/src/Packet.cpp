@@ -38,8 +38,8 @@ size_t Packet::writePath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
 
 uint8_t Packet::copyPath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
 {
-	writePath(dest, src, path_len);
-	return path_len;
+	size_t written = writePath(dest, src, path_len);
+	return written > 0 ? path_len : 0;
 }
 
 int Packet::getRawLength() const

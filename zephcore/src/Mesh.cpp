@@ -260,12 +260,21 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 						if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH) {
 							int k = 0;
 							uint8_t path_len = data[k++];
+							if (!Packet::isValidPathLen(path_len)) {
+								LOG_WRN("onRecvPacket: invalid inner path_len 0x%02x", path_len);
+								break;
+							}
 							uint8_t hash_size = (path_len >> 6) + 1;
 							uint8_t hash_count = path_len & 63;
-							uint8_t *path = &data[k]; k += hash_size*hash_count;
+							int path_bytes = hash_size * hash_count;
+							if (k + path_bytes + 1 > len) {
+								LOG_WRN("onRecvPacket: PATH payload truncated (k=%d path_bytes=%d len=%d)", k, path_bytes, len);
+								break;
+							}
+							uint8_t *path = &data[k]; k += path_bytes;
 							uint8_t extra_type = data[k++] & 0x0F;
 							uint8_t *extra = &data[k];
-							uint8_t extra_len = len - k;
+							uint8_t extra_len = (uint8_t)(len - k);
 							if (onPeerPathRecv(pkt, j, secret, path, path_len, extra_type, extra, extra_len)) {
 								if (pkt->isRouteFlood()) {
 									Packet *rpath = createPathReturn(&src_hash, secret, pkt->path, pkt->path_len, 0, nullptr, 0);
