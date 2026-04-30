@@ -68,7 +68,7 @@ index 17689720dd2..09982dc2e70 100644
  		return -EINVAL;
  	}
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 30243ba5dc7..3c8619ac262 100644
+index 30243ba5dc7..c5e346da139 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -10,10 +10,16 @@
@@ -1111,7 +1111,7 @@ index 30243ba5dc7..3c8619ac262 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1112,6 +1881,7 @@ static int sx126x_pm_action(const struct device *dev,
+@@ -1112,6 +1892,7 @@ static int sx126x_pm_action(const struct device *dev,
  static int sx126x_init(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
@@ -1119,7 +1119,7 @@ index 30243ba5dc7..3c8619ac262 100644
  	int ret;
  
  	/* Initialize data structures */
-@@ -1121,9 +1891,25 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1902,25 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);

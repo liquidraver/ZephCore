@@ -429,7 +429,10 @@ void LoRaRadioBase::startReceive()
 		uint8_t sf = (uint8_t)cfg.datarate;
 		uint32_t bw_hz = bandwidth_to_hz(cfg.bandwidth);
 		float bw_khz = (float)bw_hz / 1000.0f;
-		uint16_t preamble_len = cfg.preamble_len;
+		/*uint16_t preamble_len = cfg.preamble_len;
+		  Duty-cycle timing assumption only: keep windows compatible with
+		 * meshes that commonly transmit with a 16-symbol preamble. */
+		uint16_t preamble_len = 16;
 		uint16_t min_symbols = (sf >= 7) ? 8 : 12;
 		int16_t sleep_symbols = (int16_t)preamble_len -
 					(int16_t)min_symbols;
