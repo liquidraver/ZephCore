@@ -68,7 +68,7 @@ index 17689720dd2..09982dc2e70 100644
  		return -EINVAL;
  	}
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 30243ba5dc7..588d72d9e23 100644
+index 30243ba5dc7..579efcbb59c 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -10,10 +10,19 @@
@@ -342,7 +342,7 @@ index 30243ba5dc7..588d72d9e23 100644
  static int sx126x_set_sleep(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
-@@ -566,19 +707,23 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
+@@ -566,18 +707,25 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
  
  	/* Handle async callback or signal sync receiver */
  	if (data->rx_cb != NULL) {
@@ -351,31 +351,36 @@ index 30243ba5dc7..588d72d9e23 100644
 -		 * CRC/read failures are dropped and RX is restarted.
 -		 */
 -		if (result.status > 0) {
-+		/* Restart RX FIRST — minimise the deaf window.
-+		 * The callback (mesh processing) can take 100s of us;
-+		 * doing it before restart would lose back-to-back packets.
-+		 * Safe: we're on a cooperative work queue so the next
-+		 * DIO1 work item won't preempt us, and the callback
-+		 * copies rx_buf before returning. */
-+		sx126x_restart_rx(dev, data);
-+
-+		if (result.status < 0) {
-+			data->rx_cb(dev, NULL, 0,
-+				    result.rssi, result.snr,
-+				    data->rx_cb_user_data);
-+		} else if (result.status > 0) {
- 			data->rx_cb(dev, data->rx_buf, result.len,
- 				    result.rssi, result.snr,
- 				    data->rx_cb_user_data);
- 		}
+-			data->rx_cb(dev, data->rx_buf, result.len,
+-				    result.rssi, result.snr,
+-				    data->rx_cb_user_data);
+-		}
 -		/* Restart RX unless the callback stopped reception */
 -		if (data->rx_cb != NULL) {
 -			sx126x_set_rx(dev, 0);
--		}
++		/* Snapshot the callback pair before any pend point.
++		 * sx126x_restart_rx() takes the SPI mutex, which can yield
++		 * to another thread that calls lora_recv_async(dev, NULL)
++		 * and clears data->rx_cb — derefing it after restart would
++		 * branch through a NULL function pointer. */
++		lora_recv_cb cb = data->rx_cb;
++		void *user = data->rx_cb_user_data;
++
++		/* Restart RX FIRST — minimise the deaf window.
++		 * The callback (mesh processing) can take 100s of us;
++		 * doing it before restart would lose back-to-back packets.
++		 * The callback copies rx_buf before returning. */
++		sx126x_restart_rx(dev, data);
++
++		if (result.status < 0) {
++			cb(dev, NULL, 0, result.rssi, result.snr, user);
++		} else if (result.status > 0) {
++			cb(dev, data->rx_buf, result.len,
++			   result.rssi, result.snr, user);
+ 		}
  	} else {
  		/* Sync mode */
- 		sx126x_set_sleep(dev);
-@@ -591,6 +736,39 @@ static void sx126x_handle_irq_timeout(const struct device *dev)
+@@ -591,6 +739,39 @@ static void sx126x_handle_irq_timeout(const struct device *dev)
  	struct sx126x_data *data = dev->data;
  
  	LOG_DBG("Timeout");
@@ -415,7 +420,7 @@ index 30243ba5dc7..588d72d9e23 100644
  	sx126x_set_sleep(dev);
  
  	if (data->tx_async_signal != NULL) {
-@@ -637,6 +815,25 @@ static void sx126x_irq_work_handler(struct k_work *work)
+@@ -637,6 +818,25 @@ static void sx126x_irq_work_handler(struct k_work *work)
  		sx126x_handle_irq_timeout(dev);
  	}
  
@@ -441,7 +446,7 @@ index 30243ba5dc7..588d72d9e23 100644
  	/* Re-enable the DIO1 interrupt for the next event (unless sleeping) */
  	if (atomic_get(&data->state) != SX126X_REST_STATE) {
  		sx126x_hal_dio1_irq_enable(dev);
-@@ -698,6 +895,29 @@ static int sx126x_lora_config(const struct device *dev,
+@@ -698,6 +898,29 @@ static int sx126x_lora_config(const struct device *dev,
  		goto out;
  	}
  
@@ -471,7 +476,7 @@ index 30243ba5dc7..588d72d9e23 100644
  	/* Set sync word */
  	ret = sx126x_set_sync_word(dev, config->public_network);
  	if (ret < 0) {
-@@ -721,6 +941,8 @@ out:
+@@ -721,6 +944,8 @@ out:
  	return ret;
  }
  
@@ -480,7 +485,7 @@ index 30243ba5dc7..588d72d9e23 100644
  static int sx126x_lora_send_async(const struct device *dev,
  				  uint8_t *data_buf, uint32_t data_len,
  				  struct k_poll_signal *async)
-@@ -752,6 +974,65 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -752,6 +977,65 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return ret;
  	}
  
@@ -546,7 +551,7 @@ index 30243ba5dc7..588d72d9e23 100644
  	data->tx_async_signal = async;
  	k_msgq_purge(&data->tx_msgq);
  
-@@ -777,6 +1058,29 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -777,6 +1061,29 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -576,7 +581,7 @@ index 30243ba5dc7..588d72d9e23 100644
  	/* Start transmission with 10 second timeout */
  	ret = sx126x_set_tx(dev, 10000);
  	if (ret < 0) {
-@@ -947,6 +1251,7 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -947,6 +1254,7 @@ static int sx126x_lora_recv_async(const struct device *dev,
  
  	data->rx_cb = cb;
  	data->rx_cb_user_data = user_data;
@@ -584,7 +589,7 @@ index 30243ba5dc7..588d72d9e23 100644
  
  	/* Set packet parameters */
  	ret = sx126x_set_packet_params(dev,
-@@ -1083,14 +1388,454 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1391,454 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -1046,7 +1051,7 @@ index 30243ba5dc7..588d72d9e23 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1121,9 +1866,19 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1869,19 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);
