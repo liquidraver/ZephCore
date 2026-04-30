@@ -17,6 +17,12 @@ LOG_MODULE_REGISTER(lora_radio_base, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
+static uint16_t preambleLengthForSF(uint8_t sf)
+{
+	/* PR #1954 parity: longer preamble for lower SF. */
+	return (sf <= 8) ? 32 : 16;
+}
+
 /* ── Constructor ─────────────────────────────────────────────── */
 
 LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
@@ -203,7 +209,7 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.bandwidth = bw_khz_to_enum((uint16_t)bw_khz);
 	cfg.datarate = (enum lora_datarate)sf;
 	cfg.coding_rate = cr_to_enum(cr);
-	cfg.preamble_len = LoRaConfig::PREAMBLE_LEN;
+	cfg.preamble_len = preambleLengthForSF(sf);
 	cfg.tx_power = _prefs ? (int8_t)_prefs->tx_power_dbm
 			      : LoRaConfig::TX_POWER_DBM;
 #ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
@@ -570,7 +576,7 @@ uint32_t LoRaRadioBase::getEstAirtimeFor(int len_bytes)
 	if (cr_val > 8) cr_val = 8;
 
 	float t_sym = (float)(1 << sf) / (bw * 1000.0f);
-	float t_preamble = (LoRaConfig::PREAMBLE_LEN + 4.25f) * t_sym;
+	float t_preamble = (preambleLengthForSF(sf) + 4.25f) * t_sym;
 
 	float de = (sf >= 11) ? 1.0f : 0.0f;
 	float num = 8.0f * len_bytes - 4.0f * sf + 28.0f + 16.0f;
