@@ -1180,30 +1180,22 @@ index 9dbf3f26586..74d4ba120c8 100644
  
  #endif /* ZEPHYR_DRIVERS_LORA_SX126X_SX126X_INTERNAL_H_ */
 diff --git a/drivers/lora/native/sx126x/sx126x_hal.c b/drivers/lora/native/sx126x/sx126x_hal.c
-index 34f7089584f..e2253cf8193 100644
+index 34f7089584f..c28f2659fce 100644
 --- a/drivers/lora/native/sx126x/sx126x_hal.c
 +++ b/drivers/lora/native/sx126x/sx126x_hal.c
-@@ -203,6 +203,14 @@ int sx126x_hal_configure_tx_params(const struct device *dev, int8_t power,
- 	int8_t tx_power;
- 	int ret;
- 
-+	/* Save OCP register — SetPaConfig resets it to a chip default. */
-+	uint8_t ocp;
-+
-+	ret = sx126x_hal_read_regs(dev, SX126X_REG_OCP, &ocp, 1);
-+	if (ret < 0) {
-+		return ret;
-+	}
-+
- 	if (config->is_sx1261) {
- 		/*
- 		 * SX1261: Low power PA, up to +15 dBm
-@@ -231,6 +239,12 @@ int sx126x_hal_configure_tx_params(const struct device *dev, int8_t power,
+@@ -231,6 +231,19 @@ int sx126x_hal_configure_tx_params(const struct device *dev, int8_t power,
  		tx_power = CLAMP(power, SX1262_MIN_POWER, SX1262_MAX_POWER);
  	}
  
-+	/* Restore OCP register after SetPaConfig. */
-+	ret = sx126x_hal_write_regs(dev, SX126X_REG_OCP, &ocp, 1);
++	/* SetPaConfig does not auto-update OCP on the standalone SX126x
++	 * (cold-reset default is 60 mA / 0x18). The SX1262 high-power PA
++	 * needs ~118 mA at +22 dBm, so OCP must be raised to 140 mA / 0x38
++	 * or the PA is current-limited and output drops to ~14-16 dBm.
++	 * Mirrors what the STM32WL HAL does and what RadioLib's
++	 * setCurrentLimit() programs on Arduino MeshCore. */
++	uint8_t ocp_value = config->is_sx1261 ? 0x18 /* 60 mA  */
++					      : 0x38 /* 140 mA */;
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_OCP, &ocp_value, 1);
 +	if (ret < 0) {
 +		return ret;
 +	}
