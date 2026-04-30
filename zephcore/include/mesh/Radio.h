@@ -26,6 +26,7 @@ public:
 
 	virtual bool isInRecvMode() const = 0;
 	virtual bool isReceiving() { return false; }
+	virtual bool isRadioReady() { return true; }
 	virtual float getLastRSSI() const { return 0; }
 	virtual float getLastSNR() const { return 0; }
 

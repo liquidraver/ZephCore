@@ -53,6 +53,7 @@ public:
 	bool isInRecvMode() const override;
 	float getLastRSSI() const override;
 	float getLastSNR() const override;
+	bool isRadioReady() override;
 
 	/* Packet statistics */
 	uint32_t getPacketsRecv() const override { return (uint32_t)atomic_get(&_packets_recv); }

@@ -504,6 +504,11 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 		return false;
 	}
 
+	/* Defensive gate: callers should defer TX while radio is BUSY. */
+	if (!isRadioReady()) {
+		return false;
+	}
+
 	/* Last-moment hardware check before killing active RX.
 	 * Closes the race between the Dispatcher's isReceiving() guard
 	 * and hwCancelReceive() — if a preamble arrived in that gap,
@@ -559,6 +564,13 @@ float LoRaRadioBase::getLastRSSI() const
 float LoRaRadioBase::getLastSNR() const
 {
 	return _last_snr;
+}
+
+bool LoRaRadioBase::isRadioReady()
+{
+	/* BUSY high means the radio cannot accept SPI commands now
+	 * (e.g. duty-cycle sleep phase on SX126x/LR11xx). */
+	return !hwIsChipBusy();
 }
 
 /* ── Airtime + scoring ────────────────────────────────────────────────── */
@@ -617,12 +629,9 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
-	/* When duty cycle is active the chip alternates between short RX
-	 * windows and sleep.  GetRssiInst during the sleep phase hangs the
-	 * SPI bus (BUSY stuck high for the full 3 s timeout).  Check the
-	 * BUSY pin directly (GPIO read, no SPI) — if the chip is sleeping,
-	 * skip this cycle and try again next housekeeping tick. */
-	if (_rx_duty_cycle_enabled && hwIsChipBusy()) {
+	/* Skip when the radio cannot accept commands right now
+	 * (e.g. duty-cycle sleep BUSY window). */
+	if (!isRadioReady()) {
 		return;
 	}
 

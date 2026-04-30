@@ -376,8 +376,9 @@ void Dispatcher::checkSend()
 		}
 	}
 
-	if (_radio->isReceiving()) {
-		/* Channel busy — enforce retry timer so we don't hammer the check */
+	if (_radio->isReceiving() || !_radio->isRadioReady()) {
+		/* Channel busy or radio not command-ready — enforce retry timer
+		 * so we don't hammer checks during RX activity or BUSY windows. */
 		if (!millisHasNowPassed(next_tx_time)) {
 			if (_tx_queued_cb) {
 				uint32_t remaining = next_tx_time - now;
@@ -443,10 +444,9 @@ void Dispatcher::checkSend()
 			}
 #endif
 
-			/* Final LBT check — close the gap between initial
-			 * isReceiving() and actual TX start (serialisation +
-			 * logging can take 1-5 ms). */
-			if (_radio->isReceiving()) {
+			/* Final gate — close the gap between initial checks and
+			 * actual TX start (serialisation + logging can take 1-5 ms). */
+			if (_radio->isReceiving() || !_radio->isRadioReady()) {
 				uint32_t retry = getCADFailRetryDelay();
 				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
 				outbound = nullptr;
