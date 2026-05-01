@@ -23,6 +23,12 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
+/* Post-TX continuous-RX window in milliseconds.  Sized to cover the
+ * worst case of a near-by repeater echoing our flood: ACW jitter floor
+ * (20 ms) + ACW max_jitter (capped at 2000 ms) + LBT/CAD (~200 ms) +
+ * SPI pre-TX setup, with margin.  After this, RX returns to duty cycle. */
+#define POST_TX_HOT_RX_MS 3000
+
 /* ── Constructor ─────────────────────────────────────────────── */
 
 LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
@@ -48,6 +54,11 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	k_poll_signal_init(&_tx_signal);
 	k_sem_init(&_tx_start_sem, 0, 1);
 	memset(_rx_ring, 0, sizeof(_rx_ring));
+	atomic_set(&_hot_rx_active, 0);
+	k_timer_init(&_hot_rx_timer, hotRxTimerHandler, NULL);
+	k_timer_user_data_set(&_hot_rx_timer, this);
+	k_work_init(&_hot_rx_expire_work.work, hotRxExpireWorkFn);
+	_hot_rx_expire_work.self = this;
 }
 
 /* ── TX wait thread ──────────────────────────────────────────── */
@@ -82,7 +93,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 			LOG_DBG("TX wait: signal already raised (result=%d)", result);
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
-			self->startReceive();
+			self->restartReceiveAfterTx();
 			atomic_set(&self->_tx_active, 0);
 			atomic_inc(&self->_packets_sent);
 			if (self->_tx_done_cb) {
@@ -95,7 +106,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 		if (ret == -EAGAIN) {
 			LOG_ERR("TX wait: TIMEOUT!");
 			self->_board->onAfterTransmit();
-			self->startReceive();
+			self->restartReceiveAfterTx();
 			atomic_set(&self->_tx_active, 0);
 			if (self->_tx_done_cb) {
 				self->_tx_done_cb(self->_tx_done_cb_user_data);
@@ -106,7 +117,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 		if (ret == 0 && events[0].state == K_POLL_STATE_SIGNALED) {
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
-			self->startReceive();
+			self->restartReceiveAfterTx();
 			atomic_set(&self->_tx_active, 0);
 			atomic_inc(&self->_packets_sent);
 			LOG_INF("TX complete, RX restarted");
@@ -119,7 +130,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 				ret, events[0].state);
 			k_poll_signal_reset(&self->_tx_signal);
 			self->_board->onAfterTransmit();
-			self->startReceive();
+			self->restartReceiveAfterTx();
 			atomic_set(&self->_tx_active, 0);
 
 			if (self->_tx_done_cb) {
@@ -479,6 +490,91 @@ void LoRaRadioBase::startReceive()
 	atomic_set(&_in_recv_mode, 1);
 }
 
+void LoRaRadioBase::startReceiveHot()
+{
+	/* Continuous-RX entry — bypasses duty cycle for POST_TX_HOT_RX_MS so
+	 * a fast reply (our repeater echoing the flood we just sent) catches
+	 * a wide-open RX window instead of risking a duty-cycle sleep gap.
+	 * Continuous RX has its own AGC reset on every RxDone via the patched
+	 * sx126x_restart_rx() path, so no extra Calibrate(ALL) is needed here. */
+	configureRx();
+
+	int ret = lora_recv_async(_dev, rxCallbackStatic, this);
+	if (ret < 0) {
+		LOG_ERR("startReceiveHot: lora_recv_async failed: %d", ret);
+		/* Fall back to duty cycle directly. */
+		atomic_set(&_in_recv_mode, 0);
+		startReceive();
+		return;
+	}
+
+	atomic_set(&_in_recv_mode, 1);
+	atomic_set(&_hot_rx_active, 1);
+	k_timer_start(&_hot_rx_timer, K_MSEC(POST_TX_HOT_RX_MS), K_NO_WAIT);
+	LOG_DBG("Hot RX window started (%d ms)", POST_TX_HOT_RX_MS);
+}
+
+void LoRaRadioBase::restartReceiveAfterTx()
+{
+	if (_rx_duty_cycle_enabled) {
+		startReceiveHot();
+	} else {
+		startReceive();
+	}
+}
+
+void LoRaRadioBase::hotRxTimerHandler(struct k_timer *timer)
+{
+	LoRaRadioBase *self = static_cast<LoRaRadioBase *>(
+		k_timer_user_data_get(timer));
+	k_work_submit(&self->_hot_rx_expire_work.work);
+}
+
+void LoRaRadioBase::hotRxExpireWorkFn(struct k_work *work)
+{
+	HotRxWork *hw = CONTAINER_OF(work, HotRxWork, work);
+	LoRaRadioBase *self = hw->self;
+
+	/* Drop the hot flag first — concurrent calls (e.g. enableRxDutyCycle
+	 * toggling, a fresh startSendRaw) will see we're no longer in the
+	 * hot window. */
+	if (!atomic_cas(&self->_hot_rx_active, 1, 0)) {
+		return;
+	}
+
+	/* If a TX is in flight (user sent another packet during the hot
+	 * window), txWaitThread will reschedule the hot window after TX
+	 * completes — nothing to do here. */
+	if (atomic_get(&self->_tx_active)) {
+		return;
+	}
+
+	/* If a packet is mid-RX, defer the transition to avoid aborting it.
+	 * The work queue will run again on next TX completion or we can be
+	 * called again via timer restart — for simplicity, just push it
+	 * out by one airtime and try again. */
+	if (self->isReceiving()) {
+		atomic_set(&self->_hot_rx_active, 1);
+		k_timer_start(&self->_hot_rx_timer, K_MSEC(500), K_NO_WAIT);
+		return;
+	}
+
+	if (!self->_rx_duty_cycle_enabled) {
+		/* Duty cycle was disabled while hot — leave continuous RX as is. */
+		LOG_DBG("Hot window expired; duty cycle disabled, staying continuous");
+		return;
+	}
+
+	/* Cancel continuous RX, then enter duty cycle.  The patched driver
+	 * treats lora_recv_async(NULL,...) as "stop and return to sleep";
+	 * the next lora_recv_duty_cycle() call inside startReceive() will
+	 * pick up from STDBY and enter cycling with a fresh AGC. */
+	(void)lora_recv_async(self->_dev, NULL, NULL);
+	atomic_set(&self->_in_recv_mode, 0);
+	self->startReceive();
+	LOG_DBG("Hot RX window expired -> duty cycle");
+}
+
 /* ── RX/TX ────────────────────────────────────────────────────────────── */
 
 int LoRaRadioBase::recvRaw(uint8_t *bytes, int sz)
@@ -523,6 +619,12 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	_board->onBeforeTransmit();
 	atomic_set(&_tx_active, 1);
 	atomic_set(&_in_recv_mode, 0);
+
+	/* Cancel any in-flight hot-RX window: TX→hot-RX cycle restarts after
+	 * TX completes, so the pending timer would just race with the new TX. */
+	if (atomic_cas(&_hot_rx_active, 1, 0)) {
+		k_timer_stop(&_hot_rx_timer);
+	}
 
 	hwCancelReceive();
 	configureTx();
@@ -773,6 +875,13 @@ void LoRaRadioBase::enableRxDutyCycle(bool enable)
 {
 	_rx_duty_cycle_enabled = enable;
 	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
+
+	/* Cancel any pending hot-RX transition: we're explicitly choosing the
+	 * new RX mode now, so the deferred work would just fight us. */
+	if (atomic_cas(&_hot_rx_active, 1, 0)) {
+		k_timer_stop(&_hot_rx_timer);
+	}
+
 	if (atomic_get(&_in_recv_mode)) {
 		/* Restart receive to apply new duty cycle state */
 		hwCancelReceive();

@@ -634,7 +634,7 @@ index 30243ba5dc7..c5e346da139 100644
  	k_mutex_unlock(&data->lock);
  	return 0;
  }
-@@ -1083,14 +1408,469 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1408,500 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -982,6 +982,37 @@ index 30243ba5dc7..c5e346da139 100644
 +		return ret;
 +	}
 +
++	/* AGC reset on every entry: Calibrate(ALL) re-initialises the analog
++	 * frontend (ADC/PLL/RC) so the receiver starts with a clean AGC state.
++	 * Without this, an AGC lock-up from a strong adjacent-channel signal
++	 * persists across the cycle (the hardware-driven duty cycle never
++	 * fires an IRQ to trigger sx126x_restart_rx's calibration path), and
++	 * post-TX entry inherits whatever state the chip was in before TX.
++	 * Cost: ~5 ms — paid once per entry, not per internal duty-cycle wake. */
++	{
++		const struct sx126x_hal_config *hal_cfg = dev->config;
++
++		sx126x_calibrate(dev, SX126X_CALIBRATE_ALL);
++		k_busy_wait(5000);
++		ret = sx126x_hal_wait_busy(dev, 50);
++		if (ret < 0) {
++			k_mutex_unlock(&data->lock);
++			atomic_set(&data->state, SX126X_REST_STATE);
++			return ret;
++		}
++
++		/* Re-issue CalibrateImage for the operating frequency:
++		 * Calibrate(ALL) reverts image cal to the chip default
++		 * (902-928 MHz band) which kills RX sensitivity on
++		 * EU868 / 433 / 779 MHz operation. */
++		sx126x_calibrate_image(dev, data->config.frequency);
++
++		/* Re-apply DIO2 as RF switch — Calibrate resets it. */
++		if (hal_cfg->dio2_tx_enable) {
++			sx126x_set_dio2_as_rf_switch(dev, true);
++		}
++	}
++
 +	data->rx_cb = cb;
 +	data->rx_cb_user_data = user_data;
 +	atomic_inc(&data->rx_cb_gen);
@@ -1111,7 +1142,7 @@ index 30243ba5dc7..c5e346da139 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1112,6 +1892,7 @@ static int sx126x_pm_action(const struct device *dev,
+@@ -1112,6 +1923,7 @@ static int sx126x_pm_action(const struct device *dev,
  static int sx126x_init(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
@@ -1119,7 +1150,7 @@ index 30243ba5dc7..c5e346da139 100644
  	int ret;
  
  	/* Initialize data structures */
-@@ -1121,9 +1902,25 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1933,25 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);
