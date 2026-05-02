@@ -122,18 +122,6 @@ protected:
 	void configureRx();
 	void configureTx();
 	void startReceive();
-
-	/* Continuous (non-duty-cycle) RX entry, used for the post-TX hot
-	 * window so a quick reply (within ~3 s) is caught before we drop
-	 * back to duty cycle.  Caller must check _rx_duty_cycle_enabled
-	 * — only meaningful when duty cycle would otherwise be active. */
-	void startReceiveHot();
-
-	/* Decides between startReceiveHot() and startReceive() based on
-	 * whether duty cycle is currently enabled.  Used by the TX wait
-	 * thread on every TX completion path. */
-	void restartReceiveAfterTx();
-
 	void startTxThread(k_thread_stack_t *stack, size_t stack_size);
 
 	const struct device *_dev;
@@ -201,26 +189,6 @@ private:
 	struct k_thread _tx_wait_thread;
 	struct k_sem _tx_start_sem;
 	bool _tx_thread_running;
-
-	/* Post-TX hot-RX window: after every TX, run continuous RX for
-	 * POST_TX_HOT_RX_MS so a fast reply (e.g. our repeater echoing
-	 * our flood) can't fall into a duty-cycle sleep gap.  After the
-	 * timer expires, _hot_rx_expire_work cancels async RX and re-enters
-	 * via duty cycle (which now does Calibrate(ALL) on entry).
-	 * Hot window is gated by _rx_duty_cycle_enabled — if duty cycle
-	 * is disabled globally there's nothing to "hot up" relative to. */
-	/* Wrapper makes the work item standard-layout so CONTAINER_OF can
-	 * recover the owning radio without tripping the C++ -Winvalid-offsetof
-	 * warning that fires on the (non-standard-layout) LoRaRadioBase. */
-	struct HotRxWork {
-		struct k_work work;
-		LoRaRadioBase *self;
-	};
-	struct k_timer _hot_rx_timer;
-	HotRxWork _hot_rx_expire_work;
-	atomic_t _hot_rx_active;
-	static void hotRxTimerHandler(struct k_timer *timer);
-	static void hotRxExpireWorkFn(struct k_work *work);
 
 	/* Packet statistics */
 	atomic_t _packets_recv;
