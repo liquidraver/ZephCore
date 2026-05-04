@@ -23,6 +23,9 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
+static constexpr uint16_t RX_DUTY_RX_SYMBOLS = 10;
+static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 6;
+
 /* ── Constructor ─────────────────────────────────────────────── */
 
 LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
@@ -421,35 +424,18 @@ void LoRaRadioBase::startReceive()
 	int ret;
 
 	if (_rx_duty_cycle_enabled) {
-		/* Compute duty cycle timing from modem config (RadioLib algorithm).
-		 * The driver converts these to hardware-specific units. */
+		/* Fixed duty-cycle window for field validation.
+		 * Keep build-time tunable via constants above. */
 		struct lora_modem_config cfg;
 		buildModemConfig(cfg, false);
 
 		uint8_t sf = (uint8_t)cfg.datarate;
 		uint32_t bw_hz = bandwidth_to_hz(cfg.bandwidth);
 		float bw_khz = (float)bw_hz / 1000.0f;
-		/*uint16_t preamble_len = cfg.preamble_len;
-		  Duty-cycle timing assumption only: keep windows compatible with
-		 * meshes that commonly transmit with a 16-symbol preamble. */
-		uint16_t preamble_len = 16;
-		uint16_t min_symbols = (sf >= 7) ? 8 : 12;
-		int16_t sleep_symbols = (int16_t)preamble_len -
-					(int16_t)min_symbols;
-
-		if (sleep_symbols > 0) {
-			uint32_t symbol_us = (uint32_t)((float)(1 << sf) *
-							 1000.0f / bw_khz);
-			int16_t safe = sleep_symbols - 2;
-			if (safe < 1) safe = 1;
-			uint32_t sleep_us = (uint16_t)safe * symbol_us;
-
-			uint32_t preamble_us = (preamble_len + 1) * symbol_us;
-			int32_t w1 = ((int32_t)preamble_us -
-				      ((int32_t)sleep_us - 1000)) / 2;
-			uint32_t w2 = (min_symbols + 2) * symbol_us;
-			uint32_t rx_us = (w1 > 0 && (uint32_t)w1 > w2)
-					  ? (uint32_t)w1 : w2;
+		if (bw_khz > 0.0f) {
+			uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+			uint32_t rx_us = RX_DUTY_RX_SYMBOLS * symbol_us;
+			uint32_t sleep_us = RX_DUTY_SLEEP_SYMBOLS * symbol_us;
 
 			ret = lora_recv_duty_cycle(_dev,
 						   K_USEC(rx_us),
@@ -462,10 +448,6 @@ void LoRaRadioBase::startReceive()
 			if (ret != -ENOSYS) {
 				LOG_ERR("lora_recv_duty_cycle failed: %d", ret);
 			}
-		} else {
-			LOG_WRN("Preamble too short for duty cycle "
-				"(need >%d, have %d)",
-				min_symbols, preamble_len);
 		}
 		/* Fall through to normal recv_async */
 	}
