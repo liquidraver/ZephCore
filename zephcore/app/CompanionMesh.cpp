@@ -1278,17 +1278,9 @@ uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 
 uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
 {
-	float factor = getContentionTracker().getFloodDelayFactor();
-	uint32_t airtime = _radio->getEstAirtimeFor(
-		packet->getPathByteLen() + packet->payload_len + 2);
-	uint32_t max_jitter = (uint32_t)(5 * airtime * factor);
-	/* Companion spreads less aggressively than a repeater: half the
-	 * airtime ceiling, and a tighter absolute cap (1000ms vs 2000ms). */
-	uint32_t airtime_cap = 3 * airtime;
-	if (max_jitter > airtime_cap) max_jitter = airtime_cap;
-	if (max_jitter > 1000) max_jitter = 1000;
-	if (max_jitter == 0) return 0;
-	return getRNG()->nextInt(0, max_jitter + 1);
+	(void)packet;
+	/* Fixed companion origin jitter window: 20..150ms (inclusive). */
+	return 20 + getRNG()->nextInt(0, 131);
 }
 
 uint8_t CompanionMesh::getDutyCyclePercent() const

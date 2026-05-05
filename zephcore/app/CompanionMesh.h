@@ -247,10 +247,9 @@ protected:
 	uint32_t getRetransmitDelay(const mesh::Packet *packet) override;
 	uint32_t getDirectRetransmitDelay(const mesh::Packet *packet) override;
 
-	/* Companion doesn't forward, but needs surroundings awareness so its
-	 * initial TX spreads with local contention.  Enables passive EMA
-	 * warming and adaptive initial-flood jitter. */
-	bool passivelyTrackFloods() const override { return true; }
+	/* Companion initial flood jitter is fixed-window; passive flood
+	 * tracking is not needed unless forwarding is enabled. */
+	bool passivelyTrackFloods() const override { return false; }
 	uint32_t getInitialFloodJitter(const mesh::Packet *packet) override;
 
 	uint8_t getDutyCyclePercent() const override;
