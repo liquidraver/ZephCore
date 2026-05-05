@@ -33,12 +33,14 @@ void LR1110Radio::begin()
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */
 
-void LR1110Radio::hwConfigure(const struct lora_modem_config &cfg)
+bool LR1110Radio::hwConfigure(const struct lora_modem_config &cfg)
 {
 	int ret = lora_config(_dev, const_cast<struct lora_modem_config *>(&cfg));
 	if (ret < 0) {
 		LOG_ERR("lora_config failed: %d", ret);
+		return false;
 	}
+	return true;
 }
 
 void LR1110Radio::hwCancelReceive()

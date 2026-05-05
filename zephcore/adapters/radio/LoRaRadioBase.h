@@ -97,7 +97,7 @@ public:
 protected:
 	/* ── Hardware primitives — subclass MUST implement ─────────── */
 
-	virtual void hwConfigure(const struct lora_modem_config &cfg) = 0;
+	virtual bool hwConfigure(const struct lora_modem_config &cfg) = 0;
 	virtual void hwCancelReceive() = 0;
 	virtual int hwSendAsync(uint8_t *buf, uint32_t len,
 				struct k_poll_signal *sig) = 0;

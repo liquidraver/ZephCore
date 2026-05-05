@@ -20,7 +20,7 @@ public:
 
 protected:
 	/* Hardware primitives */
-	void hwConfigure(const struct lora_modem_config &cfg) override;
+	bool hwConfigure(const struct lora_modem_config &cfg) override;
 	void hwCancelReceive() override;
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;

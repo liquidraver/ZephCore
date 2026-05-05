@@ -24,7 +24,7 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 }
 
 static constexpr uint16_t RX_DUTY_RX_SYMBOLS = 10;
-static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 6;
+static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 4;
 
 /* ── Constructor ─────────────────────────────────────────────── */
 
@@ -306,9 +306,12 @@ void LoRaRadioBase::configureRx()
 		cfg.frequency, (int)cfg.bandwidth, (int)cfg.datarate,
 		(int)cfg.coding_rate, cfg.tx_power);
 
-	hwConfigure(cfg);
-	_last_cfg = cfg;
-	_config_cached = true;
+	if (hwConfigure(cfg)) {
+		_last_cfg = cfg;
+		_config_cached = true;
+	} else {
+		_config_cached = false;
+	}
 }
 
 void LoRaRadioBase::configureTx()
@@ -331,9 +334,12 @@ void LoRaRadioBase::configureTx()
 		return;
 	}
 
-	hwConfigure(cfg);
-	_last_cfg = cfg;
-	_config_cached = true;
+	if (hwConfigure(cfg)) {
+		_last_cfg = cfg;
+		_config_cached = true;
+	} else {
+		_config_cached = false;
+	}
 }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */

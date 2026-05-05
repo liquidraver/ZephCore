@@ -376,7 +376,9 @@ void Dispatcher::checkSend()
 		}
 	}
 
-	if (_radio->isReceiving() || !_radio->isRadioReady()) {
+	bool is_receiving = _radio->isReceiving();
+	bool is_radio_ready = _radio->isRadioReady();
+	if (is_receiving || !is_radio_ready) {
 		/* Channel busy or radio not command-ready — enforce retry timer
 		 * so we don't hammer checks during RX activity or BUSY windows. */
 		if (!millisHasNowPassed(next_tx_time)) {
@@ -391,7 +393,12 @@ void Dispatcher::checkSend()
 		}
 		if (now - cad_busy_start > getCADFailMaxDuration()) {
 			_err_flags |= ERR_EVENT_CAD_TIMEOUT;
-			LOG_ERR("checkSend: CAD timeout exceeded");
+			LOG_ERR("checkSend: CAD timeout exceeded (isReceiving=%d, isRadioReady=%d, inRecvMode=%d, rssi=%.1f, snr=%.1f, noise=%d, rx_ok=%u, rx_err=%u)",
+				(int)is_receiving, (int)is_radio_ready, (int)_radio->isInRecvMode(),
+				(double)_radio->getLastRSSI(), (double)_radio->getLastSNR(),
+				_radio->getNoiseFloor(),
+				(unsigned)_radio->getPacketsRecv(),
+				(unsigned)_radio->getPacketsRecvErrors());
 		} else {
 			uint32_t retry = getCADFailRetryDelay();
 			next_tx_time = futureMillis((int)retry);
@@ -446,8 +453,13 @@ void Dispatcher::checkSend()
 
 			/* Final gate — close the gap between initial checks and
 			 * actual TX start (serialisation + logging can take 1-5 ms). */
-			if (_radio->isReceiving() || !_radio->isRadioReady()) {
+			bool final_is_receiving = _radio->isReceiving();
+			bool final_is_radio_ready = _radio->isRadioReady();
+			if (final_is_receiving || !final_is_radio_ready) {
 				uint32_t retry = getCADFailRetryDelay();
+				LOG_DBG("checkSend: final gate blocked TX (isReceiving=%d, isRadioReady=%d, inRecvMode=%d)",
+					(int)final_is_receiving, (int)final_is_radio_ready,
+					(int)_radio->isInRecvMode());
 				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
 				outbound = nullptr;
 				if (_tx_queued_cb) {
