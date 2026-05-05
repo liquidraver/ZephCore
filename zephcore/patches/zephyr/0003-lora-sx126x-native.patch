@@ -68,7 +68,7 @@ index 17689720dd2..09982dc2e70 100644
  		return -EINVAL;
  	}
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index 30243ba5dc7..c5e346da139 100644
+index 30243ba5dc7..8611d76a782 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -10,10 +10,16 @@
@@ -443,6 +443,15 @@ index 30243ba5dc7..c5e346da139 100644
  	/* Re-enable the DIO1 interrupt for the next event (unless sleeping) */
  	if (atomic_get(&data->state) != SX126X_REST_STATE) {
  		sx126x_hal_dio1_irq_enable(dev);
+@@ -682,7 +884,7 @@ static int sx126x_lora_config(const struct device *dev,
+ 	/* Configure PA and TX power based on chip variant and frequency */
+ 	ret = sx126x_hal_configure_tx_params(dev, config->tx_power,
+ 						config->frequency,
+-						SX126X_RAMP_200_US);
++						SX126X_RAMP_800_US);
+ 	if (ret < 0) {
+ 		goto out;
+ 	}
 @@ -698,6 +900,29 @@ static int sx126x_lora_config(const struct device *dev,
  		goto out;
  	}
@@ -634,6 +643,15 @@ index 30243ba5dc7..c5e346da139 100644
  	k_mutex_unlock(&data->lock);
  	return 0;
  }
+@@ -1051,7 +1376,7 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+ 
+ 	/* Set PA config and TX power */
+ 	ret = sx126x_hal_configure_tx_params(dev, tx_power, frequency,
+-						SX126X_RAMP_200_US);
++						SX126X_RAMP_800_US);
+ 	if (ret < 0) {
+ 		sx126x_set_sleep(dev);
+ 		k_mutex_unlock(&data->lock);
 @@ -1083,14 +1408,500 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }

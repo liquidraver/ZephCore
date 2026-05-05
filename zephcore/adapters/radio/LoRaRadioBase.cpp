@@ -23,8 +23,8 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
-static constexpr uint16_t RX_DUTY_RX_SYMBOLS = 10;
-static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 4;
+static constexpr uint16_t RX_DUTY_RX_SYMBOLS = 13;
+static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 3;
 
 /* ── Constructor ─────────────────────────────────────────────── */
 
