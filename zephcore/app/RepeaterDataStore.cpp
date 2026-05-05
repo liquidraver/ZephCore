@@ -137,9 +137,6 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.flood_advert_interval = 25;
         prefs.loop_detect = LOOP_DETECT_MINIMAL;
         prefs.path_hash_mode = 1;
-#if IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)
-        prefs.rx_duty_cycle = 1;
-#endif
         /* Persist defaults so flash always has a prefs file from boot 1.
          * Lets later code (e.g. tempradio revert) trust that flash is
          * authoritative without a "first run" special case. */
@@ -237,11 +234,15 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.rx_boost = 1;
         prefs.path_hash_mode = 1;
         prefs.loop_detect = LOOP_DETECT_MINIMAL;
-#if IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)
-        prefs.rx_duty_cycle = 1;
-#endif
         savePrefs(prefs);
         LOG_INF("loadPrefs: upgraded prefs format (%d -> 294 bytes)", (int)entry.size);
+    }
+
+    /* One-time migration: disable RX duty cycle if it was previously enabled. */
+    if (prefs.rx_duty_cycle != 0) {
+        prefs.rx_duty_cycle = 0;
+        savePrefs(prefs);
+        LOG_INF("loadPrefs: migrated rx_duty_cycle to disabled");
     }
     return true;
 }

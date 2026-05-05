@@ -534,7 +534,7 @@ int main(void)
 	companion_mesh.prefs.tx_power_dbm = 22;
 	companion_mesh.prefs.rx_delay_base = 0.0f;  /* Disabled for companion */
 	companion_mesh.prefs.airtime_factor = 9.0f; /* Arduino formula: 100/(af+1) → 10% (EU 868 default) */
-	companion_mesh.prefs.rx_duty_cycle = 1;     /* Companions: duty cycle ON by default (power save) */
+	companion_mesh.prefs.rx_duty_cycle = 0;     /* Default OFF: continuous RX */
 	companion_mesh.prefs.rx_boost = 1;          /* Default: boosted RX (+3dB sensitivity, +2mA) */
 	companion_mesh.prefs.apc_enabled = 0;       /* Default: APC off */
 	companion_mesh.prefs.apc_margin = 20;       /* Companions: more conservative margin (mobile) */
