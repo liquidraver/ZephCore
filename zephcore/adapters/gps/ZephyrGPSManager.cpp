@@ -105,7 +105,6 @@ static uint32_t gps_wake_interval_ms   = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC *
 
 static bool gps_repeater_mode = false;  /* True = repeater (time sync only), False = companion */
 static bool gnss_activity_seen_this_cycle = false;  /* Runtime-only: set by GNSS callback while acquiring */
-static bool gps_runtime_no_gnss_activity = false;   /* Runtime-only: repeater disables periodic GPS until reboot */
 
 /* Forward declarations for work handlers and state functions */
 static void gps_wake_work_fn(struct k_work *work);
@@ -885,21 +884,6 @@ static void gps_software_wake(void)
  * FORCE_ON pin LOW for L76K hardware standby. */
 static void gps_go_to_standby(void)
 {
-	if (gps_repeater_mode && gps_runtime_no_gnss_activity) {
-		LOG_WRN("GPS: No GNSS activity detected; disabling repeater GPS cycles until reboot");
-		gps_current_state = GPS_STATE_OFF;
-		consecutive_good_fixes = 0;
-		standby_start_ms = 0;
-		standby_interval_ms = 0;
-
-#if HAS_GPS_POWER_CONTROL
-		gps_power_control(false, true);
-#elif HAS_GPS_UART
-		gps_software_sleep();
-#endif
-		return;
-	}
-
 	uint64_t wake_interval = gps_repeater_mode ?
 		GPS_REPEATER_SYNC_INTERVAL_MS : gps_wake_interval_ms;
 
@@ -943,11 +927,6 @@ static void gps_go_to_standby(void)
  * queue which may be processing stale UART data. */
 static void gps_start_acquiring(void)
 {
-	if (gps_repeater_mode && gps_runtime_no_gnss_activity) {
-		LOG_INF("GPS: Repeater cycles are runtime-disabled (no GNSS activity detected)");
-		return;
-	}
-
 	LOG_INF("GPS: Waking for %s", gps_repeater_mode ? "time sync" : "position fix");
 	gps_current_state = GPS_STATE_ACQUIRING;
 	consecutive_good_fixes = 0;
@@ -1005,8 +984,7 @@ static void gps_timeout_work_fn(struct k_work *work)
 		consecutive_good_fixes, GPS_GOOD_FIX_COUNT);
 
 	if (gps_repeater_mode && !gnss_activity_seen_this_cycle) {
-		LOG_WRN("GPS: Repeater acquire window had no GNSS callbacks; disabling periodic GPS until reboot");
-		gps_runtime_no_gnss_activity = true;
+		LOG_WRN("GPS: Repeater acquire window had no GNSS callbacks; retrying on next cycle");
 	}
 
 	atomic_or(&pending_gps_actions, GPS_ACTION_TIMEOUT);
@@ -1290,7 +1268,6 @@ void gps_set_repeater_mode(bool repeater)
 		LOG_INF("GPS: Repeater mode - starting initial time sync, then every 48h");
 
 		gps_enabled = true;  /* Logically enabled */
-		gps_runtime_no_gnss_activity = false;
 
 		/* Start acquiring immediately for initial time sync at boot.
 		 * GPS hardware is already powered from bootloader, so we just
