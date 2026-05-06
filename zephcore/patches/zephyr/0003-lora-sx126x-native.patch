@@ -672,7 +672,7 @@ index 30243ba5dc7..befb84797eb 100644
  	if (ret < 0) {
  		sx126x_set_sleep(dev);
  		k_mutex_unlock(&data->lock);
-@@ -1083,14 +1414,500 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1083,14 +1414,505 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  	return 0;
  }
  
@@ -724,6 +724,11 @@ index 30243ba5dc7..befb84797eb 100644
 +	}
 +
 +	sx126x_get_irq_status(dev, &irq_status);
++	/* Preamble/header IRQ bits are level-latched until cleared.
++	 * Read-and-clear here so transient detect events don't pin
++	 * is_receiving() true forever and deadlock TX gating. */
++	sx126x_clear_irq_status(dev, SX126X_IRQ_PREAMBLE_DETECTED |
++				     SX126X_IRQ_HEADER_VALID);
 +	k_mutex_unlock(&data->lock);
 +
 +	return (irq_status & (SX126X_IRQ_PREAMBLE_DETECTED |
@@ -1180,7 +1185,7 @@ index 30243ba5dc7..befb84797eb 100644
  };
  
  #ifdef CONFIG_PM_DEVICE
-@@ -1112,6 +1929,7 @@ static int sx126x_pm_action(const struct device *dev,
+@@ -1112,6 +1934,7 @@ static int sx126x_pm_action(const struct device *dev,
  static int sx126x_init(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
@@ -1188,7 +1193,7 @@ index 30243ba5dc7..befb84797eb 100644
  	int ret;
  
  	/* Initialize data structures */
-@@ -1121,9 +1939,25 @@ static int sx126x_init(const struct device *dev)
+@@ -1121,9 +1944,25 @@ static int sx126x_init(const struct device *dev)
  	k_msgq_init(&data->rx_msgq, (char *)&data->rx_result,
  		    sizeof(struct sx126x_rx_result), 1);
  	k_work_init(&data->irq_work, sx126x_irq_work_handler);
