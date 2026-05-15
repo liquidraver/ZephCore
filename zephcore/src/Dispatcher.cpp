@@ -400,6 +400,18 @@ void Dispatcher::checkSend()
 				_radio->getNoiseFloor(),
 				(unsigned)_radio->getPacketsRecv(),
 				(unsigned)_radio->getPacketsRecvErrors());
+			/* With the non-destructive sx126x_is_receiving() we lost
+			 * the accidental side-effect IRQ clear that used to break
+			 * us out of stuck preamble bits.  Walk the chip back
+			 * through REST → fresh RX, which bulk-clears IRQ status
+			 * and resets the rx_packet_active latch.  Then re-wake the
+			 * loop promptly so the next checkSend() retries TX. */
+			_radio->recoverRxState();
+			cad_busy_start = 0;
+			if (_tx_queued_cb) {
+				_tx_queued_cb(1, _tx_queued_user_data);
+			}
+			return;
 		} else {
 			uint32_t retry = getCADFailRetryDelay();
 			next_tx_time = futureMillis((int)retry);

@@ -25,7 +25,7 @@ protected:
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;
 	int16_t hwGetCurrentRSSI() override;
-	bool hwIsPreambleDetected() override;
+	bool hwIsReceiving() override;
 	void hwSetRxBoost(bool enable) override;
 	void hwResetAGC() override;
 };

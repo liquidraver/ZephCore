@@ -27,6 +27,13 @@ public:
 	virtual bool isInRecvMode() const = 0;
 	virtual bool isReceiving() { return false; }
 	virtual bool isRadioReady() { return true; }
+
+	/* Reset the radio back into a known good RX state.  Called by the
+	 * Dispatcher on CAD timeout (when isReceiving() pinned true past the
+	 * recovery threshold).  Default no-op — radios that can stall should
+	 * override to walk the chip through cancel → REST → fresh RX, which
+	 * also bulk-clears IRQ status and any internal busy latches. */
+	virtual void recoverRxState() {}
 	virtual float getLastRSSI() const { return 0; }
 	virtual float getLastSNR() const { return 0; }
 

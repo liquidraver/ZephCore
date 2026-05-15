@@ -639,10 +639,21 @@ static int lr11xx_lora_send_async(const struct device *dev,
 	if (data->tx_active) return -EBUSY;
 	if (data_len > 255 || data_len == 0) return -EINVAL;
 
-	/* LBT: perform blocking CAD before transmitting */
+	/* LBT: perform blocking CAD before transmitting.  On CAD-busy, restore
+	 * RX in-driver before returning -EBUSY so the C++ layer doesn't have
+	 * to do a full cancel-then-restart round-trip.  lr11xx_lora_cad
+	 * transitions the chip to STANDBY and clears data->in_rx_mode as
+	 * part of running CAD; capture the pre-CAD state to know whether
+	 * to re-arm. */
 	if (data->modem_cfg.cad.mode == LORA_CAD_MODE_LBT) {
+		bool was_in_rx = data->in_rx_mode;
 		int cad_ret = lr11xx_lora_cad(dev, K_MSEC(200));
 		if (cad_ret > 0) {
+			if (was_in_rx && data->async_rx_cb != NULL) {
+				k_mutex_lock(&data->spi_mutex, K_FOREVER);
+				lr11xx_start_rx(data, cfg);
+				k_mutex_unlock(&data->spi_mutex);
+			}
 			return -EBUSY;
 		}
 		if (cad_ret < 0 && cad_ret != -ENOSYS) {

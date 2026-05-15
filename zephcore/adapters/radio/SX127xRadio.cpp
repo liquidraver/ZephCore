@@ -7,7 +7,7 @@
  * provides via sx126x_ext.h are not available here:
  *
  *   hwGetCurrentRSSI()    — returns -80 dBm sentinel (no hardware path)
- *   hwIsPreambleDetected()— always false (no preamble-detect IRQ exposed)
+ *   hwIsReceiving()       — always false (no preamble/header IRQ exposed)
  *   hwSetRxBoost()        — no-op (SX127x has no RX boost register)
  *   hwResetAGC()          — no-op (loramac-node manages AGC internally)
  *   hwIsChipBusy()        — inherited false (no BUSY pin on SX127x)
@@ -77,11 +77,14 @@ int16_t SX127xRadio::hwGetCurrentRSSI()
 	return -80;
 }
 
-bool SX127xRadio::hwIsPreambleDetected()
+bool SX127xRadio::hwIsReceiving()
 {
-	/* No preamble-detect IRQ accessible through the standard Zephyr LoRa
-	 * API for the loramac-node driver.  Returning false means TX will
-	 * not abort for an in-progress preamble — acceptable on SX127x. */
+	/* MUST be non-destructive (trivially: stub returns false).
+	 * No preamble/header IRQ accessible through the standard Zephyr LoRa
+	 * API for the loramac-node driver.  Returning false means the
+	 * isReceiving() fallback uses isChannelActive() (RSSI-based) on
+	 * SX127x — acceptable as a degraded path; SX127x is not the focus
+	 * of this fix. */
 	return false;
 }
 

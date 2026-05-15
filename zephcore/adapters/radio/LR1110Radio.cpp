@@ -59,8 +59,12 @@ int16_t LR1110Radio::hwGetCurrentRSSI()
 	return lr11xx_get_rssi_inst(_dev);
 }
 
-bool LR1110Radio::hwIsPreambleDetected()
+bool LR1110Radio::hwIsReceiving()
 {
+	/* MUST be non-destructive: never clear IRQ bits from this path.
+	 * Foreign-preamble release is hardware-driven (chip-internal release
+	 * on HEADER_ERROR / sync timeout). The driver's lr11xx_is_receiving()
+	 * reads IRQ status without clearing. */
 	return lr11xx_is_receiving(_dev);
 }
 

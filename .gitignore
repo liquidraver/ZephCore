@@ -95,3 +95,5 @@ CLAUDE.md
 zephcore/apc_checklist.md
 zephcore/apc.md
 RADIO_AUDIT_INDEX.md
+RX_BUSY_LATCH_PLAN.md
+zephcore/SX126X_LBT_RX_DEBUG_HANDOFF.md

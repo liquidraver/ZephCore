@@ -216,9 +216,13 @@ loop():
      - Flood packets: compute RX delay based on score → defer or process immediately
      - Direct packets: process immediately
   4. checkSend(): Check outbound queue
-     - CAD: if channel busy, retry every 100-200ms (jittered) up to 4s total
+     - CAD: if channel busy (`isReceiving()` returns true or radio not ready),
+            retry every 100-200ms (jittered) up to 4s total. On 4s timeout,
+            call `_radio->recoverRxState()` (cancel + restart, clears IRQ +
+            latch + grace timestamp) and re-wake the loop instead of falling
+            through to TX.
      - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
-     - Final LBT check right before TX (closes timing gap)
+     - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
 ```
 
@@ -298,17 +302,50 @@ Compile-time selection via `CONFIG_ZEPHCORE_RADIO_LR1110` in `RadioIncludes.h`.
 
 ### 5.2 LoRaRadioBase State Machine
 
-**TX Flow**:
-1. `startSendRaw()` → cancel RX → configure TX → copy to buffer → async send → wake TX wait thread
-2. TX wait thread blocks on semaphore, polls completion signal (5s timeout)
-3. On DIO1 TX_DONE interrupt → signal raised → restart RX → update stats
+**TX Flow** (LBT — current default; `cad.mode == LORA_CAD_MODE_LBT` is set unconditionally in `buildModemConfig`):
+1. `startSendRaw()` → `isReceiving()` final gate → `_tx_active = 1` → **skip** `hwCancelReceive()` and leave `_in_recv_mode = 1` so the driver sees state == RX → `configureTx()` → async send.
+2. SX126x `send_async` entry CAS accepts both `REST_STATE → TX` and `RX → TX`, recording `was_rx`. LBT branch issues `set_standby(RC)` then SetCAD. On CAD-busy: in-driver `sx126x_restart_rx` puts the chip back in RX before `-EBUSY` returns. C++ failure path calls `startReceive()`, which the driver's `lora_recv_async` short-circuits when state is already RX.
+3. On TX success: `_in_recv_mode = 0`, TX wait thread blocks on semaphore (5 s timeout).
+4. On DIO1 `TX_DONE` interrupt → signal raised → restart RX → update stats.
 
 **RX Flow**:
-1. `lora_recv_async()` with callback
-2. ISR writes to 8-slot SPSC ring buffer (drops NEW packet on overflow)
-3. Main thread drains via `recvRaw()`
+1. `lora_recv_async()` with callback. SX126x `recv_async` clears `IRQ_ALL` and resets the RX-busy signals on every fresh entry.
+2. ISR writes to 8-slot SPSC ring buffer (drops NEW packet on overflow).
+3. Main thread drains via `recvRaw()`.
 
-**Config Caching**: Avoids redundant `lora_config()` calls. Fast-path for TX↔RX transitions when only direction differs.
+**Config Caching**: Avoids redundant `lora_config()` calls. Fast-path for TX↔RX transitions when only direction differs. `recoverRxState()` clears the cache (`_config_cached = false`) so post-recovery RX goes through the full path.
+
+### 5.2.1 RX-Busy Gate (TX-during-RX prevention)
+
+`LoRaRadioBase::isReceiving()` is the single software source of truth for "currently receiving" and is consulted at three sites: dispatcher initial gate, dispatcher final gate, and `startSendRaw`'s last-moment gate. Logic:
+
+```
+isReceiving()
+  ├─ false if !_in_recv_mode || _tx_active
+  ├─ true  if hwIsReceiving()         ← per-adapter; never clears IRQ
+  └─ isChannelActive() RSSI fallback  ← sub-preamble-threshold energy
+```
+
+For SX126x, `hwIsReceiving()` → `sx126x_is_receiving()` reads in this order:
+1. **`data->rx_packet_active`** latch (no SPI). Set by the work handler on `HEADER_VALID`; cleared on every terminal event and RX (re)start. Covers the full payload phase.
+2. **Mutex-busy conservative** — if the SPI mutex is contended and `state == RX`, return true (the work handler is likely mid-`RxDone`).
+3. **`HEADER_VALID` raw bit** — covers the microseconds between DIO1 firing and the work handler running.
+4. **`PREAMBLE_DETECTED` raw bit with SF-aware grace** — `PREAMBLE_DETECTED` is masked off DIO1 (fires on noise), but visible in the IRQ register. On first observation, `is_receiving` records `data->preamble_seen_at_ms`; subsequent calls return true until either `HEADER_VALID` promotes the latch (timestamp reset) or `(preamble_len + 8) × 2^SF / BW` ms elapses — at which point the bit is explicitly cleared and TX is allowed. Grace scales with SF: ~82 ms at SF8, ~786 ms at SF12.
+
+The poll path is otherwise non-destructive — IRQ bits are cleared only by the work-handler bulk clear (on any DIO1 event), explicit `clear_irq_status(IRQ_ALL)` at every RX (re)start, and the grace-expiry one-bit clear for foreign preambles.
+
+### 5.2.2 CAD-Timeout Recovery
+
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadioBase::recoverRxState()` does:
+
+```cpp
+hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
+atomic_set(&_in_recv_mode, 0);  // resync C++ side
+_config_cached = false;         // force full lora_config on the way back
+startReceive();                 // CAS(REST → RX) clears latch + IRQ
+```
+
+This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX. After recovery, the dispatcher fires `_tx_queued_cb(1, ...)` to re-wake the loop promptly.
 
 ### 5.3 Noise Floor EMA
 

@@ -134,8 +134,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         initNodePrefs(&prefs);
         strcpy(prefs.node_name, "Repeater");
         prefs.advert_loc_policy = ADVERT_LOC_PREFS;
-        prefs.flood_advert_interval = 25;
-        prefs.loop_detect = LOOP_DETECT_MINIMAL;
+        prefs.loop_detect = LOOP_DETECT_MODERATE;
         prefs.path_hash_mode = 1;
         /* Persist defaults so flash always has a prefs file from boot 1.
          * Lets later code (e.g. tempradio revert) trust that flash is
@@ -233,7 +232,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     if (ret >= 0 && entry.size < 294) {
         prefs.rx_boost = 1;
         prefs.path_hash_mode = 1;
-        prefs.loop_detect = LOOP_DETECT_MINIMAL;
+        prefs.loop_detect = LOOP_DETECT_MODERATE;
         savePrefs(prefs);
         LOG_INF("loadPrefs: upgraded prefs format (%d -> 294 bytes)", (int)entry.size);
     }

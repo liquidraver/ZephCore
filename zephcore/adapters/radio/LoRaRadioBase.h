@@ -70,6 +70,7 @@ public:
 	void triggerNoiseFloorCalibrate(int threshold) override;
 	void resetAGC() override;
 	bool isReceiving() override;
+	void recoverRxState() override;
 
 	/* Extended API */
 	bool isChannelActive(int threshold = 0);
@@ -102,7 +103,9 @@ protected:
 	virtual int hwSendAsync(uint8_t *buf, uint32_t len,
 				struct k_poll_signal *sig) = 0;
 	virtual int16_t hwGetCurrentRSSI() = 0;
-	virtual bool hwIsPreambleDetected() = 0;
+	/* Non-destructive read of the radio's "currently receiving" signal —
+	 * latch + raw IRQ bits, never clears.  Backs LoRaRadioBase::isReceiving(). */
+	virtual bool hwIsReceiving() = 0;
 	virtual void hwSetRxBoost(bool enable) = 0;
 	virtual void hwResetAGC() = 0;
 

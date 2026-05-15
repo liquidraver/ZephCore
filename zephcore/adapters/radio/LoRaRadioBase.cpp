@@ -511,19 +511,35 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 		return false;
 	}
 
-	/* Last-moment hardware check before killing active RX.
-	 * Closes the race between the Dispatcher's isReceiving() guard
-	 * and hwCancelReceive() — if a preamble arrived in that gap,
-	 * abort TX and let the Dispatcher re-queue. */
-	if (hwIsPreambleDetected()) {
+	/* Last-moment software check before killing active RX.  Uses the full
+	 * isReceiving() (latch + non-destructive raw bits) so the final gate
+	 * honors the same source of truth as the dispatcher's earlier gates.
+	 * Closes the serialisation/logging gap between the dispatcher's check
+	 * and the TX-state transition below. */
+	if (isReceiving()) {
 		return false;
 	}
 
 	_board->onBeforeTransmit();
 	atomic_set(&_tx_active, 1);
-	atomic_set(&_in_recv_mode, 0);
 
-	hwCancelReceive();
+	/* Phase 2: when LBT is enabled, skip the pre-emptive hwCancelReceive()
+	 * and keep _in_recv_mode = 1 so the driver's send_async sees state == RX
+	 * (the Phase-2 entry CAS path).  On CAD-busy the driver restores RX
+	 * internally; on success the chip transitions cleanly into TX without
+	 * the redundant ~1–3 ms C++ cancel-then-restart round-trip.
+	 * isReceiving() returns false during the CAD window because _tx_active
+	 * is set above — no extra gating needed.
+	 *
+	 * cad.mode = LBT is set unconditionally in buildModemConfig() today;
+	 * the `lbt` flag is a placeholder for any future Kconfig that toggles
+	 * the behaviour. */
+	const bool lbt = true;
+
+	if (!lbt) {
+		atomic_set(&_in_recv_mode, 0);
+		hwCancelReceive();
+	}
 	configureTx();
 
 	memcpy(_tx_buf, bytes, len);
@@ -534,9 +550,19 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 		LOG_ERR("hwSendAsync failed: %d", ret);
 		_board->onAfterTransmit();
 		atomic_set(&_tx_active, 0);
+		/* startReceive() is safe to call here regardless of failure
+		 * cause: on SX126x, recv_async early-returns if the driver
+		 * already restored RX on CAD-busy (Phase 2 idempotent fast
+		 * path); on LR11xx/LR20xx, the LBT branch restores RX before
+		 * returning -EBUSY (Phase 2 mirror), so start_rx is also a
+		 * no-op there.  On other failure modes the chip is in REST,
+		 * recv_async transitions normally. */
 		startReceive();
 		return false;
 	}
+
+	/* TX has actually started — now we're no longer in RX. */
+	atomic_set(&_in_recv_mode, 0);
 
 	LOG_DBG("TX started async, len=%d", len);
 	k_sem_give(&_tx_start_sem);
@@ -748,10 +774,33 @@ bool LoRaRadioBase::isReceiving()
 	if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active)) {
 		return false;
 	}
-	if (hwIsPreambleDetected()) {
+	/* Driver-side latch + non-destructive IRQ read covers the full
+	 * payload phase.  hwIsReceiving() never clears IRQ bits; foreign
+	 * preambles release via hardware (SymbNumTimeout on SX126x non-DC
+	 * or chip-internal sync timer on DC / LR11xx / LR20xx). */
+	if (hwIsReceiving()) {
 		return true;
 	}
 	return isChannelActive();
+}
+
+void LoRaRadioBase::recoverRxState()
+{
+	/* Called by the Dispatcher on CAD timeout when isReceiving() has been
+	 * pinned true past the recovery threshold (4 s).  We must escape a
+	 * stuck driver state == RX — a bare startReceive() can't do this
+	 * because the driver's lora_recv_async entry CAS is REST_STATE → RX,
+	 * which fails when state is already RX and would set _in_recv_mode = 0
+	 * on the -EBUSY return.  Walk the chip back through REST first.
+	 *
+	 * The RX-restart sites in the driver (recv_async, recv_duty_cycle,
+	 * restart_rx) all bulk-clear IRQ status and reset the rx_packet_active
+	 * latch as part of their entry, so this sequence cleanly flushes a
+	 * stuck PREAMBLE_DETECTED bit or a stale latch. */
+	hwCancelReceive();
+	atomic_set(&_in_recv_mode, 0);
+	_config_cached = false;
+	startReceive();
 }
 
 bool LoRaRadioBase::isChannelActive(int threshold)

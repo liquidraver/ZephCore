@@ -873,8 +873,7 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     initNodePrefs(&_prefs);
     strcpy(_prefs.node_name, "Repeater");
     _prefs.advert_loc_policy = ADVERT_LOC_PREFS;  // Repeaters always advertise prefs coordinates
-    _prefs.flood_advert_interval = 25;            // hours
-    _prefs.loop_detect = LOOP_DETECT_MINIMAL;
+    _prefs.loop_detect = LOOP_DETECT_MODERATE;
     _prefs.path_hash_mode = 1;
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
     memset(&_uplink_creds, 0, sizeof(_uplink_creds));

@@ -33,9 +33,11 @@ protected:
 	 * will converge on this value rather than the real noise floor. */
 	int16_t hwGetCurrentRSSI() override;
 
-	/* SX127x has no preamble-detected IRQ accessible via standard API.
-	 * Always returns false — TX will not abort for a detected preamble. */
-	bool hwIsPreambleDetected() override;
+	/* SX127x has no preamble/header IRQ accessible via standard API.
+	 * Always returns false — TX will not gate on the chip-level RX-busy
+	 * signal.  isReceiving() falls back to the RSSI-based isChannelActive()
+	 * for SX127x users. */
+	bool hwIsReceiving() override;
 
 	/* SX127x has no RX boost / LNA gain switch via standard API. No-op. */
 	void hwSetRxBoost(bool enable) override;
