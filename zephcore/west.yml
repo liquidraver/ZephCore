@@ -4,13 +4,9 @@ manifest:
       url-base: https://github.com/zephyrproject-rtos
 
   projects:
-    - name: hal_espressif
-      remote: zephyrproject-rtos
-      revision: b7953b8019361d09e613f7011d2ccc41b984d087
-      path: modules/hal/espressif
     - name: zephyr
       remote: zephyrproject-rtos
-      revision: 684c9e8f32e4373a21098559f748f06915f950c9
+      revision: b8ff81925771c5f72cb70845e529d22005de0e4d
       import: true
 
   self:
