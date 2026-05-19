@@ -1,0 +1,318 @@
+/*
+ * Heltec T114 — nRF52840 + SX1262 + ST7789 1.14" 240×135 TFT + ATGM336H GPS
+ * Copyright (c) 2026 ZephCore
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include <nordic/nrf52840_partition.dtsi>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include "heltec_t114_nrf52840-pinctrl.dtsi"
+
+/* Delete default partitions from nrf52840_partition.dtsi */
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/ {
+	model = "Heltec T114";
+	compatible = "heltec,t114";
+
+	chosen {
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &mono_tft;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* LED_BUILTIN on P1.03, active-LOW (LED_STATE_ON = LOW) */
+		tx_led: led_0 {
+			gpios = <&gpio1 3 GPIO_ACTIVE_LOW>;
+			label = "LoRa TX LED";
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		user_button: button_0 {
+			gpios = <&gpio1 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "User Button";
+		};
+	};
+
+	/* Input filter: user button long-press detection (1000ms) */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_POWER>;
+		long-delay-ms = <1000>;
+	};
+
+	/* Input filter: user button multi-tap detection
+	 * 1 tap  (400ms wait) → KEY_1 = page next on TFT
+	 * 2 taps (400ms wait) → KEY_B = flood advert
+	 * 3 taps (400ms wait) → KEY_D = buzzer mute toggle
+	 * 4 taps (400ms wait) → KEY_C = GPS on/off
+	 * 5 taps (immediate)  → KEY_E = LED heartbeat toggle */
+	user_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		/* No 'input' phandle — listen to ALL devices.
+		 * KEY_A is emitted by the longpress pseudo-device,
+		 * not by &buttons, so we must not filter by device. */
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C INPUT_KEY_E>;
+		tap-delay-ms = <400>;
+	};
+
+	/* GPS power enable — P0.21, HIGH = GPS powered on */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* GPS hardware reset — P1.06, active-LOW (PIN_GPS_RESET_ACTIVE=LOW) */
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+			label = "GPS Reset";
+		};
+	};
+
+	/*
+	 * Battery ADC enable — P0.06, HIGH = enable divider for measurement.
+	 * ZephyrBoard::getBattMilliVolts() calls regulator_{enable,disable}
+	 * around each reading to save power.
+	 */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * TFT power rail — P0.03, active-LOW (PIN_TFT_VDD_CTL LOW = display on).
+	 * Owned by display.c: enabled before CFB init, never disabled.
+	 * Screenless builds (no_display.conf) never call display.c so this
+	 * pin stays HIGH and the panel VDD rail is never powered.
+	 */
+	tft_pwr_enable: tft-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "tft-pwr-enable";
+		enable-gpios = <&gpio0 3 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * TFT backlight — P0.15, active-LOW (PIN_TFT_LEDA_CTL LOW = backlight on).
+	 * Named disp_pwr_enable so display.c auto-gates it with the display on/off.
+	 */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * Monochrome wrapper around the ST7789V.
+	 * Reports PIXEL_FORMAT_MONO01 to CFB → ~4 KB framebuffer instead of ~64 KB.
+	 * display.c picks this up via the zephyr,display chosen node.
+	 */
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&tft>;
+		width = <240>;
+		height = <135>;
+	};
+
+	/*
+	 * MIPI-DBI SPI bus for ST7789V.
+	 * DC=P0.12 (PIN_TFT_DC=12), RST=P0.02 (PIN_TFT_RST=2, active-LOW).
+	 * write-only: no MISO on display SPI.
+	 */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi3>;
+		dc-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		tft: st7789v@0 {
+			compatible = "sitronix,st7789v";
+			mipi-max-frequency = <20000000>;
+			reg = <0>;
+			width = <240>;
+			height = <135>;
+			x-offset = <40>;
+			y-offset = <53>;
+			/* MADCTL=0x60: MX|MV, RGB order (landscape, derived from MeshCore landscapeScreen()) */
+			mdac = <0x60>;
+			colmod = <0x55>;
+			vcom = <0x20>;
+			gctrl = <0x35>;
+			vrhs = <0x0b>;
+			vdvs = <0x20>;
+			gamma = <0x01>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			nvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			ram-param = [00 f0];
+			rgb-param = [40 02 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+		};
+	};
+
+	zephyr,user {
+		io-channels = <&adc 2>;
+		/*
+		 * Full-scale = 3600 mV (ADC_GAIN_1_6 + ADC_REF_INTERNAL),
+		 * voltage divider ratio = 4.9 (ADC_MULTIPLIER from variant.h).
+		 * multiplier = 3600 * 4.9 = 17640
+		 */
+		vbat-mv-multiplier = <17640>;
+	};
+
+	aliases {
+		led0 = &tx_led;
+		lora-tx-led = &tx_led;
+		sw0 = &user_button;
+		lora0 = &lora;
+		watchdog0 = &wdt0;
+		gps-enable = &gps_enable_pin;
+		gps-reset = &gps_reset_pin;
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+/* DC-DC converter (NRF52BoardDCDC) */
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* Battery voltage on P0.04 (AIN2) — 4.9:1 divider, 3.0V ref in Arduino */
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN2>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/* SPI2 - SX1262 LoRa radio */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 24 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		reset-gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
+		busy-gpios = <&gpio0 17 GPIO_ACTIVE_HIGH>;
+		dio1-gpios = <&gpio0 20 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+		dio2-tx-enable;
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+		spi-max-frequency = <8000000>;
+		rx-boosted;
+	};
+};
+
+/* SPI3 - ST7789 1.14" 240×135 TFT display */
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * QSPI Flash (MX25R1635F 2MB) — DISABLED.
+ */
+&qspi {
+	status = "disabled";
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* SoftDevice s140 v6.1.1 flash layout (app@0x26000, bootloader@0xF4000) */
+#include "../../common/nrf52_partitions_sdv6.dtsi"
+#include "../../common/nrf52_wakeup.dtsi"

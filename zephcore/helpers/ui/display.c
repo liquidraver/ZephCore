@@ -59,6 +59,16 @@ static const struct device *backlight_reg;
 
 static bool backlight_on;
 
+/* Optional TFT panel VDD regulator (e.g. T114 P0.03).
+ * Enabled once before CFB init and never disabled => panel VDD must stay on.
+ * Screenless builds omit display.c entirely so this is never called. */
+#if DT_NODE_EXISTS(DT_NODELABEL(tft_pwr_enable))
+static const struct device *panel_vdd_reg =
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(tft_pwr_enable));
+#else
+static const struct device *panel_vdd_reg;
+#endif
+
 /* EPD frame change detection (Arduino-style):
  * hash draw calls across a frame and skip hardware flush if unchanged. */
 static uint32_t epd_frame_hash;
@@ -93,6 +103,13 @@ static inline void backlight_set(bool on)
 			regulator_disable(backlight_reg);
 		}
 		backlight_on = on;
+	}
+}
+
+static inline void panel_vdd_enable(void)
+{
+	if (panel_vdd_reg && device_is_ready(panel_vdd_reg)) {
+		regulator_enable(panel_vdd_reg);
 	}
 }
 
@@ -201,6 +218,10 @@ int mc_display_init(void)
 	if (!is_epd) {
 		display_blanking_on(disp_dev);
 	}
+
+	/* Enable panel VDD before CFB init so the controller is powered
+	 * when the init sequence is sent over SPI. */
+	panel_vdd_enable();
 
 	/* Initialize CFB */
 	int ret = cfb_framebuffer_init(disp_dev);

@@ -1,0 +1,29 @@
+# Copyright (c) 2026 ZephCore
+#
+# SPDX-License-Identifier: Apache-2.0
+
+description: |
+  Monochrome wrapper for RGB TFT displays (ST7789V, etc.)
+
+  Reports PIXEL_FORMAT_MONO01 to CFB, so the framebuffer is ~4 KB
+  (1 bit per pixel) instead of the ~64 KB RGB565 buffer that CFB
+  would otherwise allocate. On flush, converts row-major 1bpp to
+  RGB565 and pushes to the underlying display row by row.
+
+compatible: "zephcore,mono-tft"
+
+properties:
+  tft-dev:
+    type: phandle
+    required: true
+    description: The underlying RGB TFT display device (e.g. ST7789V. etc.).
+
+  width:
+    type: int
+    required: true
+    description: Display width in pixels.
+
+  height:
+    type: int
+    required: true
+    description: Display height in pixels.

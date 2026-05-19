@@ -583,6 +583,17 @@ config ZEPHCORE_DISPLAY_LARGE_FONT
 	  no per-page changes are needed.  Requires Zephyr's default CFB
 	  fonts to be compiled in (CONFIG_CHARACTER_FRAMEBUFFER_USE_DEFAULT_FONTS).
 
+config ZEPHCORE_DISPLAY_MONO_TFT
+	bool "Monochrome TFT wrapper (MONO01 => RGB565)"
+	default y if DT_HAS_ZEPHCORE_MONO_TFT_ENABLED
+	depends on DT_HAS_ZEPHCORE_MONO_TFT_ENABLED
+	help
+	  Wraps an RGB TFT (e.g. ST7789V) as a PIXEL_FORMAT_MONO01 display.
+	  CFB allocates x*y/8 bytes (~4 KB for 240×135) instead of ~64 KB RGB565,
+	  making a colour TFT viable on RAM-constrained devices like the nRF52840.
+	  On display_write(), converts 1bpp row-major MONO01 to RGB565 row by row.
+	  Auto-enabled when a "zephcore,mono-tft" device exists in the devicetree.
+
 config ZEPHCORE_EASTER_EGG_DOOM
 	bool "Enable Doom raycaster easter egg"
 	default n
