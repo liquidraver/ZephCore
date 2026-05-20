@@ -1415,39 +1415,41 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	}
 
 	switch (data[0]) {
-	case CMD_APP_START:
-		if (len >= 8) {
-			// Reset contact iterator for fresh start
-			_contact_iter_active = false;
-
-			// Return SELF_INFO
-			uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
-			size_t i = 0;
-			rsp[i++] = PACKET_SELF_INFO;
-			rsp[i++] = ADV_TYPE_CHAT;
-			rsp[i++] = prefs.tx_power_dbm;
-			rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
-			memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
-			int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
-			int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
-			put_le32(&rsp[i], lat); i += 4;
-			put_le32(&rsp[i], lon); i += 4;
-			rsp[i++] = prefs.multi_acks;
-			rsp[i++] = prefs.advert_loc_policy;
-			// Telemetry modes: (env << 4) | (loc << 2) | base
-			rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
-			rsp[i++] = prefs.manual_add_contacts;
-			put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
-			put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
-			rsp[i++] = prefs.sf;
-			rsp[i++] = prefs.cr;
-			size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
-			memcpy(&rsp[i], prefs.node_name, name_len);
-			i += name_len;
-			writeFrame(rsp, i);
+	case CMD_APP_START: {
+		if (len < 8) {
+			sendPacketError(ERR_ILLEGAL_ARG);
 			return true;
 		}
-		break;
+		// Reset contact iterator for fresh start
+		_contact_iter_active = false;
+
+		// Return SELF_INFO
+		uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
+		size_t i = 0;
+		rsp[i++] = PACKET_SELF_INFO;
+		rsp[i++] = ADV_TYPE_CHAT;
+		rsp[i++] = prefs.tx_power_dbm;
+		rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
+		memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
+		int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
+		int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
+		put_le32(&rsp[i], lat); i += 4;
+		put_le32(&rsp[i], lon); i += 4;
+		rsp[i++] = prefs.multi_acks;
+		rsp[i++] = prefs.advert_loc_policy;
+		// Telemetry modes: (env << 4) | (loc << 2) | base
+		rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
+		rsp[i++] = prefs.manual_add_contacts;
+		put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
+		put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
+		rsp[i++] = prefs.sf;
+		rsp[i++] = prefs.cr;
+		size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
+		memcpy(&rsp[i], prefs.node_name, name_len);
+		i += name_len;
+		writeFrame(rsp, i);
+		return true;
+	}
 
 	case CMD_GET_CONTACTS:
 		if (_contact_iter_active) {
@@ -1564,7 +1566,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		// Format: [cmd][channel_idx]
 		// Response: [code][idx][32 name][16 secret] = 50 bytes (matches Arduino)
 		// Arduino returns channel info even if slot is empty (name[0]=='\0')
-		if (len >= 2 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			static int64_t last_get_channel_ms;
 			int64_t now_ms = _ms->getMillis();
 			uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
@@ -1578,17 +1584,20 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			drainPendingChannelInfos();
 			return true;
 		}
-		break;
 
 	case CMD_SET_CHANNEL:
 		// Format: [cmd][idx][32 name][16 or 32 secret]
 		// Arduino rejects 32-byte secrets, but we accept 16-byte (50 bytes total)
-		if (len >= 2 + 32 + 32 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		if (len >= 2 + 32 + 32) {
 			// 32-byte secret not supported (matches Arduino)
 			sendPacketError(ERR_UNSUPPORTED);
 			return true;
 		}
-		if (len >= 2 + 32 + 16 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len >= 2 + 32 + 16) {
 			ChannelDetails ch;
 			// Copy name (null-terminate if needed)
 			memcpy(ch.name, &data[2], 32);
@@ -1605,7 +1614,8 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			}
 			return true;
 		}
-		break;
+		sendPacketError(ERR_ILLEGAL_ARG);
+		return true;
 
 	case CMD_GET_BATT_AND_STORAGE: {
 		uint8_t rsp[11];
@@ -1810,7 +1820,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_SEND_CHANNEL_TXT_MSG:
 		// Arduino format: [cmd][txt_type][channel_idx][4-byte timestamp][text...]
 		// Minimum: 1 + 1 + 1 + 4 + 1 = 8 bytes
-		if (len >= 8) {
+		if (len < 8) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			int i = 1;
 			uint8_t txt_type = data[i++];
 			uint8_t ch_idx = data[i++];
@@ -1835,7 +1849,6 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			}
 			return true;
 		}
-		break;
 
 	case CMD_SEND_SELF_ADVERT: {
 		mesh::Packet *adv;
@@ -2016,11 +2029,20 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		return true;
 
 	case CMD_DEVICE_QUERY:
-		if (len >= 2) {
+		if (len < 2) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			_app_target_ver = data[1];  // Which version of protocol does app understand
 			#ifndef FIRMWARE_BUILD_DATE
 			#define FIRMWARE_BUILD_DATE __DATE__
 			#endif
+			/* Wire format reserves 40 bytes for the board name. Require room
+			 * for a null terminator within those 40 bytes so a phone parsing
+			 * it as a C-string never reads past the field. */
+			static_assert(sizeof(CONFIG_ZEPHCORE_BOARD_NAME) <= 40,
+				"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
 			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
 			static const uint8_t version[20] = "v1.15.1-zephyr";
@@ -2038,7 +2060,6 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			writeFrame(rsp, sizeof(rsp));
 			return true;
 		}
-		break;
 
 	case CMD_GET_TUNING_PARAMS: {
 		uint8_t rsp[9];
@@ -2050,11 +2071,13 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	}
 
 	case CMD_SET_TUNING_PARAMS:
-		if (len >= 9) {
-			prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
-			prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
-			_store->savePrefs(prefs);
+		if (len < 9) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
 		}
+		prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
+		prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
+		_store->savePrefs(prefs);
 		sendPacketOk();
 		return true;
 
