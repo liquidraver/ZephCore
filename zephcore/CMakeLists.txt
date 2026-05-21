@@ -11,117 +11,117 @@ cmake_minimum_required(VERSION 3.20.0)
 # Idempotent: stamp file tracks (patch hashes + target HEAD). Conflicts are fatal.
 #
 function(zephcore_apply_patches PATCH_DIR TARGET_DIR LABEL)
-    file(GLOB PATCH_FILES "${PATCH_DIR}/*.patch")
-    list(SORT PATCH_FILES)
-    if(NOT PATCH_FILES)
-        return()
-    endif()
-    # Stamp = hash(patch contents + target HEAD). Skip if unchanged.
-    execute_process(
+  file(GLOB PATCH_FILES "${PATCH_DIR}/*.patch")
+  list(SORT PATCH_FILES)
+  if(NOT PATCH_FILES)
+    return()
+  endif()
+  # Stamp = hash(patch contents + target HEAD). Skip if unchanged.
+  execute_process(
         COMMAND git rev-parse HEAD
         WORKING_DIRECTORY "${TARGET_DIR}"
         OUTPUT_VARIABLE _target_head
         OUTPUT_STRIP_TRAILING_WHITESPACE
         ERROR_QUIET
     )
-    set(_hash_input "${_target_head}")
-    foreach(_pf ${PATCH_FILES})
-        file(MD5 "${_pf}" _h)
-        string(APPEND _hash_input "${_h}")
-    endforeach()
-    string(MD5 _stamp_hash "${_hash_input}")
-    set(_stamp "${TARGET_DIR}/.zephcore_${LABEL}.stamp")
-    if(EXISTS "${_stamp}")
-        file(READ "${_stamp}" _existing_hash)
-        string(STRIP "${_existing_hash}" _existing_hash)
-        if(_existing_hash STREQUAL _stamp_hash)
-            message(STATUS "  [${LABEL}] Patches already applied, skipping.")
-            return()
-        endif()
-        message(STATUS "  [${LABEL}] Patch set changed, re-applying...")
+  set(_hash_input "${_target_head}")
+  foreach(_pf ${PATCH_FILES})
+    file(MD5 "${_pf}" _h)
+    string(APPEND _hash_input "${_h}")
+  endforeach()
+  string(MD5 _stamp_hash "${_hash_input}")
+  set(_stamp "${TARGET_DIR}/.zephcore_${LABEL}.stamp")
+  if(EXISTS "${_stamp}")
+    file(READ "${_stamp}" _existing_hash)
+    string(STRIP "${_existing_hash}" _existing_hash)
+    if(_existing_hash STREQUAL _stamp_hash)
+      message(STATUS "  [${LABEL}] Patches already applied, skipping.")
+      return()
     endif()
-    foreach(PATCH_FILE ${PATCH_FILES})
-        get_filename_component(PATCH_NAME ${PATCH_FILE} NAME)
-        set(PATCH_FILE_TO_APPLY "${PATCH_FILE}")
-        # Prepare LF/CRLF patch variants for robust matching across clones.
-        file(READ "${PATCH_FILE}" _patch_content)
-        string(REPLACE "\r\n" "\n" _patch_lf "${_patch_content}")
-        set(_patch_crlf "${_patch_lf}")
-        string(REPLACE "\n" "\r\n" _patch_crlf "${_patch_crlf}")
-        set(_tmp_patch_dir "${CMAKE_BINARY_DIR}/zephcore_patch_tmp/${LABEL}")
-        file(MAKE_DIRECTORY "${_tmp_patch_dir}")
-        set(_tmp_patch_lf "${_tmp_patch_dir}/${PATCH_NAME}.lf")
-        set(_tmp_patch_crlf "${_tmp_patch_dir}/${PATCH_NAME}.crlf")
-        file(WRITE "${_tmp_patch_lf}" "${_patch_lf}")
-        file(WRITE "${_tmp_patch_crlf}" "${_patch_crlf}")
-        # Dry-run check
-        execute_process(
+    message(STATUS "  [${LABEL}] Patch set changed, re-applying...")
+  endif()
+  foreach(PATCH_FILE ${PATCH_FILES})
+    get_filename_component(PATCH_NAME ${PATCH_FILE} NAME)
+    set(PATCH_FILE_TO_APPLY "${PATCH_FILE}")
+    # Prepare LF/CRLF patch variants for robust matching across clones.
+    file(READ "${PATCH_FILE}" _patch_content)
+    string(REPLACE "\r\n" "\n" _patch_lf "${_patch_content}")
+    set(_patch_crlf "${_patch_lf}")
+    string(REPLACE "\n" "\r\n" _patch_crlf "${_patch_crlf}")
+    set(_tmp_patch_dir "${CMAKE_BINARY_DIR}/zephcore_patch_tmp/${LABEL}")
+    file(MAKE_DIRECTORY "${_tmp_patch_dir}")
+    set(_tmp_patch_lf "${_tmp_patch_dir}/${PATCH_NAME}.lf")
+    set(_tmp_patch_crlf "${_tmp_patch_dir}/${PATCH_NAME}.crlf")
+    file(WRITE "${_tmp_patch_lf}" "${_patch_lf}")
+    file(WRITE "${_tmp_patch_crlf}" "${_patch_crlf}")
+    # Dry-run check
+    execute_process(
             COMMAND git apply --check "${PATCH_FILE_TO_APPLY}"
             WORKING_DIRECTORY "${TARGET_DIR}"
             RESULT_VARIABLE PATCH_CHECK
             ERROR_VARIABLE PATCH_ERR
         )
-        # Retry check with explicit LF/CRLF variants to avoid EOL drift issues.
-        if(NOT PATCH_CHECK EQUAL 0)
-            execute_process(
+    # Retry check with explicit LF/CRLF variants to avoid EOL drift issues.
+    if(NOT PATCH_CHECK EQUAL 0)
+      execute_process(
                 COMMAND git apply --check "${_tmp_patch_lf}"
                 WORKING_DIRECTORY "${TARGET_DIR}"
                 RESULT_VARIABLE PATCH_CHECK_LF
                 ERROR_VARIABLE PATCH_ERR_LF
             )
-            if(PATCH_CHECK_LF EQUAL 0)
-                set(PATCH_FILE_TO_APPLY "${_tmp_patch_lf}")
-                set(PATCH_CHECK 0)
-            else()
-                execute_process(
+      if(PATCH_CHECK_LF EQUAL 0)
+        set(PATCH_FILE_TO_APPLY "${_tmp_patch_lf}")
+        set(PATCH_CHECK 0)
+      else()
+        execute_process(
                     COMMAND git apply --check "${_tmp_patch_crlf}"
                     WORKING_DIRECTORY "${TARGET_DIR}"
                     RESULT_VARIABLE PATCH_CHECK_CRLF
                     ERROR_VARIABLE PATCH_ERR_CRLF
                 )
-                if(PATCH_CHECK_CRLF EQUAL 0)
-                    set(PATCH_FILE_TO_APPLY "${_tmp_patch_crlf}")
-                    set(PATCH_CHECK 0)
-                else()
-                    # Keep the most relevant error from the last attempted variant.
-                    set(PATCH_ERR "${PATCH_ERR_CRLF}")
-                endif()
-            endif()
+        if(PATCH_CHECK_CRLF EQUAL 0)
+          set(PATCH_FILE_TO_APPLY "${_tmp_patch_crlf}")
+          set(PATCH_CHECK 0)
+        else()
+          # Keep the most relevant error from the last attempted variant.
+          set(PATCH_ERR "${PATCH_ERR_CRLF}")
         endif()
-        # Stale patches from previous build: reset affected files, retry
-        if(NOT PATCH_CHECK EQUAL 0)
-            # Extract affected file paths from numstat
-            execute_process(
+      endif()
+    endif()
+    # Stale patches from previous build: reset affected files, retry
+    if(NOT PATCH_CHECK EQUAL 0)
+      # Extract affected file paths from numstat
+      execute_process(
                 COMMAND git apply --numstat "${PATCH_FILE_TO_APPLY}"
                 WORKING_DIRECTORY "${TARGET_DIR}"
                 OUTPUT_VARIABLE PATCH_NUMSTAT
                 ERROR_QUIET
             )
-            # numstat format: "adds\tdels\tpath"
-            string(REGEX MATCHALL "[^\t\n]+\t[^\t\n]+\t[^\t\n]+" NUMSTAT_LINES "${PATCH_NUMSTAT}")
-            set(PATCH_PATHS "")
-            foreach(_line ${NUMSTAT_LINES})
-                string(REGEX REPLACE "^[^\t]+\t[^\t]+\t" "" _path "${_line}")
-                list(APPEND PATCH_PATHS "${_path}")
-            endforeach()
-            if(PATCH_PATHS)
-                message(STATUS "  [${LABEL}] Resetting stale files for: ${PATCH_NAME}")
-                execute_process(
+      # numstat format: "adds\tdels\tpath"
+      string(REGEX MATCHALL "[^\t\n]+\t[^\t\n]+\t[^\t\n]+" NUMSTAT_LINES "${PATCH_NUMSTAT}")
+      set(PATCH_PATHS "")
+      foreach(_line ${NUMSTAT_LINES})
+        string(REGEX REPLACE "^[^\t]+\t[^\t]+\t" "" _path "${_line}")
+        list(APPEND PATCH_PATHS "${_path}")
+      endforeach()
+      if(PATCH_PATHS)
+        message(STATUS "  [${LABEL}] Resetting stale files for: ${PATCH_NAME}")
+        execute_process(
                     COMMAND git checkout -- ${PATCH_PATHS}
                     WORKING_DIRECTORY "${TARGET_DIR}"
                     ERROR_QUIET
                 )
-                # Retry dry-run
-                execute_process(
+        # Retry dry-run
+        execute_process(
                     COMMAND git apply --check "${PATCH_FILE_TO_APPLY}"
                     WORKING_DIRECTORY "${TARGET_DIR}"
                     RESULT_VARIABLE PATCH_CHECK
                     ERROR_VARIABLE PATCH_ERR
                 )
-            endif()
-        endif()
-        if(NOT PATCH_CHECK EQUAL 0)
-            message(FATAL_ERROR
+      endif()
+    endif()
+    if(NOT PATCH_CHECK EQUAL 0)
+      message(FATAL_ERROR
                 "ZephCore patch FAILED to apply: ${PATCH_NAME}\n"
                 "Target tree: ${TARGET_DIR}\n"
                 "Error:\n${PATCH_ERR}\n"
@@ -130,20 +130,20 @@ function(zephcore_apply_patches PATCH_DIR TARGET_DIR LABEL)
                 "  git diff -- <file>   # inspect current upstream\n"
                 "  # Regenerate: git diff -- <file> > ${PATCH_FILE}\n"
             )
-        endif()
-        # Apply
-        execute_process(
+    endif()
+    # Apply
+    execute_process(
             COMMAND git apply "${PATCH_FILE_TO_APPLY}"
             WORKING_DIRECTORY "${TARGET_DIR}"
             RESULT_VARIABLE APPLY_RESULT
             ERROR_VARIABLE APPLY_ERR
         )
-        if(NOT APPLY_RESULT EQUAL 0)
-            message(FATAL_ERROR "git apply failed unexpectedly: ${PATCH_NAME}\n${APPLY_ERR}")
-        endif()
-        message(STATUS "  [${LABEL}] Applied: ${PATCH_NAME}")
-    endforeach()
-    file(WRITE "${_stamp}" "${_stamp_hash}")
+    if(NOT APPLY_RESULT EQUAL 0)
+      message(FATAL_ERROR "git apply failed unexpectedly: ${PATCH_NAME}\n${APPLY_ERR}")
+    endif()
+    message(STATUS "  [${LABEL}] Applied: ${PATCH_NAME}")
+  endforeach()
+  file(WRITE "${_stamp}" "${_stamp_hash}")
 endfunction()
 
 # Resolve target directories before find_package(Zephyr)
@@ -152,8 +152,8 @@ get_filename_component(MODULES_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../modules ABSOLU
 
 # Apply patches
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr)
-    message(STATUS "Applying ZephCore patches to Zephyr...")
-    zephcore_apply_patches(
+  message(STATUS "Applying ZephCore patches to Zephyr...")
+  zephcore_apply_patches(
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr"
         "${ZEPHYR_DIR}"
         "zephyr"
@@ -162,8 +162,8 @@ endif()
 
 # Apply patches to loramac-node module
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/loramac-node)
-    message(STATUS "Applying ZephCore patches to loramac-node...")
-    zephcore_apply_patches(
+  message(STATUS "Applying ZephCore patches to loramac-node...")
+  zephcore_apply_patches(
         "${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/loramac-node"
         "${MODULES_DIR}/lib/loramac-node"
         "loramac-node"
@@ -172,15 +172,15 @@ endif()
 
 # Copy new files into Zephyr tree
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
-    file(GLOB_RECURSE ZEPHCORE_NEW_FILES
+  file(GLOB_RECURSE ZEPHCORE_NEW_FILES
          RELATIVE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new
          ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new/*)
-    foreach(REL_PATH ${ZEPHCORE_NEW_FILES})
-        set(SRC_FILE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new/${REL_PATH})
-        set(DST_FILE ${ZEPHYR_DIR}/${REL_PATH})
-        configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
-        message(STATUS "  [zephyr-new] ${REL_PATH}")
-    endforeach()
+  foreach(REL_PATH ${ZEPHCORE_NEW_FILES})
+    set(SRC_FILE ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new/${REL_PATH})
+    set(DST_FILE ${ZEPHYR_DIR}/${REL_PATH})
+    configure_file(${SRC_FILE} ${DST_FILE} COPYONLY)
+    message(STATUS "  [zephyr-new] ${REL_PATH}")
+  endforeach()
 endif()
 
 # Custom board root: boards/<mcu>/<board>/ discovered via BOARD_ROOT
@@ -194,18 +194,18 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Usage: zephcore_auto_pair_overlay("path/to/config.conf")
 #
 function(zephcore_auto_pair_overlay CONF_FILE)
-    if(NOT CONF_FILE OR NOT EXISTS "${CONF_FILE}")
-        return()
+  if(NOT CONF_FILE OR NOT EXISTS "${CONF_FILE}")
+    return()
+  endif()
+  string(REPLACE ".conf" ".overlay" OVERLAY_FILE "${CONF_FILE}")
+  if(EXISTS "${OVERLAY_FILE}")
+    if(EXTRA_DTC_OVERLAY_FILE)
+      set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${OVERLAY_FILE}" PARENT_SCOPE)
+    else()
+      set(EXTRA_DTC_OVERLAY_FILE "${OVERLAY_FILE}" PARENT_SCOPE)
     endif()
-    string(REPLACE ".conf" ".overlay" OVERLAY_FILE "${CONF_FILE}")
-    if(EXISTS "${OVERLAY_FILE}")
-        if(EXTRA_DTC_OVERLAY_FILE)
-            set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${OVERLAY_FILE}" PARENT_SCOPE)
-        else()
-            set(EXTRA_DTC_OVERLAY_FILE "${OVERLAY_FILE}" PARENT_SCOPE)
-        endif()
-        message(STATUS "  [auto-pair] ${CONF_FILE} → ${OVERLAY_FILE}")
-    endif()
+    message(STATUS "  [auto-pair] ${CONF_FILE} → ${OVERLAY_FILE}")
+  endif()
 endfunction()
 
 # ========== Board Configuration Hierarchy ==========
@@ -213,29 +213,29 @@ endfunction()
 
 # Recover BOARD and EXTRA_CONF_FILE from sysbuild cache (needed before find_package)
 if(NOT BOARD AND DEFINED SYSBUILD_CACHE AND EXISTS "${SYSBUILD_CACHE}")
-    file(STRINGS "${SYSBUILD_CACHE}" _sysbuild_strings ENCODING UTF-8)
-    foreach(_str ${_sysbuild_strings})
-        if(_str MATCHES "^BOARD:STRING=(.+)")
-            set(BOARD "${CMAKE_MATCH_1}")
-        endif()
-        # User-specified EXTRA_CONF_FILE (e.g., repeater.conf) is passed to sysbuild,
-        # not the app. Recover it so our auto-include logic can detect it.
-        if(_str MATCHES "^EXTRA_CONF_FILE:UNINITIALIZED=(.+)")
-            set(_SYSBUILD_USER_CONF "${CMAKE_MATCH_1}")
-        endif()
-    endforeach()
-    if(BOARD)
-        message(STATUS "Sysbuild: BOARD=${BOARD}")
+  file(STRINGS "${SYSBUILD_CACHE}" _sysbuild_strings ENCODING UTF-8)
+  foreach(_str ${_sysbuild_strings})
+    if(_str MATCHES "^BOARD:STRING=(.+)")
+      set(BOARD "${CMAKE_MATCH_1}")
     endif()
-    if(_SYSBUILD_USER_CONF)
-        # Merge user extras into EXTRA_CONF_FILE so downstream checks see them
-        if(EXTRA_CONF_FILE)
-            set(EXTRA_CONF_FILE "${EXTRA_CONF_FILE};${_SYSBUILD_USER_CONF}")
-        else()
-            set(EXTRA_CONF_FILE "${_SYSBUILD_USER_CONF}")
-        endif()
-        message(STATUS "Sysbuild: user EXTRA_CONF_FILE=${_SYSBUILD_USER_CONF}")
+    # User-specified EXTRA_CONF_FILE (e.g., repeater.conf) is passed to sysbuild,
+    # not the app. Recover it so our auto-include logic can detect it.
+    if(_str MATCHES "^EXTRA_CONF_FILE:UNINITIALIZED=(.+)")
+      set(_SYSBUILD_USER_CONF "${CMAKE_MATCH_1}")
     endif()
+  endforeach()
+  if(BOARD)
+    message(STATUS "Sysbuild: BOARD=${BOARD}")
+  endif()
+  if(_SYSBUILD_USER_CONF)
+    # Merge user extras into EXTRA_CONF_FILE so downstream checks see them
+    if(EXTRA_CONF_FILE)
+      set(EXTRA_CONF_FILE "${EXTRA_CONF_FILE};${_SYSBUILD_USER_CONF}")
+    else()
+      set(EXTRA_CONF_FILE "${_SYSBUILD_USER_CONF}")
+    endif()
+    message(STATUS "Sysbuild: user EXTRA_CONF_FILE=${_SYSBUILD_USER_CONF}")
+  endif()
 endif()
 
 # Build common config file list based on detected platform
@@ -244,24 +244,24 @@ set(ZEPHCORE_COMMON_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/zephcore_com
 # Detect platform from board name and add platform-specific common config
 # For boards with qualifiers like "wio_tracker_l1/nrf52840", check both the full BOARD
 # string and the BOARD_QUALIFIERS which contains just the qualifier (e.g., "nrf52840")
-if(BOARD MATCHES ".*nrf52.*" OR BOARD MATCHES "rak4631" OR BOARD MATCHES "rak_wismesh_tag" OR BOARD MATCHES "rak3401_1watt" OR BOARD MATCHES "wio_tracker" OR BOARD MATCHES "ikoka_nano" OR BOARD MATCHES "t1000_e" OR BOARD MATCHES "thinknode_m1" OR BOARD MATCHES "thinknode_m3" OR BOARD MATCHES "thinknode_m6" OR BOARD MATCHES "promicro_lr2021" OR BOARD MATCHES "promicro_sx1262" OR BOARD MATCHES "sensecap_solar" OR BOARD MATCHES "xiao_nrf52840" OR BOARD MATCHES "lilygo_techo" OR BOARD MATCHES "heltec_t114")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
+if(BOARD MATCHES ".*nrf52.*" OR BOARD MATCHES "rak4631" OR BOARD MATCHES "rak_wismesh_tag" OR BOARD MATCHES "rak3401_1watt" OR BOARD MATCHES "wio_tracker" OR BOARD MATCHES "ikoka_nano" OR BOARD MATCHES "ikoka_stick" OR BOARD MATCHES "t1000_e" OR BOARD MATCHES "thinknode_m1" OR BOARD MATCHES "thinknode_m3" OR BOARD MATCHES "thinknode_m6" OR BOARD MATCHES "promicro_lr2021" OR BOARD MATCHES "promicro_sx1262" OR BOARD MATCHES "sensecap_solar" OR BOARD MATCHES "xiao_nrf52840" OR BOARD MATCHES "lilygo_techo" OR BOARD MATCHES "heltec_t114")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*nrf52.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf52_common.conf")
 elseif(BOARD MATCHES ".*esp32.*" OR BOARD MATCHES "station_g2" OR BOARD MATCHES "lilygo_tlora_c6" OR BOARD MATCHES "heltec_wifi_lora32_v3" OR BOARD MATCHES "heltec_wifi_lora32_v4")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*esp32.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/esp32_common.conf")
 elseif(BOARD MATCHES ".*nrf54l.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*nrf54l.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/nrf54l_common.conf")
 elseif(BOARD MATCHES ".*mg24.*" OR BOARD MATCHES ".*efr32.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
 elseif(DEFINED BOARD_QUALIFIERS AND BOARD_QUALIFIERS MATCHES ".*mg24.*")
-    set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
+  set(ZEPHCORE_PLATFORM_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/mg24_common.conf")
 else()
-    set(ZEPHCORE_PLATFORM_CONF "")
+  set(ZEPHCORE_PLATFORM_CONF "")
 endif()
 
 # Check for board-specific config in new folder structure
@@ -271,49 +271,49 @@ endif()
 # For Zephyr boards with qualifiers (e.g., rak4631/nrf52840), BOARD contains base/qualifier
 # We extract just the base board name for folder lookup
 if(BOARD)
-    string(REPLACE "/" ";" BOARD_PARTS "${BOARD}")
-    list(GET BOARD_PARTS 0 BOARD_BASE)
+  string(REPLACE "/" ";" BOARD_PARTS "${BOARD}")
+  list(GET BOARD_PARTS 0 BOARD_BASE)
 else()
-    set(BOARD_BASE "")
+  set(BOARD_BASE "")
 endif()
 
 # Search for board.conf in possible locations
 set(ZEPHCORE_BOARD_CONF "")
 file(GLOB_RECURSE BOARD_CONF_CANDIDATES "${CMAKE_CURRENT_SOURCE_DIR}/boards/*/${BOARD_BASE}/board.conf")
 if(BOARD_CONF_CANDIDATES)
-    list(GET BOARD_CONF_CANDIDATES 0 ZEPHCORE_BOARD_CONF)
+  list(GET BOARD_CONF_CANDIDATES 0 ZEPHCORE_BOARD_CONF)
 endif()
 # Fallback: direct path without vendor subdirectory
 if(NOT ZEPHCORE_BOARD_CONF AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.conf")
-    set(ZEPHCORE_BOARD_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.conf")
+  set(ZEPHCORE_BOARD_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.conf")
 endif()
 
 # Build the EXTRA_CONF_FILE list (append to any user-provided extras)
 # Auto-pair each .conf with a same-named .overlay if it exists.
 set(ZEPHCORE_CONF_FILES "")
 if(EXISTS ${ZEPHCORE_COMMON_CONF})
-    list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_COMMON_CONF})
-    zephcore_auto_pair_overlay("${ZEPHCORE_COMMON_CONF}")
+  list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_COMMON_CONF})
+  zephcore_auto_pair_overlay("${ZEPHCORE_COMMON_CONF}")
 endif()
 if(ZEPHCORE_PLATFORM_CONF AND EXISTS ${ZEPHCORE_PLATFORM_CONF})
-    list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_PLATFORM_CONF})
-    zephcore_auto_pair_overlay("${ZEPHCORE_PLATFORM_CONF}")
+  list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_PLATFORM_CONF})
+  zephcore_auto_pair_overlay("${ZEPHCORE_PLATFORM_CONF}")
 endif()
 if(ZEPHCORE_BOARD_CONF AND EXISTS ${ZEPHCORE_BOARD_CONF})
-    list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_BOARD_CONF})
-    zephcore_auto_pair_overlay("${ZEPHCORE_BOARD_CONF}")
+  list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_BOARD_CONF})
+  zephcore_auto_pair_overlay("${ZEPHCORE_BOARD_CONF}")
 endif()
 
 # Include logging tuning only for debug builds (when prod.conf is NOT active).
 # This avoids Kconfig warnings from log settings that depend on CONFIG_LOG.
 set(ZEPHCORE_LOGGING_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/logging.conf")
 if(EXTRA_CONF_FILE MATCHES "prod\\.conf")
-    message(STATUS "  Production build — skipping logging.conf")
+  message(STATUS "  Production build — skipping logging.conf")
 else()
-    if(EXISTS ${ZEPHCORE_LOGGING_CONF})
-        list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_LOGGING_CONF})
-        zephcore_auto_pair_overlay("${ZEPHCORE_LOGGING_CONF}")
-    endif()
+  if(EXISTS ${ZEPHCORE_LOGGING_CONF})
+    list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_LOGGING_CONF})
+    zephcore_auto_pair_overlay("${ZEPHCORE_LOGGING_CONF}")
+  endif()
 endif()
 
 # Auto-include WiFi OTA for ESP32 repeater builds.
@@ -321,31 +321,31 @@ endif()
 # Requires --sysbuild to build MCUboot alongside the app.
 # Non-ESP32 builds and companion builds are unaffected.
 if(ZEPHCORE_PLATFORM_CONF MATCHES "esp32_common" AND EXTRA_CONF_FILE MATCHES "repeater")
-    set(ZEPHCORE_WIFI_OTA_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_ota.conf")
-    if(EXISTS ${ZEPHCORE_WIFI_OTA_CONF})
-        list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_WIFI_OTA_CONF})
-        zephcore_auto_pair_overlay("${ZEPHCORE_WIFI_OTA_CONF}")
-        message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
-    endif()
+  set(ZEPHCORE_WIFI_OTA_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_ota.conf")
+  if(EXISTS ${ZEPHCORE_WIFI_OTA_CONF})
+    list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_WIFI_OTA_CONF})
+    zephcore_auto_pair_overlay("${ZEPHCORE_WIFI_OTA_CONF}")
+    message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
+  endif()
 endif()
 
 # Append to EXTRA_CONF_FILE — auto-generated configs first, user extras last.
 # User-specified extras (repeater.conf, prod.conf) MUST come after the auto chain
 # so they can override settings (e.g. CONFIG_BT=n in repeater.conf).
 if(ZEPHCORE_CONF_FILES)
-    if(EXTRA_CONF_FILE)
-        set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES};${EXTRA_CONF_FILE}" CACHE STRING "" FORCE)
-    else()
-        set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES}" CACHE STRING "" FORCE)
-    endif()
+  if(EXTRA_CONF_FILE)
+    set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES};${EXTRA_CONF_FILE}" CACHE STRING "" FORCE)
+  else()
+    set(EXTRA_CONF_FILE "${ZEPHCORE_CONF_FILES}" CACHE STRING "" FORCE)
+  endif()
 endif()
 
 # Auto-pair user-supplied EXTRA_CONF_FILE entries with same-named .overlay files.
 # This allows repeater.conf + repeater.overlay, prod.conf + prod.overlay, etc.
 if(EXTRA_CONF_FILE)
-    foreach(_conf IN LISTS EXTRA_CONF_FILE)
-        zephcore_auto_pair_overlay("${_conf}")
-    endforeach()
+  foreach(_conf IN LISTS EXTRA_CONF_FILE)
+    zephcore_auto_pair_overlay("${_conf}")
+  endforeach()
 endif()
 
 # ========== DTC Overlay Hierarchy ==========
@@ -353,20 +353,20 @@ endif()
 set(ZEPHCORE_BOARD_OVERLAY "")
 file(GLOB_RECURSE BOARD_OVERLAY_CANDIDATES "${CMAKE_CURRENT_SOURCE_DIR}/boards/*/${BOARD_BASE}/board.overlay")
 if(BOARD_OVERLAY_CANDIDATES)
-    list(GET BOARD_OVERLAY_CANDIDATES 0 ZEPHCORE_BOARD_OVERLAY)
+  list(GET BOARD_OVERLAY_CANDIDATES 0 ZEPHCORE_BOARD_OVERLAY)
 endif()
 # Fallback: direct path without vendor subdirectory
 if(NOT ZEPHCORE_BOARD_OVERLAY AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.overlay")
-    set(ZEPHCORE_BOARD_OVERLAY "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.overlay")
+  set(ZEPHCORE_BOARD_OVERLAY "${CMAKE_CURRENT_SOURCE_DIR}/boards/${BOARD_BASE}/board.overlay")
 endif()
 
 # Append to EXTRA_DTC_OVERLAY_FILE (preserves any user-specified extras)
 if(ZEPHCORE_BOARD_OVERLAY AND EXISTS ${ZEPHCORE_BOARD_OVERLAY})
-    if(EXTRA_DTC_OVERLAY_FILE)
-        set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${ZEPHCORE_BOARD_OVERLAY}" CACHE STRING "" FORCE)
-    else()
-        set(EXTRA_DTC_OVERLAY_FILE "${ZEPHCORE_BOARD_OVERLAY}" CACHE STRING "" FORCE)
-    endif()
+  if(EXTRA_DTC_OVERLAY_FILE)
+    set(EXTRA_DTC_OVERLAY_FILE "${EXTRA_DTC_OVERLAY_FILE};${ZEPHCORE_BOARD_OVERLAY}" CACHE STRING "" FORCE)
+  else()
+    set(EXTRA_DTC_OVERLAY_FILE "${ZEPHCORE_BOARD_OVERLAY}" CACHE STRING "" FORCE)
+  endif()
 endif()
 
 
