@@ -334,7 +334,7 @@ static void mesh_event_loop(void)
 			 * transiently (HCI timeout, controller pacing) the device
 			 * would silently stop advertising and be undiscoverable
 			 * until next reboot.  Cheap to nudge it back here. */
-			if (zephcore_ble_is_enabled && !zephcore_ble_is_connected() && !zephcore_ble_is_advertising()) {
+			if (zephcore_ble_is_enabled() && !zephcore_ble_is_connected() && !zephcore_ble_is_advertising()) {
 				LOG_WRN("BLE adv watchdog: not advertising, re-enabling");
 				zephcore_ble_set_enabled(true);
 			}
