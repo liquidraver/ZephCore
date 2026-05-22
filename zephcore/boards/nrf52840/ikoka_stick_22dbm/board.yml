@@ -1,0 +1,6 @@
+board:
+  name: ikoka_stick_22dbm
+  full_name: Ikoka Stick 22dBm (XIAO nRF52840 + E22-900M22S)
+  vendor: ikoka
+  socs:
+    - name: nrf52840
