@@ -495,10 +495,7 @@ static void action_deep_sleep(void)
 #ifdef CONFIG_POWEROFF
 	LOG_INF("deep sleep: shutting down...");
 
-	/* 1. Stop LED heartbeat and msg indicator */
-	ui_set_heartbeat_led(false);
-
-	/* 2. Play shutdown melody (blocking wait) */
+	/* Shutdown melody — blocking wait is fine on this terminal path. */
 #ifdef CONFIG_ZEPHCORE_UI_BUZZER
 	buzzer_play(MELODY_SHUTDOWN);
 	while (buzzer_is_playing()) {
@@ -507,78 +504,10 @@ static void action_deep_sleep(void)
 	buzzer_stop();
 #endif
 
-	/* 3. Turn display off */
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	mc_display_off();
-#endif
-
-	/* 4. Drive power-hungry enable pins LOW.
-	 *
-	 * nRF52840 GPIO output latches persist across System OFF and reset.
-	 * If GPS_EN is HIGH, the GPS module stays powered during "sleep."
-	 * Drive known power-enable GPIOs LOW via Zephyr's safe GPIO API.
-	 *
-	 * DO NOT touch BLE (bt_conn_disconnect / bt_le_adv_stop) — that
-	 * corrupts BLE controller state and prevents clean reboot.
-	 * DO NOT blank all GPIOs — that bricked the device previously. */
-	gps_power_off_for_shutdown();
-	mesh_disable_power_regulators();
-
-	/* 5. Hold the LoRa radio in hardware reset.
-	 *
-	 * sys_poweroff() bypasses device PM — the SX126x hardware duty cycle
-	 * would otherwise keep cycling autonomously (drawing mA) while the
-	 * SoC is in System OFF (~1µA).  Drive RESET low; nRF52 GPIO output
-	 * latches persist across System OFF so the chip stays in reset (0µA).
-	 * On wakeup, the driver's sx126x_init() re-asserts then releases reset. */
-#if DT_NODE_EXISTS(DT_ALIAS(lora0)) && DT_NODE_HAS_PROP(DT_ALIAS(lora0), reset_gpios)
-	{
-		static const struct gpio_dt_spec lora_reset =
-			GPIO_DT_SPEC_GET(DT_ALIAS(lora0), reset_gpios);
-		gpio_pin_configure_dt(&lora_reset, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
-
-	/* 6. Configure GPIO SENSE for button wakeup, then enter System OFF.
-	 *
-	 * The nRF GPIO driver does not implement GPIO_INT_WAKEUP, so the
-	 * wakeup-source DTS property has no effect on nRF52. We must set
-	 * SENSE bits directly via the nRF HAL. sys_poweroff() goes straight
-	 * to nrf_power_system_off() with no device PM suspend, so these bits
-	 * persist into System OFF and trigger a reset on next button press.
-	 *
-	 * Wait for button release first: if we enter System OFF while the
-	 * button is still held (long-press shutdown), DETECT is already
-	 * asserted and the chip cannot enter System OFF cleanly. */
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF) && DT_NODE_EXISTS(DT_ALIAS(sw0))
-	{
-#define _SW0_NODE  DT_ALIAS(sw0)
-#define _SW0_PORT  DT_PROP(DT_GPIO_CTLR(_SW0_NODE, gpios), port)
-#define _SW0_PIN   DT_GPIO_PIN(_SW0_NODE, gpios)
-#define _SW0_FLAGS DT_GPIO_FLAGS(_SW0_NODE, gpios)
-
-		static const struct gpio_dt_spec sw0 =
-			GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
-		gpio_pin_configure_dt(&sw0, GPIO_INPUT);
-
-		int64_t deadline = k_uptime_get() + 5000;
-		while (gpio_pin_get_dt(&sw0) && k_uptime_get() < deadline) {
-			k_sleep(K_MSEC(10));
-		}
-
-		nrf_gpio_cfg_sense_input(
-			NRF_GPIO_PIN_MAP(_SW0_PORT, _SW0_PIN),
-			(_SW0_FLAGS & GPIO_PULL_UP)   ? NRF_GPIO_PIN_PULLUP   :
-			(_SW0_FLAGS & GPIO_PULL_DOWN) ? NRF_GPIO_PIN_PULLDOWN :
-										   NRF_GPIO_PIN_NOPULL,
-			(_SW0_FLAGS & GPIO_ACTIVE_LOW) ? NRF_GPIO_PIN_SENSE_LOW
-										   : NRF_GPIO_PIN_SENSE_HIGH);
-#undef _SW0_NODE
-#undef _SW0_PORT
-#undef _SW0_PIN
-#undef _SW0_FLAGS
-	}
-#endif /* CONFIG_SOC_FAMILY_NORDIC_NRF && sw0 */
+	/* Shared peripheral teardown + SENSE config for sw0 wake.
+	 * Single source of truth in helpers/ui/ui_common.c so the joystick
+	 * UI variant ends up in the same low-power state. */
+	ui_prepare_for_system_off();
 
 	LOG_INF("deep sleep: entering System OFF");
 	sys_poweroff();

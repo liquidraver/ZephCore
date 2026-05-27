@@ -1394,16 +1394,23 @@ void JoystickUITask::shutdown(bool restart)
 	LOG_INF("joystick UI: shutdown (restart=%d)", restart);
 #ifdef CONFIG_ZEPHCORE_UI_BUZZER
 	buzzer_play("shutdown:d=16,o=5,b=120:c,p,a4,p,f4");
-	/* Brief wait for melody */
+	/* Brief wait for melody — terminal path either way. */
 	k_sleep(K_MSEC(400));
 #endif
-	_display.turnOff();
+
 	if (restart) {
+		_display.turnOff();
 		sys_reboot(SYS_REBOOT_COLD);
 	} else {
 #ifdef CONFIG_POWEROFF
+		/* Full peripheral teardown + SENSE config for sw0 wake.  Shared
+		 * helper turns off display, GPS, regulators, holds LoRa in reset
+		 * and arms the button SENSE so the user can actually wake the
+		 * device. Same code path as the button UI's action_deep_sleep. */
+		ui_prepare_for_system_off();
 		sys_poweroff();
 #else
+		_display.turnOff();
 		sys_reboot(SYS_REBOOT_COLD);
 #endif
 	}

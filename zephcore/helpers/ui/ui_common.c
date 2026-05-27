@@ -13,8 +13,20 @@
 #include "buzzer.h"
 #endif
 
+#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+#include "display.h"
+#endif
+
+#include <ZephyrSensorManager.h>   /* gps_power_off_for_shutdown */
+#include "ui_mesh_actions.h"        /* mesh_disable_power_regulators (weak) */
+
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
+
+#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF)
+#include <hal/nrf_gpio.h>
+#endif
+
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ui_led, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
@@ -232,6 +244,86 @@ void ui_invalidate_battery_cache(void)
 {
 	s_batt_ever_read = false;
 	s_batt_last_read_ms = 0;
+}
+
+/* ========== System OFF preparation ==========
+ * Shared by both UI variants. Caller is responsible for any shutdown chime
+ * and the final sys_poweroff() call; this just leaves the SoC + peripherals
+ * in the lowest-power state with a wakeup source armed.
+ *
+ * On nRF52 the SoC enters System OFF (~1 µA) but GPIO output latches and
+ * SENSE bits persist across the transition — so we must explicitly:
+ *   - hold every power-enable GPIO LOW so external chips don't keep drawing
+ *   - hold the LoRa radio in HW reset (its internal duty cycle would
+ *     otherwise keep cycling autonomously, drawing mA)
+ *   - configure SENSE on sw0 so a button press wakes the chip (the nRF GPIO
+ *     driver doesn't honour the DT wakeup-source property, so the dtsi
+ *     marker is inert without this)
+ *
+ * Non-nRF platforms skip the SENSE block; they rely on Zephyr's wakeup-source
+ * DT property which is honoured by their respective GPIO drivers.
+ */
+void ui_prepare_for_system_off(void)
+{
+	/* 1. Stop heartbeat LED cycle (cancels both works). */
+	ui_set_heartbeat_led(false);
+
+	/* 2. Display off — content stays visible on EPD, blanks on OLED. */
+#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
+	mc_display_off();
+#endif
+
+	/* 3. Drive power-enable GPIOs LOW so peripherals don't keep drawing.
+	 * Do NOT touch BLE here — that corrupts controller state and prevents
+	 * clean reboot on wake. */
+	gps_power_off_for_shutdown();
+	mesh_disable_power_regulators();   /* weak-stubbed on non-companion roles */
+
+	/* 4. Hold LoRa radio in HW reset.
+	 * SX126x/LR11xx duty-cycle mode would otherwise keep the radio cycling
+	 * autonomously (mA) while the SoC is in System OFF.  nRF52 output
+	 * latches persist across System OFF → chip stays in reset (~0 µA). */
+#if DT_NODE_EXISTS(DT_ALIAS(lora0)) && DT_NODE_HAS_PROP(DT_ALIAS(lora0), reset_gpios)
+	{
+		static const struct gpio_dt_spec lora_reset =
+			GPIO_DT_SPEC_GET(DT_ALIAS(lora0), reset_gpios);
+		gpio_pin_configure_dt(&lora_reset, GPIO_OUTPUT_ACTIVE);
+	}
+#endif
+
+	/* 5. Configure GPIO SENSE for sw0 button wakeup, after waiting for the
+	 * user to release any held button (otherwise DETECT is already asserted
+	 * when we enter System OFF and the chip never sleeps cleanly).
+	 * nRF only — other platforms rely on the DT wakeup-source property. */
+#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF) && DT_NODE_EXISTS(DT_ALIAS(sw0))
+	{
+#define _SW0_NODE  DT_ALIAS(sw0)
+#define _SW0_PORT  DT_PROP(DT_GPIO_CTLR(_SW0_NODE, gpios), port)
+#define _SW0_PIN   DT_GPIO_PIN(_SW0_NODE, gpios)
+#define _SW0_FLAGS DT_GPIO_FLAGS(_SW0_NODE, gpios)
+
+		static const struct gpio_dt_spec sw0 =
+			GPIO_DT_SPEC_GET(DT_ALIAS(sw0), gpios);
+		gpio_pin_configure_dt(&sw0, GPIO_INPUT);
+
+		int64_t deadline = k_uptime_get() + 5000;
+		while (gpio_pin_get_dt(&sw0) && k_uptime_get() < deadline) {
+			k_sleep(K_MSEC(10));
+		}
+
+		nrf_gpio_cfg_sense_input(
+			NRF_GPIO_PIN_MAP(_SW0_PORT, _SW0_PIN),
+			(_SW0_FLAGS & GPIO_PULL_UP)   ? NRF_GPIO_PIN_PULLUP   :
+			(_SW0_FLAGS & GPIO_PULL_DOWN) ? NRF_GPIO_PIN_PULLDOWN :
+						       NRF_GPIO_PIN_NOPULL,
+			(_SW0_FLAGS & GPIO_ACTIVE_LOW) ? NRF_GPIO_PIN_SENSE_LOW
+						       : NRF_GPIO_PIN_SENSE_HIGH);
+#undef _SW0_NODE
+#undef _SW0_PORT
+#undef _SW0_PIN
+#undef _SW0_FLAGS
+	}
+#endif /* CONFIG_SOC_FAMILY_NORDIC_NRF && sw0 */
 }
 
 /* ========== Shared splash logo ==========

@@ -183,6 +183,17 @@ void ui_set_battery_provider(uint16_t (*provider)(void));
 void ui_refresh_battery(void);
 
 /**
+ * Prepare the device for sys_poweroff(): stop heartbeat LED, blank the
+ * display, power off GPS + sensor regulators, hold LoRa in HW reset,
+ * configure SENSE on sw0 (nRF only) for button wakeup.
+ *
+ * Caller is responsible for any shutdown chime BEFORE this call and the
+ * final sys_poweroff() AFTER. Both UI variants share this so the System
+ * OFF state is consistent regardless of which UI design is compiled in.
+ */
+void ui_prepare_for_system_off(void);
+
+/**
  * Drop the battery-refresh freshness timestamp. The next
  * ui_refresh_battery() call is guaranteed to sample the ADC.
  * Use when waking the display from sleep so the user sees a current
