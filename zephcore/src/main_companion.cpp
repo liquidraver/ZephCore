@@ -703,8 +703,8 @@ int main(void)
 
 		data_store.saveMainIdentity(self_identity);
 
-		memset(seed, 0, sizeof(seed));
-		memset(adc_noise, 0, sizeof(adc_noise));
+		mesh::Utils::secureZeroize(seed, sizeof(seed));
+		mesh::Utils::secureZeroize(adc_noise, sizeof(adc_noise));
 	}
 	companion_mesh.self_id = self_identity;
 

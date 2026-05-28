@@ -118,28 +118,6 @@ void RepeaterMesh::putNeighbour(const mesh::Identity& id, uint32_t timestamp, fl
 #endif
 }
 
-/* Constant-time byte-equality over a fixed length. Returns true iff every
- * byte of `a` matches `b`. No early exit — timing is independent of input,
- * defeating timing-leak attacks against password comparison.
- *
- * `volatile` on the accumulator prevents the compiler from short-circuiting
- * the XOR-OR loop back into a branching memcmp under aggressive LTO. Pattern
- * matches rweather/arduinolibs Crypto.cpp secure_compare(). mbedtls offers
- * mbedtls_ct_memcmp() but its implementation lives in a .c file that isn't
- * pulled into the Zephyr mbedtls build under current Kconfig — would require
- * enabling additional TLS features just for this one function.
- *
- * Mitigation for the password-handling weakness tracked upstream as
- * meshcore-dev/MeshCore#2556. See CRYPTO_AUDIT_INDEX.md P4.F1. */
-static bool ct_memeq(const uint8_t *a, const uint8_t *b, size_t n)
-{
-    volatile uint8_t result = 0;
-    for (size_t i = 0; i < n; i++) {
-        result |= (uint8_t)(a[i] ^ b[i]);
-    }
-    return result == 0;
-}
-
 uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood) {
     ClientInfo* client = nullptr;
 
@@ -160,12 +138,12 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
         size_t r_len = strnlen((const char *)data, sizeof(received) - 1);
         memcpy(received, data, r_len);
 
-        bool admin_match = ct_memeq(received,
-                                    (const uint8_t *)_prefs.password,
-                                    sizeof(received));
-        bool guest_match = ct_memeq(received,
-                                    (const uint8_t *)_prefs.guest_password,
-                                    sizeof(received));
+        bool admin_match = mesh::Utils::constantTimeEqual(received,
+                                                          _prefs.password,
+                                                          sizeof(received));
+        bool guest_match = mesh::Utils::constantTimeEqual(received,
+                                                          _prefs.guest_password,
+                                                          sizeof(received));
 
         if (admin_match) {
             perms = PERM_ACL_ADMIN;

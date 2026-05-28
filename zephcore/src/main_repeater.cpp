@@ -501,8 +501,8 @@ int main(void)
 		data_store.saveIdentity(self_identity);
 		LOG_INF("New identity saved");
 
-		memset(seed, 0, sizeof(seed));
-		memset(adc_noise, 0, sizeof(adc_noise));
+		mesh::Utils::secureZeroize(seed, sizeof(seed));
+		mesh::Utils::secureZeroize(adc_noise, sizeof(adc_noise));
 	}
 	repeater_mesh.self_id = self_identity;
 

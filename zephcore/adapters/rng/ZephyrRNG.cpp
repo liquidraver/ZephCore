@@ -10,6 +10,7 @@
 #include <zephyr/drivers/hwinfo.h>
 #include <psa/crypto.h>
 #include <string.h>
+#include <mesh/Utils.h>
 
 BUILD_ASSERT(IS_ENABLED(CONFIG_CSPRNG_ENABLED),
 	"ZephyrRNG requires CONFIG_CSPRNG_ENABLED for cryptographic key derivation");
@@ -163,7 +164,8 @@ static int extract_via_aes_ctr(const uint8_t *pool, size_t pool_len,
 
 	psa_key_id_t key_id = 0;
 	status = psa_import_key(&attr, key, sizeof(key), &key_id);
-	memset(key, 0, sizeof(key));
+	/* Wipe stack-resident AES key — secureZeroize survives -Os DSE. */
+	Utils::secureZeroize(key, sizeof(key));
 	if (status != PSA_SUCCESS) {
 		return -1;
 	}
@@ -192,11 +194,11 @@ static int extract_via_aes_ctr(const uint8_t *pool, size_t pool_len,
 		for (int i = sizeof(counter) - 1; i >= 0; i--) {
 			if (++counter[i] != 0) break;
 		}
-		memset(block, 0, sizeof(block));
+		Utils::secureZeroize(block, sizeof(block));
 	}
 
 	psa_destroy_key(key_id);
-	memset(counter, 0, sizeof(counter));
+	Utils::secureZeroize(counter, sizeof(counter));
 	return ret;
 }
 
@@ -262,9 +264,11 @@ void ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t out_len,
 		sys_reboot(SYS_REBOOT_COLD);
 	}
 
-	/* Wipe sensitive intermediate buffers */
-	memset(pool, 0, sizeof(pool));
-	memset(devid, 0, sizeof(devid));
+	/* Wipe sensitive intermediate buffers — secureZeroize survives the
+	 * -Os dead-store-elimination that would silently elide plain memset
+	 * on stack locals that are never read again. */
+	Utils::secureZeroize(pool, sizeof(pool));
+	Utils::secureZeroize(devid, sizeof(devid));
 }
 
 } /* namespace mesh */

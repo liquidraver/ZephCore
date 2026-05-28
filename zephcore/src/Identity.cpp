@@ -82,12 +82,21 @@ bool LocalIdentity::validatePrivateKey(const uint8_t prv[64])
 	uint8_t ss1[32], ss2[32];
 	ed25519_key_exchange(ss1, test_client_pub, prv);
 	ed25519_key_exchange(ss2, pub, test_client_prv);
-	if (memcmp(ss1, ss2, 32) != 0) return false;
-
-	for (int i = 0; i < 32; i++) {
-		if (ss1[i] != 0) return true;
+	/* Constant-time even though this self-test runs at boot before
+	 * any networking is up — hygiene + no attacker observation. */
+	if (!Utils::constantTimeEqual(ss1, ss2, 32)) {
+		Utils::secureZeroize(ss1, sizeof(ss1));
+		Utils::secureZeroize(ss2, sizeof(ss2));
+		return false;
 	}
-	return false;
+
+	bool nonzero = false;
+	for (int i = 0; i < 32; i++) {
+		if (ss1[i] != 0) { nonzero = true; break; }
+	}
+	Utils::secureZeroize(ss1, sizeof(ss1));
+	Utils::secureZeroize(ss2, sizeof(ss2));
+	return nonzero;
 }
 
 bool LocalIdentity::readFrom(const uint8_t *src, size_t len)
