@@ -201,8 +201,16 @@ uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_
         if (data_len < 1) return 0;
         reply_path_len = *data++;
         data_len--;
-        /* data is anon-req-supplied; bound copy with remaining data_len. */
-        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len);
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -218,8 +226,16 @@ uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t 
         if (data_len < 1) return 0;
         reply_path_len = *data++;
         data_len--;
-        /* data is anon-req-supplied; bound copy with remaining data_len. */
-        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len);
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -236,8 +252,16 @@ uint8_t RepeaterMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t 
         if (data_len < 1) return 0;
         reply_path_len = *data++;
         data_len--;
-        /* data is anon-req-supplied; bound copy with remaining data_len. */
-        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len);
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
