@@ -510,7 +510,14 @@ void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_mil
 		_mgr->free(packet);
 	} else {
 		_mgr->queueOutbound(packet, priority, futureMillis((int)delay_millis));
-		if (_tx_queued_cb && delay_millis > 0) {
+		/* Fire the wake callback even for delay_millis == 0.  Companion
+		 * BLE/USB-driven direct & zero-hop sends enqueue with delay 0 from
+		 * sysworkq — off the main loop — and the per-frame RX wake was
+		 * removed in 57b971f, so without this they have no drain signal
+		 * (USB companion has no tx-idle backstop).  The callback reschedules
+		 * tx_drain_work with K_MSEC(0) → immediate drain; redundant but
+		 * harmless when sendPacket is already called from the main loop. */
+		if (_tx_queued_cb) {
 			_tx_queued_cb(delay_millis, _tx_queued_user_data);
 		}
 	}
