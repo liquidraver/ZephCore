@@ -539,6 +539,28 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER)
     message(WARNING "ZephCore repeater uplink requested, but MQTT is disabled (likely prod.conf). Build will exclude uplink runtime.")
   endif()
   target_compile_definitions(app PRIVATE ZEPHCORE_REPEATER=1)
+elseif(CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
+  message(STATUS "ZephCore Role: ROOM SERVER")
+  target_sources(app PRIVATE
+    src/main_room_server.cpp
+    app/RoomServerMesh.cpp
+    app/RoomServerRegionCLI.cpp
+    app/RepeaterDataStore.cpp
+    helpers/ClientACL.cpp
+    helpers/RegionMap.cpp
+    helpers/TransportKeyStore.cpp
+    helpers/CommonCLI.cpp
+  )
+  # Shared USBD CDC ACM init + 1200-baud DFU + DTR event/callback module.
+  if(NOT CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT AND (CONFIG_USB_CDC_ACM OR CONFIG_USBD_CDC_ACM_CLASS))
+    target_sources(app PRIVATE
+      adapters/usb/ZephyrUSBCDC.cpp
+    )
+  endif()
+  target_include_directories(app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/usb
+  )
+  target_compile_definitions(app PRIVATE ZEPHCORE_ROOM_SERVER=1)
 elseif(CONFIG_ZEPHCORE_ROLE_OBSERVER)
   message(STATUS "ZephCore Role: OBSERVER")
   target_sources(app PRIVATE
@@ -640,7 +662,7 @@ if(CONFIG_ZEPHCORE_UI_BUTTONS OR CONFIG_ZEPHCORE_UI_BUZZER OR CONFIG_ZEPHCORE_UI
     ${CMAKE_CURRENT_SOURCE_DIR}/helpers/ui
   )
   # Repeater and Observer builds need weak stubs for companion-only UI mesh actions
-  if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_OBSERVER)
+  if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_OBSERVER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     target_sources(app PRIVATE
       helpers/ui/ui_mesh_actions_stubs.c
     )

@@ -2,6 +2,8 @@
 
 All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the mesh (non-zero `sender_timestamp`) cannot access USB-only commands.
 
+> The **Room Server** role shares this CLI — the common commands (radio, region, password, advert, gps, etc.) plus `setperm` / `get acl` all apply.
+
 **Sources:**
 - `helpers/CommonCLI.cpp` — common commands shared by all roles
 - `app/RepeaterMesh.cpp` — repeater-specific commands

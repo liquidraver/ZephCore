@@ -94,6 +94,15 @@ config ZEPHCORE_ROLE_OBSERVER
 	  IATA location code) are configured at runtime via serial CLI
 	  and stored in LittleFS. No BLE, no advertising, no routing.
 
+config ZEPHCORE_ROLE_ROOM_SERVER
+	bool "Room Server (shared BBS, USB serial CLI)"
+	help
+	  Store-and-forward shared message room (a "BBS").  Clients log in
+	  with an admin or guest password and post messages; the server
+	  pushes each new post to all other logged-in clients and tracks a
+	  per-client sync cursor.  No BLE — configured via USB serial CLI.
+	  Reuses the repeater's ACL, region filtering and CLI command set.
+
 endchoice
 
 config ZEPHCORE_COMPANION_USB
@@ -117,11 +126,11 @@ config ZEPHCORE_COMPANION_USB
 	  For ESP32-S3 boards, USB_DEVICE_STACK_NEXT must be enabled first via
 	  boards/common/esp32s3_usb.conf before this becomes active.
 
-if ZEPHCORE_ROLE_REPEATER
+if ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 
 config ZEPHCORE_REPEATER_UPLINK
 	bool "Enable repeater WiFi+MQTT uplink"
-	depends on SOC_FAMILY_ESPRESSIF_ESP32
+	depends on ZEPHCORE_ROLE_REPEATER && SOC_FAMILY_ESPRESSIF_ESP32
 	default n
 	help
 	  Adds observer-style WiFi station and MQTT packet publishing to
@@ -162,7 +171,15 @@ config ZEPHCORE_GUEST_PASSWORD
 	help
 	  Default password for guest access. Empty string disables guest access.
 
-endif # ZEPHCORE_ROLE_REPEATER
+config ZEPHCORE_MAX_UNSYNCED_POSTS
+	int "Room server: max buffered posts"
+	default 32
+	depends on ZEPHCORE_ROLE_ROOM_SERVER
+	help
+	  Size of the room server's circular post buffer.  When full, the
+	  oldest unsynced post is overwritten.  Matches upstream MeshCore (32).
+
+endif # ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 
 endmenu # Device Role
 

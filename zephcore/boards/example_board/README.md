@@ -113,6 +113,14 @@ Append `-- -DEXTRA_CONF_FILE="boards/common/repeater.conf"` to any build command
 west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
 ```
 
+### Building for Room Server Role
+
+Append `-- -DEXTRA_CONF_FILE="boards/common/room_server.conf"` to any build command:
+
+```
+west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/room_server.conf"
+```
+
 ### Production Build (logging disabled)
 
 ```

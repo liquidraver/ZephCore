@@ -60,6 +60,7 @@ For exact `west build -b` board strings, flash methods, and special setup, see t
 
 - **Companion** (default) -- connects to MeshCore mobile apps via BLE. Contacts, channels, offline message queue.
 - **Repeater** -- forwards packets, configured via USB serial CLI. See the [Repeater CLI Command Reference](zephcore/Repeater_CLI_commands.md) for all available commands.
+- **Room Server** -- store-and-forward shared message room (a "BBS"). Clients log in with an admin or guest password and post messages; the server pushes each new post to every other logged-in client. No BLE; configured via the same USB serial CLI as the repeater.
 - **Observer** (ESP32 only) -- listen-only node that publishes received LoRa packets to MQTT over WiFi STA. Configured at runtime via serial CLI.
 
 ## Building
@@ -96,6 +97,10 @@ west build -b rak4631 zephcore --pristine -- \
 # ESP32 repeater + WiFi AP HTTP OTA (requires sysbuild for MCUboot)
 west build -b xiao_esp32s3/esp32s3/procpu zephcore --pristine --sysbuild -- \
   -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/wifi_ota.conf"
+
+# Room Server (store-and-forward BBS, USB CLI)
+west build -b rak4631 zephcore --pristine -- \
+  -DEXTRA_CONF_FILE="boards/common/room_server.conf"
 
 # Observer (ESP32, listen-only WiFi+MQTT)
 west build -b xiao_esp32c3 zephcore --pristine -- \

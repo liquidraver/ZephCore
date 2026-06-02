@@ -25,10 +25,12 @@
 
 ## 1. Project Overview
 
-ZephCore is a LoRa mesh networking firmware running on Zephyr RTOS. It supports two device roles:
+ZephCore is a LoRa mesh networking firmware running on Zephyr RTOS. It supports four device roles:
 
 - **Companion**: BLE-connected device paired with a phone app. Full contact/channel/message management.
 - **Repeater**: Autonomous headless relay node. CLI administration via authenticated mesh connections or serial UART.
+- **Room Server**: Headless store-and-forward shared message room (BBS). Reuses the repeater's ACL/region/CLI; pushes new posts to logged-in clients (per-client sync cursor + ACK).
+- **Observer** (ESP32): Listen-only node that publishes received LoRa packets to MQTT over WiFi.
 
 Supported hardware: nRF52840, nRF54L15, ESP32-C3/C6/S3, EFR32MG24 — all with SX1262 or LR1110 LoRa radios.
 
