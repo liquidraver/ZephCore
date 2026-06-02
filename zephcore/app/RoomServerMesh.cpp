@@ -777,12 +777,24 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     if (client == nullptr) {
         /* Constant-time compare against both stored passwords.  Admin grants
          * ADMIN; the guest/room password grants READ_WRITE (so guests may
-         * post); allow_read_only downgrades any other login to GUEST. */
+         * post); allow_read_only downgrades any other login to GUEST.
+         *
+         * Zero-pad BOTH operands into cleared buffers first: the CLI's
+         * StrHelper::strncpy null-terminates but does NOT clear the rest of
+         * the 16-byte buffer, so a password set over a longer previous value
+         * leaves trailing garbage. Comparing the raw stored buffer full-width
+         * against the (zero-padded) received bytes would then fail to match a
+         * correct password. Copy only up to the NUL so the compare reflects
+         * the actual string while staying constant-time over the full width. */
         uint8_t received[sizeof(_prefs.password)] = {0};
+        uint8_t admin_pw[sizeof(_prefs.password)] = {0};
+        uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
         size_t r_len = strnlen((const char*)&data[8], sizeof(received) - 1);
         memcpy(received, &data[8], r_len);
-        bool admin_match = mesh::Utils::constantTimeEqual(received, _prefs.password, sizeof(received));
-        bool guest_match = mesh::Utils::constantTimeEqual(received, _prefs.guest_password, sizeof(received));
+        memcpy(admin_pw, _prefs.password, strnlen(_prefs.password, sizeof(admin_pw) - 1));
+        memcpy(guest_pw, _prefs.guest_password, strnlen(_prefs.guest_password, sizeof(guest_pw) - 1));
+        bool admin_match = mesh::Utils::constantTimeEqual(received, admin_pw, sizeof(received));
+        bool guest_match = mesh::Utils::constantTimeEqual(received, guest_pw, sizeof(received));
 
         uint8_t perms;
         if (admin_match) {
