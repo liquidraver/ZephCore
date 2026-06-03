@@ -5,10 +5,12 @@
  * Auto-paired with rak6421_pi5.conf. Identical to rak6421.overlay except the
  * Pi 5 moved the 40-pin header GPIOs to /dev/gpiochip4.
  *
- * Pins + clock mirror meshtasticd (lora-RAK6421-13300-slot1.yaml), BCM numbering:
+ * Pins + clock per the RAK6421 IO Slot 1 reference wiring, BCM numbering:
  *   CS = GPIO 8 (spidev0.0 CE0), DIO1 = GPIO 22, RESET = GPIO 16, BUSY = GPIO 24,
  *   DIO2 = RF switch, DIO3 = 1.8V TCXO, Enable_Pins 12+13 held high (GPIO hogs;
- *   needs CONFIG_GPIO_HOGS=y in rak6421_pi5.conf). Hardware-untested in ZephCore.
+ *   needs CONFIG_GPIO_HOGS=y in rak6421_pi5.conf). Same wiring as rak6421.overlay,
+ *   which is hardware-verified on a Pi Zero 2 W (2026-06-03); the Pi 5 gpiochip4
+ *   variant is build-verified but not separately hardware-tested.
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
@@ -43,7 +45,11 @@
 		spi-mode = <0>;
 		#address-cells = <1>;
 		#size-cells = <0>;
-		cs-gpios = <&zephcore_gpio0 8 GPIO_ACTIVE_LOW>;
+		/* CS is spidev0.0's HARDWARE CE0 (BCM GPIO 8). With dtparam=spi=on
+		 * the kernel SPI controller owns that pin (ALT0), so it canNOT be
+		 * grabbed as a GPIO — spidev asserts CE0 on every transfer instead.
+		 * Do NOT declare cs-gpios here (that's the Femtofox path, where CS is
+		 * a free GPIO). */
 
 		lora_sx1262: lora@0 {
 			compatible = "semtech,sx1262";

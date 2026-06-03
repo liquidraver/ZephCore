@@ -144,8 +144,7 @@ static uint64_t input_flags(bool pull_up, bool pull_down, bool active_low)
 	/* else: leave bias AS-IS (no flag).  Forcing BIAS_DISABLED can turn off
 	 * the pin's input path on some SoCs (e.g. Rockchip), making a
 	 * push-pull-driven input (SX126x BUSY) read stuck-low.  libgpiod
-	 * defaults to AS-IS, which is what meshtasticd uses to read these pins
-	 * correctly. */
+	 * defaults to AS-IS, which reads these pins correctly. */
 	return flags;
 }
 

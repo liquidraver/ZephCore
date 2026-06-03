@@ -15,7 +15,7 @@
  * - QSPI flash disabled (pins conflict with LoRa SPI bus)
  * - SoftDevice s140 v6.1.1, UF2 bootloader
  *
- * Pin mappings (from Meshtastic/MeshCore variant.h):
+ * Pin mappings (from MeshCore variant.h):
  * - LoRa SPI:  SCK=P0.03, MOSI=P0.30, MISO=P0.29, CS=P0.26
  * - LoRa ctl:  DIO1=P0.10 (NFC2), BUSY=P0.09 (NFC1), RESET=P0.04
  * - FEM:       SX126X_POWER_EN=P0.21 (SKY66122 CSD+CPS)

@@ -176,12 +176,18 @@ same `-DEXTRA_CONF_FILE`.)
 > initialised on Windows. `rm -rf build &&` is equivalent and works everywhere. (On a
 > native-Linux build host, plain `--pristine` is fine.)
 >
-> **Status:** the RAK6421 presets are **build-verified but not yet hardware-tested** —
-> only the Femtofox is confirmed end-to-end (2026-06-02). The same GPIO driver carries the
-> fixes, so it *should* work; if the radio is dead, follow the "Radio does nothing"
-> troubleshooting below. Note the RAK13300/RAK13302 preset assumes **no DIO3 TCXO** (XTAL +
-> discrete RF switch); if your module has a TCXO, add `dio3-tcxo-voltage`/`tcxo-power-startup-delay-ms`
-> to `boards/linux_native/rak6421.overlay` (and `rak6421_pi5.overlay`).
+> **Status:** the RAK6421 preset (`rak6421.conf`, Pi Zero 2 W) is **hardware-verified
+> end-to-end (2026-06-03)** — SX1262 init, SPI/CS, TCXO, radio-start, and over-the-air
+> RX/TX all confirmed on real hardware, alongside the Femtofox (2026-06-02). The Pi 5
+> preset (`rak6421_pi5.conf`) shares the same wiring (only the gpiochip differs) and is
+> build-verified but not separately hardware-tested. If the radio is dead, follow the
+> "Radio does nothing" troubleshooting below.
+>
+> The RAK13300/RAK13302 **does have a DIO3-powered TCXO and uses DIO2 as the RF
+> switch** — both overlays set `dio3-tcxo-voltage`/`dio2-tx-enable` accordingly, and
+> hold the module's two `Enable_Pins` (BCM 12 + 13) high via GPIO hogs
+> (`CONFIG_GPIO_HOGS=y`). Pins and clock follow the RAK6421 IO Slot 1 reference
+> wiring; see the wiring table below.
 
 ### 4. Repeater role (no companion)
 
@@ -220,16 +226,21 @@ Source: `github.com/femtofox/femtofox` → `foxbuntu/.../femtofox_SX1262_TCXO.ya
 
 BCM GPIO numbers (Pi 2/3/4/Zero 2: `gpiochip0` → `rak6421.conf`; Pi 5: `gpiochip4` → `rak6421_pi5.conf`):
 
-| Signal | BCM | WisBlock slot 1 pin |
+| Signal | BCM | WisBlock IO slot 1 |
 |---|---|---|
-| SPI bus | `/dev/spidev0.0` (CE0 = GPIO 8) | 25–28 |
-| DIO1/IRQ | 17 | 29 |
-| BUSY | 12 | 30 |
-| RESET | 13 | 31 |
+| SPI bus | `/dev/spidev0.0` (CE0 = GPIO 8) | — |
+| DIO1/IRQ | 22 | IO6 |
+| RESET | 16 | IO4 |
+| BUSY | 24 | IO5 |
+| RX/TX enable | 12, 13 (`Enable_Pins`; 13 = IO3 antenna switch) | IO3 |
 
-No DIO2 RF switch (RAK13300 has discrete switch), no DIO3 TCXO.
-
-Source: RAK6421 datasheet IO slot table + RAKWireless `meshtastic-rak6421-guide`.
+SX1262 extras: **DIO3 powers a 1.8 V TCXO** (`dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>`)
+and **DIO2 drives the RF switch** (`dio2-tx-enable` / `DIO2_AS_RF_SWITCH: true`) —
+same as the Femtofox. The two `Enable_Pins` (12, 13) are held high at boot via
+GPIO hogs in the overlay (`CONFIG_GPIO_HOGS=y` in the `.conf`). The RAK13302 is the
+1W SKY66122-boosted variant and additionally wants a per-step `TX_GAIN_LORA` PA
+gain table; ZephCore's SX126x driver does not expose that, so this overlay drives
+the 13300 fully and the 13302 at default (non-boosted) PA.
 
 ---
 
@@ -451,6 +462,24 @@ west build … -- -DCONFIG_ZEPHCORE_LINUX_TCP_PORT=15000
 
 The transport expects raw NUS bytes with no length prefix. If the connection drops immediately, capture traffic with `tcpdump -i any -X port 5000` and verify the first bytes the app sends look like a MeshCore opcode (e.g. `0x01` = CMD_APP_START), not an HTTP request or other framed protocol.
 
+### `Failed to request line 8` / `CS GPIO configure failed: -5` (Raspberry Pi)
+
+```
+<err> gpio_native_linux: Failed to request line 8 on host chip
+<err> spi_native_linux: CS GPIO configure failed: -5
+<err> sx126x_hal: SPI bus not ready
+<err> sx126x: HAL init failed: -19
+```
+
+On the Pi, `dtparam=spi=on` binds the spi0 controller to GPIO 7–11 in ALT0, so
+**CE0 = BCM GPIO 8 is owned by the SPI controller** and cannot also be requested
+as a plain GPIO for chip-select — the request fails with `-EIO`. The fix is to let
+spidev drive CE0 in **hardware** (it asserts CS on every transfer) and **not**
+declare `cs-gpios` in the overlay. The `rak6421` / `rak6421_pi5` overlays do this
+(fixed 2026-06-03). If you copy the Femtofox overlay for a Pi setup, remove its
+`cs-gpios` line — that path
+only works when CS is a free GPIO (as it is on the Luckfox, GPIO48 on gpiochip1).
+
 ### Radio does nothing (no RX, CAD always times out, TX never completes)
 
 The interrupt path (DIO1) and BUSY readback are the spine of all radio ops. If
@@ -562,6 +591,7 @@ End-to-end verified under WSL Ubuntu 24.04 (gcc 13.3):
 - ✅ `LinuxTCPTransport` listens on port 5000.
 - ✅ TCP client connect/disconnect works; `SerialWifiInterface` (`<`/`>` + 2-byte LE length) framing parses correctly.
 - ✅ **End-to-end on real Femtofox hardware (2026-06-02):** radio RX, CAD (LBT), and TX all working; companion app connects and meshes; settings persist across restarts. (Required fixing two bugs in the native GPIO driver — see "Known caveats" below.)
+- ✅ **End-to-end on real Raspberry Pi Zero 2 W + RAK6421/RAK13300 hardware (2026-06-03):** SX1262 init, SPI with spidev hardware CS (CE0), DIO3 TCXO, DIO2 RF switch, and over-the-air RX/TX all confirmed. (Required dropping the GPIO chip-select from the Pi overlays — CE0 is owned by the kernel SPI controller; see the `Failed to request line 8` troubleshooting entry.)
 
 Build command verified (run from inside WSL with workspace at `/mnt/d/zephcore`):
 

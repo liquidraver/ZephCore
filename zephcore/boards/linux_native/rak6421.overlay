@@ -8,8 +8,7 @@
  * Works on any Pi that exposes the 40-pin header on gpiochip0 (Pi 2/3/4/Zero 2).
  * Pi 5 moved it to gpiochip4 — use rak6421_pi5.overlay instead.
  *
- * Pins + clock mirror the authoritative meshtasticd config
- * (bin/config.d/lora-RAK6421-13300-slot1.yaml), BCM numbering:
+ * Pins + clock per the RAK6421 IO Slot 1 reference wiring, BCM numbering:
  *   CS    = GPIO 8  (spidev0.0 CE0, hardware CS)
  *   DIO1  = GPIO 22 (IO6)
  *   RESET = GPIO 16 (IO4)
@@ -19,10 +18,11 @@
  *   Enable_Pins 12 + 13 are held HIGH to enable the module's RF front-end
  *   (driven via GPIO hogs below — needs CONFIG_GPIO_HOGS=y, set in rak6421.conf).
  *
- * NOTE: hardware-untested in ZephCore (only the Femtofox is verified). The
- * RAK13302 (1W SKY66122) additionally wants a PA gain table that ZephCore's
- * SX126x driver does not expose; this overlay drives the 13300 correctly and
- * the 13302 at default (non-boosted) PA.
+ * NOTE: hardware-verified end-to-end on a Pi Zero 2 W + RAK13300 (2026-06-03):
+ * RX/TX, TCXO, and DIO2 RF switch all confirmed. The RAK13302 (1W SKY66122)
+ * additionally wants a PA gain table that ZephCore's SX126x driver does not
+ * expose; this overlay drives the 13300 correctly and the 13302 at default
+ * (non-boosted) PA.
  */
 
 #include <zephyr/dt-bindings/gpio/gpio.h>
@@ -41,7 +41,7 @@
 		ngpios = <64>;
 		#gpio-cells = <2>;
 
-		/* RAK6421 Enable_Pins (meshtasticd): held high at boot to enable
+		/* RAK6421 Enable_Pins: held high at boot to enable
 		 * the module / RF front-end. */
 		rak6421_enable {
 			gpio-hog;
@@ -58,8 +58,11 @@
 		spi-mode = <0>;
 		#address-cells = <1>;
 		#size-cells = <0>;
-		/* SPI CE0 = BCM GPIO 8, driven as a regular GPIO. */
-		cs-gpios = <&zephcore_gpio0 8 GPIO_ACTIVE_LOW>;
+		/* CS is spidev0.0's HARDWARE CE0 (BCM GPIO 8). With dtparam=spi=on
+		 * the kernel SPI controller owns that pin (ALT0), so it canNOT be
+		 * grabbed as a GPIO — spidev asserts CE0 on every transfer instead.
+		 * Do NOT declare cs-gpios here (that's the Femtofox path, where CS is
+		 * a free GPIO). */
 
 		lora_sx1262: lora@0 {
 			compatible = "semtech,sx1262";

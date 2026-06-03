@@ -5,7 +5,7 @@
  * Auto-paired with femtofox.conf. Defines the native_linux SPI/GPIO controllers
  * and the SX1262 radio node on top of the platform infra in linux_common.overlay.
  *
- * Pins match the meshtasticd Femtofox profile (femtofox_SX1262_TCXO.yaml):
+ * Pins match the Femtofox SX1262 TCXO profile (femtofox_SX1262_TCXO.yaml):
  * gpiochip1, CS=16/GPIO48, BUSY=22/GPIO54, DIO1=23/GPIO55, RESET=25/GPIO57,
  * RXEN=24/GPIO56. DIO2 drives the RF switch, DIO3 powers a 1.8V TCXO.
  */
