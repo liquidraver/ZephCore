@@ -2233,7 +2233,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
 			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
-			static const uint8_t version[20] = "v1.15.6-zephyr";
+			static const uint8_t version[20] = "v1.15.9-zephyr";
 			uint8_t rsp[82];
 			rsp[0] = PACKET_DEVICE_INFO;
 			rsp[1] = 12;  // FIRMWARE_VER_CODE - v12 = CMD_SET_FLOOD_SCOPE_KEY [0x36, 0x01] unscoped variant

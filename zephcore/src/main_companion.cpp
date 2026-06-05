@@ -581,7 +581,7 @@ public:
 	void savePrefs() override {
 		data_store.savePrefs(companion_mesh.prefs);
 	}
-	const char* getFirmwareVer() override { return "v1.15.6-zephyr"; }
+	const char* getFirmwareVer() override { return "v1.15.9-zephyr"; }
 	const char* getBuildDate() override { return FIRMWARE_BUILD_DATE; }
 	const char* getRole() override { return "companion"; }
 	bool formatFileSystem() override { return data_store.formatFileSystem(); }

@@ -28,7 +28,7 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.15.6-zephyr"
+  #define FIRMWARE_VERSION   "v1.15.9-zephyr"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
