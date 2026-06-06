@@ -241,11 +241,21 @@ static void ble_on_disconnected(void)
 	ui_notify(UI_EVENT_BLE_DISCONNECTED);
 }
 
+#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_DFU)
+static void ble_on_dfu_request(void)
+{
+	mesh_reboot_to_ota_dfu();  /* GPREGRET 0xA8 + reset; never returns */
+}
+#endif
+
 static const struct ble_callbacks ble_cbs = {
 	.on_rx_frame = ble_on_rx_frame,
 	.on_tx_idle = ble_on_tx_idle,
 	.on_connected = ble_on_connected,
 	.on_disconnected = ble_on_disconnected,
+#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_DFU)
+	.on_dfu_request = ble_on_dfu_request,
+#endif
 };
 
 /* ========== Frame send/receive (mesh ↔ BLE/USB) ========== */

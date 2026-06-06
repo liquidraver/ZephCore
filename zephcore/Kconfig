@@ -280,6 +280,17 @@ config ZEPHCORE_BLE_ADV_SLOW_INTERVAL
 	  Advertising interval in 0.625ms units.
 	  338 = 211.25ms (Apple-compliant, used after 60s fast window).
 
+config ZEPHCORE_BLE_DFU
+	bool "Buttonless BLE DFU (legacy Nordic/Adafruit OTA jump)"
+	default y if SOC_SERIES_NRF52X || SOC_SERIES_NRF52
+	help
+	  Register the legacy Nordic DFU service (00001530/00001531) in the
+	  running companion app so a paired phone can trigger the jump into the
+	  Adafruit bootloader's BLE OTA mode without pressing a button. On a write
+	  of 0x01 to the control point the device sets the bootloader GPREGRET
+	  magic (0xA8) and resets; the bootloader then advertises for DFU and the
+	  phone's DFU tool reconnects to flash. nRF52 only.
+
 endmenu # BLE Configuration
 
 menu "Linux Companion Transport (native_sim)"

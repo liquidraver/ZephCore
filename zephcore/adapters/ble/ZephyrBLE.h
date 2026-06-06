@@ -27,6 +27,9 @@ struct ble_callbacks {
 	void (*on_connected)(void);
 	/* BLE disconnected */
 	void (*on_disconnected)(void);
+	/* Buttonless DFU control-point write — defer reboot into the
+	 * bootloader's BLE OTA mode. May be NULL (feature disabled). */
+	void (*on_dfu_request)(void);
 };
 
 enum zephcore_iface {

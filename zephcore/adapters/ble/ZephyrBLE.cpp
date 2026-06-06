@@ -237,6 +237,67 @@ BT_GATT_SERVICE_DEFINE(secure_nus_svc,
 		NULL, secure_nus_rx_write, NULL),
 );
 
+#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_DFU)
+/* ========== Legacy Nordic/Adafruit buttonless DFU service ==========
+ *
+ * Mirrors Adafruit BLEDfu (Arduino MeshCore >=1.15.0) so the same DFU tools
+ * interoperate: a paired phone writes 0x01 to the control point and the device
+ * resets into the bootloader's BLE OTA mode. We use the *unbonded* OTA reset
+ * (GPREGRET 0xA8, same as `start ota`): the bootloader comes up as a fresh DFU
+ * target and the tool re-scans for it (the legacy buttonless flow). Adafruit's
+ * 0xB1 bonded-resume path needs SoftDevice peer-data enrollment we can't
+ * replicate on Zephyr, so the phone makes a fresh connection to the bootloader.
+ */
+static struct bt_uuid_128 dfu_svc_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x00001530, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
+static struct bt_uuid_128 dfu_ctrl_uuid = BT_UUID_INIT_128(
+	BT_UUID_128_ENCODE(0x00001531, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
+
+static void dfu_jump_work_fn(struct k_work *work);
+static K_WORK_DELAYABLE_DEFINE(dfu_jump_work, dfu_jump_work_fn);
+
+static void dfu_jump_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	if (ble_cbs && ble_cbs->on_dfu_request) {
+		ble_cbs->on_dfu_request();  /* sets GPREGRET + resets; never returns */
+	}
+}
+
+static ssize_t dfu_ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
+			      const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
+{
+	ARG_UNUSED(conn);
+	ARG_UNUSED(attr);
+	ARG_UNUSED(offset);
+	ARG_UNUSED(flags);
+	/* Adafruit BLEDfu jump command: first byte 0x01 (1-2 byte write). */
+	if (len >= 1 && ((const uint8_t *)buf)[0] == 0x01) {
+		LOG_INF("buttonless DFU requested - rebooting to BLE OTA");
+		/* Defer so the ATT write response flushes and the DFU tool can
+		 * arm its disconnect/rescan before we reset. */
+		k_work_schedule(&dfu_jump_work, K_MSEC(250));
+	}
+	return len;
+}
+
+static void dfu_ctrl_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
+{
+	ARG_UNUSED(attr);
+	ARG_UNUSED(value);
+}
+
+BT_GATT_SERVICE_DEFINE(dfu_svc,
+	BT_GATT_PRIMARY_SERVICE(&dfu_svc_uuid),
+	BT_GATT_CHARACTERISTIC(&dfu_ctrl_uuid.uuid,
+		BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
+		BT_GATT_PERM_WRITE_AUTHEN,
+		NULL, dfu_ctrl_write, NULL),
+	BT_GATT_CCC(dfu_ctrl_ccc_changed,
+		BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),
+);
+#endif /* CONFIG_ZEPHCORE_BLE_DFU */
+
 /* ========== Work items ========== */
 
 static void tx_drain_work_fn(struct k_work *work);
