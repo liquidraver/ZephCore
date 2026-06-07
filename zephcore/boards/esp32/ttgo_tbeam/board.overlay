@@ -104,3 +104,8 @@
 &wifi {
 	status = "okay";
 };
+
+/* Bluetooth HCI — disabled by default in SoC DTSI, enable for repeater/companion */
+&esp32_bt_hci {
+	status = "okay";
+};
