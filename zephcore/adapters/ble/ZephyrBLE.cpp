@@ -1043,7 +1043,7 @@ size_t zephcore_ble_send(const uint8_t *data, uint16_t len)
 		 * the queue drains or the connection drops.
 		 *
 		 * Callers check zephcore_ble_is_congested() and hold off:
-		 *   - contact_iter_work: pauses iteration
+		 *   - contact iteration (run_contact_iteration): pauses iteration
 		 *   - main thread (sendPush): pushes are best-effort signals,
 		 *     actual message data is safe in the offline queue
 		 */
