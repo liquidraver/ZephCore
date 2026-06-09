@@ -511,10 +511,11 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	 * isReceiving() returns false during the CAD window because _tx_active
 	 * is set above — no extra gating needed.
 	 *
-	 * cad.mode = LBT is set unconditionally in buildModemConfig() today;
-	 * the `lbt` flag is a placeholder for any future Kconfig that toggles
-	 * the behaviour. */
-	const bool lbt = true;
+	 * The loramac-node sx127x backend uses a plain modem_acquire/release
+	 * mutex — there is no phase-2 path.  lora_config() returns -EBUSY if
+	 * called while async RX holds the mutex, so we must always cancel RX
+	 * first.  Disable the LBT optimisation for that backend. */
+	const bool lbt = !_loramac_node;
 
 	if (!lbt) {
 		atomic_set(&_in_recv_mode, 0);
