@@ -323,12 +323,25 @@ endif()
 # Enables WiFi AP + HTTP server + MCUboot image management.
 # Requires --sysbuild to build MCUboot alongside the app.
 # Non-ESP32 builds and companion builds are unaffected.
+# Boards with insufficient DRAM (e.g. classic ESP32 PICO-D4) can opt out
+# by setting CONFIG_ZEPHCORE_WIFI_OTA=n in their board.conf.
 if(ZEPHCORE_PLATFORM_CONF MATCHES "esp32_common" AND EXTRA_CONF_FILE MATCHES "repeater")
-    set(ZEPHCORE_WIFI_OTA_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_ota.conf")
-    if(EXISTS ${ZEPHCORE_WIFI_OTA_CONF})
-        list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_WIFI_OTA_CONF})
-        zephcore_auto_pair_overlay("${ZEPHCORE_WIFI_OTA_CONF}")
-        message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
+    set(_wifi_ota_disabled FALSE)
+    if(ZEPHCORE_BOARD_CONF AND EXISTS "${ZEPHCORE_BOARD_CONF}")
+        file(STRINGS "${ZEPHCORE_BOARD_CONF}" _board_conf_lines)
+        if("CONFIG_ZEPHCORE_WIFI_OTA=n" IN_LIST _board_conf_lines)
+            set(_wifi_ota_disabled TRUE)
+        endif()
+    endif()
+    if(NOT _wifi_ota_disabled)
+        set(ZEPHCORE_WIFI_OTA_CONF "${CMAKE_CURRENT_SOURCE_DIR}/boards/common/wifi_ota.conf")
+        if(EXISTS ${ZEPHCORE_WIFI_OTA_CONF})
+            list(APPEND ZEPHCORE_CONF_FILES ${ZEPHCORE_WIFI_OTA_CONF})
+            zephcore_auto_pair_overlay("${ZEPHCORE_WIFI_OTA_CONF}")
+            message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
+        endif()
+    else()
+        message(STATUS "  WiFi OTA: disabled (board.conf opt-out)")
     endif()
 endif()
 

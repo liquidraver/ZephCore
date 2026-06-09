@@ -64,6 +64,48 @@ static const struct device *vbat_enable_dev = NULL;
 #define VBAT_MV_MULTIPLIER CONFIG_ZEPHCORE_VBAT_MV_MULTIPLIER
 #endif
 #define VBAT_ADC_SAMPLES   8
+#elif DT_NODE_EXISTS(DT_NODELABEL(axp192_pmic))
+/* AXP192 PMIC: battery voltage via I2C registers 0x78/0x79.
+ * Used on boards without a GPIO-connected battery voltage divider,
+ * e.g. LilyGo T-Beam v1.x where battery management is internal to the PMIC. */
+#include <zephyr/drivers/i2c.h>
+
+/* AXP192 register map (datasheet section 9) */
+#define AXP192_REG_ADC_EN1       0x82U  /* ADC Enable 1 */
+#define AXP192_BATT_V_ADC_EN     BIT(7) /* reg 0x82 bit 7: battery voltage ADC */
+#define AXP192_REG_BATT_VH       0x78U  /* battery voltage ADC high 8 bits [11:4] */
+#define AXP192_REG_BATT_VL       0x79U  /* battery voltage ADC low  4 bits [7:4]  */
+#define AXP192_REG_GPIO0_FUNC    0x90U  /* GPIO0 function control */
+#define AXP192_GPIO0_FUNC_FLOAT  0x06U  /* float / high-Z — cuts LED current path */
+
+static const struct i2c_dt_spec axp192_i2c =
+	I2C_DT_SPEC_GET(DT_NODELABEL(axp192_pmic));
+
+/* One-time AXP192 init at boot.
+ *
+ * 1. Enable battery voltage ADC (off at POR).
+ * 2. Float GPIO0 to turn off the red power-indicator LED.
+ *    GPIO0 is open-drain; at POR its NMOS is conducting, sinking current
+ *    from the VCC→LED→GPIO0 circuit and keeping the LED on.  FLOAT mode
+ *    puts GPIO0 in high-impedance, breaking the current path. */
+static int axp192_batt_adc_init(void)
+{
+	if (!i2c_is_ready_dt(&axp192_i2c)) {
+		return -ENODEV;
+	}
+
+	/* Enable battery voltage ADC */
+	int ret = i2c_reg_update_byte_dt(&axp192_i2c, AXP192_REG_ADC_EN1,
+					 AXP192_BATT_V_ADC_EN, AXP192_BATT_V_ADC_EN);
+	if (ret < 0) {
+		return ret;
+	}
+
+	/* Turn off red power-indicator LED (GPIO0 → float) */
+	return i2c_reg_write_byte_dt(&axp192_i2c, AXP192_REG_GPIO0_FUNC,
+				     AXP192_GPIO0_FUNC_FLOAT);
+}
+SYS_INIT(axp192_batt_adc_init, APPLICATION, 91);
 #endif
 
 /* Initialize TX LED GPIO at boot */
@@ -142,6 +184,17 @@ uint16_t ZephyrBoard::getBattMilliVolts()
 	uint16_t mv = (uint16_t)((mult * (int64_t)raw) / 4096);
 	LOG_DBG("Battery: raw=%d multiplier=%lld mv=%u", (int)raw, (long long)mult, mv);
 	return mv;
+#elif DT_NODE_EXISTS(DT_NODELABEL(axp192_pmic))
+	/* 12-bit ADC: reg 0x78 = bits[11:4], reg 0x79 bits[7:4] = bits[3:0] */
+	uint8_t vh = 0, vl = 0;
+	if (!i2c_is_ready_dt(&axp192_i2c) ||
+	    i2c_reg_read_byte_dt(&axp192_i2c, AXP192_REG_BATT_VH, &vh) < 0 ||
+	    i2c_reg_read_byte_dt(&axp192_i2c, AXP192_REG_BATT_VL, &vl) < 0) {
+		return 0;
+	}
+	uint16_t raw = ((uint16_t)vh << 4) | (vl >> 4);
+	/* 1.1 mV per LSB — multiply by 11 then divide by 10 to avoid floats */
+	return (uint16_t)((uint32_t)raw * 11U / 10U);
 #else
 	return 0;
 #endif

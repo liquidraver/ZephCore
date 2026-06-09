@@ -1,0 +1,143 @@
+/*
+ * ZephCore overlay — LilyGo T-Beam v1.x (ESP32 PICO-D4 + SX1276 + AXP192)
+ *
+ * The upstream Zephyr ttgo_tbeam DTS targets a newer T-Beam revision that
+ * ships with AXP2101. The v1.0/v1.1 hardware uses AXP192. This overlay:
+ *   1. Removes the upstream AXP2101 node
+ *   2. Adds AXP192 with correct T-Beam v1.x LDO assignments:
+ *        LDO2 → SX1276 LoRa 3.3V  (always-on)
+ *        LDO3 → GPS (NEO-6M) 3.3V
+ *   3. Repurposes storage_partition as LittleFS
+ *
+ * SX1276 pins (from upstream DTS, verified against T-Beam v1.x schematic):
+ *   NSS=18  SCK=5  MISO=19  MOSI=27  RESET=23  DIO0=26  DIO1=33  DIO2=32
+ * If your board has RESET on GPIO14 (very early T-Beam v0.7), override
+ * reset-gpios in a local DTS fragment.
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/* Remove the upstream AXP2101 node — wrong PMIC for v1.x hardware */
+/delete-node/ &axp2101;
+
+/ {
+	aliases {
+		regulator0 = &axp192_pmic;
+		/* GPIO4 LED is wired active-low (cathode to GPIO, anode to VCC).
+		 * Upstream DTS has GPIO_ACTIVE_HIGH which inverts the logic and
+		 * keeps the LED on permanently.  We fix the polarity here and
+		 * register the LED as the LoRa TX indicator so it flashes on
+		 * each transmit in addition to the 4-second heartbeat pulse. */
+		lora-tx-led = &red_led;
+	};
+
+	/*
+	 * T-Beam v1.x IO38 button (gpio1 pin 6).
+	 * GPIO38 is input-only on ESP32 PICO-D4 (no internal pull-up).
+	 * T-Beam PCB has 100 K pull-up to 3.3 V; button shorts GPIO38 to GND.
+	 */
+	buttons: buttons {
+		compatible = "gpio-keys";
+		button0: button_0 {
+			label = "IO38 button";
+			gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+};
+
+/* Fix LED polarity: hardware is active-low, upstream DTS says active-high */
+&red_led {
+	gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+};
+
+/*
+ * Flash layout — repurpose storage_partition as LittleFS.
+ * 192 KB at 0x3B0000: same location and size as the deleted storage_partition.
+ */
+/delete-node/ &storage_partition;
+
+&flash0 {
+	partitions {
+		lfs_partition: partition@3b0000 {
+			label = "lfs";
+			reg = <0x3B0000 0x30000>;
+		};
+	};
+};
+
+#include "../../common/filesystem.dtsi"
+
+&i2c0 {
+	/*
+	 * AXP192 PMIC — replaces AXP2101 from upstream DTS.
+	 * T-Beam v1.x LDO assignments:
+	 *   DCDC1: ESP32 core VDD 3.3V
+	 *   LDO2:  SX1276 LoRa VDD 3.3V
+	 *   LDO3:  GPS VDD 3.3V
+	 */
+	axp192_pmic: axp192@34 {
+		compatible = "x-powers,axp192";
+		reg = <0x34>;
+		status = "okay";
+
+		axp192_regulator: axp192_regulator {
+			compatible = "x-powers,axp192-regulator";
+			status = "okay";
+
+			/* DCDC1 → ESP32 core VDD */
+			DCDC1 {
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			/* LDO2 → SX1276 VDD — must be on before radio init */
+			LDO2 {
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+				regulator-always-on;
+			};
+
+			/* LDO3 → GPS VDD */
+			LDO3 {
+				regulator-init-microvolt = <3300000>;
+				regulator-min-microvolt = <3300000>;
+				regulator-max-microvolt = <3300000>;
+				regulator-boot-on;
+			};
+		};
+	};
+
+	/* I2C sensors — auto-detected at runtime */
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* WiFi — required for observer and wifi_ota roles */
+&wifi {
+	status = "okay";
+};
+
+/* Bluetooth HCI — disabled by default in SoC DTSI, enable for repeater/companion */
+&esp32_bt_hci {
+	status = "okay";
+};
