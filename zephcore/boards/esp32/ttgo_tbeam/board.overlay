@@ -15,6 +15,8 @@
  * reset-gpios in a local DTS fragment.
  */
 
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
 /* Remove the upstream AXP2101 node — wrong PMIC for v1.x hardware */
 /delete-node/ &axp2101;
 
@@ -27,6 +29,36 @@
 		 * register the LED as the LoRa TX indicator so it flashes on
 		 * each transmit in addition to the 4-second heartbeat pulse. */
 		lora-tx-led = &red_led;
+	};
+
+	/*
+	 * T-Beam v1.x IO38 button (gpio1 pin 6).
+	 * GPIO38 is input-only on ESP32 PICO-D4 (no internal pull-up).
+	 * T-Beam PCB has 100 K pull-up to 3.3 V; button shorts GPIO38 to GND.
+	 */
+	buttons: buttons {
+		compatible = "gpio-keys";
+		button0: button_0 {
+			label = "IO38 button";
+			gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
 	};
 };
 
