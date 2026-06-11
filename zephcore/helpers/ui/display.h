@@ -174,9 +174,19 @@ void mc_display_epd_full_reset(void);
 const struct device *mc_display_get_device(void);
 
 /**
- * Convert UTF-8 text to Latin-1 for display rendering.
- * Passes ASCII unchanged, converts 2-byte Latin-1 (U+00A0-U+00FF),
- * strips everything else (emojis, CJK). Trims leading spaces left by stripped chars.
+ * Convert UTF-8 text to the display charset for rendering.
+ * Passes ASCII unchanged, converts Latin-1 (U+00A0-U+00FF) to its native
+ * code points, maps 32 Latin-2 letters (Hungarian/Czech/Slovak/Polish/...)
+ * into font slots 128-159, folds the rest of Latin Extended-A to base ASCII
+ * letters, and strips everything else (emojis, CJK). Bytes that are not
+ * valid UTF-8 pass through unchanged, so already-converted text survives a
+ * second pass.
+ */
+void utf8_to_display(char *dst, const char *src, size_t dst_size);
+
+/**
+ * utf8_to_display() + leading-space trim (names are sometimes space-padded
+ * to game sort order).
  */
 void utf8_to_latin1(char *dst, const char *src, size_t dst_size);
 

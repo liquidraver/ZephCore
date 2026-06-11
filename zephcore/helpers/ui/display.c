@@ -565,45 +565,134 @@ const struct device *mc_display_get_device(void)
 	return disp_initialized ? disp_dev : NULL;
 }
 
-/* ========== UTF-8 to Latin-1 Sanitizer ========== */
-void utf8_to_latin1(char *dst, const char *src, size_t dst_size)
+/* ========== UTF-8 to display-charset sanitizer ==========
+ *
+ * The 6x8 font covers Latin-1 at its native code points (0xA0-0xFF) and
+ * hosts 32 Latin Extended-A letters (Hungarian, Czech, Slovak, Polish, ...)
+ * in the otherwise-unused C1 range 128-159 (see cfb_font_0608.c). */
+
+/* Latin Extended-A code points with a real glyph -> font slot 128-159 */
+static const struct {
+	uint16_t cp;
+	uint8_t slot;
+} latin2_slots[] = {
+	{ 0x0104, 132 }, { 0x0105, 133 },	/* A/a ogonek */
+	{ 0x0106, 134 }, { 0x0107, 135 },	/* C/c acute */
+	{ 0x010C, 136 }, { 0x010D, 137 },	/* C/c caron */
+	{ 0x0118, 140 }, { 0x0119, 141 },	/* E/e ogonek */
+	{ 0x011A, 138 }, { 0x011B, 139 },	/* E/e caron */
+	{ 0x0141, 142 }, { 0x0142, 143 },	/* L/l stroke */
+	{ 0x0143, 144 }, { 0x0144, 145 },	/* N/n acute */
+	{ 0x0150, 128 }, { 0x0151, 129 },	/* O/o double acute */
+	{ 0x0158, 146 }, { 0x0159, 147 },	/* R/r caron */
+	{ 0x015A, 148 }, { 0x015B, 149 },	/* S/s acute */
+	{ 0x0160, 150 }, { 0x0161, 151 },	/* S/s caron */
+	{ 0x016E, 152 }, { 0x016F, 153 },	/* U/u ring */
+	{ 0x0170, 130 }, { 0x0171, 131 },	/* U/u double acute */
+	{ 0x0179, 154 }, { 0x017A, 155 },	/* Z/z acute */
+	{ 0x017B, 156 }, { 0x017C, 157 },	/* Z/z dot above */
+	{ 0x017D, 158 }, { 0x017E, 159 },	/* Z/z caron */
+};
+
+/* Base-letter fold for all of Latin Extended-A (U+0100..U+017F), indexed by
+ * cp - 0x100. Used for code points without a glyph slot above. */
+static const char latin_ext_a_fold[] =
+	"AaAaAa" "CcCcCcCc" "DdDd" "EeEeEeEeEe" "GgGgGgGg" "HhHh"
+	"IiIiIiIiIi" "Ii" "Jj" "Kkk" "LlLlLlLlLl" "NnNnNnnNn"
+	"OoOoOoOo" "RrRrRr" "SsSsSsSs" "TtTtTt" "UuUuUuUuUuUu"
+	"Ww" "YyY" "ZzZzZz" "s";
+
+static uint8_t display_charset_map(uint32_t cp)
+{
+	if (cp >= 0xA0 && cp <= 0xFF) {
+		return (uint8_t)cp;	/* native Latin-1 glyph */
+	}
+	if (cp >= 0x100 && cp <= 0x17F) {
+		for (size_t i = 0; i < ARRAY_SIZE(latin2_slots); i++) {
+			if (latin2_slots[i].cp == cp) {
+				return latin2_slots[i].slot;
+			}
+		}
+		return (uint8_t)latin_ext_a_fold[cp - 0x100];
+	}
+	switch (cp) {	/* Romanian uses comma-below variants */
+	case 0x218: return 'S';
+	case 0x219: return 's';
+	case 0x21A: return 'T';
+	case 0x21B: return 't';
+	default:    return 0;	/* drop: emoji, other scripts, ... */
+	}
+}
+
+void utf8_to_display(char *dst, const char *src, size_t dst_size)
 {
 	size_t di = 0;
 	size_t si = 0;
 
+	if (dst_size == 0) {
+		return;
+	}
 	while (src[si] && di < dst_size - 1) {
 		uint8_t c = (uint8_t)src[si];
+		uint32_t cp;
+		int len;
 
 		if (c < 0x80) {
 			dst[di++] = (char)c;
 			si++;
+			continue;
 		} else if ((c & 0xE0) == 0xC0) {
-			uint8_t c2 = (uint8_t)src[si + 1];
-
-			if ((c2 & 0xC0) != 0x80) {
-				si++;
-				continue;
-			}
-			uint16_t cp = ((c & 0x1F) << 6) | (c2 & 0x3F);
-			if (cp >= 0xA0 && cp <= 0xFF) {
-				dst[di++] = (char)(uint8_t)cp;
-			}
-			si += 2;
+			cp = c & 0x1F;
+			len = 2;
 		} else if ((c & 0xF0) == 0xE0) {
-			si += 3;
+			cp = c & 0x0F;
+			len = 3;
 		} else if ((c & 0xF8) == 0xF0) {
-			si += 4;
+			cp = c & 0x07;
+			len = 4;
 		} else {
+			/* Not a UTF-8 lead byte: already display-encoded text
+			 * (or junk) — pass through so a second sanitizing pass
+			 * is harmless. */
+			dst[di++] = (char)c;
 			si++;
+			continue;
+		}
+
+		bool valid = true;
+		for (int k = 1; k < len; k++) {
+			if (((uint8_t)src[si + k] & 0xC0) != 0x80) {
+				valid = false;
+				break;
+			}
+			cp = (cp << 6) | ((uint8_t)src[si + k] & 0x3F);
+		}
+		if (!valid) {
+			dst[di++] = (char)c;	/* lone lead byte: pass through */
+			si++;
+			continue;
+		}
+		si += len;
+
+		uint8_t out = display_charset_map(cp);
+		if (out) {
+			dst[di++] = (char)out;
 		}
 	}
 	dst[di] = '\0';
+}
+
+/* Legacy entry point: transcode + trim leading spaces (names are sometimes
+ * space-padded to game sort order). */
+void utf8_to_latin1(char *dst, const char *src, size_t dst_size)
+{
+	utf8_to_display(dst, src, dst_size);
 
 	size_t start = 0;
 	while (dst[start] == ' ') {
 		start++;
 	}
 	if (start > 0) {
-		memmove(dst, dst + start, di - start + 1);
+		memmove(dst, dst + start, strlen(dst + start) + 1);
 	}
 }

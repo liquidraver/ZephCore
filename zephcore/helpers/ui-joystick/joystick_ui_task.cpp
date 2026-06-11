@@ -657,22 +657,30 @@ void JoystickUITask::renderAlertOverlay()
 
 void JoystickUITask::handleLockInput(char key, uint32_t now)
 {
+	/* Unlock sequence: LEFT, OK, RIGHT — dedicated GPIO keys delivered
+	 * instantly. The back button is unusable here: its taps pass through
+	 * the longpress + multi-tap devicetree filters, so a single tap is
+	 * deferred 400 ms (tap-count window), a >=1 s hold becomes KEY_POWER,
+	 * and a quick re-tap becomes KEY_B — which made the old Back-OK-Back
+	 * sequence timing-sensitive. A wrong key restarts the sequence, except
+	 * LEFT, which always (re)arms step 1. */
+	uint8_t restart = (key == KEY_LEFT) ? 1 : 0;
+
 	switch (_lock_step) {
 	case 0:
-		if (key == KEY_CANCEL) _lock_step = 1;
-		else _lock_step = 0;
+		_lock_step = restart;
 		break;
 	case 1:
 		if (key == KEY_ENTER || key == KEY_ENTER_LONG) _lock_step = 2;
-		else _lock_step = 0;
+		else _lock_step = restart;
 		break;
 	case 2:
-		if (key == KEY_CANCEL) {
+		if (key == KEY_RIGHT) {
 			_locked = false;
 			_lock_step = 0;
 			scheduleLockTimer();
 		} else {
-			_lock_step = 0;
+			_lock_step = restart;
 		}
 		break;
 	default:
@@ -723,7 +731,7 @@ void JoystickUITask::renderLockOverlay()
 	mc_display_text((w - unread_w) / 2, 6 + fh + 6 + fh + 2, unread_buf, false);
 
 	/* Three step unlock sequence */
-	const char *toks[3] = { "Back", "OK", "Back" };
+	const char *toks[3] = { "Left", "OK", "Right" };
 	const int gap = 6;
 	int total_w = 0;
 	for (int i = 0; i < 3; i++) total_w += (int)strlen(toks[i]) * fw;

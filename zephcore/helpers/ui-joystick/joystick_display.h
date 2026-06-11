@@ -47,19 +47,20 @@ public:
 	int fontW() const { int w = mc_display_font_width(); return w ? w : 6; }
 	int fontH() const { int h = mc_display_font_height(); return h ? h : 8; }
 	int getTextWidth(const char *text) const {
-		return text ? (int)strlen(text) * fontW() : 0;
+		if (!text) return 0;
+		char buf[SANITIZE_BUF];
+		return (int)strlen(sanitized(buf, sizeof(buf), text)) * fontW();
 	}
 
-	/* ===== Text drawing ===== */
+	/* ===== Text drawing =====
+	 * All entry points transcode UTF-8 to the display charset first
+	 * (utf8_to_display: Latin-1/Latin-2 mapped, emoji stripped), so screens
+	 * can pass contact/channel names straight through. Measurement uses the
+	 * same transcoding, keeping widths in glyphs rather than UTF-8 bytes. */
 	void drawTextLeftAlign(int x, int y, const char *text) {
 		if (!text) return;
-		if (_color == YELLOW) {
-			int w = getTextWidth(text);
-			mc_display_fill_rect(x, y, w, fontH());
-			mc_display_text(x, y, text, true);
-		} else {
-			mc_display_text(x, y, text, _color == DARK);
-		}
+		char buf[SANITIZE_BUF];
+		drawSanitized(x, y, sanitized(buf, sizeof(buf), text));
 	}
 
 	void drawTextRightAlign(int right_x, int y, const char *text) {
@@ -85,19 +86,21 @@ public:
 		int avail_chars = max_w / fw;
 		if (avail_chars <= 0) return;
 
-		int len = (int)strlen(text);
+		char sbuf[SANITIZE_BUF];
+		const char *s = sanitized(sbuf, sizeof(sbuf), text);
+		int len = (int)strlen(s);
 		if (len <= avail_chars) {
-			drawTextLeftAlign(x, y, text);
+			drawSanitized(x, y, s);
 		} else {
 			/* Truncate with "…" (3 dots, but we only have ASCII) */
 			int truncate_at = avail_chars - 3;
 			if (truncate_at < 0) truncate_at = 0;
 			char buf[128];
 			int n = truncate_at < 127 ? truncate_at : 127;
-			memcpy(buf, text, n);
+			memcpy(buf, s, n);
 			buf[n] = '.'; buf[n+1] = '.'; buf[n+2] = '.';
 			buf[n+3] = '\0';
-			drawTextLeftAlign(x, y, buf);
+			drawSanitized(x, y, buf);
 		}
 	}
 
@@ -145,12 +148,39 @@ public:
 	void turnOn() { mc_display_on(); }
 	void turnOff() { mc_display_off(); }
 
-	/* UTF8 utility */
+	/* UTF8 utility — explicit pre-transcoding for screens that slice text
+	 * afterwards (marquee windows etc.), so byte == glyph in their math.
+	 * Re-sanitizing the result at draw time is a harmless pass-through. */
 	void translateUTF8ToBlocks(char *dst, const char *src, int size) {
 		utf8_to_latin1(dst, src, (size_t)size);
 	}
 
 private:
+	static constexpr size_t SANITIZE_BUF = 160;	/* > any display line */
+
+	/* Returns text itself when pure ASCII (no copy), else the transcoded
+	 * copy in buf. */
+	static const char *sanitized(char *buf, size_t n, const char *text) {
+		for (const char *p = text; *p; p++) {
+			if ((uint8_t)*p >= 0x80) {
+				utf8_to_display(buf, text, n);
+				return buf;
+			}
+		}
+		return text;
+	}
+
+	/* Color/invert draw logic on already-transcoded text. */
+	void drawSanitized(int x, int y, const char *text) {
+		if (_color == YELLOW) {
+			int w = (int)strlen(text) * fontW();
+			mc_display_fill_rect(x, y, w, fontH());
+			mc_display_text(x, y, text, true);
+		} else {
+			mc_display_text(x, y, text, _color == DARK);
+		}
+	}
+
 	Color _color;
 	int _cx, _cy;
 };
