@@ -277,11 +277,15 @@ DispatcherAction Mesh::onRecvPacket(Packet *pkt)
 
 	switch (pkt->getPayloadType()) {
 	case PAYLOAD_TYPE_ACK: {
-		uint32_t ack_crc;
-		memcpy(&ack_crc, pkt->payload, 4);
-		if (!_tables->hasSeen(pkt)) {
-			onAckRecv(pkt, ack_crc);
-			action = routeRecvPacket(pkt);
+		if (pkt->payload_len < 4) {
+			LOG_WRN("onRecvPacket: incomplete ACK (payload_len=%d)", pkt->payload_len);
+		} else {
+			uint32_t ack_crc;
+			memcpy(&ack_crc, pkt->payload, 4);
+			if (!_tables->hasSeen(pkt)) {
+				onAckRecv(pkt, ack_crc);
+				action = routeRecvPacket(pkt);
+			}
 		}
 		break;
 	}
@@ -499,6 +503,7 @@ Packet *Mesh::createAck(const uint8_t *ack, uint8_t len)
 
 Packet *Mesh::createMultiAck(const uint8_t *ack, uint8_t len, uint8_t remaining)
 {
+	if (1 + (size_t)len > MAX_PACKET_PAYLOAD) return nullptr;
 	Packet *packet = obtainNewPacket();
 	if (packet == nullptr) return nullptr;
 	packet->header = (PAYLOAD_TYPE_MULTIPART << PH_TYPE_SHIFT);
@@ -594,7 +599,15 @@ void Mesh::sendDirect(Packet *packet, const uint8_t *path, uint8_t path_len, uin
 
 	uint8_t pri;
 	if (packet->getPayloadType() == PAYLOAD_TYPE_TRACE) {
-		/* For TRACE packets, path is appended to end of PAYLOAD (used for SNRs) */
+		/* For TRACE packets, path is appended to end of PAYLOAD (used for SNRs).
+		 * Guard the append: a crafted CMD_SEND_TRACE_PATH frame can set a
+		 * non-standard path hash size (path_sz 2/3) that the caller's hop-count
+		 * validation doesn't byte-bound, so payload_len + path_len could spill
+		 * past payload[]. */
+		if ((int)packet->payload_len + path_len > MAX_PACKET_PAYLOAD) {
+			releasePacket(packet);
+			return;
+		}
 		memcpy(&packet->payload[packet->payload_len], path, path_len);
 		packet->payload_len += path_len;
 		packet->path_len = 0;
