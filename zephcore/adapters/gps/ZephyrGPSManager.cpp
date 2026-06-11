@@ -1398,6 +1398,15 @@ int64_t gps_get_utc_time(void)
 	struct gnss_time t = current_utc;
 	k_mutex_unlock(&gps_mutex);
 
+	/* Defensive: the date math below indexes month_days[m] for m < t.month.
+	 * t.month is a uint8_t straight from the GNSS driver — bound it (and the
+	 * day) so a driver that doesn't range-check (the NMEA parser does; binary
+	 * UBX/chip drivers are not all verified) can't drive an OOB read of
+	 * month_days[13] or a garbage RTC set. */
+	if (t.month < 1 || t.month > 12 || t.month_day < 1 || t.month_day > 31) {
+		return 0;
+	}
+
 	int year = 2000 + t.century_year;
 	int days = 0;
 
