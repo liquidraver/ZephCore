@@ -242,8 +242,8 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set multi.acks <0\|1>` | | Enable extra ACK transmits |
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |
 | `set loop.detect <mode>` | `off`, `minimal`, `moderate`, `strict` | Loop detection sensitivity |
-| `set radio.rxgain <0\|1>` | | RX gain boost *(reboot required)* |
-| `set rxduty <0\|1>` | | RX duty cycle mode *(reboot required)* |
+| `set radio.rxgain <0\|1\|on\|off>` | | RX gain boost *(reboot required)* |
+| `set rxduty <0\|1\|on\|off>` | | RX duty cycle mode *(reboot required)* |
 | `set adc.multiplier <mult>` | (0 = use board default) | Battery voltage ADC calibration multiplier |
 | `set prv.key <hex>` | 64-char hex (32-byte key) | Replace private key; derive new identity *(reboot to apply)* |
 

@@ -884,22 +884,30 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error: unsupported by this board");
             }
         } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
-            int val = atoi(&config[13]);
+            const char* arg = &config[13];
+            int val = -1;
+            if (memcmp(arg, "on", 2) == 0) val = 1;
+            else if (memcmp(arg, "off", 3) == 0) val = 0;
+            else if (arg[0] == '0' || arg[0] == '1') val = atoi(arg);
             if (val == 0 || val == 1) {
                 _prefs->rx_boost = (uint8_t)val;
                 savePrefs();
                 snprintf(reply, CLI_REPLY_SIZE, "OK - radio.rxgain=%d (reboot to apply)", _prefs->rx_boost);
             } else {
-                strcpy(reply, "Error: must be 0 or 1");
+                strcpy(reply, "Error: must be 0, 1, on, or off");
             }
         } else if (memcmp(config, "rxduty ", 7) == 0) {
-            int val = atoi(&config[7]);
+            const char* arg = &config[7];
+            int val = -1;
+            if (memcmp(arg, "on", 2) == 0) val = 1;
+            else if (memcmp(arg, "off", 3) == 0) val = 0;
+            else if (arg[0] == '0' || arg[0] == '1') val = atoi(arg);
             if (val == 0 || val == 1) {
                 _prefs->rx_duty_cycle = (uint8_t)val;
                 savePrefs();
                 snprintf(reply, CLI_REPLY_SIZE, "OK - rxduty=%d (reboot to apply)", _prefs->rx_duty_cycle);
             } else {
-                strcpy(reply, "Error: must be 0 or 1");
+                strcpy(reply, "Error: must be 0, 1, on, or off");
             }
         } else {
             snprintf(reply, CLI_REPLY_SIZE, "unknown config: %s", config);
