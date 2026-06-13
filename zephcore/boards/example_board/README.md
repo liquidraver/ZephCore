@@ -259,7 +259,8 @@ should ONLY contain settings that can't be inferred from hardware:
     CONFIG_ZEPHCORE_UI_DISPLAY          Auto from DT zephyr,display chosen
     CONFIG_SPI                          Auto from ZEPHCORE_RADIO_LR1110
     CONFIG_NORDIC_QSPI_NOR             Auto from DT nordic,qspi-nor node
-    CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE  Auto: ON for companion+SX1262, OFF for repeater/LR1110
+    CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE  OFF by default for all roles (boot default only;
+                                        runtime toggle via CLI "set rxduty on/off")
     CONFIG_ESP_SPIRAM                   Auto: ON when DT psram0 size > 0 (ESP32-S/C5)
     CONFIG_ESP_SPIRAM_SIZE              Auto: read from DT psram0 size by upstream Kconfig
 

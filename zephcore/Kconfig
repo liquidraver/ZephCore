@@ -485,27 +485,54 @@ config ZEPHCORE_LORA_RX_DUTY_CYCLE
 	bool "Enable LoRa RX duty cycle power saving"
 	default n
 	help
-	  Enable RX duty cycling for power saving on battery-powered devices.
-	  Uses RadioLib's algorithm to calculate optimal timing based on SF/BW.
+	  Enable RX duty cycling (chip-autonomous sniff mode) for power
+	  saving on battery-powered devices.  This sets the boot default;
+	  it can be toggled at runtime via CLI "set rxduty on/off".
 
-	  Disabled by default for all roles. Enable manually if you want
-	  power savings and have verified acceptable packet loss/latency for
-	  your environment and radio.
-	  Duty cycle mode also resets AGC state after every received
-	  packet via Calibrate(ALL), preventing the "near-far" gain-lock
-	  problem where a strong signal desensitises the receiver.
-	  Still disabled for LR1110 (cannot lock on mid-preamble, causes packet
-	  loss) and LR2021 (untested — enable manually after verifying no
-	  packet loss).  Can be toggled at runtime via CLI.
+	  Window timing is computed per SF/BW/preamble from primary-source
+	  constraints (SX1261/2 datasheet sec 13.1.7, AN1200.36): the deaf
+	  time per cycle (sleep + TCXO/PLL wake transition) never exceeds
+	  the budget needed to guarantee one full detection window inside
+	  the sender's preamble, and the post-detect timer budget
+	  (2*rxPeriod + sleepPeriod) always covers preamble + header.
+	  With a 32-symbol sender preamble (current MeshCore firmware at
+	  SF<=8) this yields ~40-55% radio-off time with zero loss against
+	  updated senders.  Presets whose preamble is too short for a
+	  guaranteed catch (16 symbols at SF>=9) automatically fall back to
+	  continuous RX — no fake duty cycling.
 
-	  The key insight is that LoRa preamble symbols are all identical,
-	  so CAD/RX can detect preamble even if we wake mid-stream. The
-	  algorithm ensures we always catch at least 8 symbols regardless
-	  of when we wake within the preamble window.
+	  Caveat for mixed meshes: nodes still on pre-preamble-32 firmware
+	  (16 symbols at SF<=8) are only caught ~50% worst-phase.  Keep
+	  this off on infrastructure until the local mesh has converted.
+	  Floods are usually re-heard via updated repeaters; direct
+	  messages from legacy nodes are the real exposure.
 
-	  Power savings: ~60-70% reduction in RX current (10-15mA to 3-5mA).
+	  Duty cycle mode also resets AGC state on entry via
+	  Calibrate(ALL), pins the boosted RX gain into the warm-start
+	  retention list (datasheet sec 9.6, mandatory for SetRxDutyCycle),
+	  and runs a parked-RX watchdog that re-arms the cycle after a
+	  false preamble detect (inspect via CLI "get dc.restarts").
 
-	  Can be toggled at runtime via CLI "set rxduty on/off".
+	  LR1110/LR20xx use the same chip-level SetRxDutyCycle MODE_RX
+	  (identical preamble-detect-and-extend mechanism) sized by the same
+	  adapter math; the LR1110's earlier "broken" status was a window-
+	  sizing bug, not a chip defect. Both are wired but HW-unverified —
+	  confirm no packet loss on a live board before trusting in
+	  production. LR1110 has no infinite-park failure mode (its DC uses a
+	  bounded 2*rx+sleep timeout), so it re-arms via the normal RX-timeout
+	  path rather than the SX126x watchdog.
+
+config ZEPHCORE_LORA_DC_MIN_SYMBOLS
+	int "RX duty cycle: preamble symbols required for detection"
+	range 4 16
+	default 8
+	help
+	  Minimum LoRa preamble symbols that must land inside one open RX
+	  window for detection to be considered guaranteed.  8 is Semtech's
+	  own figure for sniff mode (AN1200.36 sec 4); their time-synced
+	  LoRaWAN stacks budget 6.  Raise to 10-12 to trade radio-off time
+	  for extra detection margin on very noisy sites.  SF5/6 adds +4
+	  internally.  Lowering below 8 risks missed packets at low SNR.
 
 config ZEPHCORE_APC
 	bool "Adaptive Power Control (APC)"

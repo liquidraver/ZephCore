@@ -79,9 +79,15 @@ struct lr11xx_data {
 	volatile bool in_rx_mode;
 
 	/* Extension features (duty cycle, boost) */
-	bool rx_duty_cycle_enabled; /* unused — LR1110 always continuous RX */
+	bool rx_duty_cycle_enabled;
 	bool rx_boost_enabled;
 	bool rx_boost_applied;  /* RX boost register written to hardware */
+
+	/* Stored duty-cycle timing from recv_duty_cycle() — the re-arm paths
+	 * (start_rx / restart_rx) reuse these exact values, never recompute:
+	 * window sizing is owned by the adapter layer (LoRaRadioBase). */
+	uint32_t dc_rx_ms;
+	uint32_t dc_sleep_ms;
 
 	/* CAD state */
 	lora_cad_cb cad_cb;
@@ -305,18 +311,33 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 	lr11xx_apply_modem_config(data, cfg, false);
 
 	/* Apply RX boost — persistent register, only written once.
-	 * Deferred from hw_init to here so radio is fully configured. */
-	if (data->rx_boost_enabled && !data->rx_boost_applied) {
+	 * Deferred from hw_init to here so radio is fully configured.
+	 * In duty-cycle mode we force a re-apply on every (re)start: the
+	 * chip's sleep-with-retention warm wakes are autonomous (no IRQ per
+	 * wake, so software can't intervene mid-cycle), and we don't want to
+	 * assume the boost register survives them — cheap insurance against
+	 * the SX126x-style silent -3 dB loss across warm starts. */
+	if (data->rx_boost_enabled &&
+	    (!data->rx_boost_applied || data->rx_duty_cycle_enabled)) {
 		lr11xx_radio_cfg_rx_boosted(ctx, true);
 		data->rx_boost_applied = true;
 	}
 
-	/* Start continuous RX.
-	 * 0xFFFFFF is the magic RTC-step value for continuous RX.
-	 * Must use the raw RTC-step API — set_rx() converts from ms,
-	 * which overflows uint32_t and gives a ~131 s timeout instead.
-	 * LR1110 always uses continuous RX (duty cycle is broken). */
-	lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
+	if (data->rx_duty_cycle_enabled &&
+	    data->dc_rx_ms != 0 && data->dc_sleep_ms != 0) {
+		/* Sniff mode: standard-RX listening with the chip's autonomous
+		 * sleep/wake.  MODE_RX uses the same preamble-detect-and-extend
+		 * (2*rx + sleep) mechanism as the SX126x — catches a preamble
+		 * mid-window.  Timing is computed by the adapter. */
+		lr11xx_radio_set_rx_duty_cycle(ctx, data->dc_rx_ms,
+			data->dc_sleep_ms, LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+	} else {
+		/* Start continuous RX.
+		 * 0xFFFFFF is the magic RTC-step value for continuous RX.
+		 * Must use the raw RTC-step API — set_rx() converts from ms,
+		 * which overflows uint32_t and gives a ~131 s timeout instead. */
+		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
+	}
 
 	/* LR1110 firmware sets CMD_ERROR IRQ flag on several write commands
 	 * (SetModParams, SetSyncWord, SetRxBoosted, SetRx) across all
@@ -345,9 +366,23 @@ static void lr11xx_restart_rx(struct lr11xx_data *data)
 	void *ctx = &data->hal_ctx;
 
 	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
-	lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
 
-	/* RX boost persists through SetRx — no re-apply needed. */
+	if (data->rx_duty_cycle_enabled &&
+	    data->dc_rx_ms != 0 && data->dc_sleep_ms != 0) {
+		/* Re-arm sniff mode with the stored timing (e.g. after RX_DONE
+		 * or a false-preamble 2*rx+sleep timeout dropped the chip to
+		 * standby).  Re-apply boost — same warm-start caution as
+		 * start_rx. */
+		if (data->rx_boost_enabled) {
+			lr11xx_radio_cfg_rx_boosted(ctx, true);
+		}
+		lr11xx_radio_set_rx_duty_cycle(ctx, data->dc_rx_ms,
+			data->dc_sleep_ms, LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+	} else {
+		lr11xx_radio_set_rx_with_timeout_in_rtc_step(ctx, 0xFFFFFF);
+		/* RX boost persists through SetRx — no re-apply needed. */
+	}
+
 	data->in_rx_mode = true;
 }
 
@@ -772,6 +807,61 @@ static int lr11xx_lora_recv_async(const struct device *dev,
 	return 0;
 }
 
+/* ── Driver API: recv_duty_cycle ─────────────────────────────────────── */
+
+static int lr11xx_lora_recv_duty_cycle(const struct device *dev,
+				       k_timeout_t rx_period,
+				       k_timeout_t sleep_period,
+				       lora_recv_cb cb, void *user_data)
+{
+	struct lr11xx_data *data = dev->data;
+	const struct lr11xx_config *cfg = dev->config;
+
+	/* NULL cb = cancel (same as recv_async cancel) */
+	if (cb == NULL) {
+		k_mutex_lock(&data->spi_mutex, K_FOREVER);
+		data->async_rx_cb = NULL;
+		data->async_rx_user_data = NULL;
+		data->rx_duty_cycle_enabled = false;
+		data->in_rx_mode = false;
+		k_mutex_unlock(&data->spi_mutex);
+		return 0;
+	}
+
+	if (!data->configured) {
+		return -EINVAL;
+	}
+
+	/* Explicit timing only — the adapter (LoRaRadioBase) owns the window
+	 * sizing.  No driver-side auto-compute. */
+	if (K_TIMEOUT_EQ(rx_period, K_FOREVER) ||
+	    K_TIMEOUT_EQ(sleep_period, K_FOREVER)) {
+		LOG_ERR("recv_duty_cycle: explicit rx/sleep periods required");
+		return -EINVAL;
+	}
+
+	uint32_t rx_ms = k_ticks_to_ms_ceil32(rx_period.ticks);
+	uint32_t slp_ms = k_ticks_to_ms_ceil32(sleep_period.ticks);
+	if (rx_ms < 1) rx_ms = 1;
+	if (slp_ms < 1) slp_ms = 1;
+
+	k_mutex_lock(&data->spi_mutex, K_FOREVER);
+
+	data->async_rx_cb = cb;
+	data->async_rx_user_data = user_data;
+	data->dc_rx_ms = rx_ms;
+	data->dc_sleep_ms = slp_ms;
+	data->rx_duty_cycle_enabled = true;
+
+	/* start_rx() reads rx_duty_cycle_enabled + dc_*_ms and issues
+	 * SetRxDutyCycle(MODE_RX) with a forced boost re-apply. */
+	lr11xx_start_rx(data, cfg);
+
+	k_mutex_unlock(&data->spi_mutex);
+	LOG_INF("recv_duty_cycle: rx=%ums sleep=%ums", rx_ms, slp_ms);
+	return 0;
+}
+
 /* ── Driver API: recv (sync) ─────────────────────────────────────────── */
 
 static int lr11xx_lora_recv(const struct device *dev, uint8_t *buf,
@@ -816,6 +906,21 @@ bool lr11xx_is_receiving(const struct device *dev)
 
 	return (irq & (LR11XX_SYSTEM_IRQ_PREAMBLE_DETECTED |
 		       LR11XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID)) != 0;
+}
+
+uint32_t lr11xx_get_wakeup_time_us(const struct device *dev)
+{
+	const struct lr11xx_config *cfg = dev->config;
+	/* Context restore + PLL lock (~1.5 ms) plus the TCXO startup delay
+	 * where fitted.  Per the LR11xx SetRxDutyCycle model the wake
+	 * transition is deaf time between sleep and RX, counting against the
+	 * adapter's preamble-catch budget — same accounting as the SX126x. */
+	uint32_t us = 1500;
+
+	if (cfg->tcxo_voltage_mv > 0) {
+		us += cfg->tcxo_startup_delay_ms * 1000U;
+	}
+	return us;
 }
 
 void lr11xx_set_rx_boost(const struct device *dev, bool enable)
@@ -1203,7 +1308,12 @@ static DEVICE_API(lora, lr11xx_lora_api) = {
 	.recv_async = lr11xx_lora_recv_async,
 	.cad        = lr11xx_lora_cad,
 	.cad_async  = lr11xx_lora_cad_async,
-	/* .recv_duty_cycle = NULL — LR1110 duty cycle broken */
+	/* MODE_RX sniff: same preamble-detect-and-extend (2*rx+sleep) as the
+	 * SX126x.  The earlier "broken" verdict was a window-sizing bug
+	 * (over-sleep + no header budget), not a chip defect — now sized by
+	 * the shared adapter math.  Default-off via prefs; HW-verify on a
+	 * live LR1110 before trusting in production. */
+	.recv_duty_cycle = lr11xx_lora_recv_duty_cycle,
 };
 
 #define LR11XX_INIT(n)                                                     \

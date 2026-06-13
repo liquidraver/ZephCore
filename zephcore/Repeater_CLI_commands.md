@@ -201,7 +201,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get loop.detect` | Loop detection level: `off`, `minimal`, `moderate`, or `strict` |
 | `get radio.rxgain` | RX gain boost: `0` or `1` |
 | `get rxduty` | RX duty cycle mode: `0` or `1` |
-| `get dc.restarts` | Duty-cycle preamble false-positive re-arm counter. High values mean the preamble detector is tripping on noise/interference without real packets arriving — inflates RX-on time and drains battery. Reset by `clear stats`. |
+| `get dc.restarts` | Duty-cycle preamble false-positive re-arm counter (RxTimeout re-arms + parked-RX watchdog recoveries). High values mean the preamble detector is tripping on noise/interference without real packets arriving — inflates RX-on time and drains battery; packets are never lost to it. Reset by `clear stats`. |
 | `get adc.multiplier` | Battery voltage ADC calibration multiplier |
 | `get bootloader.ver` | Bootloader version string |
 | `get public.key` | *(USB only)* Node's public key as hex |
@@ -243,7 +243,7 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |
 | `set loop.detect <mode>` | `off`, `minimal`, `moderate`, `strict` | Loop detection sensitivity |
 | `set radio.rxgain <0\|1\|on\|off>` | | RX gain boost *(reboot required)* |
-| `set rxduty <0\|1\|on\|off>` | | RX duty cycle mode *(reboot required)* |
+| `set rxduty <0\|1\|on\|off>` | | RX duty cycle mode *(reboot required)*. Window timing auto-sized per SF/BW/preamble from the SX126x datasheet constraints (boot log line `rxduty:` shows the result). Zero-loss guarantee assumes senders on preamble-32 firmware (current MeshCore at SF≤8); legacy preamble-16 senders are only caught ~50% worst-phase — keep off until the local mesh has converted. Presets with 16-symbol preambles (SF≥9) fall back to continuous RX automatically. |
 | `set adc.multiplier <mult>` | (0 = use board default) | Battery voltage ADC calibration multiplier |
 | `set prv.key <hex>` | 64-char hex (32-byte key) | Replace private key; derive new identity *(reboot to apply)* |
 

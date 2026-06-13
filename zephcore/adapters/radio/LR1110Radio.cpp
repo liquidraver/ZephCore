@@ -79,4 +79,9 @@ void LR1110Radio::hwResetAGC()
 	lr11xx_reset_agc(_dev);
 }
 
+uint32_t LR1110Radio::hwWakeupTimeUs()
+{
+	return lr11xx_get_wakeup_time_us(_dev);
+}
+
 } /* namespace mesh */

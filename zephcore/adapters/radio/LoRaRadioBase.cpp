@@ -23,8 +23,18 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
-static constexpr uint16_t RX_DUTY_RX_SYMBOLS = 13;
-static constexpr uint16_t RX_DUTY_SLEEP_SYMBOLS = 3;
+/* Minimum preamble symbols that must land inside one open duty-cycle RX
+ * window for guaranteed detection.  8 is Semtech's own figure for sniff
+ * mode (AN1200.36 §4: "8 symbols in LoRa make up the time required to
+ * ensure that the SX1261/2 detects a valid incoming packet"); their
+ * time-synced LoRaWAN stacks budget 6, so 8 already carries margin.
+ * SF5/6 need more symbols to reach sensitivity (RadioLib/LBM use 12). */
+static uint16_t rxDutyDetectSymbols(uint8_t sf)
+{
+	uint16_t d = CONFIG_ZEPHCORE_LORA_DC_MIN_SYMBOLS;
+
+	return (sf >= 7) ? d : (uint16_t)(d + 4);
+}
 
 /* ── Constructor ─────────────────────────────────────────────── */
 
@@ -39,6 +49,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board,
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
 	  _rx_boost_enabled(true),
 	  _tx_power_reduction_db(0),
+	  _dc_last_rx_us(0), _dc_last_sleep_us(0),
 	  _config_cached(false),
 	  _has_radio_override(false),
 	  _override_freq(0), _override_bw(0),
@@ -421,32 +432,88 @@ void LoRaRadioBase::startReceive()
 	int ret;
 
 	if (_rx_duty_cycle_enabled) {
-		/* Fixed duty-cycle window for field validation.
-		 * Keep build-time tunable via constants above. */
+		/* Duty-cycle window sizing.  All constraints primary-sourced
+		 * (SX1261/2 DS rev 2.2 §13.1.7 + AN1200.36):
+		 *
+		 * 1. Catch — worst case is a preamble starting D−ε symbols
+		 *    before an RX window closes (detection aborts, must
+		 *    complete in the NEXT window), so the total deaf time per
+		 *    cycle (programmed sleep + wake transition) must satisfy
+		 *      sleep + trans ≤ (P − 2D − 1)·Tsym
+		 *    with 1 symbol margin for the chip's RC64k sleep timer.
+		 *    Stricter than AN1200.36's own "P ≥ sleep + D" model,
+		 *    which ignores the window-tail arrival case.
+		 * 2. Complete — DS: "Tpreamble + Theader ≤ 2·rxPeriod +
+		 *    sleepPeriod".  A preamble detected at its first symbols
+		 *    restarts the chip timer with 2R+S; that budget must cover
+		 *    the rest of the preamble + sync (4.25) + header (~8),
+		 *    rounded up to P + 14 symbols.  The driver also sets
+		 *    StopTimerOnPreamble, but this sizing keeps packets safe
+		 *    under either documented timer behaviour.
+		 * 3. Floor — rxPeriod ≥ (D+1)·Tsym so any single window can
+		 *    detect on its own.
+		 *
+		 * No viable sleep budget (short preamble, or the TCXO restart
+		 * eats it) → honest fall-through to continuous RX. */
 		struct lora_modem_config cfg;
 		buildModemConfig(cfg, false);
 
-		uint8_t sf = (uint8_t)cfg.datarate;
-		uint32_t bw_hz = bandwidth_to_hz(cfg.bandwidth);
-		float bw_khz = (float)bw_hz / 1000.0f;
-		if (bw_khz > 0.0f) {
-			uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
-			uint32_t rx_us = RX_DUTY_RX_SYMBOLS * symbol_us;
-			uint32_t sleep_us = RX_DUTY_SLEEP_SYMBOLS * symbol_us;
+		const uint8_t sf = (uint8_t)cfg.datarate;
+		const uint32_t bw_hz = bandwidth_to_hz(cfg.bandwidth);
+		const uint16_t P = cfg.preamble_len;
+		const uint16_t D = rxDutyDetectSymbols(sf);
 
-			ret = lora_recv_duty_cycle(_dev,
-						   K_USEC(rx_us),
-						   K_USEC(sleep_us),
-						   rxCallbackStatic, this);
-			if (ret == 0) {
-				atomic_set(&_in_recv_mode, 1);
-				return;
+		if (bw_hz > 0 && P > 2 * D + 1) {
+			const uint32_t sym_us = (uint32_t)
+				(((uint64_t)(1U << sf) * 1000000ULL) / bw_hz);
+			const uint32_t trans_us = hwWakeupTimeUs();
+			const uint32_t deaf_us =
+				(uint32_t)(P - 2 * D - 1) * sym_us;
+
+			if (deaf_us > trans_us + 2000) {
+				const uint32_t sleep_us = deaf_us - trans_us;
+				const uint32_t complete_us =
+					(uint32_t)(P + 14) * sym_us;
+				uint32_t rx_us = (uint32_t)(D + 1) * sym_us;
+
+				if (complete_us > sleep_us &&
+				    rx_us < (complete_us - sleep_us + 1) / 2) {
+					rx_us = (complete_us - sleep_us + 1) / 2;
+				}
+
+				if (rx_us != _dc_last_rx_us ||
+				    sleep_us != _dc_last_sleep_us) {
+					_dc_last_rx_us = rx_us;
+					_dc_last_sleep_us = sleep_us;
+					LOG_INF("rxduty: rx=%ums sleep=%ums trans=%ums (P=%u D=%u, off=%u%%)",
+						rx_us / 1000, sleep_us / 1000,
+						trans_us / 1000, P, D,
+						(uint32_t)(((uint64_t)sleep_us * 100) /
+							   (rx_us + sleep_us + trans_us)));
+				}
+
+				ret = lora_recv_duty_cycle(_dev,
+							   K_USEC(rx_us),
+							   K_USEC(sleep_us),
+							   rxCallbackStatic, this);
+				if (ret == 0) {
+					atomic_set(&_in_recv_mode, 1);
+					return;
+				}
+				if (ret != -ENOSYS) {
+					LOG_ERR("lora_recv_duty_cycle failed: %d", ret);
+				}
+				/* Fall through to continuous RX */
+			} else if (_dc_last_rx_us != UINT32_MAX) {
+				_dc_last_rx_us = UINT32_MAX;
+				LOG_INF("rxduty: wake transition %uus exceeds deaf budget %uus — continuous RX",
+					trans_us, deaf_us);
 			}
-			if (ret != -ENOSYS) {
-				LOG_ERR("lora_recv_duty_cycle failed: %d", ret);
-			}
+		} else if (_dc_last_rx_us != UINT32_MAX) {
+			_dc_last_rx_us = UINT32_MAX;
+			LOG_INF("rxduty: preamble %u too short for guaranteed catch (need >%u syms) — continuous RX",
+				P, 2 * D + 1);
 		}
-		/* Fall through to normal recv_async */
 	}
 
 	ret = lora_recv_async(_dev, rxCallbackStatic, this);

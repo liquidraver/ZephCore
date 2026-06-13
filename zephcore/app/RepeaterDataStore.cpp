@@ -241,12 +241,6 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         LOG_INF("loadPrefs: upgraded prefs format (%d -> 296 bytes)", (int)entry.size);
     }
 
-    /* One-time migration: disable RX duty cycle if it was previously enabled. */
-    if (prefs.rx_duty_cycle != 0) {
-        prefs.rx_duty_cycle = 0;
-        savePrefs(prefs);
-        LOG_INF("loadPrefs: migrated rx_duty_cycle to disabled");
-    }
     return true;
 }
 

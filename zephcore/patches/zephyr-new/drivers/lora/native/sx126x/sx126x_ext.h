@@ -89,6 +89,20 @@ void sx126x_apply_heltec_reg_patch(const struct device *dev);
 void sx126x_reset_agc(const struct device *dev);
 
 /**
+ * @brief Radio deaf time per duty-cycle wake transition, in microseconds
+ *
+ * Context save/restore + PLL lock (~1.5 ms) plus the DTS-configured TCXO
+ * startup delay where fitted.  Per datasheet rev 2.2 §13.1.7, the TCXO
+ * delay is inserted between the sleep and RX periods of every duty-cycle
+ * wake — it counts against the preamble-catch budget, outside both
+ * programmed periods.  Used by the adapter to size duty-cycle windows.
+ *
+ * @param dev LoRa device
+ * @return Transition deaf time in microseconds
+ */
+uint32_t sx126x_get_wakeup_time_us(const struct device *dev);
+
+/**
  * @brief Get duty-cycle preamble false-positive counter
  *
  * Returns the number of times duty-cycle RX tripped IRQ_RX_TX_TIMEOUT

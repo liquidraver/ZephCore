@@ -86,6 +86,13 @@ struct lr20xx_data {
 	bool rx_boost_enabled;
 	bool rx_boost_applied;
 
+	/* Stored duty-cycle timing from recv_duty_cycle() — re-arm paths
+	 * must reuse these exact values, never recompute: the window sizing
+	 * (detection budget, datasheet completion rule, wake transition) is
+	 * owned by the adapter layer. */
+	uint32_t dc_rx_ms;
+	uint32_t dc_sleep_ms;
+
 	/* CAD state */
 	lora_cad_cb cad_cb;
 	void *cad_user_data;
@@ -474,77 +481,28 @@ static void lr20xx_apply_modem_config(struct lr20xx_data *data,
 
 /* ── RX duty cycle ──────────────────────────────────────────────────── */
 
-/* Minimum preamble symbols needed for detection (same as SX126x) */
-#define LR20XX_DC_MIN_SYMBOLS_SF7_PLUS  8
-#define LR20XX_DC_MIN_SYMBOLS_SF6_LESS  12
-#define LR20XX_DC_TCXO_DELAY_US         1000
-
 /**
- * Compute duty cycle timing from current modem config and issue the
- * SetRxDutyCycle command.  Returns true on success, false if the
- * preamble is too short (falls back to continuous RX).
- *
- * Mirrors the SX126x symbol-based calculation: sleep through
- * (preamble_len - min_symbols - 2) symbols, wake for the remainder
- * plus margin.
+ * Re-issue the SetRxDutyCycle command with the timing stored by
+ * lr20xx_lora_recv_duty_cycle().  Returns true on success, false if no
+ * timing has been provided yet (falls back to continuous RX).
  */
 static bool lr20xx_apply_rx_duty_cycle(struct lr20xx_data *data)
 {
 	void *ctx = &data->hal_ctx;
-	struct lora_modem_config *mc = &data->modem_cfg;
 
-	uint8_t sf = (uint8_t)mc->datarate;
-	float bw_khz = bw_enum_to_khz(mc->bandwidth);
-	uint16_t preamble_len = mc->preamble_len;
-
-	uint16_t min_symbols = (sf >= 7) ? LR20XX_DC_MIN_SYMBOLS_SF7_PLUS
-					 : LR20XX_DC_MIN_SYMBOLS_SF6_LESS;
-
-	int16_t sleep_symbols = (int16_t)preamble_len - (int16_t)min_symbols;
-	if (sleep_symbols <= 0) {
-		LOG_WRN("Preamble too short for duty cycle "
-			"(need >%d symbols, have %d) — continuous RX",
-			min_symbols, preamble_len);
+	if (data->dc_rx_ms == 0 || data->dc_sleep_ms == 0) {
+		LOG_WRN("No duty-cycle timing stored — continuous RX");
 		data->rx_duty_cycle_enabled = false;
 		lr20xx_radio_common_set_rx_with_timeout_in_rtc_step(
 			ctx, 0xFFFFFF);
 		return false;
 	}
 
-	/* symbol_us = 2^SF / BW_kHz * 1000 */
-	uint32_t symbol_us = (uint32_t)((float)(1 << sf) * 1000.0f / bw_khz);
+	lr20xx_radio_common_set_rx_duty_cycle(ctx, data->dc_rx_ms,
+		data->dc_sleep_ms, LR20XX_RADIO_COMMON_RX_DUTY_CYCLE_MODE_RX);
 
-	/* Shave 2 symbols off sleep for timing margin */
-	int16_t sleep_symbols_safe = sleep_symbols - 2;
-	if (sleep_symbols_safe < 1) {
-		sleep_symbols_safe = 1;
-	}
-	uint32_t sleep_period_us = (uint16_t)sleep_symbols_safe * symbol_us;
-
-	uint32_t preamble_total_us = (preamble_len + 1) * symbol_us;
-	int32_t wake_calc1 = ((int32_t)preamble_total_us -
-			      ((int32_t)sleep_period_us -
-			       LR20XX_DC_TCXO_DELAY_US)) / 2;
-	uint32_t wake_calc2 = (min_symbols + 1) * symbol_us;
-
-	uint32_t wake_period_us =
-		(wake_calc1 > 0 && (uint32_t)wake_calc1 > wake_calc2)
-		? (uint32_t)wake_calc1 : wake_calc2;
-
-	uint32_t rx_ms  = (wake_period_us + 999) / 1000;  /* round up */
-	uint32_t slp_ms = (sleep_period_us + 999) / 1000;
-
-	if (rx_ms < 1) {
-		rx_ms = 1;
-	}
-	if (slp_ms < 1) {
-		slp_ms = 1;
-	}
-
-	lr20xx_radio_common_set_rx_duty_cycle(ctx, rx_ms, slp_ms,
-		LR20XX_RADIO_COMMON_RX_DUTY_CYCLE_MODE_RX);
-
-	LOG_DBG("RX duty cycle: SF%d rx=%ums sleep=%ums", sf, rx_ms, slp_ms);
+	LOG_DBG("RX duty cycle re-armed: rx=%ums sleep=%ums",
+		data->dc_rx_ms, data->dc_sleep_ms);
 	return true;
 }
 
@@ -1311,6 +1269,13 @@ static int lr20xx_lora_recv_duty_cycle(const struct device *dev,
 		return -EINVAL;
 	}
 
+	/* Explicit timing only — the adapter owns the window sizing. */
+	if (K_TIMEOUT_EQ(rx_period, K_FOREVER) ||
+	    K_TIMEOUT_EQ(sleep_period, K_FOREVER)) {
+		LOG_ERR("recv_duty_cycle: explicit rx/sleep periods required");
+		return -EINVAL;
+	}
+
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
 	data->async_rx_cb = cb;
@@ -1328,6 +1293,10 @@ static int lr20xx_lora_recv_duty_cycle(const struct device *dev,
 	if (rx_ms < 1) rx_ms = 1;
 	if (slp_ms < 1) slp_ms = 1;
 
+	/* Store for the re-arm paths (lr20xx_start_rx / lr20xx_restart_rx)
+	 * so every re-entry uses exactly this timing. */
+	data->dc_rx_ms = rx_ms;
+	data->dc_sleep_ms = slp_ms;
 	data->rx_duty_cycle_enabled = true;
 	lr20xx_radio_common_set_rx_duty_cycle(ctx, rx_ms, slp_ms,
 		LR20XX_RADIO_COMMON_RX_DUTY_CYCLE_MODE_RX);

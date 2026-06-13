@@ -533,6 +533,16 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 	} else {
 		prefs.auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
 	}
+
+	/* Offset 150: rx_duty_cycle (ZephCore extension).  Absent in pre-existing
+	 * files → leave the caller's in-RAM default (0 = continuous RX) untouched
+	 * so the no-op past-EOF read can't force it on. */
+	if (off < len) {
+		prefs.rx_duty_cycle = buf[off++];
+		if (prefs.rx_duty_cycle > 1) {
+			prefs.rx_duty_cycle = 0;
+		}
+	}
 }
 
 void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
@@ -605,7 +615,9 @@ void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
 	/* Offset 148: auto_shutdown_mv (ZephCore extension, 2 bytes LE) */
 	buf[off++] = prefs.auto_shutdown_mv & 0xFF;
 	buf[off++] = (prefs.auto_shutdown_mv >> 8) & 0xFF;
-	/* Total: 150 bytes */
+	/* Offset 150: rx_duty_cycle (ZephCore extension) */
+	buf[off++] = prefs.rx_duty_cycle;
+	/* Total: 151 bytes */
 
 	bool ok = atomicReplaceFile(PREFS_FILE, buf, off);
 	LOG_DBG("savePrefs: wrote %s, ok=%d (%d bytes), name='%.16s'",

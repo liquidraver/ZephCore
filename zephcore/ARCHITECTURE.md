@@ -364,7 +364,7 @@ The custom `lr11xx_lora.c` driver handles several LR1110 firmware bugs:
 - **RX buffer drift**: Buffer base shifts 4 bytes per packet → `clear_rxbuffer()` after every RX
 - **Header error**: Can shift buffer pointer → standby before RX restart
 - **DIO1 stuck HIGH**: 5-cycle detection → full hardware reset + recovery
-- **RX duty cycle broken**: 23-40% packet loss → disabled, always continuous RX
+- **RX duty cycle**: wired via `SetRxDutyCycle` MODE_RX, sized by the shared adapter math (same as SX126x). The earlier "broken, 23-40% loss" verdict was a window-sizing bug (over-sleep + no header budget), not a chip defect — default-off, HW-verify before production use.
 
 ### 5.5 Default Radio Parameters
 

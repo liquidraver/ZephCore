@@ -51,6 +51,19 @@ bool lr11xx_is_receiving(const struct device *dev);
 void lr11xx_set_rx_boost(const struct device *dev, bool enable);
 
 /**
+ * @brief Radio deaf time per duty-cycle wake transition, in microseconds
+ *
+ * Context restore + PLL lock plus the DTS-configured TCXO startup delay
+ * where fitted.  Used by the adapter (LoRaRadioBase) to size duty-cycle
+ * windows so the wake transition is charged against the preamble-catch
+ * budget — same accounting as the SX126x.
+ *
+ * @param dev LoRa device
+ * @return Transition deaf time in microseconds
+ */
+uint32_t lr11xx_get_wakeup_time_us(const struct device *dev);
+
+/**
  * @brief Get a random number from the radio
  *
  * Uses LR11xx hardware RNG.

@@ -28,6 +28,7 @@ protected:
 	bool hwIsReceiving() override;
 	void hwSetRxBoost(bool enable) override;
 	void hwResetAGC() override;
+	uint32_t hwWakeupTimeUs() override;
 };
 
 } /* namespace mesh */

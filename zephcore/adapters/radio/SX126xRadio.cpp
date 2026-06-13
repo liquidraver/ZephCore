@@ -91,6 +91,11 @@ bool SX126xRadio::hwIsChipBusy()
 	return sx126x_is_chip_busy(_dev);
 }
 
+uint32_t SX126xRadio::hwWakeupTimeUs()
+{
+	return sx126x_get_wakeup_time_us(_dev);
+}
+
 uint32_t SX126xRadio::getDutyCycleTimeoutRestarts() const
 {
 	return sx126x_get_dc_timeout_restarts(_dev);

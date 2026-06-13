@@ -112,6 +112,13 @@ protected:
 	/** GPIO-only BUSY check (no SPI). Default false for chips without duty-cycle sleep. */
 	virtual bool hwIsChipBusy() { return false; }
 
+	/** Radio deaf time per duty-cycle wake transition (context restore +
+	 *  PLL lock + TCXO startup where fitted), in microseconds.  Counts
+	 *  against the duty-cycle preamble-catch budget: per SX126x DS rev 2.2
+	 *  §13.1.7 the TCXO startup delay is inserted between the sleep and RX
+	 *  periods, outside both.  Default suits XTAL parts (LR2021). */
+	virtual uint32_t hwWakeupTimeUs() { return 1500; }
+
 	/* Set to true by subclasses using the loramac-node driver backend.
 	 * Disables the direction-only fast path in configureTx()/configureRx():
 	 * loramac-node calls Radio.SetTxConfig() and Radio.SetRxConfig() which
@@ -163,6 +170,12 @@ protected:
 	bool _rx_duty_cycle_enabled;
 	bool _rx_boost_enabled;
 	int8_t _tx_power_reduction_db;
+
+	/* Last duty-cycle timing handed to the driver — used to log timing
+	 * changes once at INF instead of on every RX restart.  0/0 = never
+	 * computed; UINT32_MAX rx = continuous-RX fallback active. */
+	uint32_t _dc_last_rx_us;
+	uint32_t _dc_last_sleep_us;
 
 	/* Config cache — skip redundant hwConfigure() */
 	struct lora_modem_config _last_cfg;

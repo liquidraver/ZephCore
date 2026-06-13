@@ -31,6 +31,7 @@ protected:
 	void hwSetRxBoost(bool enable) override;
 	void hwResetAGC() override;
 	bool hwIsChipBusy() override;
+	uint32_t hwWakeupTimeUs() override;
 };
 
 } /* namespace mesh */
