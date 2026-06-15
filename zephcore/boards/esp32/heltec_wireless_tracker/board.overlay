@@ -1,0 +1,241 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Heltec Wireless Tracker (V1.1) — ZephCore overlay
+ *
+ * Upstream DTS defines: SX1262 (lora0) on SPI2, ST7735R 160x80 TFT
+ * (st7735r_160x80) on SPI3, GPS (gnss-nmea-generic) on UART2, button (GPIO0),
+ * vbatt voltage-divider, Vext hog (GPIO3, output-high), TFT backlight hog
+ * (GPIO21, output-high), USB serial, BLE, WiFi.
+ *
+ * Upstream DTS issues corrected here:
+ *   - 'gnss_rst' (GPIO35) deleted; exposed as the gps-enable alias instead.
+ *   - Battery 'vbatt' sits on &adc1 (ADC unit 2 = GPIO11 = the SX1262 MISO!);
+ *     removed, and the battery moved to &adc0 (ADC unit 1 = GPIO1).  See the
+ *     battery section below — this was also why LoRa SPI reads returned 0x00.
+ *   - GPIO17/18 parked on UART1; UART1 disabled and GPIO18 exposed as the
+ *     led0 status LED (otherwise it stays permanently lit).
+ *
+ * LoRa SPI2:    SCLK=9, MOSI=10, MISO=11, NSS=8 (driver GPIO CS)
+ * LoRa ctrl:    DIO1=14, BUSY=13, RESET=12 (open-drain), DIO2 RF switch, TCXO 1.8V
+ * Display SPI3: SCLK=41, MOSI=42, CS=38, DC=GPIO40, RST=GPIO39
+ * GPS UART2:    TX=GPIO34, RX=GPIO33, 115200 baud (GPS powered by the Vext rail)
+ * GPS enable:   GPIO35 (gpio1 pin 3) — drives the GPS reset/run line; HIGH = run
+ * Battery ADC:  GPIO1 = ADC1 ch0 (&adc0), divider enable GPIO2 active-HIGH
+ * Vext:         GPIO3 (gpio0 pin 3, hog output-high — powers GPS + display rail)
+ * Backlight:    GPIO21 (gpio0 pin 21 — disp_pwr_enable regulator)
+ * Status LED:   GPIO18 (led0 heartbeat, active-HIGH)
+ * Button:       GPIO0
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+/ {
+	chosen {
+		zephyr,console    = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		/* Mono-TFT wrapper: presents PIXEL_FORMAT_MONO01 to CFB (~1600-byte buffer)
+		 * and converts each row to RGB565 for the ST7735R.  Direct RGB565 to CFB
+		 * causes random noise because CFB doesn't drive colour TFTs correctly. */
+		zephyr,display = &mono_tft;
+	};
+
+	/* Monochrome wrapper around the ST7735R 160x80 colour TFT */
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&st7735r_160x80>;
+		width = <160>;
+		height = <80>;
+	};
+
+	/* Add label to upstream 'buttons' node so input-longpress can reference it */
+	buttons: buttons {
+	};
+
+	/* TFT backlight — GPIO21 via N-ch MOSFET, active-HIGH.
+	 * Upstream DTS hard-wires this as a gpio-hog (always on).  Replace with a
+	 * regulator-fixed so display.c can cut the backlight when auto-off fires. */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* GPS run/enable — GPIO35 (gpio1 pin 3), active-HIGH.
+	 * The GPS (UC6580) is powered from the always-on Vext rail; GPIO35 is its
+	 * reset/run line — HIGH releases the GPS so it runs, LOW holds it off.
+	 * ZephCore's simple-board GPS manager drives this via the gps-enable alias
+	 * (no separate power pin needed).  GPIO36 is the GPS PPS *output* and is
+	 * intentionally left unconfigured (it must not be driven).
+	 * Upstream DTS mislabels GPIO35 as 'gnss_rst' — deleted below. */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* Battery ADC enable — GPIO2, active-HIGH.
+	 * On the Wireless Tracker V1.1 the divider-enable (ADC_CTRL) is GPIO2,
+	 * active-HIGH (meshtastic variant.h: "ADC_CTRL 2 // active HIGH, powers the
+	 * voltage divider. Only on 1.1").  The previous GPIO37/active-LOW came from
+	 * HeltecV3Board (a different board) and never powered this board's divider,
+	 * so the ADC read ~0 and the battery showed 0%.  GPIO2 is an ESP32-S3
+	 * strapping pin but is only driven post-boot, during a battery read. */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
+	 * Multiplier: Vref_internal(1100) * divider_ratio(5.2) = 5720.
+	 * 5.2 is the empirical ratio from MeshCore's HeltecV3Board for this hardware.
+	 *
+	 * IMPORTANT: the battery pin is GPIO1 = ADC unit 1 channel 0.  In the
+	 * upstream esp32s3 DTS the node *labelled* adc0 is unit 1 and the node
+	 * labelled adc1 is unit 2 (the label is 0-indexed, the unit is 1-indexed).
+	 * So GPIO1 lives on &adc0.  The previous &adc1 (unit 2) channel 0 maps to
+	 * ADC2_CH0 = GPIO11 — which is the SX1262 MISO: the ADC channel setup drives
+	 * that pad to GPIO_DISCONNECTED (clearing its input buffer), which both broke
+	 * all LoRa SPI reads AND sampled the wrong pin (battery read 0%). */
+	zephyr,user {
+		io-channels = <&adc0 0>;
+		vbat-mv-multiplier = <5720>;
+	};
+
+	aliases {
+		gps-enable = &gps_enable_pin;
+		led0       = &status_led;
+	};
+
+	/* Status LED — GPIO18 (meshtastic LED_PIN), active-HIGH.  Used by ZephCore
+	 * as the led0 heartbeat (brief pulses; off when idle), toggleable from the
+	 * LED menu item.  UART1 (which upstream parks on this pin) is disabled below. */
+	leds {
+		compatible = "gpio-leds";
+		status_led: led_0 {
+			gpios = <&gpio0 18 GPIO_ACTIVE_HIGH>;
+			label = "Status LED";
+		};
+	};
+
+	/* Button chain: single button, longpress = action/enter, short tap = page scroll. */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+};
+
+/* Remove upstream 'gnss_rst' node — GPIO35 is GPS power enable, not reset.
+ * Our gps-enable node above replaces it on the same pin. */
+/delete-node/ &gnss_rst;
+
+/* Remove upstream tft-backlight gpio-hog — GPIO21 is now controlled by the
+ * disp_pwr_enable regulator-fixed above so the display driver can cut power
+ * when the auto-off timer fires. */
+&gpio0 {
+	/delete-node/ tft-backlight;
+};
+
+/* White status LED on GPIO18 (meshtastic LED_PIN), active-HIGH.  The upstream
+ * DTS mis-assigns GPIO17/18 to UART1 (unused on this board), which leaves the
+ * pad high so the LED is permanently lit.  Disable UART1 to free the pin; the
+ * LED itself is exposed as led0 below so ZephCore's heartbeat drives it (off
+ * when idle, brief pulses) and the LED menu item can disable it. */
+&uart1 {
+	status = "disabled";
+};
+
+/* Battery ADC channel configuration on adc0 (ADC unit 1 -> GPIO1).
+ * adc0 is status="disabled" upstream, so enable it here.  Without the channel
+ * node adc_channel_setup_dt() is a no-op and the resolution stays 0, causing
+ * VALID_RESOLUTION() to reject the read.  ADC_GAIN_1 = 0 dB; effective range
+ * 0–950 mV; battery divider output is 550–780 mV (3.0–4.2 V), well in range. */
+&adc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* Remove the upstream 'vbatt' voltage-divider: it sits on &adc1 (unit 2) ch0 =
+ * GPIO11 = the SX1262 MISO, and with CONFIG_VOLTAGE_DIVIDER=y its driver would
+ * run adc_channel_setup on GPIO11 and disconnect the MISO pad.  ZephCore reads
+ * the battery via zephyr,user (on adc0) instead, so this node is unused. */
+/ {
+	/delete-node/ vbatt;
+};
+
+/* ADC unit 2 (label adc1) is unused on this board; keep it disabled so nothing
+ * can claim GPIO11 (MISO) as an ADC pad. */
+&adc1 {
+	status = "disabled";
+};
+
+/* SX1262 LoRa on SPI2 (native upstream bus).  Switch from the upstream hardware
+ * CS pinmux (SPIM2_CSEL_GPIO8) to driver-controlled GPIO CS, matching the
+ * working Heltec V3.  Add a DIO1 pull-down and RX boost (upstream omits both).
+ * (SPI reads work once the battery ADC is off &adc1 — see the battery section
+ * above; the bus itself needs nothing extra.) */
+&pinctrl {
+	spim2_lora: spim2_lora {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO11>,
+				 <SPIM2_SCLK_GPIO9>;
+		};
+
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO10>;
+			output-low;
+		};
+	};
+};
+
+&spi2 {
+	pinctrl-0 = <&spim2_lora>;
+	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+};
+
+&lora0 {
+	dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+	rx-boosted;
+};
+
+/*
+ * Flash partitions — FN8 is 8 MB but the upstream AMP table covers only
+ * the lower 4 MB (0x000000-0x3FFFFF). Place LittleFS in the unused upper
+ * half at 0x400000 (384 KB). No existing partitions are touched.
+ */
+&flash0 {
+	partitions {
+		lfs_partition: partition@400000 {
+			label = "lfs";
+			reg = <0x400000 0x60000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"
