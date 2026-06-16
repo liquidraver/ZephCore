@@ -7,7 +7,7 @@ on:
 env:
   zephyr_sdk: 1.0.1
   python_version: 3.12
-  toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:riscv64-zephyr-elf
+  toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:xtensa-espressif_esp32_zephyr-elf:riscv64-zephyr-elf
 
 jobs:
   setup-zephyr:
