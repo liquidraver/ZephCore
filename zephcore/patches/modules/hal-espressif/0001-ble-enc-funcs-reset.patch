@@ -1,0 +1,22 @@
+diff --git a/components/bt/controller/esp32c3/bt.c b/components/bt/controller/esp32c3/bt.c
+index 7f47e23f4e..ab872f5654 100644
+--- a/components/bt/controller/esp32c3/bt.c
++++ b/components/bt/controller/esp32c3/bt.c
+@@ -1415,9 +1415,15 @@ static void btdm_funcs_table_ready_wrapper(void)
+     ble_cca_funcs_reset();
+ #endif // (BT_BLE_CCA_MODE != 0)
+ 
+-#if CONFIG_BT_CTRL_BLE_SECURITY_ENABLE
++/* ZephCore patch: guard was CONFIG_BT_CTRL_BLE_SECURITY_ENABLE (an IDF sdkconfig
++ * symbol never defined in Zephyr builds), so ble_enc_funcs_reset() was never
++ * called -> the controller's LE Secure Connections encryption table stayed
++ * uninitialised -> SC pairing produced a wrong session key -> 0x3D MIC failure
++ * (e.g. Pixel 7). BLE_SECURITY_ENABLE maps to CONFIG_ESP32_BT_CTLR_LE_SECURITY_ENABLE
++ * (the Zephyr knob, =y) and is already used for .enc_en in esp_bt.h. */
++#if BLE_SECURITY_ENABLE
+     ble_enc_funcs_reset();
+-#endif // CONFIG_BT_CTRL_BLE_SECURITY_ENABLE
++#endif // BLE_SECURITY_ENABLE
+ 
+ #if CONFIG_BT_CTRL_BLE_MASTER
+     ble_init_funcs_reset();

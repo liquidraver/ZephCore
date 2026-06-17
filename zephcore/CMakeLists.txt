@@ -170,6 +170,16 @@ if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/loramac-node)
     )
 endif()
 
+# Apply patches to hal_espressif module (ESP32 BLE controller glue)
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/hal-espressif)
+    message(STATUS "Applying ZephCore patches to hal_espressif...")
+    zephcore_apply_patches(
+        "${CMAKE_CURRENT_SOURCE_DIR}/patches/modules/hal-espressif"
+        "${MODULES_DIR}/hal/espressif"
+        "hal-espressif"
+    )
+endif()
+
 # Copy new files into Zephyr tree
 if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/patches/zephyr-new)
     file(GLOB_RECURSE ZEPHCORE_NEW_FILES
