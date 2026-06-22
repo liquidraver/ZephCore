@@ -15,10 +15,22 @@
  * STM32WL TRNG -- entropy source for the CSPRNG used by Ed25519 key
  * generation and LoRa contention jitter. STM32WL has only a raw TRNG;
  * CONFIG_CSPRNG_ENABLED (stm32wl_common.conf) layers the CS generator on top.
- * Matches the bare enable used by upstream nucleo_wl55jc.
+ *
+ * The RNG functional clock MUST be routed to MSI here. The SoC-default RNG
+ * clock source is PLLQ, but this board runs MSI-only (48MHz, msi-range 11)
+ * with NO PLL -- so with the default source the RNG domain is unclocked, the
+ * driver trips RNG_CR CECS ("clock too slow"), and entropy init fails (an
+ * __ASSERT in debug builds; in production sys_csrand_get() then fails and
+ * ZephyrRNG cryptoPanicReboots). MSI is live at 48MHz, matching the RNG
+ * nist-config. Upstream nucleo_wl55jc only gets away with a bare enable
+ * because it runs the PLL, whose Q output clocks the RNG by default.
+ *
+ * RNG_SEL(3) selects MSI (RCC_CCIPR RNGSEL = 0b11 = LL_RCC_RNG_CLKSOURCE_MSI).
+ * Element 0 is the AHB3 peripheral (bus) clock, kept from the SoC node.
  */
 &rng {
 	status = "okay";
+	clocks = <&rcc STM32_CLOCK(AHB3, 18)>, <&rcc STM32_SRC_MSI RNG_SEL(3)>;
 };
 
 /*
