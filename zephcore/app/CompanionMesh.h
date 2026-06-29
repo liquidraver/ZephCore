@@ -152,6 +152,31 @@ public:
 	 */
 	void setPinChangeCallback(PinChangeCallback cb) { _pin_change_cb = cb; }
 
+#ifdef CONFIG_ZEPHCORE_APC
+	/* Adaptive Power Control hooks used by the USB text CLI. */
+	int8_t getAPCReduction() const {
+		return getPowerController().getPowerReduction();
+	}
+	float getAPCMargin() const {
+		return getPowerController().getMarginEstimate();
+	}
+	bool isAPCEnabled() const {
+		return getPowerController().isEnabled();
+	}
+	void setAPCEnabled(bool en) {
+		getPowerController().setEnabled(en);
+		if (!en) {
+			_radio->setTxPowerReduction(0);
+		}
+	}
+	uint8_t getAPCTargetMargin() const {
+		return getPowerController().getTargetMargin();
+	}
+	void setAPCTargetMargin(uint8_t margin_db) {
+		getPowerController().setTargetMargin(margin_db);
+	}
+#endif
+
 	/**
 	 * Continue contact iteration (call each main loop iteration).
 	 * Returns true if contacts are still being sent.

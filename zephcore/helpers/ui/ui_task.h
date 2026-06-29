@@ -85,6 +85,21 @@ void ui_set_radio_params(uint32_t freq_hz, uint8_t sf, uint16_t bw_khz_x10,
 			 uint8_t cr, int8_t tx_power, int16_t noise_floor);
 
 /**
+ * Update extended live radio/APC details for display.
+ */
+void ui_set_radio_runtime(int8_t effective_tx_power, bool apc_enabled,
+			  int8_t apc_reduction, int16_t apc_margin_x10,
+			  uint8_t apc_target_margin, uint8_t sync_word,
+			  uint16_t preamble_len, bool rx_duty_cycle,
+			  bool radio_ready, bool in_rx, bool tx_active);
+
+/**
+ * Update radio packet counters for display.
+ */
+void ui_set_radio_stats(uint32_t packets_rx, uint32_t packets_tx,
+			uint32_t packets_err);
+
+/**
  * Update GPS data for display.
  */
 void ui_set_gps_data(bool has_fix, uint8_t sats,

@@ -49,6 +49,25 @@ WEAK void ui_set_radio_params(uint32_t freq_hz, uint8_t sf,
 	ARG_UNUSED(cr); ARG_UNUSED(tx_power); ARG_UNUSED(noise_floor);
 }
 
+WEAK void ui_set_radio_runtime(int8_t effective_tx_power, bool apc_enabled,
+			       int8_t apc_reduction, int16_t apc_margin_x10,
+			       uint8_t apc_target_margin, uint8_t sync_word,
+			       uint16_t preamble_len, bool rx_duty_cycle,
+			       bool radio_ready, bool in_rx, bool tx_active)
+{
+	ARG_UNUSED(effective_tx_power); ARG_UNUSED(apc_enabled);
+	ARG_UNUSED(apc_reduction); ARG_UNUSED(apc_margin_x10);
+	ARG_UNUSED(apc_target_margin); ARG_UNUSED(sync_word);
+	ARG_UNUSED(preamble_len); ARG_UNUSED(rx_duty_cycle);
+	ARG_UNUSED(radio_ready); ARG_UNUSED(in_rx); ARG_UNUSED(tx_active);
+}
+
+WEAK void ui_set_radio_stats(uint32_t packets_rx, uint32_t packets_tx,
+			     uint32_t packets_err)
+{
+	ARG_UNUSED(packets_rx); ARG_UNUSED(packets_tx); ARG_UNUSED(packets_err);
+}
+
 WEAK void ui_set_gps_data(bool has_fix, uint8_t sats,
 			   int32_t lat_mdeg, int32_t lon_mdeg, int32_t alt_mm)
 {

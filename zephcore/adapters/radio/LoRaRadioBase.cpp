@@ -248,6 +248,71 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.cad.mode = LORA_CAD_MODE_LBT;
 }
 
+uint32_t LoRaRadioBase::getActiveFrequencyHz() const
+{
+	float freq_mhz = _has_radio_override ? _override_freq
+			 : (_prefs ? _prefs->freq : (LoRaConfig::FREQ_HZ / 1000000.0f));
+
+	return (uint32_t)(freq_mhz * 1000000.0f + 0.5f);
+}
+
+uint16_t LoRaRadioBase::getActiveBandwidthKHzX10() const
+{
+	float bw_khz = _has_radio_override ? _override_bw
+		       : (_prefs ? _prefs->bw : (float)LoRaConfig::BANDWIDTH);
+
+	return (uint16_t)(bw_khz * 10.0f + 0.5f);
+}
+
+uint8_t LoRaRadioBase::getActiveSpreadingFactor() const
+{
+	return _has_radio_override ? _override_sf
+	       : (_prefs ? _prefs->sf : LoRaConfig::SPREADING_FACTOR);
+}
+
+uint8_t LoRaRadioBase::getActiveCodingRate() const
+{
+	return _has_radio_override ? _override_cr
+	       : (_prefs ? _prefs->cr : LoRaConfig::CODING_RATE);
+}
+
+uint16_t LoRaRadioBase::getActivePreambleLength() const
+{
+	return preambleLengthForSF(getActiveSpreadingFactor());
+}
+
+uint8_t LoRaRadioBase::getActiveSyncWord() const
+{
+	/* buildModemConfig() currently sets public_network=false, which maps
+	 * Zephyr's LoRa API to the Semtech private sync word. */
+	return 0x12;
+}
+
+int8_t LoRaRadioBase::getConfiguredTxPower() const
+{
+	int power = _prefs ? _prefs->tx_power_dbm : LoRaConfig::TX_POWER_DBM;
+
+#ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
+	if (power > CONFIG_ZEPHCORE_MAX_TX_POWER_DBM) {
+		power = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+	}
+#endif
+	if (power < -9) {
+		power = -9;
+	}
+	return (int8_t)power;
+}
+
+int8_t LoRaRadioBase::getEffectiveTxPower() const
+{
+	int power = (int)getConfiguredTxPower() - (int)_tx_power_reduction_db;
+
+	if (power < -9) {
+		power = -9;
+	}
+	return (int8_t)power;
+}
+
 /**
  * Compare radio-relevant fields of two modem configs.
  * Ignores the tx flag — that only selects TX vs RX mode, the actual

@@ -95,7 +95,9 @@ static const enum ui_page active_pages[] = {
 	UI_PAGE_BLUETOOTH,
 	UI_PAGE_ADVERT,
 	UI_PAGE_GPS,
+#ifdef CONFIG_ZEPHCORE_UI_BUZZER
 	UI_PAGE_BUZZER,
+#endif
 	UI_PAGE_LEDS,
 	UI_PAGE_SENSORS,
 	UI_PAGE_OFFGRID,
@@ -234,6 +236,16 @@ static void draw_centered(int y, const char *text)
 	mc_display_text(x, y, text, false);
 }
 
+static void draw_color_segments(int y, const char *label,
+				const char *value, uint16_t value_color)
+{
+	int x = 0;
+
+	mc_display_color_text(x, y, label, MC_COLOR_CYAN);
+	x += (int)strlen(label) * 6;
+	mc_display_color_text(x, y, value, value_color);
+}
+
 /* ========== Page Renderers ========== */
 
 static void render_messages(void)
@@ -294,42 +306,108 @@ static void render_recent(void)
 
 static void render_radio(void)
 {
-	char buf[28];
+	char buf[32];
 	int y = CONTENT_Y;
-
-	/* Line 1: FQ, SF, BW */
 	uint32_t freq_mhz = state.lora_freq_hz / 1000000;
 	uint32_t freq_frac = (state.lora_freq_hz % 1000000 + 500) / 1000;
 	uint16_t bw_int = state.lora_bw_khz_x10 / 10;
 	uint16_t bw_frac = state.lora_bw_khz_x10 % 10;
+	const char *packet_state = state.lora_tx_active ? "TX" :
+				   (state.lora_in_rx ? "RX" :
+				    (state.lora_radio_ready ? "RDY" : "WAIT"));
+	const char *rx_mode = state.lora_rx_duty_cycle ? "DC" : "CONT";
+	uint16_t apc_color = state.lora_apc_enabled ? MC_COLOR_GREEN : MC_COLOR_GRAY;
+	uint16_t warn_color = (state.lora_apc_enabled && state.lora_apc_reduction > 0)
+			      ? MC_COLOR_ORANGE : MC_COLOR_GREEN;
+
+	if (mc_display_has_color()) {
+		mc_display_color_fill_rect(0, y - 1, DISP_W, FONT_H + 2, MC_COLOR_BLUE);
+		snprintf(buf, sizeof(buf), "companion %s/%s", packet_state, rx_mode);
+		mc_display_color_text(2, y, "RAD", MC_COLOR_YELLOW);
+		mc_display_color_text(26, y, buf, MC_COLOR_WHITE);
+		y += LINE_H;
+
+		if (bw_frac) {
+			snprintf(buf, sizeof(buf), "%u.%03u BW%u.%u",
+				 freq_mhz, freq_frac, bw_int, bw_frac);
+		} else {
+			snprintf(buf, sizeof(buf), "%u.%03u BW%u",
+				 freq_mhz, freq_frac, bw_int);
+		}
+		draw_color_segments(y, "RF ", buf, MC_COLOR_WHITE);
+		y += LINE_H;
+
+		snprintf(buf, sizeof(buf), "SF%u CR%u SW%02X P%u",
+			 state.lora_sf, state.lora_cr, state.lora_sync_word,
+			 state.lora_preamble_len);
+		draw_color_segments(y, "LoRa ", buf, MC_COLOR_WHITE);
+		y += LINE_H;
+
+		if (state.lora_apc_enabled) {
+			snprintf(buf, sizeof(buf), "%d/%ddBm APC on",
+				 state.lora_effective_tx_power, state.lora_tx_power);
+		} else {
+			snprintf(buf, sizeof(buf), "%ddBm APC off", state.lora_tx_power);
+		}
+		draw_color_segments(y, "TX ", buf, apc_color);
+		y += LINE_H;
+
+		snprintf(buf, sizeof(buf), "red %d M%d.%d T%u",
+			 state.lora_apc_reduction,
+			 state.lora_apc_margin_x10 / 10,
+			 abs(state.lora_apc_margin_x10 % 10),
+			 state.lora_apc_target_margin);
+		draw_color_segments(y, "APC ", buf, warn_color);
+		y += LINE_H;
+
+		snprintf(buf, sizeof(buf), "NF%d R%lu T%lu E%lu",
+			 state.lora_noise_floor,
+			 (unsigned long)state.lora_packets_rx,
+			 (unsigned long)state.lora_packets_tx,
+			 (unsigned long)state.lora_packets_err);
+		draw_color_segments(y, "PKT ", buf,
+				    state.lora_packets_err ? MC_COLOR_RED : MC_COLOR_WHITE);
+		return;
+	}
 
 	if (bw_frac) {
-		snprintf(buf, sizeof(buf), "%u.%03u SF%u BW%u.%u",
-			 freq_mhz, freq_frac, state.lora_sf, bw_int, bw_frac);
+		snprintf(buf, sizeof(buf), "%u.%03u BW%u.%u",
+			 freq_mhz, freq_frac, bw_int, bw_frac);
 	} else {
-		snprintf(buf, sizeof(buf), "%u.%03u SF%u BW%u",
-			 freq_mhz, freq_frac, state.lora_sf, bw_int);
+		snprintf(buf, sizeof(buf), "%u.%03u BW%u",
+			 freq_mhz, freq_frac, bw_int);
 	}
 	mc_display_text(0, y, buf, false);
 	y += LINE_H;
 
-	/* Line 2: CR, TX Power */
-	snprintf(buf, sizeof(buf), "CR:%u  TX:%ddBm", state.lora_cr, state.lora_tx_power);
+	snprintf(buf, sizeof(buf), "SF%u CR%u SW%02X P%u",
+		 state.lora_sf, state.lora_cr, state.lora_sync_word,
+		 state.lora_preamble_len);
 	mc_display_text(0, y, buf, false);
 	y += LINE_H;
 
-	/* Line 3: Noise floor */
-	snprintf(buf, sizeof(buf), "Noise: %ddBm", state.lora_noise_floor);
+	if (state.lora_apc_enabled) {
+		snprintf(buf, sizeof(buf), "TX:%d/%ddBm APC:on",
+			 state.lora_effective_tx_power, state.lora_tx_power);
+	} else {
+		snprintf(buf, sizeof(buf), "TX:%ddBm APC:off", state.lora_tx_power);
+	}
 	mc_display_text(0, y, buf, false);
 	y += LINE_H;
 
-	/* Uptime */
-	uint32_t up_s = (uint32_t)(k_uptime_get() / 1000);
-	uint32_t days = up_s / 86400;
-	uint32_t hours = (up_s % 86400) / 3600;
-	uint32_t mins = (up_s % 3600) / 60;
+	snprintf(buf, sizeof(buf), "R%d M%d.%d T%u %s/%s",
+		 state.lora_apc_reduction,
+		 state.lora_apc_margin_x10 / 10,
+		 abs(state.lora_apc_margin_x10 % 10),
+		 state.lora_apc_target_margin, packet_state, rx_mode);
+	mc_display_text(0, y, buf, false);
+	y += LINE_H;
 
-	snprintf(buf, sizeof(buf), "Up: %ud %uh %um", days, hours, mins);
+	snprintf(buf, sizeof(buf), "NF%d R%lu T%lu E%lu",
+		 state.lora_noise_floor,
+		 (unsigned long)state.lora_packets_rx,
+		 (unsigned long)state.lora_packets_tx,
+		 (unsigned long)state.lora_packets_err);
 	mc_display_text(0, y, buf, false);
 }
 

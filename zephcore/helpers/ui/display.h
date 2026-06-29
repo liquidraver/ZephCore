@@ -84,6 +84,12 @@ bool mc_display_is_on(void);
 bool mc_display_is_epd(void);
 
 /**
+ * @return true when a raw RGB565-capable color panel is available for
+ * optional color overlays. Monochrome displays return false.
+ */
+bool mc_display_has_color(void);
+
+/**
  * Clear the framebuffer (fill with black).
  * Call before rendering a new frame.
  */
@@ -99,6 +105,25 @@ void mc_display_clear(void);
  */
 void mc_display_text(int x, int y, const char *text, bool invert);
 
+/* Common RGB565 colors for optional color-capable pages. */
+#define MC_COLOR_BLACK    0x0000
+#define MC_COLOR_WHITE    0xffff
+#define MC_COLOR_GREEN    0x07e0
+#define MC_COLOR_CYAN     0x07ff
+#define MC_COLOR_YELLOW   0xffe0
+#define MC_COLOR_ORANGE   0xfd20
+#define MC_COLOR_RED      0xf800
+#define MC_COLOR_BLUE     0x001f
+#define MC_COLOR_GRAY     0x8410
+
+/**
+ * Draw text using RGB565 color when supported. On non-color displays this
+ * falls back to mc_display_text(..., invert=false).
+ *
+ * Color overlays are flushed after the normal CFB frame in mc_display_finalize().
+ */
+void mc_display_color_text(int x, int y, const char *text, uint16_t color);
+
 /**
  * Draw a filled rectangle.
  *
@@ -108,6 +133,12 @@ void mc_display_text(int x, int y, const char *text, bool invert);
  * @param h  Height
  */
 void mc_display_fill_rect(int x, int y, int w, int h);
+
+/**
+ * Draw a filled rectangle using RGB565 color when supported. On non-color
+ * displays this falls back to mc_display_fill_rect().
+ */
+void mc_display_color_fill_rect(int x, int y, int w, int h, uint16_t color);
 
 /**
  * Draw a horizontal line.
