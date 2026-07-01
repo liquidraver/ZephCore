@@ -1,0 +1,334 @@
+/*
+ * Heltec Mesh Node T096 - nRF52840 + SX1262 + UC6580 GNSS
+ * Copyright (c) 2026 ZephCore
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Pin mappings are verified against the official Heltec
+ * Mesh_Node_T096_V0.2 schematic. MeshCore's heltec_t096 variant was used as
+ * a comparison source; the schematic is the source of truth for implemented
+ * nets in this DTS.
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include "heltec_t096_nrf52840-pinctrl.dtsi"
+
+/ {
+	model = "Heltec Mesh Node T096";
+	compatible = "heltec,t096";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &mono_tft;
+		zephcore,gps-power = &gps_power;
+	};
+
+	aliases {
+		led0 = &led_white;
+		lora-tx-led = &led_white;
+		sw0 = &user_button;
+		lora0 = &lora;
+		watchdog0 = &wdt0;
+		gps-reset = &gps_reset_pin;
+		display0 = &tft;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		/* Schematic net LED: P0.28 -> R25 -> LED2 -> GND, active-HIGH. */
+		led_white: led_0 {
+			gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
+			label = "White LED";
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		/* Schematic net Button: P1.10, switch to GND. */
+		user_button: button_0 {
+			gpios = <&gpio1 10 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "User Button";
+		};
+	};
+
+	user_btn_longpress: user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	user_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C INPUT_KEY_E>;
+		tap-delay-ms = <400>;
+	};
+
+	/*
+	 * Schematic net VGNSS_CTRL: P0.06 controls the VGNSS_3V3 rail.
+	 * MeshCore defines PIN_GPS_EN_ACTIVE=LOW for this net.
+	 */
+	gps_power: gps-power {
+		compatible = "regulator-fixed";
+		regulator-name = "gps-power";
+		enable-gpios = <&gpio0 6 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
+	};
+
+	/* Schematic net GNSS_RST: P1.14 -> UC6580 RESETN, active-LOW. */
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
+			label = "GNSS Reset";
+		};
+	};
+
+	/* Schematic net VFEM_Ctrl: P0.30 enables U5, producing the Vfem rail. */
+	vfem_enable: vfem-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vfem-enable";
+		enable-gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <1000>;
+	};
+
+	/* Schematic net ADC_Ctrl: P1.15 enables the VBAT divider. */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio1 15 GPIO_ACTIVE_HIGH>;
+	};
+
+	/*
+	 * Schematic net Vext_Ctrl: P0.26 enables the switched peripheral rail
+	 * that MeshCore's T096 variant claims before ST7735 display init.
+	 */
+	tft_pwr_enable: tft-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "tft-pwr-enable";
+		enable-gpios = <&gpio0 26 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
+	};
+
+	/*
+	 * Schematic/datasheet display LED net LEDA: P1.12. MeshCore defines
+	 * PIN_TFT_LEDA_CTL_ACTIVE=LOW for the T096 backlight control.
+	 */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio1 12 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * Monochrome wrapper around the ST7735S-compatible TFT.
+	 * Reports PIXEL_FORMAT_MONO01 to CFB and converts rows to RGB565.
+	 */
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&tft>;
+		width = <160>;
+		height = <80>;
+	};
+
+	/*
+	 * MIPI-DBI SPI bus for the ST7735S 0.96" 160x80 TFT.
+	 * T096 schematic nets:
+	 * - RS    -> P0.15, data/command
+	 * - RESET -> P0.13, active-LOW reset
+	 * - SDIN  -> P0.17, SPI MOSI
+	 * - SCLK  -> P0.20, SPI SCK
+	 * - CS    -> P0.22, SPI chip-select
+	 */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi3>;
+		dc-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 13 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		tft: st7735s@0 {
+			compatible = "sitronix,st7735r";
+			mipi-max-frequency = <20000000>;
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			reg = <0>;
+			width = <160>;
+			height = <80>;
+			inversion-on;
+			x-offset = <1>;
+			y-offset = <26>;
+			madctl = <0xa8>;
+			colmod = <0x05>;
+			invctr = <7>;
+			vmctr1 = <0x0e>;
+			pwctr1 = [a2 02 84];
+			pwctr2 = [c1];
+			pwctr3 = [0a 00];
+			pwctr4 = [8a 2a];
+			pwctr5 = [8a ee];
+			frmctr1 = [01 26 2e];
+			frmctr2 = [01 26 2e];
+			frmctr3 = [01 26 2e 01 26 2e];
+			gamctrp1 = [0f 1a 0f 18 2f 28 20 22 1f 1b 23 37 00 07 02 10];
+			gamctrn1 = [0f 1b 0f 17 33 2c 29 2e 30 2e 30 3b 00 07 03 10];
+			caset = [00 01 00 a0];
+			raset = [00 1a 00 69];
+		};
+	};
+
+	zephyr,user {
+		io-channels = <&adc 1>;
+		/*
+		 * Schematic: ADC_IN on P0.03/AIN1, divider R22=390K high side
+		 * and R23=100K low side -> 4.9:1. With ADC_GAIN_1_6 and
+		 * internal 0.6V ref, full-scale is 3600 mV.
+		 */
+		vbat-mv-multiplier = <17728>;
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@1 {
+		reg = <1>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN1>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/* SPI3 - ST7735S 0.96" 160x80 TFT display */
+&spi3 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi3_default>;
+	pinctrl-1 = <&spi3_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio0 22 GPIO_ACTIVE_LOW>; /* Schematic net CS */
+};
+
+/* SPI2 - SX1262 LoRa radio */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>;  /* Schematic net LoRa_NSS */
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		reset-gpios = <&gpio0 16 GPIO_ACTIVE_LOW>;  /* LoRa_RST */
+		busy-gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;  /* LoRa_BUSY */
+		dio1-gpios = <&gpio0 21 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* DIO1 */
+
+		/*
+		 * KCT8103L PA/FEM control:
+		 * - PA_CSD P0.12 -> CSD, active-HIGH FEM enable.
+		 * - PA_CTX P1.09 -> CTX, HIGH for TX in the existing ZephCore
+		 *   SX1262 tx-enable model. MeshCore uses the same net for
+		 *   TX/LNA-bypass control.
+		 * - PA_CPS is not an MCU GPIO on T096; it is the SX1262 DIO2
+		 *   net into the KCT8103L CPS pin, so use dio2-tx-enable.
+		 */
+		antenna-enable-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>; /* PA_CSD */
+		tx-enable-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;       /* PA_CTX */
+		dio2-tx-enable;                                      /* PA_CPS */
+
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+		rx-boosted;
+	};
+};
+
+/*
+ * External SPI flash footprint is present in the schematic (F_SPI_* nets),
+ * but the memory device and Zephyr-compatible parameters are not confirmed.
+ */
+&qspi {
+	status = "disabled";
+};
+
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* SoftDevice s140 v6.1.1 flash layout (app@0x26000, bootloader@0xF4000) */
+#include "../../common/nrf52_partitions_sdv6.dtsi"
+#include "../../common/nrf52_wakeup.dtsi"

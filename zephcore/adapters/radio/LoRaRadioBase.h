@@ -81,6 +81,19 @@ public:
 	void setRxBoost(bool enable);
 	bool isRxBoostEnabled() const { return _rx_boost_enabled; }
 
+	/* Read-only view of the modem config currently used by buildModemConfig().
+	 * These honor temporary radio overrides for freq/bw/sf/cr and the same TX
+	 * clamps/APC reduction as the actual lora_config() path. */
+	uint32_t getActiveFrequencyHz() const;
+	uint16_t getActiveBandwidthKHzX10() const;
+	uint8_t getActiveSpreadingFactor() const;
+	uint8_t getActiveCodingRate() const;
+	uint16_t getActivePreambleLength() const;
+	uint8_t getActiveSyncWord() const;
+	int8_t getConfiguredTxPower() const;
+	int8_t getEffectiveTxPower() const;
+	bool isTxActive() const { return atomic_get(&_tx_active) != 0; }
+
 	/* Duty-cycle preamble false-positive counter.
 	 * Incremented by the driver whenever RX_TX_TIMEOUT fires in
 	 * duty-cycle mode and the chip is silently re-armed.  High

@@ -489,12 +489,26 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             } else {
                 strcpy(reply, "> strict");
             }
-        } else if (memcmp(config, "tx", 2) == 0 && (config[2] == 0 || config[2] == ' ')) {
+        } else if (strcmp(config, "tx apc") == 0) {
             if (_callbacks->isAPCEnabled()) {
                 int8_t apc = _callbacks->getAPCReduction();
                 float margin = _callbacks->getAPCMargin();
                 int effective = (int)_prefs->tx_power_dbm - (int)apc;
-                snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (max=%d apc=-%d margin=%.1f target=%d)",
+                snprintf(reply, CLI_REPLY_SIZE,
+                         "> apc=on effective=%ddBm max=%d reduction=%d margin=%.1f target=%d",
+                         effective, (int)_prefs->tx_power_dbm, (int)apc, (double)margin,
+                         (int)_callbacks->getAPCTargetMargin());
+            } else {
+                snprintf(reply, CLI_REPLY_SIZE, "> apc=off max=%ddBm target=%d",
+                         (int)_prefs->tx_power_dbm, (int)_callbacks->getAPCTargetMargin());
+            }
+        } else if (strcmp(config, "tx") == 0) {
+            if (_callbacks->isAPCEnabled()) {
+                int8_t apc = _callbacks->getAPCReduction();
+                float margin = _callbacks->getAPCMargin();
+                int effective = (int)_prefs->tx_power_dbm - (int)apc;
+                snprintf(reply, CLI_REPLY_SIZE,
+                         "> %ddBm (apc=on max=%d reduction=%d margin=%.1f target=%d)",
                          effective, (int)_prefs->tx_power_dbm, (int)apc, (double)margin,
                          (int)_callbacks->getAPCTargetMargin());
             } else {
@@ -784,21 +798,23 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error: range 6-30 dB");
             }
         } else if (memcmp(config, "tx ", 3) == 0) {
-            if (memcmp(&config[3], "apc", 3) == 0) {
+            if (strcmp(&config[3], "apc") == 0) {
                 _prefs->apc_enabled = 1;
                 _callbacks->setAPCEnabled(true);
                 savePrefs();
                 snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%d dBm (apc=on)",
                          (int)_prefs->tx_power_dbm);
             } else {
-                int val = atoi(&config[3]);
+                char *end = nullptr;
+                long parsed = strtol(&config[3], &end, 10);
                 int max_tx = 30;
 #ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
                 max_tx = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
 #endif
-                if (val < -9 || val > max_tx) {
+                if (end == &config[3] || *end != '\0' || parsed < -9 || parsed > max_tx) {
                     snprintf(reply, CLI_REPLY_SIZE, "Error: range -9 to %d dBm, or 'apc'", max_tx);
                 } else {
+                    int val = (int)parsed;
                     _prefs->apc_enabled = 0;
                     _prefs->tx_power_dbm = (int8_t)val;
                     savePrefs();

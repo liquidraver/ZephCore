@@ -28,6 +28,7 @@ Other benefits:
 | **ThinkNode M3** | LR1110 | GPS, buzzer, two buttons, RGB LEDs |
 | **ThinkNode M6** | SX1262 | GPS (L76K), QSPI flash, RGB LEDs |
 | **LilyGo T-Echo** | SX1262 (TCXO 1.8V) | GPS (L76K), 1.54" e-paper (SSD1681), BME280, QSPI flash, touch-button backlight |
+| **Heltec Mesh Node T096** | SX1262 + KCT8103L PA/FEM | UC6580 GNSS, button, LED, battery ADC |
 | **Ikoka Nano 30dBm** | SX1262 (E22-900M30S, 30 dBm PA) | RGB LEDs |
 | **GAT562 30S Mesh Kit** | SX1262 (30 dBm / 1 W PA) | RAK4631 core module. OLED (SSD1306), 5-way joystick, buzzer, GPS, BME280 pad, 2×18650 + solar |
 | **SenseCAP Solar** | SX1262 | GPS (L76K), QSPI flash, battery monitor |

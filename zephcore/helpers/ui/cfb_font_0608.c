@@ -970,6 +970,14 @@ static const uint8_t cfb_font_0608[224][6] = {
 	{ 0x0C, 0x51, 0x50, 0x51, 0x3C, 0x00 },
 };
 
+const uint8_t *zephcore_font_6x8_glyph(uint8_t c)
+{
+	if (c < 32) {
+		c = '?';
+	}
+	return cfb_font_0608[c - 32];
+}
+
 FONT_ENTRY_DEFINE(cfb_font_6x8,
 		  6, 8,
 		  CFB_FONT_MONO_VPACKED,

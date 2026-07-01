@@ -678,6 +678,27 @@ public:
 		LOG_INF("TX power %d dBm requested (reboot to apply)", power_dbm);
 	}
 
+#ifdef CONFIG_ZEPHCORE_APC
+	int8_t getAPCReduction() const override {
+		return companion_mesh.getAPCReduction();
+	}
+	float getAPCMargin() const override {
+		return companion_mesh.getAPCMargin();
+	}
+	bool isAPCEnabled() const override {
+		return companion_mesh.isAPCEnabled();
+	}
+	void setAPCEnabled(bool en) override {
+		companion_mesh.setAPCEnabled(en);
+	}
+	uint8_t getAPCTargetMargin() const override {
+		return companion_mesh.getAPCTargetMargin();
+	}
+	void setAPCTargetMargin(uint8_t margin_db) override {
+		companion_mesh.setAPCTargetMargin(margin_db);
+	}
+#endif
+
 	mesh::LocalIdentity& getSelfId() override { return companion_mesh.self_id; }
 
 	void saveIdentity(const mesh::LocalIdentity& new_id) override {
@@ -1107,12 +1128,39 @@ int main(void)
 	/* Push initial state to UI display */
 	ui_set_node_name(companion_mesh.prefs.node_name);
 	ui_set_radio_params(
-		(uint32_t)(companion_mesh.prefs.freq * 1000000.0f + 0.5f),
-		companion_mesh.prefs.sf,
-		(uint16_t)(companion_mesh.prefs.bw * 10.0f + 0.5f),
-		companion_mesh.prefs.cr,
-		companion_mesh.prefs.tx_power_dbm,
+		lora_radio.getActiveFrequencyHz(),
+		lora_radio.getActiveSpreadingFactor(),
+		lora_radio.getActiveBandwidthKHzX10(),
+		lora_radio.getActiveCodingRate(),
+		lora_radio.getConfiguredTxPower(),
 		lora_radio.getNoiseFloor());
+#ifdef CONFIG_ZEPHCORE_APC
+	ui_set_radio_runtime(
+		lora_radio.getEffectiveTxPower(),
+		companion_mesh.isAPCEnabled(),
+		companion_mesh.getAPCReduction(),
+		(int16_t)(companion_mesh.getAPCMargin() * 10.0f),
+		companion_mesh.getAPCTargetMargin(),
+		lora_radio.getActiveSyncWord(),
+		lora_radio.getActivePreambleLength(),
+		lora_radio.isRxDutyCycleEnabled(),
+		lora_radio.isRadioReady(),
+		lora_radio.isInRecvMode(),
+		lora_radio.isTxActive());
+#else
+	ui_set_radio_runtime(
+		lora_radio.getEffectiveTxPower(),
+		false, 0, 0, companion_mesh.prefs.apc_margin,
+		lora_radio.getActiveSyncWord(),
+		lora_radio.getActivePreambleLength(),
+		lora_radio.isRxDutyCycleEnabled(),
+		lora_radio.isRadioReady(),
+		lora_radio.isInRecvMode(),
+		lora_radio.isTxActive());
+#endif
+	ui_set_radio_stats(lora_radio.getPacketsRecv(),
+			   lora_radio.getPacketsSent(),
+			   lora_radio.getPacketsRecvErrors());
 	ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
 	ui_set_gps_available(gps_is_available());
 	ui_set_gps_enabled(companion_mesh.prefs.gps_enabled != 0);
@@ -1163,6 +1211,30 @@ int main(void)
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
 	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
+#ifdef CONFIG_ZEPHCORE_APC
+	ui_set_radio_runtime(
+		lora_radio.getEffectiveTxPower(),
+		companion_mesh.isAPCEnabled(),
+		companion_mesh.getAPCReduction(),
+		(int16_t)(companion_mesh.getAPCMargin() * 10.0f),
+		companion_mesh.getAPCTargetMargin(),
+		lora_radio.getActiveSyncWord(),
+		lora_radio.getActivePreambleLength(),
+		lora_radio.isRxDutyCycleEnabled(),
+		lora_radio.isRadioReady(),
+		lora_radio.isInRecvMode(),
+		lora_radio.isTxActive());
+#else
+	ui_set_radio_runtime(
+		lora_radio.getEffectiveTxPower(),
+		false, 0, 0, companion_mesh.prefs.apc_margin,
+		lora_radio.getActiveSyncWord(),
+		lora_radio.getActivePreambleLength(),
+		lora_radio.isRxDutyCycleEnabled(),
+		lora_radio.isRadioReady(),
+		lora_radio.isInRecvMode(),
+		lora_radio.isTxActive());
+#endif
 
 	/* Restore runtime ADC multiplier override (0 = keep DT default) */
 	zephyr_board.setAdcMultiplier(companion_mesh.prefs.adc_multiplier);

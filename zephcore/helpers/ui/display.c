@@ -22,6 +22,7 @@
 #include <zephyr/drivers/display.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/kernel.h>
+#include <zephyr/sys/byteorder.h>
 #include <string.h>
 #include <stdio.h>
 #include <limits.h>
@@ -54,6 +55,39 @@ static uint16_t disp_height;
 static uint8_t  font_w;
 static uint8_t  font_h;
 static bool     is_epd;       /* true for e-paper displays */
+static bool     has_color;    /* true when a raw RGB565 TFT is available */
+
+const uint8_t *zephcore_font_6x8_glyph(uint8_t c);
+
+#define COLOR_TEXT_MAX_CHARS 32
+#define COLOR_MAX_OPS        72
+#define COLOR_MAX_WIDTH      320
+
+enum color_op_type {
+	COLOR_OP_TEXT,
+	COLOR_OP_RECT,
+};
+
+struct color_op {
+	enum color_op_type type;
+	int16_t x;
+	int16_t y;
+	int16_t w;
+	int16_t h;
+	uint16_t color;
+	char text[COLOR_TEXT_MAX_CHARS];
+};
+
+static struct color_op color_ops[COLOR_MAX_OPS];
+static uint8_t color_op_count;
+static uint16_t color_line[COLOR_MAX_WIDTH];
+
+#if DT_NODE_EXISTS(DT_NODELABEL(tft))
+static const struct device *color_dev =
+	DEVICE_DT_GET_OR_NULL(DT_NODELABEL(tft));
+#else
+static const struct device *color_dev;
+#endif
 
 /* Optional symmetric inset (pixels).  Shrinks reported width/height and
  * offsets all draw primitives so panels with edge artefacts can hide them
@@ -129,6 +163,159 @@ static inline void panel_vdd_enable(void)
 	if (panel_vdd_reg && device_is_ready(panel_vdd_reg)) {
 		regulator_enable(panel_vdd_reg);
 	}
+}
+
+static void color_overlay_probe(void)
+{
+	has_color = false;
+
+	if (!color_dev || color_dev == disp_dev || !device_is_ready(color_dev)) {
+		return;
+	}
+
+	struct display_capabilities caps;
+
+	display_get_capabilities(color_dev, &caps);
+	if ((caps.current_pixel_format == PIXEL_FORMAT_RGB_565 ||
+	     caps.current_pixel_format == PIXEL_FORMAT_RGB_565X ||
+	     (caps.supported_pixel_formats & (PIXEL_FORMAT_RGB_565 | PIXEL_FORMAT_RGB_565X))) &&
+	    !(caps.screen_info & SCREEN_INFO_EPD)) {
+		has_color = true;
+		LOG_INF("display: color overlay enabled");
+	}
+}
+
+static bool color_queue(enum color_op_type type, int x, int y, int w, int h,
+			const char *text, uint16_t color)
+{
+	if (!has_color || color_op_count >= COLOR_MAX_OPS) {
+		return false;
+	}
+
+	struct color_op *op = &color_ops[color_op_count++];
+
+	op->type = type;
+	op->x = (int16_t)x;
+	op->y = (int16_t)y;
+	op->w = (int16_t)w;
+	op->h = (int16_t)h;
+	op->color = color;
+	op->text[0] = '\0';
+	if (text) {
+		strncpy(op->text, text, sizeof(op->text) - 1);
+		op->text[sizeof(op->text) - 1] = '\0';
+	}
+	return true;
+}
+
+static void color_write_rect_now(int x, int y, int w, int h, uint16_t color)
+{
+	if (!has_color || w <= 0 || h <= 0) {
+		return;
+	}
+
+	x += DISP_INSET;
+	y += DISP_INSET;
+	if (x < 0) {
+		w += x;
+		x = 0;
+	}
+	if (y < 0) {
+		h += y;
+		y = 0;
+	}
+	if (x + w > (int)disp_width) {
+		w = (int)disp_width - x;
+	}
+	if (y + h > (int)disp_height) {
+		h = (int)disp_height - y;
+	}
+	if (w <= 0 || h <= 0) {
+		return;
+	}
+	if (w > COLOR_MAX_WIDTH) {
+		w = COLOR_MAX_WIDTH;
+	}
+
+	uint16_t be = sys_cpu_to_be16(color);
+	for (int i = 0; i < w; i++) {
+		color_line[i] = be;
+	}
+
+	const struct display_buffer_descriptor desc = {
+		.buf_size = (uint32_t)w * 2U,
+		.width = (uint16_t)w,
+		.height = 1U,
+		.pitch = (uint16_t)w,
+	};
+
+	for (int row = 0; row < h; row++) {
+		display_write(color_dev, (uint16_t)x, (uint16_t)(y + row),
+			      &desc, color_line);
+	}
+}
+
+static void color_write_char_now(int x, int y, uint8_t c, uint16_t color)
+{
+	uint16_t glyph_buf[6 * 8];
+	const uint8_t *glyph = zephcore_font_6x8_glyph(c);
+	uint16_t fg = sys_cpu_to_be16(color);
+	uint16_t bg = sys_cpu_to_be16(MC_COLOR_BLACK);
+
+	for (int row = 0; row < 8; row++) {
+		for (int col = 0; col < 6; col++) {
+			bool on = (glyph[col] >> row) & 0x01;
+			glyph_buf[row * 6 + col] = on ? fg : bg;
+		}
+	}
+
+	const struct display_buffer_descriptor desc = {
+		.buf_size = sizeof(glyph_buf),
+		.width = 6,
+		.height = 8,
+		.pitch = 6,
+	};
+
+	display_write(color_dev, (uint16_t)(x + DISP_INSET),
+		      (uint16_t)(y + DISP_INSET), &desc, glyph_buf);
+}
+
+static void color_write_text_now(int x, int y, const char *text, uint16_t color)
+{
+	if (!has_color || !text) {
+		return;
+	}
+
+	for (const char *p = text; *p; p++, x += 6) {
+		uint8_t c = (uint8_t)*p;
+
+		if (c < 32) {
+			c = '?';
+		}
+		if (x + 6 > (int)mc_display_width() || y + 8 > (int)mc_display_height()) {
+			break;
+		}
+		color_write_char_now(x, y, c, color);
+	}
+}
+
+static void color_flush_ops(void)
+{
+	if (!has_color) {
+		color_op_count = 0;
+		return;
+	}
+
+	for (uint8_t i = 0; i < color_op_count; i++) {
+		struct color_op *op = &color_ops[i];
+
+		if (op->type == COLOR_OP_RECT) {
+			color_write_rect_now(op->x, op->y, op->w, op->h, op->color);
+		} else {
+			color_write_text_now(op->x, op->y, op->text, op->color);
+		}
+	}
+	color_op_count = 0;
 }
 
 /* Auto-off work */
@@ -228,6 +415,7 @@ int mc_display_init(void)
 
 	LOG_INF("display: %ux%u%s", disp_width, disp_height,
 		is_epd ? " (e-paper)" : "");
+	color_overlay_probe();
 
 	/* OLED: blank before CFB init so stale VRAM isn't visible while we
 	 * build the first frame.  EPD: driver init already performed a clean
@@ -395,12 +583,18 @@ bool mc_display_is_epd(void)
 	return is_epd;
 }
 
+bool mc_display_has_color(void)
+{
+	return has_color;
+}
+
 void mc_display_clear(void)
 {
 	if (!disp_initialized) {
 		return;
 	}
 
+	color_op_count = 0;
 	if (is_epd) {
 		epd_frame_hash = 2166136261u;
 	}
@@ -430,6 +624,17 @@ void mc_display_text(int x, int y, const char *text, bool invert)
 	}
 }
 
+void mc_display_color_text(int x, int y, const char *text, uint16_t color)
+{
+	if (!disp_initialized || !text) {
+		return;
+	}
+
+	if (!color_queue(COLOR_OP_TEXT, x, y, 0, 0, text, color)) {
+		mc_display_text(x, y, text, false);
+	}
+}
+
 void mc_display_fill_rect(int x, int y, int w, int h)
 {
 	if (!disp_initialized) {
@@ -449,6 +654,17 @@ void mc_display_fill_rect(int x, int y, int w, int h)
 		struct cfb_position start = { .x = x + DISP_INSET, .y = row };
 		struct cfb_position end = { .x = x + w - 1 + DISP_INSET, .y = row };
 		cfb_draw_line(disp_dev, &start, &end);
+	}
+}
+
+void mc_display_color_fill_rect(int x, int y, int w, int h, uint16_t color)
+{
+	if (!disp_initialized) {
+		return;
+	}
+
+	if (!color_queue(COLOR_OP_RECT, x, y, w, h, NULL, color)) {
+		mc_display_fill_rect(x, y, w, h);
 	}
 }
 
@@ -564,6 +780,7 @@ void mc_display_finalize(void)
 	}
 
 	cfb_framebuffer_finalize(disp_dev);
+	color_flush_ops();
 
 	if (is_epd) {
 		epd_last_frame_hash = epd_frame_hash;
