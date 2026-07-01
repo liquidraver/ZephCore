@@ -165,6 +165,18 @@ void ui_set_leds_disabled(bool disabled);
 void ui_set_heartbeat_led(bool enabled);
 
 /**
+ * Flash the heartbeat LED immediately on message receipt.
+ * Cancels the current cycle, pulses, then resumes normal heartbeat.
+ */
+void ui_led_flash_msg(void);
+
+/**
+ * Flash the heartbeat LED 3 times as a visual shutdown indicator.
+ * Used when the buzzer is muted — gives visual feedback on power-off.
+ */
+void ui_led_flash_shutdown(void);
+
+/**
  * Set offgrid mode (client repeat) state for display page.
  */
 void ui_set_offgrid_mode(bool enabled);

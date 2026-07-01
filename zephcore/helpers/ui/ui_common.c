@@ -212,6 +212,24 @@ void ui_led_flash_msg(void)
 #endif
 }
 
+/* Flash the heartbeat LED 3 times on shutdown.
+ * Used as a visual power-off indicator when the buzzer is muted. */
+void ui_led_flash_shutdown(void)
+{
+#if HAS_HEARTBEAT_LED
+	if (gpio_is_ready_dt(&s_heartbeat_led)) {
+		for (int i = 0; i < 3; i++) {
+			gpio_pin_set_dt(&s_heartbeat_led, 1);
+			k_sleep(K_MSEC(100));
+			gpio_pin_set_dt(&s_heartbeat_led, 0);
+			if (i < 2) {
+				k_sleep(K_MSEC(100));
+			}
+		}
+	}
+#endif
+}
+
 /* ========== Battery refresh ==========
  * Lazy: render path calls ui_refresh_battery(); ADC only fires when the
  * cached reading is older than UI_BATT_REFRESH_MS. Telemetry / stats paths
