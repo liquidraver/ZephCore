@@ -531,11 +531,11 @@ static void mesh_event_loop(void)
 			ui_auto_shutdown_check();
 		}
 
-		/* Off-main pref mutators (e.g. gps_fix_callback in modem_chat
-		 * context) post this bit and update _prefs in memory; we flush
-		 * to flash here so the synchronous LittleFS write doesn't block
-		 * the originating thread.  Multiple posts coalesce into one
-		 * write of the latest _prefs values — desired behaviour. */
+		/* Off-main pref mutators (e.g. the autoshutdown CLI handler on
+		 * the sysworkq USB RX path) post this bit and update _prefs in
+		 * memory; we flush to flash here so the synchronous LittleFS
+		 * write doesn't block the originating thread.  Multiple posts
+		 * coalesce into one write of the latest _prefs values. */
 		if ((events & MESH_EVENT_PREFS_DIRTY) && companion_mesh_ptr) {
 			save_prefs_to_flash();
 		}
@@ -758,8 +758,8 @@ static bool handle_autoshutdown_cli(const char *line, char *reply)
 		companion_mesh.prefs.auto_shutdown_mv = (uint16_t)v;
 		/* Defer the flash write to the main thread (this runs on sysworkq via
 		 * the USB RX work handler). A synchronous savePrefs here could race a
-		 * concurrent main-thread save (e.g. GPS-fix MESH_EVENT_PREFS_DIRTY) on
-		 * the same prefs .tmp file. Posting the event coalesces both onto main. */
+		 * concurrent main-thread save (e.g. a companion-app command handler)
+		 * on the same prefs .tmp file. Posting the event coalesces onto main. */
 		k_event_post(&mesh_events, MESH_EVENT_PREFS_DIRTY);
 		ui_set_auto_shutdown_mv((uint16_t)v);
 		if (v == 0) {
@@ -847,7 +847,12 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 	}
 
 #ifdef ZEPHCORE_LORA
-	/* Update node position for mesh advertising */
+	/* Update node position for mesh advertising — RAM only, no flash
+	 * write. Matches upstream Arduino (sensors.node_lat/lon): the
+	 * position reaches flash only piggybacked on the next savePrefs()
+	 * triggered by an actual settings change. Persisting from here
+	 * would rewrite the full prefs blob on nearly every promoted fix,
+	 * since GPS jitter defeats the exact-double comparison below. */
 	if (lat != companion_mesh.prefs.node_lat || lon != companion_mesh.prefs.node_lon) {
 		companion_mesh.prefs.node_lat = lat;
 		companion_mesh.prefs.node_lon = lon;
@@ -860,13 +865,6 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 		if (lon_frac < 0) lon_frac = -lon_frac;
 		LOG_INF("GPS fix: position updated lat=%d.%06d lon=%d.%06d",
 			lat_deg, lat_frac, lon_deg, lon_frac);
-		/* Defer flash write to main thread — gps_fix_callback runs in
-		 * the GNSS modem_chat worker; a synchronous LittleFS write here
-		 * (10-50 ms on nRF52 QSPI) would block NMEA ingest and risk
-		 * UART buffer overflow / lost fixes.  Main handles the save
-		 * via MESH_EVENT_PREFS_DIRTY; multiple fixes coalesce into one
-		 * write (the latest prefs values are written). */
-		k_event_post(&mesh_events, MESH_EVENT_PREFS_DIRTY);
 	}
 
 	/* Update UI with GPS data */

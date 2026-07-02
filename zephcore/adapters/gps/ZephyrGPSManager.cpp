@@ -24,7 +24,6 @@
 #include <zephyr/drivers/uart.h>
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/i2c.h>
-#include <zephyr/fs/fs.h>
 #include <string.h>
 #if defined(CONFIG_SOC_NRF52840)
 #include <nrfx.h>
@@ -111,9 +110,9 @@ static inline bool gps_duty_cycling(void)
 	return gps_wake_interval_ms != 0;
 }
 
-/* k_uptime of the last always-on position/clock refresh — rate-limits the
- * flash write + RTC sync to gps_acquire_timeout_ms while streaming (see
- * gnss_data_cb), so continuous operation doesn't hammer flash. */
+/* k_uptime of the last always-on fix-callback invocation — rate-limits the
+ * RTC sync / node-position update to gps_acquire_timeout_ms while streaming
+ * (see gnss_data_cb), so 1Hz fixes don't fire the callback continuously. */
 static int64_t last_promote_ms = 0;
 
 /* Repeater acquire window — GPS only for time sync. The standby interval is
@@ -132,59 +131,6 @@ static void gps_start_acquiring(void);
 /* Delayable work for event-driven timers (no polling!) */
 static K_WORK_DELAYABLE_DEFINE(gps_wake_work, gps_wake_work_fn);
 static K_WORK_DELAYABLE_DEFINE(gps_timeout_work, gps_timeout_work_fn);
-
-/* ========== Last-known position persistence ========== */
-#define GPS_POS_FILE "/lfs/gps_pos"
-
-/* On-disk format: lat(8) + lon(8) + alt(4) = 20 bytes */
-struct gps_pos_record {
-	int64_t latitude_ndeg;
-	int64_t longitude_ndeg;
-	int32_t altitude_mm;
-};
-
-static void gps_save_position(const struct gps_position *pos)
-{
-	struct fs_file_t file;
-	struct gps_pos_record rec = {
-		.latitude_ndeg = pos->latitude_ndeg,
-		.longitude_ndeg = pos->longitude_ndeg,
-		.altitude_mm = pos->altitude_mm,
-	};
-
-	fs_file_t_init(&file);
-	if (fs_open(&file, GPS_POS_FILE, FS_O_CREATE | FS_O_WRITE) == 0) {
-		fs_write(&file, &rec, sizeof(rec));
-		fs_close(&file);
-	}
-}
-
-static bool gps_load_position(void)
-{
-	struct fs_file_t file;
-	struct gps_pos_record rec;
-
-	fs_file_t_init(&file);
-	if (fs_open(&file, GPS_POS_FILE, FS_O_READ) < 0) {
-		return false;
-	}
-	ssize_t n = fs_read(&file, &rec, sizeof(rec));
-	fs_close(&file);
-
-	if (n != sizeof(rec)) {
-		return false;
-	}
-
-	current_pos.latitude_ndeg = rec.latitude_ndeg;
-	current_pos.longitude_ndeg = rec.longitude_ndeg;
-	current_pos.altitude_mm = rec.altitude_mm;
-	current_pos.valid = true;
-	current_pos.satellites = 0;
-	current_pos.timestamp_ms = 0;  /* unknown — loaded from flash */
-	LOG_INF("GPS: Restored last position from flash lat=%lld lon=%lld",
-		rec.latitude_ndeg / 1000000, rec.longitude_ndeg / 1000000);
-	return true;
-}
 
 #else
 static gps_enable_callback_t gps_enable_cb = NULL;
@@ -301,26 +247,6 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 					gps_time_synced = true;
 					last_fix_uptime_ms = k_uptime_get();
 
-					/* Persist position to flash at most once per
-					 * gps_acquire_timeout_ms (default 120s), always on the
-					 * first-ever fix so a fresh device saves an initial
-					 * position right away. This throttle applies uniformly
-					 * to duty-cycled AND always-on mode: without it, a short
-					 * `gps duty` interval (e.g. 10s) would write flash on
-					 * every wake indefinitely — worse wear than always-on's
-					 * throttled rate. The RTC sync / fix callback below still
-					 * fires on every successful duty-cycle wake regardless
-					 * (that's cheap, RAM + a hardware RTC write, not flash);
-					 * only the flash persistence is throttled. */
-					bool promote = first_ever ||
-						(k_uptime_get() - last_promote_ms >=
-						 (int64_t)gps_acquire_timeout_ms);
-					if (promote) {
-						last_promote_ms = k_uptime_get();
-						/* Persist position to flash for reboot survival */
-						gps_save_position(&current_pos);
-					}
-
 					if (duty) {
 						/* Cancel timeout */
 						k_work_cancel_delayable(&gps_timeout_work);
@@ -345,11 +271,18 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 						return;
 					}
 
-					/* Always-on: keep streaming (no standby). Reset the gate so
-					 * we don't re-promote every fix; refresh persisted position
-					 * + RTC on the cadence captured by `promote` above. */
+					/* Always-on: keep streaming (no standby). Throttle the fix
+					 * callback (RTC sync + node-position update in main) to
+					 * once per gps_acquire_timeout_ms — at 1Hz fixes it would
+					 * otherwise fire constantly. Always fire on the first-ever
+					 * fix so the clock syncs right away. current_pos (the
+					 * telemetry source) is updated on every fix above. */
 					consecutive_good_fixes = 0;
+					bool promote = first_ever ||
+						(k_uptime_get() - last_promote_ms >=
+						 (int64_t)gps_acquire_timeout_ms);
 					if (promote && gps_fix_cb) {
+						last_promote_ms = k_uptime_get();
 						double lat = (double)data->nav_data.latitude / 1000000000.0;
 						double lon = (double)data->nav_data.longitude / 1000000000.0;
 						k_mutex_unlock(&gps_mutex);
@@ -1363,9 +1296,6 @@ int gps_manager_init(void)
 #if HAS_GNSS
 	gnss_init();
 
-	/* Restore last known position from flash (survives reboot) */
-	gps_load_position();
-
 	/* Configure constellations + fix rate NOW while chip is powered
 	 * and the modem pipe is open (driver init already ran).
 	 * This is the ONLY safe place to call modem_chat_run_script() —
@@ -1501,8 +1431,8 @@ void gps_enable(bool enable)
 		 * report a live fix (e.g. joystick UI showing "3D FIX") off old
 		 * data before any new NMEA sentence arrives. lat/lon/valid are
 		 * deliberately left alone — telemetry/UI "last known position"
-		 * reads (gps_get_position/gps_load_position) intentionally survive
-		 * an on/off toggle; only the live fix-quality indicator resets. */
+		 * reads (gps_get_position) intentionally survive an on/off
+		 * toggle; only the live fix-quality indicator resets. */
 		k_mutex_lock(&gps_mutex, K_FOREVER);
 		current_pos.satellites = 0;
 		k_mutex_unlock(&gps_mutex);
