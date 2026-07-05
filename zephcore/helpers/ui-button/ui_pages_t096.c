@@ -445,6 +445,51 @@ static void render_traffic(const struct ui_state *st, int page_index,
 			    graph_h, st);
 }
 
+static bool shutdown_confirm_active(const struct ui_state *st)
+{
+	return st->shutdown_confirm_time != 0 &&
+	       (k_uptime_get_32() - st->shutdown_confirm_time) <=
+	       CONFIG_ZEPHCORE_UI_CONFIRM_WINDOW_MS;
+}
+
+static void draw_sad_face(int cx, int y, bool waving)
+{
+	mc_display_color_text(cx - 9, y, ":-(", T096_AMBER);
+	if (!waving) {
+		return;
+	}
+
+	int hand_x = cx + 18;
+
+	mc_display_color_fill_rect(cx + 11, y + 9, 12, 3, T096_AMBER);
+	mc_display_color_fill_rect(hand_x, y + 3, 3, 10, T096_TEXT);
+	mc_display_color_fill_rect(hand_x + 5, y, 3, 8, T096_TEXT);
+	mc_display_color_fill_rect(hand_x + 10, y + 3, 3, 7, T096_TEXT);
+	mc_display_color_fill_rect(hand_x + 16, y + 1, 2, 2, T096_ORANGE);
+	mc_display_color_fill_rect(hand_x + 19, y + 7, 2, 2, T096_ORANGE);
+}
+
+static void render_shutdown(const struct ui_state *st, int page_index,
+			    int page_count)
+{
+	bool confirm = shutdown_confirm_active(st);
+	int y = T096_CONTENT_Y;
+
+	header("SYSTEM OFF", st, page_index, page_count);
+
+	if (confirm) {
+		text_centered(y, "CONFIRM OFF", T096_AMBER);
+		draw_sad_face((int)mc_display_width() / 2, y + 18, false);
+		text_centered((int)mc_display_height() - 11, "press again",
+			      T096_MUTED);
+		return;
+	}
+
+	badge(2, y, "PWR", T096_RED);
+	mc_display_color_text(38, y + 1, "system off", T096_TEXT);
+	text_centered(y + 24, "press to select", T096_MUTED);
+}
+
 bool ui_pages_t096_render(enum ui_page page, const struct ui_state *st,
 			  int page_index, int page_count)
 {
@@ -462,9 +507,32 @@ bool ui_pages_t096_render(enum ui_page page, const struct ui_state *st,
 	case UI_PAGE_TRAFFIC:
 		render_traffic(st, page_index, page_count);
 		return true;
+	case UI_PAGE_SHUTDOWN:
+		render_shutdown(st, page_index, page_count);
+		return true;
 	default:
 		return false;
 	}
+}
+
+bool ui_pages_t096_render_system_off_notice(void)
+{
+	int w;
+	int h;
+
+	if (!ui_pages_t096_renderer_available()) {
+		return false;
+	}
+
+	w = mc_display_width();
+	h = mc_display_height();
+	mc_display_clear();
+	mc_display_color_fill_rect(0, 0, w, h, T096_BG);
+	text_centered(14, "SYSTEM OFF", T096_AMBER);
+	draw_sad_face(w / 2, h / 2 - 4, true);
+	text_centered(h - 11, "73", T096_MUTED);
+	mc_display_finalize();
+	return true;
 }
 
 static void render_off_notice(void)

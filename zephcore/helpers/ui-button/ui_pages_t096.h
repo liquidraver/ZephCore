@@ -20,6 +20,7 @@ extern "C" {
 bool ui_pages_t096_render(enum ui_page page, const struct ui_state *state,
 			  int page_index, int page_count);
 bool ui_pages_t096_renderer_available(void);
+bool ui_pages_t096_render_system_off_notice(void);
 #else
 static inline bool ui_pages_t096_render(enum ui_page page,
 					const struct ui_state *state,
@@ -33,6 +34,11 @@ static inline bool ui_pages_t096_render(enum ui_page page,
 }
 
 static inline bool ui_pages_t096_renderer_available(void)
+{
+	return false;
+}
+
+static inline bool ui_pages_t096_render_system_off_notice(void)
 {
 	return false;
 }
