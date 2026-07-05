@@ -842,6 +842,17 @@ config ZEPHCORE_DISPLAY_MONO_TFT
 	  On display_write(), converts 1bpp row-major MONO01 to RGB565 row by row.
 	  Auto-enabled when a "zephcore,mono-tft" device exists in the devicetree.
 
+config ZEPHCORE_UI_RENDERER_T096
+	bool "Heltec T096 compact color UI renderer"
+	default y if BOARD_HELTEC_T096
+	depends on BOARD_HELTEC_T096
+	depends on ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_DESIGN_BUTTON
+	help
+	  Enable the compact color page renderer for the Heltec Mesh Node T096.
+	  Runtime display capability and geometry checks still apply; this symbol
+	  prevents other compact RGB565 TFT boards from entering T096-specific
+	  layout work by display size alone.
+
 config ZEPHCORE_EASTER_EGG_DOOM
 	bool "Enable Doom raycaster easter egg"
 	default n

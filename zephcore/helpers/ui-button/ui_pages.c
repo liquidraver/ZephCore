@@ -377,9 +377,10 @@ static void fmt_compact_count(char *buf, size_t len, uint32_t value)
 	}
 }
 
-static bool use_compact_color_home(void)
+static bool use_t096_color_renderer(void)
 {
-	return mc_display_has_color() && DISP_W <= 180 && DISP_H <= 100;
+	return IS_ENABLED(CONFIG_ZEPHCORE_UI_RENDERER_T096) &&
+	       mc_display_has_color() && DISP_W <= 180 && DISP_H <= 100;
 }
 
 /* Short label for the current LoRa radio state, shared across pages. */
@@ -494,7 +495,7 @@ static void render_messages(void)
 	/* 3 centered rows: msg count, BLE status, offgrid status */
 	char buf[24];
 
-	if (use_compact_color_home()) {
+	if (use_t096_color_renderer()) {
 		int y = CONTENT_Y;
 		uint16_t ble_color = state.ble_connected ? UI_COLOR_OK : UI_COLOR_WARN;
 		const char *ble = state.ble_connected ? "BLE OK" : "BLE ADV";
