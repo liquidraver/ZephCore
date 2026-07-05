@@ -342,6 +342,15 @@ static void color_flush_ops(void)
 /* Auto-off work */
 static struct k_work_delayable auto_off_work;
 
+__attribute__((weak)) bool ui_t096_display_auto_off_notice(void)
+{
+	return false;
+}
+
+__attribute__((weak)) void ui_t096_display_cancel_auto_off_notice(void)
+{
+}
+
 static void auto_off_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -356,6 +365,10 @@ static void auto_off_handler(struct k_work *work)
 	if (is_epd) {
 		backlight_set(false);
 		disp_on = false;
+		return;
+	}
+	if (disp_on && IS_ENABLED(CONFIG_ZEPHCORE_UI_RENDERER_T096) &&
+	    ui_t096_display_auto_off_notice()) {
 		return;
 	}
 	if (disp_on) {
@@ -825,6 +838,10 @@ void mc_display_reset_auto_off(void)
 {
 	if (!disp_initialized) {
 		return;
+	}
+
+	if (IS_ENABLED(CONFIG_ZEPHCORE_UI_RENDERER_T096)) {
+		ui_t096_display_cancel_auto_off_notice();
 	}
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS

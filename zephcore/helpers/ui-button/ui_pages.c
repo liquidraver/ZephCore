@@ -15,6 +15,7 @@
  */
 
 #include "ui_pages.h"
+#include "ui_pages_t096.h"
 #include "ui_task.h"
 #include "display.h"
 
@@ -377,12 +378,6 @@ static void fmt_compact_count(char *buf, size_t len, uint32_t value)
 	}
 }
 
-static bool use_t096_color_renderer(void)
-{
-	return IS_ENABLED(CONFIG_ZEPHCORE_UI_RENDERER_T096) &&
-	       mc_display_has_color() && DISP_W <= 180 && DISP_H <= 100;
-}
-
 /* Short label for the current LoRa radio state, shared across pages. */
 static const char *radio_state_label(void)
 {
@@ -494,48 +489,6 @@ static void render_messages(void)
 {
 	/* 3 centered rows: msg count, BLE status, offgrid status */
 	char buf[24];
-
-	if (use_t096_color_renderer()) {
-		int y = CONTENT_Y;
-		uint16_t ble_color = state.ble_connected ? UI_COLOR_OK : UI_COLOR_WARN;
-		const char *ble = state.ble_connected ? "BLE OK" : "BLE ADV";
-		const char *radio = radio_state_label();
-		uint16_t radio_color = state.lora_tx_active ? UI_COLOR_TX :
-				       state.lora_in_rx ? UI_COLOR_RX :
-				       state.lora_radio_ready ? UI_COLOR_OK
-							      : UI_COLOR_WARN;
-
-		draw_badge(0, y, ble, ble_color);
-		draw_badge(DISP_W - color_text_width(radio) - 4, y, radio,
-			   radio_color);
-		y += LINE_H + 2;
-
-		mc_display_color_text(0, y, "COMPANION", UI_COLOR_LABEL);
-		snprintf(buf, sizeof(buf), "MSG %u", state.msg_count);
-		mc_display_color_text(DISP_W - color_text_width(buf), y, buf,
-				      state.msg_count ? UI_COLOR_WARN : UI_COLOR_VALUE);
-		y += LINE_H;
-
-		if (state.ble_connected) {
-			draw_centered_color(y, "Connected", UI_COLOR_OK);
-		} else {
-			mc_display_color_text(30, y, "Waiting for app", UI_COLOR_WARN);
-		}
-		y += LINE_H;
-
-		snprintf(buf, sizeof(buf), "Offgrid %s",
-			 state.offgrid_enabled ? "on" : "off");
-		draw_centered_color(y, buf,
-				    state.offgrid_enabled ? UI_COLOR_ACTIVE
-							  : UI_COLOR_DISABLED);
-		y += LINE_H;
-
-		uint32_t up_s = (uint32_t)(k_uptime_get() / 1000);
-		snprintf(buf, sizeof(buf), "Up: %ud %uh %um",
-			 up_s / 86400, (up_s % 86400) / 3600, (up_s % 3600) / 60);
-		draw_centered_color(y, buf, UI_COLOR_LABEL);
-		return;
-	}
 
 	if (mc_display_has_color()) {
 		int y = CONTENT_Y;
@@ -1365,10 +1318,16 @@ void ui_pages_render(void)
 	ui_refresh_battery();
 
 	mc_display_clear();
+	enum ui_page page = active_pages[current_page_idx];
+
+	if (ui_pages_t096_render(page, &state, current_page_idx,
+				 ACTIVE_PAGE_COUNT)) {
+		mc_display_finalize();
+		return;
+	}
+
 	render_top_bar();
 	render_page_indicator();
-
-	enum ui_page page = active_pages[current_page_idx];
 
 	if (page < UI_PAGE_COUNT && renderers[page]) {
 		renderers[page]();

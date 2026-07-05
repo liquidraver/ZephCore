@@ -774,6 +774,12 @@ if(CONFIG_ZEPHCORE_UI_DISPLAY AND CONFIG_ZEPHCORE_UI_DESIGN_BUTTON)
   )
 endif()
 
+if(CONFIG_ZEPHCORE_UI_RENDERER_T096)
+  target_sources(app PRIVATE
+    helpers/ui-button/ui_pages_t096.c
+  )
+endif()
+
 if(CONFIG_ZEPHCORE_UI_DISPLAY AND CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
   target_sources(app PRIVATE
     helpers/ui-joystick/time_sync.c
