@@ -10,6 +10,7 @@
 
 #include "ui_pages_t096.h"
 #include "display.h"
+#include "ui_task.h"
 
 #include <zephyr/kernel.h>
 
@@ -46,6 +47,49 @@ static uint32_t activity_last_sample_ms;
 static struct k_work_delayable off_notice_work;
 static bool off_notice_work_ready;
 static bool off_notice_pending;
+
+#ifdef ZEPHCORE_REPEATER
+static const enum ui_page t096_active_pages[] = {
+	UI_PAGE_STATUS,
+	UI_PAGE_RADIO,
+	UI_PAGE_SHUTDOWN,
+};
+#else
+static const enum ui_page t096_active_pages[] = {
+	UI_PAGE_MESSAGES,
+	UI_PAGE_RECENT,
+	UI_PAGE_RADIO,
+	UI_PAGE_TRAFFIC,
+	UI_PAGE_BLUETOOTH,
+	UI_PAGE_ADVERT,
+	UI_PAGE_GPS,
+#ifdef CONFIG_ZEPHCORE_UI_BUZZER
+	UI_PAGE_BUZZER,
+#endif
+	UI_PAGE_LEDS,
+	UI_PAGE_SENSORS,
+	UI_PAGE_OFFGRID,
+	UI_PAGE_DFU,
+	UI_PAGE_SHUTDOWN,
+};
+#endif
+
+#define T096_ACTIVE_PAGE_COUNT \
+	((int)(sizeof(t096_active_pages) / sizeof(t096_active_pages[0])))
+
+void __real_ui_pages_render(void);
+void __real_ui_prepare_for_system_off(void);
+
+static int active_page_index(enum ui_page page)
+{
+	for (int i = 0; i < T096_ACTIVE_PAGE_COUNT; i++) {
+		if (t096_active_pages[i] == page) {
+			return i;
+		}
+	}
+
+	return -1;
+}
 
 bool ui_pages_t096_renderer_available(void)
 {
@@ -533,6 +577,34 @@ bool ui_pages_t096_render_system_off_notice(void)
 	text_centered(h - 11, "73", T096_MUTED);
 	mc_display_finalize();
 	return true;
+}
+
+void __wrap_ui_pages_render(void)
+{
+	enum ui_page page = ui_pages_current();
+	struct ui_state *st = ui_pages_get_state();
+	int page_index = active_page_index(page);
+
+	if (st && page_index >= 0 && ui_pages_t096_renderer_available()) {
+		ui_refresh_battery();
+		mc_display_clear();
+		if (ui_pages_t096_render(page, st, page_index,
+					 T096_ACTIVE_PAGE_COUNT)) {
+			mc_display_finalize();
+			return;
+		}
+	}
+
+	__real_ui_pages_render();
+}
+
+void __wrap_ui_prepare_for_system_off(void)
+{
+	if (ui_pages_t096_render_system_off_notice()) {
+		k_sleep(K_MSEC(220));
+	}
+
+	__real_ui_prepare_for_system_off();
 }
 
 static void render_off_notice(void)

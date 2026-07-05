@@ -778,6 +778,10 @@ if(CONFIG_ZEPHCORE_UI_RENDERER_T096)
   target_sources(app PRIVATE
     helpers/ui-button/ui_pages_t096.c
   )
+  zephyr_ld_options(
+    -Wl,--wrap=ui_pages_render
+    -Wl,--wrap=ui_prepare_for_system_off
+  )
 endif()
 
 if(CONFIG_ZEPHCORE_UI_DISPLAY AND CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)

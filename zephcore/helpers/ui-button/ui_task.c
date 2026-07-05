@@ -25,7 +25,6 @@
 
 #include "ui_task.h"
 #include "ui_pages.h"
-#include "ui_pages_t096.h"
 #include <time_sync.h>
 
 #ifdef CONFIG_ZEPHCORE_UI_BUZZER
@@ -514,11 +513,6 @@ static void action_deep_sleep(void)
 	/* Shared peripheral teardown + SENSE config for sw0 wake.
 	 * Single source of truth in helpers/ui/ui_common.c so the joystick
 	 * UI variant ends up in the same low-power state. */
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	if (ui_pages_t096_render_system_off_notice()) {
-		k_sleep(K_MSEC(220));
-	}
-#endif
 	ui_prepare_for_system_off();
 
 	LOG_INF("deep sleep: entering System OFF");

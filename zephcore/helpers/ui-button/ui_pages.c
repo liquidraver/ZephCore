@@ -15,7 +15,6 @@
  */
 
 #include "ui_pages.h"
-#include "ui_pages_t096.h"
 #include "ui_task.h"
 #include "display.h"
 
@@ -1319,12 +1318,6 @@ void ui_pages_render(void)
 
 	mc_display_clear();
 	enum ui_page page = active_pages[current_page_idx];
-
-	if (ui_pages_t096_render(page, &state, current_page_idx,
-				 ACTIVE_PAGE_COUNT)) {
-		mc_display_finalize();
-		return;
-	}
 
 	render_top_bar();
 	render_page_indicator();
