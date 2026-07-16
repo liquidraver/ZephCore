@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Heltec WiFi LoRa 32 V3 — ZephCore overlay
+ * Heltec WiFi LoRa 32 V3 -- ZephCore overlay
  *
  * The upstream Zephyr DTS already defines SX1262, SSD1306 OLED, button,
  * LED, battery ADC, Vext/ADC control, I2C0, SPI2, BLE, and WiFi.
@@ -10,13 +10,35 @@
  * LoRa control:    DIO1=14, BUSY=13, RESET=12
  * Display I2C0:    SDA=17, SCL=18 (SSD1306 @ 0x3C)
  * Battery ADC:     GPIO1 = ADC1 ch0 (&adc0), enable GPIO37 active-HIGH, divider 100K/390K
- * Vext:            GPIO36 (active-LOW, powers OLED) — regulator + vin-supply in overlay
+ * Vext:            GPIO36 (active-LOW, powers OLED) -- regulator + vin-supply in overlay
  * Button:          GPIO0
  * LED:             GPIO35
+ * GPS UART1:       RX=47 (GPS TX), TX=48 (GPS RX) -- optional add-on module,
+ *                   9600 baud (NEO-6M/GT-U7 default). uart1 is unused by the
+ *                   upstream board DTS, so no conflicts. Matches the pinout
+ *                   used by community Meshtastic/Arduino MeshCore builds for
+ *                   this board; edit uart1_default below to remap if your
+ *                   module is wired to different pins.
  */
 
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+
+&pinctrl {
+	/* GPS module on UART1 -- GPIO47 = GPS TX (into CPU RX), GPIO48 = GPS RX
+	 * (out of CPU TX). Swap the GPIO numbers here to rewire to different pins. */
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_GPIO48>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART1_RX_GPIO47>;
+			bias-pull-up;
+		};
+	};
+};
 
 / {
 	chosen {
@@ -34,7 +56,7 @@
 	buttons: buttons {
 	};
 
-	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
+	/* Battery ADC -- ZephCore reads via zephyr,user { io-channels }.
 	 * Upstream vbatt node uses voltage-divider compatible which ZephCore
 	 * doesn't use (deleted below).
 	 *
@@ -42,7 +64,7 @@
 	 * upstream esp32s3 DTS the node *labelled* adc0 is unit 1 and the node
 	 * labelled adc1 is unit 2 (the label is 0-indexed, the unit is 1-indexed).
 	 * So GPIO1 lives on &adc0. The previous &adc1 (unit 2) channel 0 mapped to
-	 * ADC2_CH0 = GPIO11 = the SX1262 MISO — wrong peripheral, always read 0.
+	 * ADC2_CH0 = GPIO11 = the SX1262 MISO -- wrong peripheral, always read 0.
 	 *
 	 * Multiplier: Vref_internal(1100) * divider_ratio(5.2) = 5720, matching the
 	 * Heltec Wireless Tracker on the same 100K/390K divider (was 17886, which
@@ -52,21 +74,21 @@
 		vbat-mv-multiplier = <5720>;
 	};
 
-	/* Battery ADC enable — GPIO37 (gpio1 pin 5) must be driven to read.
+	/* Battery ADC enable -- GPIO37 (gpio1 pin 5) must be driven to read.
 	 * Upstream has an adc_ctrl power-domain-gpio on the same GPIO37; it is
 	 * deleted below so this regulator is the sole owner (else the two fight
 	 * over the pin and the per-read enable/disable in ZephyrBoard is not
 	 * deterministic). Active-HIGH on V3.2/V4 (transistor in the enable path);
 	 * the previous GPIO_ACTIVE_LOW never powered the divider so the read was 0.
 	 * ZephyrBoard toggles this per read, so between reads the divider draws
-	 * nothing. (Early V3 boards may need GPIO_ACTIVE_LOW — see GH #50.) */
+	 * nothing. (Early V3 boards may need GPIO_ACTIVE_LOW -- see GH #50.) */
 	vbat_enable: vbat-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vbat-enable";
 		enable-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
 	};
 
-	/* Vext — GPIO36, active-LOW enables rail (matches Arduino periph_power / MeshCore
+	/* Vext -- GPIO36, active-LOW enables rail (matches Arduino periph_power / MeshCore
 	 * PIN_VEXT_EN). Replaces upstream vext_ctrl power-domain so SSD1306 init works with
 	 * CONFIG_PM_DEVICE=n. */
 	vext_enable: vext-enable {
@@ -77,7 +99,7 @@
 		regulator-always-on;
 	};
 
-	/* Button chain — same mapping as RAK4631 / WisMesh Pocket (rak4631/board.overlay). */
+	/* Button chain -- same mapping as RAK4631 / WisMesh Pocket (rak4631/board.overlay). */
 	user_btn_longpress {
 		compatible = "zephyr,input-longpress";
 		input = <&buttons>;
@@ -107,7 +129,7 @@
 	rx-boosted;
 };
 
-/* Reduce CPU clock from 240 MHz to 160 MHz — saves power, HAL minimum */
+/* Reduce CPU clock from 240 MHz to 160 MHz -- saves power, HAL minimum */
 &cpu0 {
 	clock-frequency = <DT_FREQ_M(160)>;
 };
@@ -116,7 +138,21 @@
 	clock-frequency = <DT_FREQ_M(160)>;
 };
 
-/* I2C sensors — auto-detected at runtime */
+/* Optional GPS module on UART1 (GPIO47=RX/GPS-TX, GPIO48=TX/GPS-RX).
+ * Auto-detected at build time by ZephyrGPSManager via DT_HAS_COMPAT_STATUS_OKAY;
+ * no Kconfig flag needed. Harmless no-op if no GPS module is wired up. */
+&uart1 {
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/* I2C sensors -- auto-detected at runtime */
 &i2c0 {
 	#include "../../common/sensors-i2c.dtsi"
 
@@ -128,10 +164,10 @@
 
 /*
  * Flash partitions live in partitions.overlay (this dir) so the identical map is
- * fed to both the app and the MCUboot image — see that file and sysbuild/CMakeLists.txt.
+ * fed to both the app and the MCUboot image -- see that file and sysbuild/CMakeLists.txt.
  */
 
-/* LittleFS auto-mount — standard /lfs mount point */
+/* LittleFS auto-mount -- standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
 
 /* After SSD1306 no longer references vext_ctrl, remove upstream power-domain node. */
@@ -140,7 +176,7 @@
 /* Battery ADC channel configuration on adc0 (ADC unit 1 -> GPIO1).
  * adc0 is status="disabled" upstream, so enable it here. Without the channel
  * node adc_channel_setup_dt() fails and getBattMilliVolts() returns 0 before it
- * ever performs a conversion — the primary cause of the hard "0% (0mV)".
+ * ever performs a conversion -- the primary cause of the hard "0% (0mV)".
  * ADC_GAIN_1 = 0 dB with ADC_REF_INTERNAL (~1100 mV); the divider output for a
  * 3.0-4.2 V cell (~580-810 mV) sits well inside range. */
 &adc0 {
@@ -158,7 +194,7 @@
 };
 
 /* Remove the upstream 'vbatt' voltage-divider (io-channels on &adc1 = unit 2 =
- * GPIO11 = SX1262 MISO — wrong node) and the adc_ctrl power-domain that also
+ * GPIO11 = SX1262 MISO -- wrong node) and the adc_ctrl power-domain that also
  * claims GPIO37 and fights the vbat_enable regulator above. */
 / {
 	/delete-node/ vbatt;
