@@ -11,7 +11,7 @@ nRF formatter tools
 
 | SoftDevice | Boards |
 |------------|--------|
-| **v6** | RAK4631, RAK3401 1W, ThinkNode M1/M3/M6, RAK WisMesh Tag, LilyGo T-Echo, LilyGo T-Impulse Plus, ProMicro SX1262, Heltec T114, Heltec T096, GAT562 30s |
+| **v6** | RAK4631, RAK3401 1W, ThinkNode M1/M3/M6, RAK WisMesh Tag, LilyGo T-Echo, LilyGo T-Impulse Plus, ProMicro SX1262, Heltec T114, Heltec T096, GAT562 30s, muzi works R1 Neo |
 | **v7** | Wio Tracker L1, T1000-E, Ikoka Nano 30dBm, SenseCAP Solar, XIAO nRF52840 |
 
 - **`.uf2`** — manual drag-and-drop onto the UF2 mass-storage drive.

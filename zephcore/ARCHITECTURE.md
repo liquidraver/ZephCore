@@ -869,6 +869,7 @@ Build strings and flash methods: `boards/supported_boards.md` and `boards/exampl
 | TTGO LoRa32 | ESP32 (PICO-D4) | **SX1276** (loramac-node) | - | - | SX127x reference board |
 | XIAO MG24 | EFR32MG24 | SX1262 | - | - | - |
 | Seeed LoRa-E5 mini | STM32WL | STM32WL sub-GHz (SX1262-class) | - | - | UART companion/CLI; contacts capped at 24 |
+| muzi works R1 Neo | nRF52840 | SX1262 | Unknown | - | Buzzer, button, multitap |
 
 Contact capacity is `CONFIG_ZEPHCORE_MAX_CONTACTS` (default 350) unless capped per-board as noted. Native-Linux presets (Femtofox, RAK6421) are `EXTRA_CONF_FILE` presets, not boards — see `LINUX_NATIVE.md`.
 

@@ -21,6 +21,7 @@ promicro_sx1262
 heltec_t114
 heltec_t096
 gat562_30s
+muziworks_r1neo
 ```
 
 > **RAK WisMesh Pocket** (WisBlock pocket): use `-b rak4631` — same board string and firmware as **RAK4631**.

@@ -23,6 +23,7 @@ nRF_boards=(
     heltec_t114
     heltec_t096
     gat562_30s
+    muziworks_r1neo
 )
 
 # Native-Linux presets (not Zephyr boards — built with -b native_sim plus an

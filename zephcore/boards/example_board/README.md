@@ -26,6 +26,7 @@ Supported Boards
 | LilyGo T-Impulse Plus | `west build -b lilygo_timpulse_plus zephcore` | UF2 drag-drop or `west flash` |
 | Heltec T114          | `west build -b heltec_t114 zephcore`      | UF2 drag-drop or `west flash` |
 | Heltec Mesh Node T096 | `west build -b heltec_t096 zephcore`     | UF2 drag-drop or `west flash` |
+| muzi works R1 Neo    | `west build -b muziworks_r1neo zephcore`  | UF2 drag-drop or `west flash` |
 
 **Heltec T114 screenless:** append `boards/nrf52840/heltec_t114/no_display.conf` to `EXTRA_CONF_FILE` for units without the TFT module.
 
