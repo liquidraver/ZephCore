@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * BQ Station G2 — Pin Control Definitions
  *
  * Pin mapping (from Arduino MeshCore variants/station_g2):

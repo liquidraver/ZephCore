@@ -1,0 +1,38 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * ESP32 family: run the CPU at 80 MHz.
+ *
+ * Espressif parts have no equivalent of the nRF52's "idle at microamps in
+ * WFI": WAITI gates the core clock but leaves the PLL, peripherals and RAM
+ * powered, so an idle ESP32 sits in the tens of mA and CPU frequency is a
+ * first-order term in that. Arduino MeshCore ships its ESP32 variants at
+ * 80 MHz for the same reason (ESP32_CPU_FREQ=80 in variants/heltec_v3,
+ * heltec_v4, heltec_tracker, rak3112, xiao_c3, ...).
+ *
+ * 80 requires patches/modules/hal-espressif/0002: upstream's DT-to-Kconfig map
+ * lists only the per-SoC defaults (96/120/160/240) and omits 80, so without it
+ * the build fails with "'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ' undeclared".  Do NOT
+ * reach for 96 to dodge that -- it is an ESP32-H2 frequency, rejected by
+ * rtc_clk_cpu_freq_mhz_to_config() on every SoC we build, and it fails at BOOT
+ * rather than at build time.
+ *
+ * The mesh workload is event-driven and nowhere near CPU-bound: wake on a
+ * packet, run some AES and LittleFS, go back to idle. Airtime dominates every
+ * latency that matters — the slowest presets spend seconds on air per packet.
+ *
+ * Only cpu0 is set, deliberately. clock_control_esp32.c reads exactly
+ * DT_INST(0, DT_CPU_COMPAT) — cpu0 — so a cpu1 property is never consulted,
+ * and omitting it lets this one file serve the dual-core Xtensa parts (S3,
+ * classic) and the single-core RISC-V parts (C3, C6) alike. Referencing
+ * &cpu1 here would be a dtc error on the latter.
+ *
+ * Applied automatically to non-observer ESP32 builds — see the ESP32 CPU
+ * clock block in CMakeLists.txt. Kept out of the per-board DTS files on
+ * purpose: one place to change, and it makes the observer exception a simple
+ * "don't include this" rather than an override that would have to know each
+ * SoC's maximum (240 MHz on S3/classic, 160 MHz on C3/C6).
+ */
+
+&cpu0 {
+	clock-frequency = <DT_FREQ_M(80)>;
+};

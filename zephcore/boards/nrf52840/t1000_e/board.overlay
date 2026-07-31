@@ -1,6 +1,6 @@
 /*
  * T1000-E board overlay - additional ZephCore-specific configuration
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * GPS control pins for Airoha AG3335 GNSS module (matches Arduino target.cpp):
  * - GPS_EN (P1.11) - Main power enable

@@ -1,0 +1,38 @@
+Add 80 MHz to the DT-derived CPU frequency mapping.
+
+zephyr/Kconfig derives ESP_DEFAULT_CPU_FREQ_MHZ from the devicetree cpu0
+clock-frequency via a lookup table listing 96/120/160/240.  Those four values
+are exactly the per-SoC DEFAULTS in Zephyr's own espressif dtsi files (H2 96,
+C2 120, C3/C6 160, esp32/C5/S2/S3 240) -- the table enumerates defaults, not
+capabilities, so a board that deliberately downclocks falls through it and the
+symbol resolves to nothing:
+
+  clk.c:120: error: 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ' undeclared
+  sleep_modes.c:235: error: 'CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ' undeclared
+
+80 MHz is valid on every part we build -- rtc_clk.c accepts 80/160/240 on
+esp32 and esp32s3, 80/160 on C3, 80/120/160 on C6 -- and Espressif's own IDF
+Kconfig.cpu offers ESP_DEFAULT_CPU_FREQ_MHZ_80.  This is a gap in the Zephyr
+port glue, not a limitation of the silicon or of IDF.
+
+ZephCore runs every non-observer ESP32 build at 80 MHz for battery life
+(boards/common/esp32_cpu_80mhz.overlay).
+
+Do NOT 'fix' this by selecting 96 instead: 96 is in the table but is an
+ESP32-H2 frequency, rejected by rtc_clk_cpu_freq_mhz_to_config() on all of our
+SoCs, and it fails at BOOT rather than at build time.
+
+Upstream candidate: the omission looks accidental.
+---
+diff --git a/zephyr/Kconfig b/zephyr/Kconfig
+index e9fb2b90a8..f8793f5d59 100644
+--- a/zephyr/Kconfig
++++ b/zephyr/Kconfig
+@@ -105,6 +105,7 @@ config ESP_SYSTEM_RTC_EXT_XTAL_BOOTSTRAP_CYCLES
+ # CPU frequency in MHz derived from devicetree clock-frequency property
+ config ESP_DEFAULT_CPU_FREQ_MHZ
+ 	int
++	default 80 if ESP_CLK_FREQ_HZ = 80000000
+ 	default 96 if ESP_CLK_FREQ_HZ = 96000000
+ 	default 120 if ESP_CLK_FREQ_HZ = 120000000
+ 	default 160 if ESP_CLK_FREQ_HZ = 160000000

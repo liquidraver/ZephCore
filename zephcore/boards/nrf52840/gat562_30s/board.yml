@@ -1,0 +1,6 @@
+board:
+  name: gat562_30s
+  full_name: GAT562 30S Mesh Kit (nRF52840 + SX1262, 30dBm/1W)
+  vendor: gat
+  socs:
+    - name: nrf52840

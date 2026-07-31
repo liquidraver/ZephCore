@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * LR20xx HAL implementation for Zephyr - ZephCore
  *
  * Based on Semtech SWDR001 lr20xx_driver and the ZephCore lr11xx HAL.

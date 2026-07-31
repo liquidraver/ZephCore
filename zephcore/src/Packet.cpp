@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Packet implementation
  */
 
@@ -24,22 +24,25 @@ bool Packet::isValidPathLen(uint8_t path_len)
 	return hash_count * hash_size <= MAX_PATH_SIZE;
 }
 
-size_t Packet::writePath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
+size_t Packet::writePath(uint8_t *dest, const uint8_t *src, size_t src_len, uint8_t path_len)
 {
 	uint8_t hash_count = path_len & 63;
 	uint8_t hash_size = (path_len >> 6) + 1;
 	size_t len = hash_count * hash_size;
 	if (len > MAX_PATH_SIZE) {
-		return 0;   // Error
+		return 0;   // Decoded path exceeds max
+	}
+	if (len > src_len) {
+		return 0;   // Would read past source buffer (caller-supplied bound)
 	}
 	memcpy(dest, src, len);
 	return len;
 }
 
-uint8_t Packet::copyPath(uint8_t *dest, const uint8_t *src, uint8_t path_len)
+uint8_t Packet::copyPath(uint8_t *dest, const uint8_t *src, size_t src_len, uint8_t path_len)
 {
-	writePath(dest, src, path_len);
-	return path_len;
+	size_t written = writePath(dest, src, src_len, path_len);
+	return written > 0 ? path_len : 0;
 }
 
 int Packet::getRawLength() const
@@ -73,7 +76,8 @@ uint8_t Packet::writeTo(uint8_t dest[]) const
 		memcpy(&dest[i], &transport_codes[1], 2); i += 2;
 	}
 	dest[i++] = path_len;
-	i += writePath(&dest[i], path, path_len);
+	/* Trusted source: Packet::path is MAX_PATH_SIZE-sized. */
+	i += writePath(&dest[i], path, MAX_PATH_SIZE, path_len);
 	memcpy(&dest[i], payload, payload_len); i += payload_len;
 	return i;
 }
@@ -94,6 +98,7 @@ bool Packet::readFrom(const uint8_t src[], uint8_t len)
 	if (!isValidPathLen(path_len)) return false;
 
 	uint8_t bl = getPathByteLen();
+	if ((uint16_t)i + bl > len) return false;
 	memcpy(path, &src[i], bl); i += bl;
 	if (i >= len) return false;
 	payload_len = len - i;

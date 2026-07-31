@@ -1,11 +1,11 @@
 /*
  * ThinkNode M3 board overlay - additional ZephCore-specific configuration
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * GPS control pins for the GPS module (generic NMEA at 9600 baud):
  * - GPS_POWER (P0.14) - Main power enable (always HIGH, gpio-hog)
  * - GPS_EN    (P0.21) - Standby control (HIGH = awake, LOW = standby)
- * - GPS_RESET (P0.25) - Reset (GPS_RESET_ACTIVE = LOW, REINIT pin)
+ * - GPS_RESET (P0.25) - REINIT pin, must stay FLOATING on this unit (see below)
  *
  * Power enable pins (always HIGH):
  * - PIN_PWR_EN   (P0.16) - Main power domain
@@ -24,20 +24,18 @@
 		};
 	};
 
-	/* GPS hardware reset - P0.25 (GPS_RESET, active-LOW)
-	 * Asserted (pin LOW) on standby entry to halt the module cleanly.
-	 * Released (pin HIGH) after GPS_EN on wake with a brief reset pulse. */
-	gps_rst: gps-reset {
-		compatible = "gpio-leds";
-		gps_reset_pin: gps_reset {
-			gpios = <&gpio0 25 GPIO_ACTIVE_LOW>;
-			label = "GPS Reset";
-		};
-	};
+	/* GPS hardware reset (P0.25, "REINIT") is deliberately NOT declared.
+	 *
+	 * On this unit the pin must be left floating: Arduino MeshCore drove it
+	 * and GPS did not work, and setting GPS_RESET = -1 (never drive it) is
+	 * what fixed NMEA output on real hardware — upstream 3af5ffe1, resolving
+	 * meshcore-dev/MeshCore#1864 and #2879.  Without a `gps-reset` alias,
+	 * every reset path in ZephyrGPSManager compiles out
+	 * (#if DT_NODE_EXISTS(DT_ALIAS(gps_reset))), so the pin stays untouched.
+	 * GPS_EN (P0.21) alone handles wake/standby. */
 
 	aliases {
 		gps-enable = &gps_enable_pin;
-		gps-reset  = &gps_reset_pin;
 	};
 };
 

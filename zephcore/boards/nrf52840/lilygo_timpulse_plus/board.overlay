@@ -1,0 +1,7 @@
+/*
+ * LilyGo T-Impulse Plus — DTS is self-contained.
+ * This overlay is intentionally empty; all nodes live in
+ * lilygo_timpulse_plus.dts. User-level tweaks (e.g. OLED orientation) go here.
+ *
+ * SPDX-License-Identifier: MIT
+ */

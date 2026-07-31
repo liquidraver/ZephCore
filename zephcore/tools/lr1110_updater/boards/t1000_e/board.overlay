@@ -1,6 +1,6 @@
 /*
  * T1000-E LR1110 Updater overlay
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Minimal overlay — only SPI1 (LR1110 radio) and USB console.
  * Disables GPS UART, I2C sensors, and other peripherals not needed for update.

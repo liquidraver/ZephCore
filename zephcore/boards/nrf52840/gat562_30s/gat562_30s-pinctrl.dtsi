@@ -1,0 +1,97 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * GAT562 30S Mesh Kit pin control.
+ *
+ * RAK4631 core-module pinout (UART/I2C/SPI/QSPI identical to upstream
+ * rak4631) plus a PWM channel for the onboard buzzer on P1.01.
+ */
+
+&pinctrl {
+	/* GPS (AT6558R) on UART0: MCU TX P0.16 -> GPS RX, MCU RX P0.15 <- GPS TX. */
+	uart0_default: uart0_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 16)>,
+				<NRF_PSEL(UART_RX, 0, 15)>;
+		};
+	};
+
+	uart0_sleep: uart0_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 16)>,
+				<NRF_PSEL(UART_RX, 0, 15)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C0: SSD1306 OLED + sensors (SDA P0.13 / SCL P0.14) */
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 13)>,
+				<NRF_PSEL(TWIM_SCL, 0, 14)>;
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 13)>,
+				<NRF_PSEL(TWIM_SCL, 0, 14)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C1 (P0.24/P0.25) — defined for parity, not enabled */
+	i2c1_default: i2c1_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 24)>,
+				<NRF_PSEL(TWIM_SCL, 0, 25)>;
+		};
+	};
+
+	i2c1_sleep: i2c1_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 24)>,
+				<NRF_PSEL(TWIM_SCL, 0, 25)>;
+			low-power-enable;
+		};
+	};
+
+	/* LoRa SX1262 on SPI1: SCK P1.11 / MOSI P1.12 / MISO P1.13 */
+	spi1_default: spi1_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 11)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 12)>,
+				<NRF_PSEL(SPIM_MISO, 1, 13)>;
+		};
+	};
+
+	spi1_sleep: spi1_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK, 1, 11)>,
+				<NRF_PSEL(SPIM_MOSI, 1, 12)>,
+				<NRF_PSEL(SPIM_MISO, 1, 13)>;
+			low-power-enable;
+		};
+	};
+
+	/* Buzzer on PWM0 -> P1.01 */
+	pwm0_default: pwm0_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 1, 1)>;
+		};
+	};
+
+	pwm0_sleep: pwm0_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 1, 1)>;
+			low-power-enable;
+		};
+	};
+
+	/*
+	 * No QSPI pinctrl: the GAT562 core module has no external QSPI flash
+	 * (&qspi is disabled in the DTS), and the upstream RAK4631 QSPI pins
+	 * P0.26 / P0.28 / P0.30 are reused here as joystick inputs. Defining a
+	 * qspi group "for parity" would silently collide with the joystick if
+	 * QSPI were ever re-enabled, so it is intentionally omitted.
+	 */
+};

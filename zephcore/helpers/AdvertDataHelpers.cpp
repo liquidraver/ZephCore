@@ -1,9 +1,10 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore AdvertDataHelpers implementation
  */
 
 #include "AdvertDataHelpers.h"
+#include "UTF8Helpers.h"
 #include <string.h>
 
 uint8_t AdvertDataBuilder::encodeTo(uint8_t app_data[])
@@ -25,10 +26,16 @@ uint8_t AdvertDataBuilder::encodeTo(uint8_t app_data[])
 		memcpy(&app_data[i], &_extra2, 2); i += 2;
 	}
 	if (_name && *_name != 0) {
-		app_data[0] |= ADV_NAME_MASK;
-		const char *sp = _name;
-		while (*sp && i < MAX_ADVERT_DATA_SIZE) {
-			app_data[i++] = *sp++;
+		/* Truncate on a UTF-8 code-point boundary: a byte-wise copy would
+		 * emit a partial multi-byte sequence when a code point straddles
+		 * MAX_ADVERT_DATA_SIZE, producing a mangled name on the wire.
+		 * ADV_NAME_MASK is only set when at least one whole code point
+		 * fits in the remaining space. */
+		size_t name_len = mesh::validUtf8PrefixLength(_name, MAX_ADVERT_DATA_SIZE - i);
+		if (name_len > 0) {
+			app_data[0] |= ADV_NAME_MASK;
+			memcpy(&app_data[i], _name, name_len);
+			i += name_len;
 		}
 	}
 	return i;
@@ -62,6 +69,13 @@ AdvertDataParser::AdvertDataParser(const uint8_t app_data[], uint8_t app_data_le
 
 	if (_flags & ADV_NAME_MASK) {
 		int nlen = app_data_len - i;
+		/* Self-defense: callers clamp app_data_len to MAX_ADVERT_DATA_SIZE
+		 * today, but don't trust that — _name is MAX_ADVERT_DATA_SIZE and the
+		 * NUL goes at _name[nlen], so bound nlen to sizeof(_name)-1 or a
+		 * malformed/oversized advert would overflow this stack object. */
+		if (nlen > (int)sizeof(_name) - 1) {
+			nlen = (int)sizeof(_name) - 1;
+		}
 		if (nlen > 0) {
 			memcpy(_name, &app_data[i], nlen);
 			_name[nlen] = 0;

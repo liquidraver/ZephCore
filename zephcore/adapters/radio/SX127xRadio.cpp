@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * SX127x hardware hooks for LoRaRadioBase — Zephyr loramac-node driver.
  *
  * The SX127x driver (loramac-node/sx127x.c) exposes only the standard
@@ -7,9 +7,8 @@
  * provides via sx126x_ext.h are not available here:
  *
  *   hwGetCurrentRSSI()    — returns -80 dBm sentinel (no hardware path)
- *   hwIsPreambleDetected()— always false (no preamble-detect IRQ exposed)
+ *   hwIsReceiving()       — always false (no preamble/header IRQ exposed)
  *   hwSetRxBoost()        — no-op (SX127x has no RX boost register)
- *   hwResetAGC()          — no-op (loramac-node manages AGC internally)
  *   hwIsChipBusy()        — inherited false (no BUSY pin on SX127x)
  *
  * Everything else (configure, send, receive) uses the standard API.
@@ -47,12 +46,14 @@ void SX127xRadio::begin()
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */
 
-void SX127xRadio::hwConfigure(const struct lora_modem_config &cfg)
+bool SX127xRadio::hwConfigure(const struct lora_modem_config &cfg)
 {
 	int ret = lora_config(_dev, const_cast<struct lora_modem_config *>(&cfg));
 	if (ret < 0) {
 		LOG_ERR("lora_config failed: %d", ret);
+		return false;
 	}
+	return true;
 }
 
 void SX127xRadio::hwCancelReceive()
@@ -75,11 +76,14 @@ int16_t SX127xRadio::hwGetCurrentRSSI()
 	return -80;
 }
 
-bool SX127xRadio::hwIsPreambleDetected()
+bool SX127xRadio::hwIsReceiving()
 {
-	/* No preamble-detect IRQ accessible through the standard Zephyr LoRa
-	 * API for the loramac-node driver.  Returning false means TX will
-	 * not abort for an in-progress preamble — acceptable on SX127x. */
+	/* MUST be non-destructive (trivially: stub returns false).
+	 * No preamble/header IRQ accessible through the standard Zephyr LoRa
+	 * API for the loramac-node driver.  Returning false means the
+	 * isReceiving() fallback uses isChannelActive() (RSSI-based) on
+	 * SX127x — acceptable as a degraded path; SX127x is not the focus
+	 * of this fix. */
 	return false;
 }
 
@@ -89,24 +93,6 @@ void SX127xRadio::hwSetRxBoost(bool enable)
 	 * switch.  Sensitivity is controlled via lora_config tx_power and
 	 * the DTS power-amplifier-output property.  Nothing to do here. */
 	ARG_UNUSED(enable);
-}
-
-void SX127xRadio::hwResetAGC()
-{
-	/* The loramac-node SX127x driver manages AGC recalibration internally
-	 * (RadioSetRxConfig re-programs all gain registers on every RX config
-	 * call).  No explicit AGC reset is needed or possible via the standard
-	 * API. */
-}
-
-void SX127xRadio::resetAGC()
-{
-	/* hwResetAGC() is a no-op, so skip the base-class resetAGC() entirely.
-	 * The base class calls startReceive() after hwResetAGC(), but the
-	 * loramac-node modem mutex (STATE_BUSY during async RX) causes
-	 * lora_recv_async() to return -EBUSY, setting _in_recv_mode = 0 and
-	 * corrupting the state machine.  The loramac-node driver self-manages
-	 * AGC, so nothing needs to happen here. */
 }
 
 } /* namespace mesh */

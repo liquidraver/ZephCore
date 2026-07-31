@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * XIAO MG24 + Wio-SX1262 LoRa
  *
  * Pin mapping (XIAO MG24 connector → Wio-SX1262):

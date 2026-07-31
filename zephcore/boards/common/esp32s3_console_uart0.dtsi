@@ -1,0 +1,54 @@
+/*
+ * Reroute console + shell off USB Serial/JTAG onto uart0 (physical TX/RX).
+ *
+ * ESP32-S3 USB Serial/JTAG shares the D+/D- pins with USB OTG and only one
+ * controller can own the port at a time.  When esp32s3_usb.conf disables USB
+ * Serial/JTAG and hands the port to USB OTG, a console chosen as usb_serial
+ * would go silent — this gives it a home on uart0 instead.
+ *
+ * Boards that default their console to USB Serial/JTAG must NOT include this
+ * from board.overlay: that applies to every build of the board, including the
+ * ones that never enable USB OTG, and silently strands the console (and the
+ * observer/repeater serial CLI, which falls back to the chosen console) on
+ * GPIO43/44.  It is included from the auto-paired esp32s3_usb.overlay instead,
+ * so it follows esp32s3_usb.conf.
+ *
+ * Boards whose console really is a physical uart0 — Heltec V3/V4/V43, and
+ * ThinkNode M9 (USB-C via a CH9102-class bridge into UART0, native USB pads not
+ * bonded) — do include it unconditionally, which is correct for them.
+ *
+ * uart0 is disabled by default in the ESP32-S3 SoC dtsi, so we enable it and
+ * pin it to the chip's ROM-default UART0 pads (GPIO43 TX / GPIO44 RX) — the
+ * same pins Heltec uses.  Without this the console would point at a disabled,
+ * un-pinned node and produce no output at all.
+ */
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	uart0_default: uart0_default {
+		group1 {
+			pinmux = <UART0_TX_GPIO43>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART0_RX_GPIO44>;
+			bias-pull-up;
+		};
+	};
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+/ {
+	chosen {
+		zephyr,console    = &uart0;
+		zephyr,shell-uart = &uart0;
+	};
+};

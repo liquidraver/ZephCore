@@ -1,0 +1,249 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Elecrow ThinkNode M9 — ZephCore overlay
+ *
+ * Adds the display stack, GPS driver, buzzer, battery ADC, RTC and
+ * filesystem on top of the base board DTS (which already carries the
+ * LR1110 radio — kept there so tools/lr1110_updater works without this
+ * overlay). Pin mapping from Arduino MeshCore variants/thinknode_m9.
+ *
+ * Display SPI2: CS=16 (cs-gpios[1]), DC=15, RST=14, BL=17 (active-LOW)
+ * Panel power:  VEXT=18 (active-LOW)
+ * GPS UART1:    RX=2, TX=3 @ 115200; EN=11 (active-LOW), RESET=5
+ * Buzzer:       GPIO9 (LEDC ch0)
+ * Battery ADC:  GPIO13 = ADC unit 2 ch 2 (&adc1), 2:1 divider (matches
+ *               MeshCore ESP32Board's hardcoded 2x)
+ *
+ * Not ported (unused by Arduino MeshCore): STC8H I2C keyboard @0x6C (bus
+ * SDA=20 SCL=21, INT=12, LED=46), SD card (CS=48 — parked HIGH by a hog in
+ * the base DTS), ext-power detect GPIO1 (active-LOW) + charge-DONE GPIO8,
+ * GPS PPS (4), GPS STANDBY (10), QMI8658 IMU + QMC6309 magnetometer on the
+ * sensor bus.
+ */
+
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	aliases {
+		pwm-0 = &ledc0;
+		buzzer = &buzzer;
+		gps-enable = &gps_enable_pin;
+		gps-reset = &gps_reset_pin;
+	};
+
+	chosen {
+		zephyr,display = &mono_tft;
+	};
+
+	/*
+	 * VDD_PERIPH rail — GPIO18 (VEXT_ENABLE), active-LOW.
+	 * The V1.0 schematic shows this is NOT display-only: VDD_PERIPH_EN
+	 * gates a rail feeding the panel (DISPLAY_VDD), the RTC's main supply
+	 * (button cell only backs up timekeeping) and the I2C sensors —
+	 * `regulator-boot-on` powers it at driver init, before the RTC
+	 * autodiscover and sensor scan run, matching Arduino's unconditional
+	 * board.begin() write. display.c still treats it as the panel supply
+	 * (never disables it); the label stays tft_pwr_enable for that hookup.
+	 */
+	tft_pwr_enable: tft-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "tft-pwr-enable";
+		enable-gpios = <&gpio0 18 GPIO_ACTIVE_LOW>;
+		regulator-boot-on;
+	};
+
+	/*
+	 * TFT backlight — GPIO17 (TFT_LEDA_CTL), active-LOW.
+	 * Named disp_pwr_enable so display.c auto-gates it with display on/off.
+	 * (Arduino dims it with 44 kHz PWM; fixed on/off is the first pass.)
+	 */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
+	};
+
+	/*
+	 * Monochrome wrapper around the ST7789.
+	 * Reports PIXEL_FORMAT_MONO01 to CFB (~9.6 KB framebuffer instead of
+	 * ~150 KB RGB565) and converts each row on flush.
+	 */
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&tft>;
+		width = <320>;
+		height = <240>;
+	};
+
+	/*
+	 * MIPI-DBI SPI wrapper for the ST7789 — rides the shared SPI2 bus.
+	 * The child's reg (1) picks cs-gpios[1] (GPIO16) declared in the base DTS.
+	 * DC=GPIO15, RST=GPIO14 (active-LOW). Write-only (MISO belongs to LR1110).
+	 */
+	mipi_dbi {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
+		write-only;
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		tft: st7789v@1 {
+			compatible = "sitronix,st7789v";
+			mipi-max-frequency = <20000000>;
+			reg = <1>;
+			width = <320>;
+			height = <240>;
+			x-offset = <0>;
+			y-offset = <0>;
+			/* MADCTL=0xA0: MY|MV, RGB order (landscape 320x240 on the
+			 * native-portrait 240x320 panel). This is what Arduino ends
+			 * up with: landscapeScreen() sets 0x60 (MX|MV), then
+			 * DISPLAY_FLIP_VERTICALLY=1 calls flipScreenVertically()
+			 * which overwrites MADCTL with MV|MY = 0xA0 (ST7789Spi.h).
+			 * If mirrored/upside-down at bring-up, try 0x60.
+			 * Panel inversion (INVON): Arduino sends it, and the Zephyr
+			 * st7789v driver defaults to inversion ON (no `inversion-off`
+			 * prop here) — matched. */
+			mdac = <0xA0>;
+			colmod = <0x55>;
+			vcom = <0x20>;
+			gctrl = <0x35>;
+			vrhs = <0x0b>;
+			vdvs = <0x20>;
+			gamma = <0x01>;
+			lcm = <0x2c>;
+			porch-param = [0c 0c 00 33 33];
+			cmd2en-param = [5a 69 02 01];
+			pwctrl1-param = [a4 a1];
+			pvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			nvgam-param = [70 2c 2e 15 10 09 48 33 53 0b 19 18 20 25];
+			ram-param = [00 f0];
+			rgb-param = [40 02 14];
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+		};
+	};
+
+	/* GPS power enable — GPIO11, active-LOW (PIN_GPS_EN_ACTIVE=LOW).
+	 * ZephCore's GPS manager drives this via the gps-enable alias. */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* GPS reset — GPIO5, active-HIGH per Arduino (PIN_GPS_RESET_ACTIVE=HIGH). */
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+			label = "GPS Reset";
+		};
+	};
+
+	/* Buzzer on LEDC channel 0 (GPIO9) */
+	pwmbuzzer {
+		compatible = "pwm-leds";
+		buzzer: buzzer {
+			pwms = <&ledc0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
+	 * GPIO13 = ADC **unit 2** channel 2 → &adc1 (the DT label is 0-indexed,
+	 * the unit is 1-indexed — same trap as heltec_wireless_tracker).
+	 * ADC_GAIN_1_4 = 12 dB attenuation ≈ 0–3.1 V usable; nominal full scale
+	 * 1100 mV × 4 = 4400 mV. Divider ratio unverified — assumed 2:1
+	 * (multiplier 4400 × 2.0 = 8800). Calibrate at bring-up.
+	 * Caveat: ADC unit 2 is shared with WiFi — battery reads can fail while
+	 * WiFi is active (wifi_ota builds). */
+	zephyr,user {
+		io-channels = <&adc1 2>;
+		vbat-mv-multiplier = <8800>;
+	};
+};
+
+/* Battery ADC channel configuration (ADC unit 2 → GPIO13). */
+&adc1 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@2 {
+		reg = <2>;
+		zephyr,gain = "ADC_GAIN_1_4";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* GPS on UART1 — generic NMEA driver (no vendor commands).
+ * The module is NOT the L76K that MeshCore's variant.h claims — it
+ * identifies as "CC1167Q" to the Unicore-family $PDTINFO probe, which also
+ * explains the 115200 default baud (a CASIC L76K would be 9600). Under
+ * module-identity uncertainty gnss-nmea-generic is the safe choice —
+ * CASIC-specific driver init would be wrong here, and plain NMEA works
+ * either way. Power is gated by the manager via gps-enable/gps-reset.
+ * GPS_STANDBY (GPIO10) is deliberately left untouched — Arduino MeshCore
+ * never drives it either. */
+&uart1 {
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};
+
+/* LEDC PWM controller — buzzer timer/channel */
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
+};
+
+/*
+ * STC8H keypad helper MCU — this board's only input device (no user button
+ * exists at hardware level). KB_INT on GPIO12 is idle-low and pulses high on
+ * a keypress; the driver also polls as a safety net.
+ */
+&i2c1 {
+	keypad: keypad@6c {
+		compatible = "zephcore,stc8h-keypad";
+		reg = <0x6c>;
+		irq-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+		poll-interval-ms = <40>;
+	};
+};
+
+&i2c0 {
+	#include "../../common/sensors-i2c.dtsi"
+	/* ThinkNode M9 has a battery-backed PCF8563 @ 0x51 — opt in to boot-time
+	 * time restore (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
+};
+
+/*
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
+ */
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"
+
+/* Console + shell on uart0 — the USB-C port is a CH9102-class UART bridge
+ * into UART0 (GPIO43/44), verified on hardware. No USB OTG transport on this
+ * board: the S3's native D+/D- pads (GPIO19/20) are not bonded to the
+ * connector, and GPIO20/21 carry the STC8H keypad I2C bus — enabling the OTG
+ * or USB Serial/JTAG PHY would claim the keypad's SDA pin. BLE is the
+ * companion transport. */
+#include "../../common/esp32s3_console_uart0.dtsi"

@@ -196,9 +196,12 @@ lr20xx_status_t lr20xx_radio_common_calibrate_front_end_helper(
         const uint32_t freq_hz = front_end_calibration_structures[front_end_calibration_value_index].frequency_in_hertz;
         const lr20xx_radio_common_rx_path_t rx_path =
             front_end_calibration_structures[front_end_calibration_value_index].rx_path;
-        /* ceil(freq_hz / 4MHz): calibrate at next 4MHz boundary ≥ freq_hz */
+        /* round(freq_hz / 4MHz): calibrate the NEAREST 4MHz bin — this is the
+         * bin the chip selects internally for set_rf_freq, so it must match or
+         * RX raises RXFREQ_NO_FE_CAL (0x0200) and TX is refused (PERR).
+         * RadioLib uses round-to-nearest; ceil() picked the wrong bin. */
         const uint16_t freq_4mhz =
-            ( uint16_t ) ( ( freq_hz + LR20XX_RADIO_COMMON_FRONT_END_CALIBRATION_STEP_IN_HZ - 1u ) /
+            ( uint16_t ) ( ( freq_hz + ( LR20XX_RADIO_COMMON_FRONT_END_CALIBRATION_STEP_IN_HZ / 2u ) ) /
                           LR20XX_RADIO_COMMON_FRONT_END_CALIBRATION_STEP_IN_HZ );
         raw_calibration_values[front_end_calibration_value_index] =
             ( uint16_t ) ( ( ( rx_path == LR20XX_RADIO_COMMON_RX_PATH_HF ) ? 0x8000u : 0x0000u ) | freq_4mhz );

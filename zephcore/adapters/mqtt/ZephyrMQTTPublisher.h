@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephyrMQTTPublisher — MQTT client thread for the Observer role.
  *
  * Dedicated thread: waits for WiFi ready, resolves broker hostname,
@@ -10,12 +10,21 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 struct ObserverCreds;
+
+/* The publisher only ever writes to the two topics registered in
+ * mqtt_publisher_start(); messages carry a 1-byte index instead of a
+ * per-message topic string. */
+enum mqtt_pub_topic {
+	MQTT_PUB_TOPIC_STATUS  = 0,
+	MQTT_PUB_TOPIC_PACKETS = 1,
+};
 
 /*
  * Start the MQTT publisher thread.
@@ -32,12 +41,15 @@ void mqtt_publisher_start(const struct ObserverCreds *creds,
 			  const char *packets_topic);
 
 /*
- * Enqueue a pre-serialized JSON payload for publishing.
- * topic and payload are copied — safe to pass stack buffers.
- * Drops the message silently if the queue is full.
- * Safe to call from any thread.
+ * Zero-copy publish staging (single producer — the mesh main thread ONLY).
+ * mqtt_publisher_stage() returns the staging payload buffer (capacity in
+ * *size); the caller builds the JSON directly in it, then calls
+ * mqtt_publisher_commit() which copies the staged message into the queue.
+ * Drops the message (with a warning) if the queue is full.
+ * NOT safe to call from any other thread — the staging slot is unlocked.
  */
-void mqtt_publisher_enqueue(const char *topic, const char *payload, int payload_len);
+char *mqtt_publisher_stage(size_t *size);
+void mqtt_publisher_commit(enum mqtt_pub_topic topic, int payload_len);
 
 /* Returns true when the MQTT session is active. */
 bool mqtt_publisher_is_connected(void);

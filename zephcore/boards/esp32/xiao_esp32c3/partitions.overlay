@@ -1,0 +1,51 @@
+/*
+ * Flash partition layout — SHARED by the app image and MCUboot.
+ *
+ * Fed to BOTH images (app via EXTRA_DTC_OVERLAY_FILE, MCUboot via
+ * mcuboot_EXTRA_DTC_OVERLAY_FILE in sysbuild/CMakeLists.txt) so their flash maps
+ * are identical — otherwise MCUboot stages/looks for the OTA image at a different
+ * address than the app writes it to and OTA silently reverts on reboot.
+ *
+ * slot0 starts at 0x10000 (right after the 64KB MCUboot region), matching the
+ * Arduino/ESP-IDF app offset (Mesh America "flash-update" compatible). sys_partition
+ * is reclaimed. Slots are equal size; the reflash keeps identity/prefs/contacts.
+ *
+ * 4MB default layout: lpcore kept @0x3A0000, so slots fill 0x10000..0x3A0000;
+ * lfs (192KB) @0x3B0000 and storage @0x3E0000 unchanged.
+ */
+/delete-node/ &sys_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+/delete-node/ &scratch_partition;
+
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+&flash0 {
+	partitions {
+		/* App slots — equal size (swap-mode compatible), slot0 at 0x10000,
+		 * slots fill up to the kept LP-core slots at 0x3A0000. */
+		slot0_partition: partition@10000 {
+			label = "image-0";
+			reg = <0x10000 0x1C8000>;
+		};
+		slot1_partition: partition@1d8000 {
+			label = "image-1";
+			reg = <0x1D8000 0x1C8000>;
+		};
+		/* LittleFS 192KB (identity/prefs/contacts) — offset unchanged. */
+		lfs_partition: partition@3b0000 {
+			label = "lfs";
+			reg = <0x3B0000 0x30000>;
+		};
+		/* BLE bond NVS — offset unchanged so bonds survive the reflash. */
+		storage_partition: partition@3e0000 {
+			label = "storage";
+			reg = <0x3E0000 0x4000>;
+		};
+	};
+};

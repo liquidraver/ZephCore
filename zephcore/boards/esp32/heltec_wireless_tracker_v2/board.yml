@@ -1,0 +1,6 @@
+board:
+  name: heltec_wireless_tracker_v2
+  full_name: Heltec Wireless Tracker V2
+  vendor: heltec
+  socs:
+    - name: esp32s3

@@ -2,7 +2,7 @@
  * RAK WisMesh Tag — nRF52840 + SX1262 (card-sized GPS tracker)
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware:
  * - nRF52840 SoC with BLE 5
@@ -93,10 +93,10 @@
 
 	/* Input filter: multi-tap
 	 * 1 tap  → KEY_1 = (reserved / next page if display added)
-	 * 2 taps → KEY_B = flood advert
+	 * 2 taps → KEY_B = LED heartbeat toggle
 	 * 3 taps → KEY_D = buzzer mute toggle
 	 * 4 taps → KEY_C = GPS on/off
-	 * 5 taps → KEY_E = LED heartbeat toggle */
+	 * 5 taps → KEY_E = flood advert */
 	user_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
 		input-codes = <INPUT_KEY_A>;
@@ -138,7 +138,7 @@
 	 * applied to 12-bit average with default ref (GAIN_1_6 + 0.6V internal = 3.6V FS). */
 	zephyr,user {
 		io-channels = <&adc 3>;
-		vbat-mv-multiplier = <6161>;
+		vbat-mv-multiplier = <5973>;  /* 1.73:1 divider, 3.6V ref; measured on hw (calc'd 6259 over-read ~4.7%) */
 	};
 
 	/* ---- Buzzer on PWM0 ---- */

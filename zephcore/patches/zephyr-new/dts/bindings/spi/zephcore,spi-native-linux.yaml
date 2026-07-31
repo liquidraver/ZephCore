@@ -1,0 +1,32 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+description: |
+  ZephCore SPI driver using Linux spidev.
+
+  Bridges Zephyr's SPI subsystem to a Linux /dev/spidevX.Y character device
+  via SPI_IOC_MESSAGE ioctl. CS is driven via the linked GPIO controller
+  (spi-cs-gpios), not by spidev's hardware CS, so the SX126x driver's
+  software CS sequencing keeps working unchanged.
+
+  The host SPI device path defaults to the DT property below, but can be
+  overridden at runtime with the --lora-spidev=<path> command-line argument.
+
+compatible: "zephcore,spi-native-linux"
+
+include: [spi-controller.yaml]
+
+properties:
+  spi-dev:
+    type: string
+    required: true
+    description: |
+      Linux host SPI character device path, e.g. "/dev/spidev0.0".
+      Overridable at runtime via --lora-spidev=<path>.
+
+  spi-mode:
+    type: int
+    default: 0
+    description: |
+      SPI mode byte passed to SPI_IOC_WR_MODE (0..3).
+      0 = CPOL=0/CPHA=0 (SX126x default).

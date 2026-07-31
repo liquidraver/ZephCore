@@ -1,0 +1,57 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * Femtofox (Luckfox Pico Mini RV1103 + Ebyte E22-900M30S, SX1262 TCXO) wiring.
+ * Auto-paired with femtofox.conf. Defines the native_linux SPI/GPIO controllers
+ * and the SX1262 radio node on top of the platform infra in linux_common.overlay.
+ *
+ * Pins match the Femtofox SX1262 TCXO profile (femtofox_SX1262_TCXO.yaml):
+ * gpiochip1, CS=16/GPIO48, BUSY=22/GPIO54, DIO1=23/GPIO55, RESET=25/GPIO57,
+ * RXEN=24/GPIO56. DIO2 drives the RF switch, DIO3 powers a 1.8V TCXO.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
+/ {
+	aliases {
+		/* The mesh adapter reads lora0 to bind the SX126x driver. */
+		lora0 = &lora_sx1262;
+	};
+
+	/* GPIO V2 chardev controller bound to /dev/gpiochip1. */
+	zephcore_gpio0: zephcore_gpio0 {
+		status = "okay";
+		compatible = "zephcore,gpio-native-linux";
+		gpio-controller;
+		gpio-chip = "/dev/gpiochip1";
+		ngpios = <64>;
+		#gpio-cells = <2>;
+	};
+
+	/* spidev-backed SPI bus on /dev/spidev0.0 with one SX1262 child. */
+	zephcore_spi0: zephcore_spi0 {
+		status = "okay";
+		compatible = "zephcore,spi-native-linux";
+		spi-dev = "/dev/spidev0.0";
+		clock-frequency = <2000000>;
+		spi-mode = <0>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		/* CS: gpiochip1 offset 16 = GPIO48. */
+		cs-gpios = <&zephcore_gpio0 16 GPIO_ACTIVE_LOW>;
+
+		lora_sx1262: lora@0 {
+			compatible = "semtech,sx1262";
+			reg = <0>;
+			spi-max-frequency = <2000000>;
+			reset-gpios = <&zephcore_gpio0 25 GPIO_ACTIVE_LOW>;
+			busy-gpios  = <&zephcore_gpio0 22 GPIO_ACTIVE_HIGH>;
+			dio1-gpios  = <&zephcore_gpio0 23 GPIO_ACTIVE_HIGH>;
+			rx-enable-gpios = <&zephcore_gpio0 24 GPIO_ACTIVE_HIGH>;
+			dio2-tx-enable;
+			dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+			tcxo-power-startup-delay-ms = <5>;
+		};
+	};
+};

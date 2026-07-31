@@ -1,6 +1,6 @@
 # Elecrow ThinkNode M1 board configuration
 # Copyright (c) 2025 ZephCore
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 config BOARD_THINKNODE_M1
 	select SOC_NRF52840_QIAA

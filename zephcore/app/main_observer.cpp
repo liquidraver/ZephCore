@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Observer — listen-only LoRa node with WiFi+MQTT forwarding.
  *
  * Every received LoRa packet is published to an MQTT broker in
@@ -8,7 +8,7 @@
  * LittleFS.  Nothing is hardcoded.
  *
  * Event loop:
- *   LORA_RX  → ObserverMesh::loop() → enqueuePacket() → mqtt_publisher_enqueue()
+ *   LORA_RX  → ObserverMesh::loop() → enqueuePacket() → mqtt_publisher_commit()
  *   CLI_RX   → ObserverMesh::handleCLI() (set/get commands)
  */
 
@@ -21,6 +21,14 @@
 
 #define CLI_REPLY_SIZE 256
 
+/* The CDC-ACM device object exists only when the class driver is compiled.
+ * A board overlay may expose a cdc_acm_uart DT node unconditionally (the shared
+ * esp32s3_usb_otg.dtsi does), so gate the device-get on the Kconfig class, not
+ * on DT_HAS_COMPAT_STATUS_OKAY alone, or DEVICE_DT_GET_ONE references an
+ * undefined device ordinal (e.g. an ESP32-S3 observer without esp32s3_usb.conf). */
+#define ZEPHCORE_USB_STACK \
+	(IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS))
+
 LOG_MODULE_REGISTER(zephcore_observer_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #include <app/RepeaterDataStore.h>
@@ -30,6 +38,7 @@ LOG_MODULE_REGISTER(zephcore_observer_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <ZephyrWiFiStation.h>
 #include <ZephyrMQTTPublisher.h>
 #include "observer_creds.h"
+#include <helpers/led_gate.h>
 
 /* ========== LED (optional) ========== */
 
@@ -41,10 +50,11 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 /* ========== Event loop bits ========== */
 
-#define MESH_EVENT_LORA_RX   BIT(0)
-#define MESH_EVENT_CLI_RX    BIT(1)
-#define MESH_EVENT_STATUS    BIT(2)
-#define MESH_EVENT_ALL       (MESH_EVENT_LORA_RX | MESH_EVENT_CLI_RX | MESH_EVENT_STATUS)
+#define MESH_EVENT_LORA_RX     BIT(0)
+#define MESH_EVENT_CLI_RX      BIT(1)
+#define MESH_EVENT_STATUS      BIT(2)
+#define MESH_EVENT_MQTT_CONNECT BIT(3)  /* MQTT (re)connected — publish status+self-advert on main */
+#define MESH_EVENT_ALL       (MESH_EVENT_LORA_RX | MESH_EVENT_CLI_RX | MESH_EVENT_STATUS | MESH_EVENT_MQTT_CONNECT)
 
 static struct k_event mesh_events;
 
@@ -150,7 +160,7 @@ static void print_banner(void)
 	cli_println(line);
 
 	cli_println("");
-	cli_println("--- Configure ---");
+	cli_println("--- Configure: network ---");
 	cli_println("set wifi.ssid <name>       WiFi network name");
 	cli_println("set wifi.psk  <password>   WiFi password (empty = open)");
 	cli_println("set mqtt.host <hostname>   MQTT broker hostname");
@@ -159,16 +169,37 @@ static void print_banner(void)
 	cli_println("set mqtt.user <username>   MQTT username");
 	cli_println("set mqtt.password <pass>   MQTT password");
 	cli_println("set mqtt.iata <code>       Location code (e.g. BUD BTS VIE SEA)");
+	cli_println("");
+	cli_println("--- Configure: node ---");
 	cli_println("set name      <name>       Node display name");
-	cli_println("set freq      <MHz|Hz>     LoRa frequency (e.g. 869.618 or 869618000)");
+	cli_println("set lat       <-90..90>    Latitude, decimal degrees");
+	cli_println("set lon       <-180..180>  Longitude, decimal degrees");
+	cli_println("                           (lat+lon+non-default name = self-advert)");
+	cli_println("set meshtimesync <on|off>  Mesh clock consensus correction");
+	cli_println("");
+	cli_println("--- Configure: radio ---");
+	cli_println("set freq      <MHz|Hz>     300-1000 (e.g. 869.618 or 869618000)");
 	cli_println("set sf        <7-12>       Spreading factor");
-	cli_println("set bw        <idx>        Bandwidth: 3=62.5 0=125 1=250 2=500 kHz");
+	cli_println("set bw        <idx|kHz>    0=125 1=250 2=500 3=62.5 4=41.7 5=31.25");
 	cli_println("set cr        <5-8>        Coding rate");
 	cli_println("");
 	cli_println("--- Query ---");
+	cli_println("get name                   Node display name");
+	cli_println("get role                   Node role (observer)");
+	cli_println("get board                  Board name");
+	cli_println("get version                Firmware version and build date");
+	cli_println("get public.key             Node public key (hex)");
+	cli_println("get radio                  LoRa radio parameters");
+	cli_println("get lat / get lon          Configured position");
+	cli_println("get wifi.ssid              Configured WiFi network");
 	cli_println("get wifi.status            WiFi connection state");
 	cli_println("get mqtt.status            MQTT connection state");
-	cli_println("get radio                  LoRa radio parameters");
+	cli_println("get mqtt.host              MQTT broker hostname");
+	cli_println("get mqtt.port              MQTT broker port");
+	cli_println("get mqtt.tls               MQTT TLS on/off");
+	cli_println("get mqtt.user              MQTT username");
+	cli_println("get mqtt.iata              Location code");
+	cli_println("get meshtimesync           Time-sync consensus state (dry-run)");
 	cli_println("help                       Show this screen");
 	cli_println("=========================");
 }
@@ -219,9 +250,14 @@ static void process_cli_rx(void)
 
 static mesh::ZephyrRTCClock s_rtc_clock;
 
+/* SNTP callback runs on the WiFi thread; the mesh time-sync module is
+ * main-thread-only, so just flag the sync and let the event loop arm it. */
+static atomic_t s_sntp_synced;
+
 static void time_sync_cb(uint32_t unix_ts)
 {
 	s_rtc_clock.setCurrentTime(unix_ts);
+	atomic_set(&s_sntp_synced, 1);
 	LOG_INF("RTC synced from SNTP: %u", unix_ts);
 }
 
@@ -229,11 +265,12 @@ static void time_sync_cb(uint32_t unix_ts)
 
 static mesh::ZephyrBoard    s_board;
 static mesh::ZephyrMillisecondClock s_ms_clock;
-static mesh::ZephyrRNG      s_rng;
 
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
 
-/* Radio prefs — observer-specific defaults set in main() */
+/* Static-init placeholder only.  The radio is rebound to the mesh's own
+ * NodePrefs via setPrefs() in main() before observer_mesh.begin() — this object
+ * is not the live radio configuration and is never loaded from flash. */
 static NodePrefs s_radio_prefs;
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
@@ -244,7 +281,7 @@ static mesh::SX127xRadio lora_radio(lora_dev, s_board, &s_radio_prefs);
 static mesh::SX126xRadio lora_radio(lora_dev, s_board, &s_radio_prefs);
 #endif
 
-static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rng, s_rtc_clock);
+static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rtc_clock);
 static RepeaterDataStore  data_store;
 
 /* ========== main() ========== */
@@ -285,14 +322,34 @@ int main(void)
 	/* LoRa RX callback — observer never needs TX done */
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 
+	/* Bind the radio to the mesh's NodePrefs BEFORE begin().
+	 *
+	 * The radio reads freq/bw/sf/cr through this pointer, both during
+	 * begin() → Dispatcher::begin() → Radio::begin() and on every later
+	 * reconfigure() (LoRaRadioBase::reconfigureWithParams() ignores its
+	 * arguments and re-reads the pointer).  Constructed against
+	 * s_radio_prefs, which is never loaded from flash, the radio stayed on
+	 * the compiled-in defaults forever: `set freq/sf/bw/cr` wrote flash and
+	 * updated the CLI/MQTT readback but never reached the hardware, so the
+	 * setting looked accepted and then "reverted" on reboot.
+	 *
+	 * Binding before begin() is safe and required: begin() calls loadPrefs()
+	 * first and Dispatcher::begin() last, so the object is populated by the
+	 * time the radio reads through it.  Mirrors main_repeater.cpp and
+	 * main_room_server.cpp. */
+	lora_radio.setPrefs(observer_mesh.getNodePrefs());
+
 	/* Initialize and start mesh (loads prefs + identity from flash) */
 	s_mesh_ptr = &observer_mesh;
 	observer_mesh.begin(&data_store, &s_creds);
 
 	/* Generate a default node name based on pubkey if still generic */
 	NodePrefs *prefs = observer_mesh.getNodePrefs();
+	/* "Observer" is deliberately NOT in this list: it is a name a user can set,
+	 * and regenerating it here made `set name Observer` silently revert on every
+	 * reboot.  "Repeater" is the name the shared store writes on first boot, so
+	 * it still counts as unset. */
 	if (strlen(prefs->node_name) == 0 ||
-	    strcmp(prefs->node_name, "Observer") == 0 ||
 	    strcmp(prefs->node_name, "Repeater") == 0) {
 		/* Use first 4 bytes of pubkey for uniqueness */
 		const char *hex = observer_mesh.getPubkeyHex();
@@ -301,11 +358,21 @@ int main(void)
 		data_store.savePrefs(*prefs);
 	}
 
+	/* Apply the persisted LED master switch. The observer has no CLI of its own
+	 * to change it, but a unit reflashed from a repeater build keeps the setting
+	 * — and it still drives lora-tx-led on TX-capable boards. */
+	{
+		bool leds_off = prefs->leds_disabled != 0;
+		zephcore_leds_set_disabled(leds_off);
+		LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
+	}
+
 	/* Initialize USB serial for CLI */
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
+#if ZEPHCORE_USB_STACK && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
 	usb_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 #else
-	/* ESP32 native USB or other console UART */
+	/* ESP32 native USB / other console UART, or a cdc_acm DT node present
+	 * without the class driver compiled — fall back to the chosen console. */
 	usb_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 #endif
 	if (device_is_ready(usb_dev)) {
@@ -334,10 +401,10 @@ int main(void)
 	/* Publish self-advert once on each MQTT connect so CoreScope can pin
 	 * this observer on the map (requires lat/lon to be configured). */
 	mqtt_publisher_set_connect_cb([]() {
-		if (s_mesh_ptr) {
-			s_mesh_ptr->publishStatus("online");
-			s_mesh_ptr->publishSelfAdvert();
-		}
+		/* Runs on the MQTT publisher thread — defer to the main loop. Publishing
+		 * here would race the main-thread producer on the publisher's staging
+		 * buffer; publishSelfAdvert() also signs + formats. */
+		k_event_post(&mesh_events, MESH_EVENT_MQTT_CONNECT);
 	});
 	k_timer_start(&status_timer, K_SECONDS(300), K_SECONDS(300));
 
@@ -356,8 +423,17 @@ int main(void)
 		if (ev & MESH_EVENT_CLI_RX) {
 			process_cli_rx();
 		}
+		if (atomic_cas(&s_sntp_synced, 1, 0)) {
+			/* SNTP set the clock — arm suppression + drift envelope. */
+			observer_mesh.noteTrustedTimeSync();
+		}
 		if (ev & MESH_EVENT_STATUS) {
 			observer_mesh.publishStatus("online");
+			observer_mesh.timeSyncTick();
+		}
+		if (ev & MESH_EVENT_MQTT_CONNECT) {
+			observer_mesh.publishStatus("online");
+			observer_mesh.publishSelfAdvert();
 		}
 	}
 

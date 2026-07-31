@@ -1,9 +1,10 @@
 /*
  * SenseCAP Solar — ZephCore overlay
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
- * GPS aliases for ZephyrGPSManager. gnss-nmea-generic has no on-off-gpios,
- * so ZephyrGPSManager owns P1.05 (gps-enable alias) exclusively.
+ * GPS aliases for ZephyrGPSManager. P1.05 (gps-enable alias) is shared
+ * with the air530z driver's on-off-gpios (T-Echo pattern): the driver
+ * powers the module at init, ZephyrGPSManager duty-cycles it after.
  */
 
 #include "../../common/qspi-ext.dtsi"

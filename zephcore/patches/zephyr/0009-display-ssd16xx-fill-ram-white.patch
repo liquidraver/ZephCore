@@ -1,0 +1,60 @@
+diff --git a/drivers/display/ssd16xx.c b/drivers/display/ssd16xx.c
+index 0b9a3559dd5..e7f52c19ec3 100644
+--- a/drivers/display/ssd16xx.c
++++ b/drivers/display/ssd16xx.c
+@@ -672,6 +672,27 @@ static int ssd16xx_clear_cntlr_mem(const struct device *dev, uint8_t ram_cmd)
+ 	return 0;
+ }
+ 
++int ssd16xx_fill_ram_white(const struct device *dev)
++{
++	/*
++	 * Clear both RAM banks (Black and Red) to white, identical to the
++	 * post-boot ssd16xx_controller_init state, WITHOUT updating the panel.
++	 * Used by the ZephCore periodic full refresh: the caller then triggers
++	 * a full refresh (panel goes white) and redraws the current page as a
++	 * partial against the all-white reference, so every content pixel is
++	 * driven and nothing stale is left behind — matching the clean
++	 * post-boot first partial.  Leaves entry mode at XIYDY; the following
++	 * set_profile()/set_window() restore it.
++	 */
++	int err = ssd16xx_clear_cntlr_mem(dev, SSD16XX_CMD_WRITE_RAM);
++
++	if (err < 0) {
++		return err;
++	}
++
++	return ssd16xx_clear_cntlr_mem(dev, SSD16XX_CMD_WRITE_RED_RAM);
++}
++
+ static inline int ssd16xx_load_ws_from_otp_tssv(const struct device *dev)
+ {
+ 	const struct ssd16xx_config *config = dev->config;
+diff --git a/include/zephyr/display/ssd16xx.h b/include/zephyr/display/ssd16xx.h
+index 53eb05b07ca..7e6690f82e8 100644
+--- a/include/zephyr/display/ssd16xx.h
++++ b/include/zephyr/display/ssd16xx.h
+@@ -58,6 +58,23 @@ int ssd16xx_read_ram(const struct device *dev, enum ssd16xx_ram ram_type,
+ 		     const struct display_buffer_descriptor *desc,
+ 		     void *buf);
+ 
++/**
++ * @brief Clear both RAM banks (Black and Red) to white without refreshing.
++ *
++ * Fills the controller's Black and Red RAM with white, matching the state
++ * established by ssd16xx_controller_init() at boot, without updating the
++ * panel.  Intended for a full-refresh-to-white followed by a partial redraw:
++ * the all-white reference makes the next partial drive every content pixel
++ * with nothing stale to erase, avoiding both the fade (unchanged regions left
++ * on the neutral waveform) and the overlap (stale pixels not cleared) that
++ * occur when a partial follows a full refresh of non-white content.
++ *
++ * @param dev Pointer to device structure
++ *
++ * @return 0 on success, negative errno on failure.
++ */
++int ssd16xx_fill_ram_white(const struct device *dev);
++
+ /** @} */
+ 
+ #endif /* ZEPHYR_INCLUDE_DISPLAY_SSD16XX_H_ */

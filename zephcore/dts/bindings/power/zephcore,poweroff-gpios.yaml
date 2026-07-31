@@ -1,0 +1,48 @@
+# Copyright 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+description: |
+  Board power-latch release list.
+
+  Lists GPIOs that must be driven to their INACTIVE level as the very last
+  step before sys_poweroff(), after every other peripheral has been shut down
+  and after the sw0 wake button has been released.
+
+  This exists for boards whose supply rail is latched on by the MCU rather
+  than by a mechanical switch — typically a soft-power design where a
+  companion I/O controller holds the regulator enabled only while the MCU
+  keeps a "hold" line asserted. On such boards sys_poweroff() alone is not a
+  real power-off: the SoC enters System OFF at ~1 uA, but nRF GPIO output
+  latches persist across the transition, so the hold line stays asserted and
+  the rail (plus whatever else it feeds) keeps draining the battery.
+
+  Order matters and is preserved: list downstream loads first and the rail
+  latch itself last, so the board is quiesced before the supply is cut.
+
+  Boards that do not define a node with this compatible are completely
+  unaffected — the release loop compiles to nothing.
+
+  Note that these are usually the same pins a board asserts at boot via
+  gpio-hog. The hog performs the early boot assert (PRE_KERNEL, before any
+  driver runs); this node performs the shutdown release. Referencing a
+  hogged pin here is intentional and safe — a gpio-hog is an init-time
+  configuration, not a runtime reservation.
+
+  Example (muzi works R1 Neo — I/O controller gated DCDC rail):
+    poweroff_gpios: poweroff-gpios {
+        compatible = "zephcore,poweroff-gpios";
+        gpios = <&gpio1 5  GPIO_ACTIVE_HIGH>,   /* SX1262 module power */
+                <&gpio0 29 GPIO_ACTIVE_HIGH>,   /* I/O controller "MCU on" */
+                <&gpio0 13 GPIO_ACTIVE_HIGH>;   /* DCDC latch - cuts the rail */
+    };
+
+compatible: "zephcore,poweroff-gpios"
+
+properties:
+  gpios:
+    type: phandle-array
+    required: true
+    description: |
+      GPIOs to drive INACTIVE (per each entry's own GPIO_ACTIVE_* flag)
+      immediately before sys_poweroff(). Listed in shutdown order:
+      downstream loads first, supply latch last.

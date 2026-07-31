@@ -1,6 +1,6 @@
 /*
  * Seeed XIAO nRF52840 + Wio-SX1262 (headers) — pin control
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * MeshCore variants/xiao_nrf52 variant.cpp + platformio.ini:
  * - SPI2 (SX1262): SCK=P1.13, MOSI=P1.15, MISO=P1.14 (D8–D10)

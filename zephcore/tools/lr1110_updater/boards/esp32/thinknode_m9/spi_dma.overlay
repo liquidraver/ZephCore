@@ -1,0 +1,38 @@
+/*
+ * ThinkNode M9 updater — route SPI2 through GDMA.
+ * SPDX-License-Identifier: MIT
+ *
+ * Opt-in via -DUPDATER_SPI_DMA=1. Purpose is diagnostic, not performance.
+ *
+ * WriteFlashEncrypted is a 6-byte header + 256-byte payload = 262 bytes, and
+ * it is the ONLY command this tool issues that exceeds 64 bytes. Without DMA,
+ * spi_esp32_spim.c clamps every chunk to SOC_SPI_MAXIMUM_BUFFER_SIZE (64 on
+ * the S3), so that one command is delivered as five hardware transactions
+ * with the peripheral reconfigured between them — while every command known
+ * to work on this board (GetVersion, GetStatus, EraseFlash, the EUI reads)
+ * fits in a single transaction.
+ *
+ * The payload is encrypted, so the chip cannot validate content at write
+ * time — only that 256 bytes arrived. If the split perturbed the bit stream,
+ * writes would still report OK and the signed image would fail its integrity
+ * check at boot, which is exactly the observed symptom.
+ *
+ * With DMA the cap becomes SPI_DMA_MAX_BUFFER_SIZE (4092), so the whole
+ * 262-byte frame goes out as ONE transaction and that variable is removed.
+ *
+ * Caveat: upstream's own ESP32 board files leave SPI DMA commented as a TODO,
+ * so this path is not well exercised in-tree. Treat a failure to build or run
+ * as information about the driver, not about the radio.
+ */
+
+/* GDMA controller is disabled in esp32s3_common.dtsi — enable it. */
+&dma {
+	status = "okay";
+};
+
+&spi2 {
+	dma-enabled;
+	dma-host = <0>;			/* 0 -> SPI2 */
+	dmas = <&dma 0>, <&dma 1>;	/* #dma-cells = <1>: the cell is the channel */
+	dma-names = "tx", "rx";
+};

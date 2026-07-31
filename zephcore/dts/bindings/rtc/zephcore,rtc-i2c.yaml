@@ -1,0 +1,43 @@
+# SPDX-License-Identifier: MIT
+#
+# Data-only descriptor for an I2C RTC chip read by ZephyrRTCDiscover
+# (adapters/clock/ZephyrRTCDiscover.c). This binds NO Zephyr RTC driver —
+# the chip is accessed with raw I2C using the register layout described by
+# the properties below. This keeps the boot-time RTC restore compact
+# (~2-3 KB total, "Path B") instead of pulling in the full RTC subsystem.
+#
+# All supported chips use a 7-byte BCD time block (sec, min, hour, then
+# weekday/date, month, year) starting at "time-reg". Only the day-of-month
+# byte offset varies between parts, captured by "date-index".
+
+description: ZephCore data-only I2C RTC descriptor (raw-I2C, no Zephyr RTC driver)
+
+compatible: "zephcore,rtc-i2c"
+
+include: [i2c-device.yaml]
+
+properties:
+  time-reg:
+    type: int
+    required: true
+    description: Register address of the seconds byte (start of the 7-byte BCD block).
+
+  date-index:
+    type: int
+    required: true
+    description: >
+      Byte offset of the day-of-month within the 7-byte block. 4 for chips
+      ordered sec/min/hour/weekday/date/month/year (DS3231, RV3028, RX8130CE);
+      3 for PCF8563 which swaps to sec/min/hour/date/weekday/month/year.
+
+  status-reg:
+    type: int
+    required: true
+    description: >
+      Register holding the "time invalid / power was lost" flag. Use 0xFF to
+      indicate the flag lives in the seconds byte itself (PCF8563 VL bit).
+
+  status-mask:
+    type: int
+    required: true
+    description: Bit mask within status-reg that means the held time is unreliable.

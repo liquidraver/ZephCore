@@ -1,0 +1,49 @@
+/*
+ * RAK4631 — RNG selftest console overlay
+ * SPDX-License-Identifier: MIT
+ *
+ * Minimal ON PURPOSE. The node's own board.overlay is NOT reused here: it
+ * declares an /fstab entry, radio, sensors and partitions, none of which this
+ * tool enables (CONFIG_FLASH=n, CONFIG_SPI=n ...) — pulling it in fails the
+ * build on an undefined lfs_partition label. Same reasoning as the LR1110
+ * updater's per-board overlays.
+ *
+ * RAK4631 connects USB straight to the nRF52840, so the console has to ride
+ * USB CDC ACM; uart0's physical pins are not reachable on a plain WisBlock
+ * base board.
+ */
+
+/* Same flash layout as the node build.
+ *
+ * NOT just for UF2 packaging: RAK4631 boots through the Adafruit nRF52
+ * bootloader, so the application must be LINKED at the bootloader's app
+ * offset. Without a code partition the image links at 0 and would not run even
+ * if uf2conv managed to package it (it does not — the missing
+ * CONFIG_FLASH_LOAD_OFFSET is what produces "argument -b/--base: expected one
+ * argument"). SoftDevice v6 layout, matching boards/nrf52840/rak4631.
+ *
+ * The delete-nodes are required by that dtsi's own contract (see its header):
+ * it redefines partitions the upstream board DTS already labels, and without
+ * removing those first the build fails with a duplicate 'storage_partition'
+ * label. */
+/delete-node/ &boot_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+#include "../../../../boards/common/nrf52_partitions_sdv6.dtsi"
+
+/ {
+	chosen {
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+	};
+
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

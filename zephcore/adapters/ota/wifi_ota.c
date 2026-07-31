@@ -1,10 +1,10 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * WiFi OTA Firmware Update
  *
  * Starts a WiFi AP + HTTP server for browser-based firmware upload.
  * Mirrors Arduino MeshCore's ElegantOTA:
- *   - WiFi SoftAP "MeshCore-OTA" at 192.168.100.1
+ *   - WiFi SoftAP "ZephCore-OTA" at 192.168.100.1
  *   - DHCP server for client IP assignment
  *   - HTTP server with upload page at /update
  *   - Firmware written to MCUboot slot1 via flash_img API
@@ -13,6 +13,7 @@
 
 #include "wifi_ota.h"
 #include "ota_page.h"
+#include "../../helpers/pm_sleep_guard.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/net/wifi_mgmt.h>
@@ -208,7 +209,10 @@ static int upload_handler(struct http_client_ctx *client,
 	if (status == HTTP_SERVER_REQUEST_DATA_MORE ||
 	    status == HTTP_SERVER_REQUEST_DATA_FINAL) {
 
-		/* First chunk: initialize flash context */
+		/* First call: initialize flash context. The first dispatch from
+		 * the HTTP server may have data_len==0 if headers and body
+		 * landed in separate TCP segments — flash_img_buffered_write
+		 * handles zero-length writes fine. */
 		if (!flash_ctx_initialized) {
 			ret = flash_img_init(&flash_ctx);
 			if (ret) {
@@ -224,10 +228,12 @@ static int upload_handler(struct http_client_ctx *client,
 			LOG_INF("OTA upload started");
 		}
 
-		/* Write chunk to flash (slot1) */
+		/* Write chunk to flash (slot1). Always call on final, even with
+		 * data_len==0, so the trailing partial block is flushed and the
+		 * flash_area handle is closed. */
 		bool is_final = (status == HTTP_SERVER_REQUEST_DATA_FINAL);
 
-		if (request_ctx->data_len > 0) {
+		if (request_ctx->data_len > 0 || is_final) {
 			ret = flash_img_buffered_write(&flash_ctx,
 						       request_ctx->data,
 						       request_ctx->data_len,
@@ -248,6 +254,11 @@ static int upload_handler(struct http_client_ctx *client,
 		if (is_final) {
 			LOG_INF("OTA upload complete: %u bytes",
 				(unsigned)total_bytes_received);
+
+			/* No client-side validation — let MCUboot decide on next
+			 * boot. A bogus image fails signature/magic check there
+			 * and the bootloader falls back to slot0. Worst case is
+			 * an unnecessary reboot; we never brick. */
 
 			/* Mark new image for boot (overwrite-only: permanent) */
 			ret = boot_request_upgrade(BOOT_UPGRADE_PERMANENT);
@@ -274,6 +285,13 @@ static int upload_handler(struct http_client_ctx *client,
 	} else if (status == HTTP_SERVER_TRANSACTION_ABORTED) {
 		LOG_WRN("OTA upload aborted at %u bytes",
 			(unsigned)total_bytes_received);
+		/* Flush+close the flash_area to release the handle. The
+		 * partial slot1 contents are harmless — MCUboot will reject
+		 * an unfinished image, and the next upload will progressively
+		 * re-erase as it writes. */
+		if (flash_ctx_initialized) {
+			(void)flash_img_buffered_write(&flash_ctx, NULL, 0, true);
+		}
 		flash_ctx_initialized = false;
 		total_bytes_received = 0;
 	}
@@ -436,16 +454,24 @@ int wifi_ota_start(const char *node_name, const char *board_name)
 	snprintf(home_html, sizeof(home_html),
 		 "<html><body style=\"background:#1a1a2e;color:#eee;font-family:sans-serif;"
 		 "display:flex;justify-content:center;align-items:center;height:100vh\">"
-		 "<h2 style=\"color:#0ff\">MeshCore OTA: %s (%s)<br>"
+		 "<h2 style=\"color:#0ff\">ZephCore OTA: %s (%s)<br>"
 		 "<a href=\"/update\" style=\"color:#00b894\">Go to Update Page</a></h2>"
 		 "</body></html>",
 		 node_name ? node_name : "Unknown",
 		 board_name ? board_name : "Unknown");
 
+	/* Hold off light sleep for the whole session. The WiFi stack and the
+	 * HTTP upload have no PM coordination here, so a node that slept
+	 * mid-transfer would drop the client's connection. Released in
+	 * wifi_ota_stop(); the post-upload reboot path also passes through
+	 * there, and a reboot would clear the lock regardless. */
+	zc_pm_block_sleep();
+
 	/* Start WiFi AP */
 	int ret = wifi_ap_start();
 
 	if (ret) {
+		zc_pm_unblock_sleep();
 		return ret;
 	}
 
@@ -455,6 +481,7 @@ int wifi_ota_start(const char *node_name, const char *board_name)
 	if (ret) {
 		LOG_ERR("HTTP server start failed: %d", ret);
 		wifi_ap_stop();
+		zc_pm_unblock_sleep();
 		return ret;
 	}
 
@@ -473,11 +500,25 @@ int wifi_ota_stop(void)
 		return 0;
 	}
 
+	/* Cancel any pending post-upload reboot — user explicitly asked us to
+	 * stop, so don't reboot out from under them. */
+	(void)k_work_cancel_delayable(&ota_reboot_work);
+
+	/* If an upload was in flight, flush+close the flash_area handle. */
+	if (flash_ctx_initialized) {
+		(void)flash_img_buffered_write(&flash_ctx, NULL, 0, true);
+	}
+
 	http_server_stop();
 	wifi_ap_stop();
 	ota_active = false;
 	flash_ctx_initialized = false;
 	total_bytes_received = 0;
+
+	/* Matches the lock taken in wifi_ota_start(). The early return above
+	 * (!ota_active) is why this sits after the flag check — an unbalanced
+	 * put would drop someone else's lock. */
+	zc_pm_unblock_sleep();
 
 	LOG_INF("OTA server stopped");
 	return 0;

@@ -1,10 +1,11 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * RepeaterDataStore - Filesystem storage for repeater
  */
 
 #include "RepeaterDataStore.h"
 #include <zephyr/fs/fs.h>
+#include <zephyr/storage/flash_map.h>
 #include <zephyr/logging/log.h>
 #include <string.h>
 #include <stdio.h>
@@ -134,9 +135,13 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         initNodePrefs(&prefs);
         strcpy(prefs.node_name, "Repeater");
         prefs.advert_loc_policy = ADVERT_LOC_PREFS;
-        prefs.flood_advert_interval = 25;
-        prefs.loop_detect = LOOP_DETECT_MINIMAL;
+        prefs.loop_detect = LOOP_DETECT_MODERATE;
         prefs.path_hash_mode = 1;
+        prefs.gps_interval = CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC;  // repeater default (48h)
+        /* Persist defaults so flash always has a prefs file from boot 1.
+         * Lets later code (e.g. tempradio revert) trust that flash is
+         * authoritative without a "first run" special case. */
+        savePrefs(prefs);
         return true;
     }
 
@@ -144,7 +149,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     ret = fs_stat(path, &entry);
     LOG_DBG("loadPrefs: file size = %d bytes", ret < 0 ? 0 : (int)entry.size);
 
-    uint8_t pad[8];
+    uint8_t pad[25];
 
     /* Read prefs in same format as Arduino CommonCLI for compatibility */
     fs_read(&file, &prefs.airtime_factor, sizeof(prefs.airtime_factor));
@@ -168,8 +173,14 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
     fs_read(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_read(&file, &prefs.bw, sizeof(prefs.bw));
-    fs_read(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
-    fs_read(&file, pad, 3);
+    /* 120: leds_disabled, magic-encoded. Formerly agc_reset_interval — see the
+     * LEDS_PREF_* comment in NodePrefs.h for why this is not a bare 0/1.
+     * leds_byte stays 0 (→ LEDs on) if the file is short. */
+    uint8_t leds_byte = 0;
+    fs_read(&file, &leds_byte, sizeof(leds_byte));
+    fs_read(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
+    fs_read(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
+    fs_read(&file, pad, 1);
     fs_read(&file, &prefs.flood_max, sizeof(prefs.flood_max));
     fs_read(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
     fs_read(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
@@ -182,12 +193,39 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
     fs_read(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
     fs_read(&file, prefs.owner_info, sizeof(prefs.owner_info));
+    /* ZephCore extensions — absent in old 290-byte files; fs_read past EOF is a
+     * no-op so these fields keep the initNodePrefs() defaults the caller passed
+     * in (rx_boost=1, rx_duty_cycle=0). The upgrade block below forces
+     * repeater-specific values for old files. */
+    fs_read(&file, &prefs.rx_boost, sizeof(prefs.rx_boost));
+    fs_read(&file, &prefs.rx_duty_cycle, sizeof(prefs.rx_duty_cycle));
+    /* RESERVED — formerly apc_enabled / apc_margin (APC, removed in 1.16.6).
+     * Still consumed so the fields after them stay at their stored offsets. */
+    fs_read(&file, &prefs._reserved_apc_enabled, sizeof(prefs._reserved_apc_enabled));
+    fs_read(&file, &prefs._reserved_apc_margin, sizeof(prefs._reserved_apc_margin));
+    /* Flood hop-ceiling extensions (absent in <296-byte files; the no-op EOF
+     * read leaves the constructor defaults flood_max_unscoped=64, flood_max_advert=8). */
+    fs_read(&file, &prefs.flood_max_unscoped, sizeof(prefs.flood_max_unscoped));
+    fs_read(&file, &prefs.flood_max_advert, sizeof(prefs.flood_max_advert));
+    /* Mesh time sync (absent in <297-byte files; no-op EOF read keeps default 0 = off) */
+    fs_read(&file, &prefs.meshtimesync, sizeof(prefs.meshtimesync));
+    /* Adaptive CAD (absent in <300-byte files; no-op EOF reads keep defaults
+     * auto=0, offset=0, probe_interval=60) */
+    fs_read(&file, &prefs.cad_auto, sizeof(prefs.cad_auto));
+    fs_read(&file, &prefs.cad_offset, sizeof(prefs.cad_offset));
+    fs_read(&file, &prefs.probe_interval, sizeof(prefs.probe_interval));
+    /* cad_busycap absent in <301-byte files; EOF read keeps default 25 */
+    fs_read(&file, &prefs.cad_busycap, sizeof(prefs.cad_busycap));
 
     fs_close(&file);
 
+    /* Only the explicit "off" magic disables LEDs; a legacy AGC interval or an
+     * unwritten byte both mean "on". */
+    prefs.leds_disabled = (leds_byte == LEDS_PREF_OFF) ? 1 : 0;
+
     /* Migrate uninitialized backoff_multiplier (0.0 or NaN) to default */
     if (prefs.backoff_multiplier == 0.0f || prefs.backoff_multiplier != prefs.backoff_multiplier) {
-        prefs.backoff_multiplier = 0.5f;
+        prefs.backoff_multiplier = 0.2f;
     }
 
     LOG_INF("Loaded prefs from %s", path);
@@ -206,6 +244,39 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
         prefs.cr = 8;
         prefs.tx_power_dbm = 22;
     }
+    if (prefs.path_hash_mode > 2) prefs.path_hash_mode = 0;
+    if (prefs.loop_detect > LOOP_DETECT_STRICT) prefs.loop_detect = LOOP_DETECT_MINIMAL;
+    if (prefs.rx_boost > 1) prefs.rx_boost = 0;
+    if (prefs.rx_duty_cycle > 1) prefs.rx_duty_cycle = 0;
+    if (prefs.meshtimesync > 1) prefs.meshtimesync = 0;
+    if (prefs.cad_auto > 1) prefs.cad_auto = 0;
+    if (prefs.cad_offset < CAD_OFFSET_MIN || prefs.cad_offset > CAD_OFFSET_MAX) prefs.cad_offset = 0;
+    if (prefs.probe_interval != 0 && prefs.probe_interval < 10) prefs.probe_interval = 10;
+    if (prefs.cad_busycap > 90) prefs.cad_busycap = 90;
+
+    /* One-time format upgrade: old files (< 294 bytes) never saved the ZephCore
+     * extension fields, and stored path_hash_mode/loop_detect as zero padding.
+     * Apply repeater defaults and re-save so values survive subsequent reboots. */
+    if (ret >= 0 && entry.size < 294) {
+        prefs.rx_boost = 1;
+        prefs.path_hash_mode = 1;
+        prefs.loop_detect = LOOP_DETECT_MODERATE;
+        savePrefs(prefs);
+        LOG_INF("loadPrefs: upgraded prefs format (%d -> 297 bytes)", (int)entry.size);
+    }
+
+    /* Repeater GPS-interval unification migration: before this firmware the
+     * repeater ignored gps_interval (hardcoded 48h), so a stored companion
+     * default (300) was never a deliberate choice. Bump it to the repeater
+     * default once, so now-honoring the field doesn't silently switch existing
+     * units to 5-min GPS polling. (Triggers only on exactly 300; after the
+     * one-time rewrite it won't re-fire. A deliberate 300 on a repeater isn't
+     * reachable via the CLI — use 299/301 if you really want ~5 min.) */
+    if (prefs.gps_interval == CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC) {
+        prefs.gps_interval = CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC;
+        savePrefs(prefs);
+    }
+
     return true;
 }
 
@@ -255,8 +326,14 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
     fs_write(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_write(&file, &prefs.bw, sizeof(prefs.bw));
-    fs_write(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
-    fs_write(&file, pad, 3);
+    /* 120: leds_disabled, magic-encoded (was agc_reset_interval). */
+    {
+        uint8_t leds_byte = prefs.leds_disabled ? LEDS_PREF_OFF : LEDS_PREF_ON;
+        fs_write(&file, &leds_byte, sizeof(leds_byte));
+    }
+    fs_write(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
+    fs_write(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
+    fs_write(&file, pad, 1);
     fs_write(&file, &prefs.flood_max, sizeof(prefs.flood_max));
     fs_write(&file, &prefs.flood_advert_interval, sizeof(prefs.flood_advert_interval));
     fs_write(&file, &prefs.interference_threshold, sizeof(prefs.interference_threshold));
@@ -269,6 +346,23 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.discovery_mod_timestamp, sizeof(prefs.discovery_mod_timestamp));
     fs_write(&file, &prefs.adc_multiplier, sizeof(prefs.adc_multiplier));
     fs_write(&file, prefs.owner_info, sizeof(prefs.owner_info));
+    /* ZephCore extensions */
+    fs_write(&file, &prefs.rx_boost, sizeof(prefs.rx_boost));
+    fs_write(&file, &prefs.rx_duty_cycle, sizeof(prefs.rx_duty_cycle));
+    /* RESERVED — formerly apc_enabled / apc_margin (removed in 1.16.6).
+     * Written back unchanged to hold the layout. */
+    fs_write(&file, &prefs._reserved_apc_enabled, sizeof(prefs._reserved_apc_enabled));
+    fs_write(&file, &prefs._reserved_apc_margin, sizeof(prefs._reserved_apc_margin));
+    /* Flood hop-ceiling extensions (extend the format past 294 bytes) */
+    fs_write(&file, &prefs.flood_max_unscoped, sizeof(prefs.flood_max_unscoped));
+    fs_write(&file, &prefs.flood_max_advert, sizeof(prefs.flood_max_advert));
+    /* Mesh time sync on/off (offset 296) */
+    fs_write(&file, &prefs.meshtimesync, sizeof(prefs.meshtimesync));
+    /* Adaptive CAD (offsets 297-300) */
+    fs_write(&file, &prefs.cad_auto, sizeof(prefs.cad_auto));
+    fs_write(&file, &prefs.cad_offset, sizeof(prefs.cad_offset));
+    fs_write(&file, &prefs.probe_interval, sizeof(prefs.probe_interval));
+    fs_write(&file, &prefs.cad_busycap, sizeof(prefs.cad_busycap));
 
     ret = fs_sync(&file);
     fs_close(&file);
@@ -308,6 +402,17 @@ bool RepeaterDataStore::formatFileSystem() {
         fs_unlink(path);
     }
     fs_closedir(&dir);
+
+#if FIXED_PARTITION_EXISTS(storage_partition)
+    /* Erase the NVS bonds partition too — a factory reset should clear BLE
+     * bonds, not just repeater files.  Caller reboots so NVS re-inits clean. */
+    const struct flash_area *fap;
+    if (flash_area_open(PARTITION_ID(storage_partition), &fap) == 0) {
+        LOG_INF("Formatting NVS storage (%u bytes)", (unsigned)fap->fa_size);
+        flash_area_flatten(fap, 0, fap->fa_size);
+        flash_area_close(fap);
+    }
+#endif
 
     LOG_INF("Repeater data erased");
     return true;

@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 # T1000-E uses J-Link or UF2 bootloader
 board_runner_args(jlink "--device=nRF52840_xxAA" "--speed=4000")

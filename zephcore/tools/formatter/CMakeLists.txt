@@ -1,4 +1,4 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 # ZephCore Flash Formatter — erases all filesystem partitions, reboots to UF2 DFU.
 #
 # Build:  west build -b rak4631/nrf52840 zephcore/tools/formatter --pristine
@@ -54,7 +54,43 @@ endif()
 message(STATUS "Formatter board overlay: ${FORMATTER_BOARD_OVERLAY}")
 message(STATUS "Formatter board conf: ${FMT_BOARD_CONF}")
 
+# Read the SoftDevice firmware ID from the MAIN board.conf for this board.
+# The Adafruit bootloader rejects a DFU package whose --sd-req doesn't match the
+# SoftDevice it's running, which is exactly the guard we want: the SDv6 formatter
+# must never apply to an SDv7 node (wrong partition map = corrupted node).
+#   SoftDevice v6 -> 0x00B6      SoftDevice v7 -> 0x0123
+file(GLOB_RECURSE MAIN_BOARD_CONF_CANDIDATES
+     "${CMAKE_CURRENT_SOURCE_DIR}/../../boards/*/${BOARD_BASE}/board.conf")
+if(MAIN_BOARD_CONF_CANDIDATES)
+    list(GET MAIN_BOARD_CONF_CANDIDATES 0 MAIN_BOARD_CONF)
+    file(STRINGS "${MAIN_BOARD_CONF}" _sd_fwid_line REGEX "^CONFIG_ZEPHCORE_SD_FWID=")
+    if(_sd_fwid_line)
+        string(REGEX REPLACE "^CONFIG_ZEPHCORE_SD_FWID=" "" FORMATTER_SD_REQ "${_sd_fwid_line}")
+    endif()
+endif()
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(zephcore_formatter)
 
 target_sources(app PRIVATE src/main.c src/qspi_probe.c)
+
+# Generate an Adafruit DFU package (.zip) next to the .uf2. The .zip is what the
+# Mesh America configurator uses for its automated `erase` flow (spec §4a); the
+# .uf2 remains the manual drag-and-drop fallback. See PROVIDER_CATALOG.md.
+find_program(ADAFRUIT_NRFUTIL adafruit-nrfutil)
+if(ADAFRUIT_NRFUTIL AND FORMATTER_SD_REQ)
+  add_custom_target(dfu_zip ALL
+    COMMAND ${ADAFRUIT_NRFUTIL} dfu genpkg
+      --dev-type 0x0052
+      --sd-req ${FORMATTER_SD_REQ}
+      --application ${CMAKE_BINARY_DIR}/zephyr/zephyr.hex
+      ${CMAKE_BINARY_DIR}/zephyr/zephyr.zip
+    DEPENDS ${CMAKE_BINARY_DIR}/zephyr/zephyr.hex
+    COMMENT "Generating formatter DFU package: zephyr.zip (sd-req=${FORMATTER_SD_REQ})"
+    VERBATIM
+  )
+  add_dependencies(dfu_zip zephyr_final)
+  message(STATUS "Formatter DFU zip: ENABLED (sd-req=${FORMATTER_SD_REQ})")
+else()
+  message(STATUS "Formatter DFU zip: DISABLED (adafruit-nrfutil or SD_FWID missing)")
+endif()

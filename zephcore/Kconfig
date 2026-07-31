@@ -1,6 +1,9 @@
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 source "$(ZEPHYR_BASE)/Kconfig.zephyr"
+
+# DT-driven PSRAM auto-enable for ESP32 boards (see Kconfig.psram).
+rsource "Kconfig.psram"
 
 module = ZEPHCORE_MAIN
 module-str = zephcore_main
@@ -48,6 +51,17 @@ source "$(ZEPHYR_BASE)/subsys/logging/Kconfig.template.log_config"
 
 menu "ZephCore"
 
+config ZEPHCORE_RESET_ON_FATAL_ERROR
+	bool "Reboot on fatal error"
+	default y
+	help
+	  Cold-reboot instead of halting when a fatal error occurs (CPU
+	  exception, stack overflow, k_panic, kernel oops).  Production default;
+	  turn it off (boards/common/debug.conf does) so a debugger can inspect
+	  the halted core.  Implemented via a k_sys_fatal_error_handler()
+	  override in helpers/fatal_reboot.c — Zephyr has no built-in Kconfig
+	  for this.
+
 menu "Device Role"
 
 choice ZEPHCORE_ROLE
@@ -80,13 +94,62 @@ config ZEPHCORE_ROLE_OBSERVER
 	  IATA location code) are configured at runtime via serial CLI
 	  and stored in LittleFS. No BLE, no advertising, no routing.
 
+config ZEPHCORE_ROLE_ROOM_SERVER
+	bool "Room Server (shared BBS, USB serial CLI)"
+	help
+	  Store-and-forward shared message room (a "BBS").  Clients log in
+	  with an admin or guest password and post messages; the server
+	  pushes each new post to all other logged-in clients and tracks a
+	  per-client sync cursor.  No BLE — configured via USB serial CLI.
+	  Reuses the repeater's ACL, region filtering and CLI command set.
+
 endchoice
 
-if ZEPHCORE_ROLE_REPEATER
+config ZEPHCORE_COMPANION_USB
+	bool "Enable USB CDC companion transport"
+	depends on USB_DEVICE_STACK_NEXT
+	default y if ZEPHCORE_ROLE_COMPANION
+	help
+	  Compile and init the USB CDC-ACM companion protocol stack
+	  (ZephyrCompanionUSB / ZephyrUSBCDC) independently of CONFIG_LOG.
+	  The full ~60-opcode binary protocol is available over USB even in
+	  production builds (CONFIG_LOG=n).  USB and BLE arbitrate the active
+	  interface first-come-first-served: CMD_APP_START claims it for USB only
+	  if no BLE session is already active (and is ignored while BLE is live);
+	  on USB unplug the interface is handed back to BLE or released to idle.
+
+	  Enabled by default for all companion builds on platforms that already
+	  have CONFIG_USB_DEVICE_STACK_NEXT=y (all nRF52840 boards).  On
+	  platforms without USB hardware (MG24, ESP32 classic, C3/C6) the
+	  depends forces this to n automatically — no conf change needed.
+
+	  For ESP32-S3 boards, USB_DEVICE_STACK_NEXT must be enabled first via
+	  boards/common/esp32s3_usb.conf before this becomes active.
+
+config ZEPHCORE_COMPANION_SERIAL
+	bool "Enable plain-UART companion transport"
+	depends on ZEPHCORE_ROLE_COMPANION && !ZEPHCORE_COMPANION_USB
+	help
+	  Run the same wired-companion stack (ZephyrCompanionUSB: frame parser,
+	  TX ring, text CLI, BLE-arbitrated interface) over a plain UART instead
+	  of a native-USB CDC-ACM endpoint.  For boards whose USB-C is wired to a
+	  USB-UART bridge rather than the SoC's native USB (e.g. Heltec V3 /
+	  CP2102), or that have no USB device controller at all.
+
+	  The board points the transport at its UART with the
+	  `zephcore,companion-uart` chosen node (e.g. = &uart0); that UART must be
+	  dedicated to the companion (console/shell moved off or disabled), since
+	  the protocol stream and a text console cannot share one line.  Coexists
+	  with BLE exactly like the USB backend — same first-come arbitration.
+
+	  Distinct from the legacy SerialCompanionTransport (no-BLE STM32WL path):
+	  this one keeps BLE and adds the text CLI.
+
+if ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 
 config ZEPHCORE_REPEATER_UPLINK
 	bool "Enable repeater WiFi+MQTT uplink"
-	depends on SOC_FAMILY_ESPRESSIF_ESP32
+	depends on ZEPHCORE_ROLE_REPEATER && SOC_FAMILY_ESPRESSIF_ESP32
 	default n
 	help
 	  Adds observer-style WiFi station and MQTT packet publishing to
@@ -102,10 +165,11 @@ config ZEPHCORE_MAX_CLIENTS
 
 config ZEPHCORE_MAX_NEIGHBOURS
 	int "Maximum tracked neighbors"
-	default 16
+	default 50
 	help
 	  Maximum number of neighboring repeaters to track.
 	  Set to 0 to disable neighbor tracking.
+	  Default 50 matches upstream Arduino MeshCore repeater variants.
 
 config ZEPHCORE_MAX_REGION_ENTRIES
 	int "Maximum region entries"
@@ -127,7 +191,40 @@ config ZEPHCORE_GUEST_PASSWORD
 	help
 	  Default password for guest access. Empty string disables guest access.
 
-endif # ZEPHCORE_ROLE_REPEATER
+config ZEPHCORE_MAX_UNSYNCED_POSTS
+	int "Room server: max buffered posts"
+	default 32
+	depends on ZEPHCORE_ROLE_ROOM_SERVER
+	help
+	  Size of the room server's circular post buffer.  When full, the
+	  oldest unsynced post is overwritten.  Matches upstream MeshCore (32).
+
+endif # ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
+
+config ZEPHCORE_TIMESYNC_QUORUM
+	int "Mesh time sync: consensus quorum"
+	default 6
+	range 3 32
+	help
+	  Minimum eligible advert senders required before a mesh time-sync
+	  consensus may step the clock (a strict majority of them must also
+	  agree). Each quorum unit costs a local attacker one more physical
+	  radio sustained for tenure-hours, so lowering this trades eclipse
+	  resistance for coverage on small meshes (e.g. 7 repeaters = exactly
+	  6 potential voters). Floor 3 matches the bootstrap quorum — below
+	  that the interval intersection degenerates. Deliberately a build-time
+	  knob, not a runtime pref: this is a security parameter.
+
+config ZEPHCORE_TIMESYNC_TABLE_SIZE
+	int "Mesh time sync: sample table slots"
+	default 16 if ZEPHCORE_ROLE_COMPANION
+	default 32
+	range 8 64
+	help
+	  Per-sender advert sample slots (24 bytes each) for the mesh
+	  time-sync consensus. 32 fits dense neighborhoods; companions
+	  default to 16 (RAM-bound role). Must be at least the quorum for
+	  normal-mode stepping to be reachable.
 
 endmenu # Device Role
 
@@ -181,11 +278,14 @@ config ZEPHCORE_BLE_PASSKEY
 
 config ZEPHCORE_BLE_QUEUE_SIZE
 	int "BLE TX/RX message queue depth"
-	default 12
+	default 24
 	range 4 64
 	help
 	  Number of frames that can be queued for BLE TX/RX.
 	  Larger = better buffering for bursty traffic, more RAM.
+	  24 absorbs the app's bursty CMD_GET_CHANNEL pipelining during
+	  channel sync (it fires up to MAX_CHANNELS requests back-to-back);
+	  at 12 the recv queue overran and dropped requests, stalling sync.
 
 config ZEPHCORE_BLE_CONN_MIN_INTERVAL
 	int "BLE minimum connection interval (units: 1.25ms)"
@@ -227,17 +327,153 @@ config ZEPHCORE_BLE_ADV_SLOW_INTERVAL
 	  Advertising interval in 0.625ms units.
 	  338 = 211.25ms (Apple-compliant, used after 60s fast window).
 
+config ZEPHCORE_BLE_DFU
+	bool "Buttonless BLE DFU (legacy Nordic/Adafruit OTA jump)"
+	depends on SOC_SERIES_NRF52
+	default y
+	help
+	  Register the legacy Nordic DFU service (00001530/00001531) in the
+	  running companion app so a paired phone can trigger the jump into the
+	  Adafruit bootloader's BLE OTA mode without pressing a button. On a write
+	  of 0x01 to the control point the device sets the bootloader GPREGRET
+	  magic (0xA8) and resets; the bootloader then advertises for DFU and the
+	  phone's DFU tool reconnects to flash. nRF52 only.
+
 endmenu # BLE Configuration
+
+menu "Linux Companion Transport (native_sim)"
+
+config ZEPHCORE_TRANSPORT_TCP
+	bool "Use TCP socket transport instead of BLE NUS"
+	default n
+	help
+	  Replaces the ZephyrBLE adapter with LinuxTCPTransport, exposing
+	  the companion NUS protocol over a TCP socket on Linux SBC builds
+	  (BOARD=native_sim). Auto-enabled by boards/linux_native/linux_common.conf.
+
+	  The wire format is MeshCore's SerialWifiInterface framing:
+	  ['<'][len_LSB][len_MSB][NUS payload] app->node and ['>']... node->app.
+
+config ZEPHCORE_LINUX_TCP_PORT
+	int "TCP listen port"
+	depends on ZEPHCORE_TRANSPORT_TCP
+	default 5000
+	range 1 65535
+	help
+	  Port the companion TCP transport binds to. Default 5000 matches
+	  the upstream MeshCore Linux companion service so a single mobile
+	  app TCP configuration works against both backends.
+
+endmenu # Linux Companion Transport
 
 endif # ZEPHCORE_ROLE_COMPANION
 
 config ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
 	int "Periodic housekeeping interval (ms)"
+	depends on ZEPHCORE_ROLE_COMPANION || ZEPHCORE_ROLE_ROOM_SERVER
 	default 5000
 	range 1000 60000
 	help
 	  Wake interval for noise floor calibration, battery reads, and UI refresh.
 	  Longer = lower power, less responsive monitoring.
+
+	  Companion and room server only.  Both still run a fixed periodic tick:
+	  the companion's block contains genuine pollers (contact-dump progress,
+	  BLE advertising watchdog) that have no deadline to arm, and the room
+	  server is paced by its own 500 ms push timer regardless.  Repeaters are
+	  deadline-driven instead — see ZEPHCORE_MAINTENANCE_BACKSTOP_MS.
+
+config ZEPHCORE_MAINTENANCE_BACKSTOP_MS
+	int "Repeater maintenance backstop (ms)"
+	depends on ZEPHCORE_ROLE_REPEATER
+	default 60000
+	range 15000 600000
+	help
+	  Hard ceiling on how long a repeater will go without a maintenance pass.
+
+	  main_repeater.cpp arms a one-shot wake at the soonest deadline reported
+	  by msUntilNextMaintenance(), then clamps it to this value.  The clamp is
+	  UNCONDITIONAL, so this is a safety net against a deadline that is missed
+	  or mis-reported — not a value that should ever bind in normal operation.
+
+	  MUST stay above the radio measurement interval ("set probe.interval",
+	  default 15 s; ZEPHCORE_NOISE_FLOOR_INTERVAL_MS when probing is off) —
+	  the shortest recurring deadline on an idle repeater.  Set at or below it
+	  and this silently becomes the wake period, reproducing the old fixed 5 s
+	  tick and making the deadline scheduling a no-op.  That is exactly the bug
+	  the original 5000 default shipped with.
+
+	  Lowering it costs wakes without improving responsiveness — real work is
+	  already scheduled at its own deadline.  Raising it widens the window in
+	  which a scheduling bug goes unnoticed.
+
+config ZEPHCORE_NOISE_FLOOR_INTERVAL_MS
+	int "Default radio measurement interval (ms)"
+	default 15000
+	range 1000 120000
+	help
+	  Fallback cadence for periodic radio measurements — the noise-floor RSSI
+	  sample and the CAD probe that consumes it.
+
+	  This is only the DEFAULT.  At runtime the "probe.interval" pref governs
+	  both (see set probe.interval); this value applies when that pref is 0,
+	  i.e. CAD probing is switched off but the floor sampler still has to run.
+
+	  This used to be implicit: the sampler ran once per housekeeping tick, so
+	  it inherited that 5 s period.  The sampler lives in shared radio code, so
+	  roles that still tick periodically (companion, room server) keep 5000 —
+	  raising it there would change their RF tracking for no power gain, since
+	  their housekeeping timer wakes them at 5 s regardless.
+
+	  Repeaters use 15 s, matching ZEPHCORE_CAD_PROBE_INTERVAL — the only other
+	  recurring radio deadline — so the two do not interleave into separate
+	  wakes any more often than they have to.
+
+	  On a repeater this is one of the two shortest recurring deadlines, so it
+	  bounds how long the SoC can sleep between wakes.  Raising it stretches
+	  EMA warmup (8 samples) and the every-16th-sample unguarded bypass by the
+	  same factor: at 15000 warmup is ~2 min and the bypass ~4 min apart; at
+	  30000, ~4 min and ~8 min.  Past 15000 the CAD probe becomes the binding
+	  deadline instead, so raise both or neither.
+
+config ZEPHCORE_PM_BOOT_AWAKE_MS
+	int "Block light sleep for this long after boot (ms)"
+	depends on PM && SOC_FAMILY_ESPRESSIF_ESP32
+	default 600000
+	range 0 3600000
+	help
+	  How long after boot the SoC refuses to light-sleep, so the USB console
+	  is guaranteed reachable for a configuration session.
+
+	  This exists because nothing arms a UART wake source on ESP32 — see
+	  helpers/pm_esp32_console.c.  Once the window closes, characters typed at
+	  a sleeping node are DROPPED and the CLI stops answering over USB until
+	  the board resets.  In practice connecting a terminal usually does reset
+	  it (the USB bridge drives EN from DTR), which re-arms the window.
+
+	  0 disables the window entirely — the node may sleep immediately after
+	  boot, and the USB console becomes unusable except in the instants it
+	  happens to be awake.  Do not set 0 on a board you still need to
+	  configure.
+
+	  Raising it costs only the extra awake time at the start of each boot.
+
+config ZEPHCORE_PM_CONSOLE_UART_NUM
+	int "Console UART index flushed before light sleep"
+	depends on PM && SOC_FAMILY_ESPRESSIF_ESP32
+	default 0
+	range 0 2
+	help
+	  Hardware UART index (not a DT node) passed to
+	  esp_rom_uart_tx_wait_idle() before entering light sleep, so a line in
+	  the TX FIFO is not cut off mid-character by the clock stopping.
+
+	  0 is correct for every board this is currently enabled on: their
+	  console is uart0, whether via a USB-serial bridge (Heltec V3/V4/V4.3)
+	  or the ROM-default pads.  Change it only if a board's console is moved
+	  to another hardware UART — a wrong index does not fail the build, it
+	  just silently flushes the wrong peripheral and lets the console
+	  truncate again.
 
 menu "Radio Configuration"
 
@@ -315,14 +551,16 @@ config ZEPHCORE_MAX_TX_POWER_DBM
 	  Example: Station G2 caps at 19 dBm to stay below PA P1dB (35 dBm).
 
 config ZEPHCORE_SX126X_HELTEC_REG_PATCH
-	bool "Apply undocumented SX126x register 0x8B5 RX improvement (Heltec V4)"
+	bool "Apply undocumented SX126x register 0x8B5 RX improvement (external PA/FEM)"
 	depends on ZEPHCORE_RADIO_NATIVE
 	default n
 	help
 	  Sets the LSB of undocumented register 0x8B5 after the first lora_config().
 	  Described by Heltec engineer @Quency-D in MeshCore PR#1398 — consistently
 	  improves RX reception on boards with GC1109 or KCT8103L PA (Heltec V4/V4.3).
-	  Enable in board.conf for Heltec V4 boards.
+	  Upstream MeshCore also enables it for the RAK3401's SKY66122 FEM, so it is
+	  not Heltec-specific despite the symbol name. Enable in board.conf for boards
+	  with an external PA/FEM in the RX path.
 
 endmenu # Radio Configuration
 
@@ -393,45 +631,92 @@ menu "LoRa Power Saving"
 
 config ZEPHCORE_LORA_RX_DUTY_CYCLE
 	bool "Enable LoRa RX duty cycle power saving"
-	default y if (ZEPHCORE_ROLE_COMPANION || ZEPHCORE_ROLE_REPEATER) && !ZEPHCORE_RADIO_LR1110 && !ZEPHCORE_RADIO_LR2021 && !ZEPHCORE_RADIO_SX127X
 	default n
 	help
-	  Enable RX duty cycling for power saving on battery-powered devices.
-	  Uses RadioLib's algorithm to calculate optimal timing based on SF/BW.
+	  Enable RX duty cycling (chip-autonomous sniff mode) for power
+	  saving on battery-powered devices.  This sets the boot default;
+	  it can be toggled at runtime via CLI "set rxduty on/off".
 
-	  Auto-enabled for companion and repeater devices with SX1262/LLCC68
-	  radios.  Duty cycle mode also resets AGC state after every received
-	  packet via Calibrate(ALL), preventing the "near-far" gain-lock
-	  problem where a strong signal desensitises the receiver.
-	  Disabled for LR1110 (cannot lock on mid-preamble, causes packet
-	  loss) and LR2021 (untested — enable manually after verifying no
-	  packet loss).  Can be toggled at runtime via CLI.
+	  Window timing is computed per SF/BW/preamble from primary-source
+	  constraints (SX1261/2 datasheet sec 13.1.7, AN1200.36): the deaf
+	  time per cycle (sleep + TCXO/PLL wake transition) never exceeds
+	  the budget needed to guarantee one full detection window inside
+	  the sender's preamble, and the post-detect timer budget
+	  (2*rxPeriod + sleepPeriod) always covers preamble + header.
+	  With a 32-symbol sender preamble (current MeshCore firmware at
+	  SF<=8) this yields ~40-55% radio-off time with zero loss against
+	  updated senders.  Presets whose preamble is too short for a
+	  guaranteed catch (16 symbols at SF>=9) automatically fall back to
+	  continuous RX — no fake duty cycling.
 
-	  The key insight is that LoRa preamble symbols are all identical,
-	  so CAD/RX can detect preamble even if we wake mid-stream. The
-	  algorithm ensures we always catch at least 8 symbols regardless
-	  of when we wake within the preamble window.
+	  Caveat for mixed meshes: nodes still on pre-preamble-32 firmware
+	  (16 symbols at SF<=8) are only caught ~50% worst-phase.  Keep
+	  this off on infrastructure until the local mesh has converted.
+	  Floods are usually re-heard via updated repeaters; direct
+	  messages from legacy nodes are the real exposure.
 
-	  Power savings: ~60-70% reduction in RX current (10-15mA to 3-5mA).
+	  Duty cycle mode also resets AGC state on entry via
+	  Calibrate(ALL), pins the boosted RX gain into the warm-start
+	  retention list (datasheet sec 9.6, mandatory for SetRxDutyCycle),
+	  and runs a parked-RX watchdog that re-arms the cycle after a
+	  false preamble detect (inspect via CLI "get dc.restarts").
 
-	  Can be toggled at runtime via CLI "set rxduty on/off".
+	  LR1110/LR20xx use the same chip-level SetRxDutyCycle MODE_RX
+	  (identical preamble-detect-and-extend mechanism) sized by the same
+	  adapter math; the LR1110's earlier "broken" status was a window-
+	  sizing bug, not a chip defect. Both are wired but HW-unverified —
+	  confirm no packet loss on a live board before trusting in
+	  production. LR1110 has no infinite-park failure mode (its DC uses a
+	  bounded 2*rx+sleep timeout), so it re-arms via the normal RX-timeout
+	  path rather than the SX126x watchdog.
 
-config ZEPHCORE_APC
-	bool "Adaptive Power Control (APC)"
-	default n
+config ZEPHCORE_LORA_DC_MIN_SYMBOLS
+	int "RX duty cycle: preamble symbols required for detection"
+	range 4 16
+	default 8
 	help
-	  Automatically reduce TX power when echo packets from neighbors
-	  indicate excess SNR margin. Saves battery and reduces channel
-	  congestion. Ramps back to full power within 2 minutes if no
-	  echoes are heard.
+	  Minimum LoRa preamble symbols that must land inside one open RX
+	  window for detection to be considered guaranteed.  8 is Semtech's
+	  own figure for sniff mode (AN1200.36 sec 4); their time-synced
+	  LoRaWAN stacks budget 6.  Raise to 10-12 to trade radio-off time
+	  for extra detection margin on very noisy sites.  SF5/6 adds +4
+	  internally.  Lowering below 8 risks missed packets at low SNR.
 
-	  Uses rogue-filtering: clusters echo SNRs to avoid one badly
-	  placed high-SNR neighbor from over-reducing power.
-
-	  Off by default. Enable with CONFIG_ZEPHCORE_APC=y in board.conf
-	  or via EXTRA_CONF_FILE.
+config ZEPHCORE_LORA_DC_MARGIN_PCT
+	int "RX duty cycle: sleep-budget safety margin (percent)"
+	range 0 40
+	default 15
+	help
+	  Percentage the per-cycle deaf-time budget is derated before the
+	  sleep period is programmed.  The theoretical catch budget assumes
+	  the sleep clock and wake transition are exact, but the chip's sleep
+	  timer runs on an internal RC oscillator (RC64k on SX126x, RTC on
+	  LR11xx) that drifts several percent over temperature, and the wake-
+	  transition estimate is a datasheet figure the datasheet itself calls
+	  "not accurate and may vary".  Either overshoot silently pushes real
+	  deaf time past the budget and drops the fraction of packets whose
+	  preamble phase aligns with the window edge — signal-strength-
+	  independent loss that presents as random DC packet drops.  This
+	  margin trades a little radio-off time for that robustness and is
+	  shared by every radio (SX126x / LR11xx / LR20xx).  Set to 0 to
+	  restore the old zero-margin behaviour; 15% is a conservative default,
+	  lower it once you have measured your board's clock+transition on air.
 
 endmenu
+
+config ZEPHCORE_RTC_AUTODISCOVER
+	bool "Auto-discover a hardware I2C RTC at boot"
+	default y
+	depends on I2C
+	help
+	  Probe I2C RTC chips declared with the "zephcore,rtc-i2c" binding
+	  (DS3231 / PCF8563 / RV3028 / RX8130CE). Boards with a battery/cap-
+	  backed RTC opt in by including boards/common/rtc-i2c.dtsi; if a chip
+	  holds a valid time it is restored at boot — shown tagged "L" until the
+	  next external sync. On every GPS/app/CLI sync the time is written back
+	  so it survives power-off. Compact raw-I2C reader (no Zephyr RTC
+	  subsystem). Safe to leave on: a board with no rtc-i2c.dtsi include has
+	  no RTC nodes and compiles to nothing.
 
 menu "GPS Configuration"
 
@@ -445,11 +730,39 @@ config ZEPHCORE_GPS_POLL_INTERVAL_SEC
 
 config ZEPHCORE_GPS_FIX_TIMEOUT_SEC
 	int "GPS fix acquisition timeout in seconds"
-	default 30
+	default 120
 	range 10 300
 	help
 	  Maximum time to wait for GPS fix before giving up.
 	  GPS will be powered off after this timeout.
+	  Default 120s — 30s was too aggressive for Air530Z / MAX-7Q warm
+	  starts in marginal sky conditions; the acquire loop would time out
+	  before the 3-consecutive-good-fix gate could promote. Only applies
+	  to wake cycles after the first successful fix since enable.
+
+config ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC
+	int "GPS first-acquisition timeout in seconds"
+	default 300
+	range 30 1800
+	help
+	  Bounded window for the FIRST position fix after GPS is enabled
+	  (cold start). Longer than the normal fix timeout because a cold
+	  start may need to download almanac data. If no fix is acquired in
+	  this window the node drops into the normal duty cycle anyway, so
+	  the GPS can never stay powered indefinitely with no sky view.
+	  Default 300s (5 minutes). Companion mode only; repeaters use a
+	  fixed 5-minute time-sync window.
+
+config ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
+	int "Repeater GPS duty interval in seconds (boot default)"
+	default 172800
+	range 0 604800
+	help
+	  Default GPS standby interval for repeaters/room servers: how often
+	  the GPS wakes for a time-sync fix. Default 172800s (48 hours).
+	  0 = always-on (never sleeps). Applied at boot until the operator
+	  overrides it with "set gps duty <sec>" (persisted to flash).
+	  Companions default to ZEPHCORE_GPS_POLL_INTERVAL_SEC (300s) instead.
 
 endmenu
 
@@ -462,7 +775,7 @@ config ZEPHCORE_WIFI_OTA
 	  Enable WiFi AP + HTTP server for OTA firmware updates.
 	  Auto-enabled for ESP32 repeater builds via wifi_ota.conf.
 
-	  When "start ota" is issued, starts WiFi AP "MeshCore-OTA"
+	  When "start ota" is issued, starts WiFi AP "ZephCore-OTA"
 	  and HTTP server. User uploads firmware via browser at
 	  http://192.168.100.1/update. Requires MCUboot (--sysbuild).
 
@@ -470,7 +783,7 @@ if ZEPHCORE_WIFI_OTA
 
 config ZEPHCORE_OTA_AP_SSID
 	string "WiFi AP SSID for OTA"
-	default "MeshCore-OTA"
+	default "ZephCore-OTA"
 	help
 	  SSID of the WiFi access point started for OTA updates.
 	  Open network (no password), matching Arduino behavior.
@@ -537,15 +850,165 @@ config ZEPHCORE_UI_DISPLAY_AUTO_OFF_MS
 	  Time in milliseconds before the display turns off
 	  after the last user interaction. Set to 0 to disable.
 
+config ZEPHCORE_UI_TIME_SOURCE_FRESH_HOURS
+	int "Clock source tag freshness window (hours)"
+	default 12
+	help
+	  The top-bar clock shows a one-character source tag: G (GPS),
+	  A (app), N (network/SNTP). If the most recent sync from one of
+	  those sources is older than this many hours, the tag falls back
+	  to L (local) — the RTC is free-running on its own oscillator.
+	  Set to 0 to keep the last external source tag indefinitely
+	  (no freshness expiry). Drift on a 50 ppm crystal is ~4 s/day,
+	  so this is a trust/freshness signal, not an accuracy limit.
+
+config ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS
+	int "Low-battery auto-shutdown threshold (mV, 0 = disabled)"
+	default 3300 if SOC_SERIES_NRF52
+	default 0
+	help
+	  Companion only. When the battery falls below this voltage the device
+	  shows a brief "Low Battery / Shutting Down" notice (3 s on OLED;
+	  e-paper persists without delay) and enters System OFF to protect the
+	  cell from over-discharge. The check piggybacks the existing periodic
+	  housekeeping tick (no extra polling) and is skipped while externally
+	  powered (USB/charger) via MainBoard::isExternalPowered().
+
+	  3300 mV is ~10% SoC on the default LiPo curve (battery_curve.c) — a
+	  protective floor that still leaves headroom for the under-load voltage
+	  sag during a TX burst. Requires CONFIG_POWEROFF to actually power down.
+
+	  This is only the boot DEFAULT: the value is copied into prefs and is
+	  tunable at runtime over the USB CLI ("set autoshutdown <mv>" /
+	  "get autoshutdown", 0 = off or 1-5000 mV), persisted to flash.
+
+	  Defaults ON (3300) for nRF52 only: that is where isExternalPowered()
+	  reads VBUS, so the "plugged in" gate actually works. ESP32 / MG24 /
+	  nRF54L stay at 0 (off) — isExternalPowered() is a stub there, so a
+	  USB/mains-powered node could otherwise self-shutdown on a low ADC
+	  reading. Set explicitly per board to enable once VBUS detect exists.
+
+config ZEPHCORE_UI_CONFIRM_WINDOW_MS
+	int "Double-press confirmation window (ms)"
+	default 500
+	depends on ZEPHCORE_UI_DISPLAY
+	help
+	  Maximum time between the two KEY_ENTER presses that confirm
+	  destructive actions (shutdown, DFU, offgrid toggle).  The default
+	  500 ms suits boards where ENTER is a direct short tap.  Boards
+	  with only one button that emit ENTER via a zephyr,input-longpress
+	  filter (T-Echo, RAK4631 Pocket) need a longer window — two
+	  1 s holds plus the release gap do not fit in 500 ms.  Set to
+	  3000 on such boards.
+
+config ZEPHCORE_DISPLAY_INSET
+	int "Display inset margin (pixels)"
+	default 0
+	depends on ZEPHCORE_UI_DISPLAY
+	help
+	  Shrink the usable drawing area by this many pixels on each side.
+	  mc_display_width/height() report the reduced size and all draw
+	  primitives are offset by this amount.  Useful on panels (e.g.
+	  LilyGo T-Echo SSD1681) where the outermost rows/columns show
+	  hardware artefacts — a small inset hides them behind a clean
+	  background margin.  Set to 0 on boards without edge artefacts.
+
+config ZEPHCORE_DISPLAY_EPD_FULL_REFRESH_INTERVAL
+	int "E-paper full-refresh interval (partial refreshes)"
+	default 16
+	depends on ZEPHCORE_UI_DISPLAY
+	help
+	  On e-paper panels, partial refreshes never fully clear the previous
+	  image, so ghosting accumulates where text changes most (status bar
+	  name/time/battery).  After this many partial refreshes, perform one
+	  full refresh to clear the panel.  A full refresh is the ~2 s
+	  black/white flash, so keep this large enough that it isn't constant
+	  but small enough that ghosting never becomes unreadable.  Set to 0 to
+	  disable periodic full refreshes (partial-only — accumulates ghosting).
+	  Ignored on non-EPD displays (OLED/TFT never ghost).
+
+config ZEPHCORE_DISPLAY_LARGE_FONT
+	bool "Use a larger built-in CFB font"
+	default n
+	depends on ZEPHCORE_UI_DISPLAY && CHARACTER_FRAMEBUFFER_USE_DEFAULT_FONTS
+	help
+	  Select the smallest Zephyr built-in CFB font whose height is
+	  >= 16 pixels (typically the 10x16 font).  Intended for larger
+	  e-paper panels (T-Echo, ThinkNode M1) where the default 6x8
+	  glyph is too small to read comfortably.  The ui_pages.c layout
+	  auto-centers its content rows using the active font height, so
+	  no per-page changes are needed.  Requires Zephyr's default CFB
+	  fonts to be compiled in (CONFIG_CHARACTER_FRAMEBUFFER_USE_DEFAULT_FONTS).
+
+config ZEPHCORE_DISPLAY_MONO_TFT
+	bool "Monochrome TFT wrapper (MONO01 => RGB565)"
+	default y if DT_HAS_ZEPHCORE_MONO_TFT_ENABLED
+	depends on DT_HAS_ZEPHCORE_MONO_TFT_ENABLED
+	help
+	  Wraps an RGB TFT (e.g. ST7789V) as a PIXEL_FORMAT_MONO01 display.
+	  CFB allocates x*y/8 bytes (~4 KB for 240×135) instead of ~64 KB RGB565,
+	  making a colour TFT viable on RAM-constrained devices like the nRF52840.
+	  On display_write(), converts 1bpp row-major MONO01 to RGB565 row by row.
+	  Auto-enabled when a "zephcore,mono-tft" device exists in the devicetree.
+
 config ZEPHCORE_EASTER_EGG_DOOM
 	bool "Enable Doom raycaster easter egg"
 	default n
 	depends on ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_BUTTONS
 	help
 	  Hidden easter egg: Wolf3D-style raycaster on the OLED.
-	  Activate with double-click + single-click joystick center
-	  on the first page. Double-click to exit.
+	  Button UI: triple-press ENTER on the Messages page.
+	  Joystick UI: open the Tools menu and select "Doom".
+	  Press BACK/ESC to exit.
 	  Adds ~5KB flash and ~1.7KB RAM when enabled.
+
+config ZEPHCORE_UI_JOYSTICK
+	bool
+	help
+	  Set by board-level Kconfig when the hardware has a 5-way joystick or
+	  D-pad. Not user-selectable; set by the board configuration.
+	  Follows the same pattern as ZEPHCORE_UI_BUTTONS and ZEPHCORE_UI_DISPLAY.
+
+config ZEPHCORE_UI_KEYBOARD
+	bool
+	help
+	  Set by board-level Kconfig when the hardware has a full keyboard
+	  (e.g. ThinkNode M9's STC8H matrix MCU on I2C). Not user-selectable.
+
+	  A keyboard is a superset of a joystick — it supplies arrows, enter
+	  and escape — so it drives the same full companion UI rather than a
+	  separate one. Selecting this makes ZEPHCORE_UI_DESIGN_JOYSTICK
+	  available on a board that has no 5-way stick.
+
+	  Selected by ThinkNode M9. The STC8H driver is helpers/input/
+	  stc8h_keypad.c; the keypad's arrow-key codes are still unknown, so
+	  the driver logs any code it does not recognise (see its header).
+	  The key-space reservation in helpers/ui-joystick/joystick_defs.h is
+	  the groundwork that makes them droppable in later.
+
+config ZEPHCORE_UI_DESIGN_BUTTON
+	bool "Button-based page UI"
+	default y if (ZEPHCORE_UI_BUTTONS || ZEPHCORE_UI_DISPLAY || ZEPHCORE_UI_BUZZER) && !ZEPHCORE_UI_DESIGN_JOYSTICK
+	depends on (ZEPHCORE_UI_BUTTONS || ZEPHCORE_UI_DISPLAY || ZEPHCORE_UI_BUZZER) && !ZEPHCORE_UI_DESIGN_JOYSTICK
+	help
+	  Compile the default page-based button UI (helpers/ui-button/).
+	  Auto-selected when any UI hardware is present and the joystick UI
+	  design is not active. Disable to supply a custom ui_task.h
+	  implementation without touching this Kconfig.
+
+config ZEPHCORE_UI_DESIGN_JOYSTICK
+	bool "Full companion UI (joystick or keyboard driven)"
+	default y if ZEPHCORE_ROLE_COMPANION && ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_BUTTONS && (ZEPHCORE_UI_JOYSTICK || ZEPHCORE_UI_KEYBOARD)
+	depends on ZEPHCORE_ROLE_COMPANION && ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_BUTTONS && (ZEPHCORE_UI_JOYSTICK || ZEPHCORE_UI_KEYBOARD)
+	help
+	  Full companion UI (helpers/ui-joystick/). Provides GPS, contacts,
+	  channels, snake game, repeater admin, and all other companion screens.
+	  Replaces ZEPHCORE_UI_DESIGN_BUTTON for companion builds on boards with
+	  joystick or keyboard hardware.
+
+	  Named "joystick" for the hardware that first drove it; the screens
+	  themselves only consume the abstract key codes in joystick_defs.h, so
+	  any input device supplying arrows/enter/escape can drive them.
 
 endmenu
 

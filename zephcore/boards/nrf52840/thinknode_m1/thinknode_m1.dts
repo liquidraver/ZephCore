@@ -2,7 +2,7 @@
  * Elecrow ThinkNode M1 — nRF52840 + SX1262 + SSD1681 1.54" EPD
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware:
  * - nRF52840 SoC with BLE 5
@@ -49,6 +49,7 @@
 		watchdog0 = &wdt0;
 		buzzer = &buzzer;
 		gps-enable = &gps_enable_pin;
+		gps-reset = &gps_reset_pin;
 	};
 
 	/* ---- LEDs (active-high, matches MeshCore LED_STATE_ON=HIGH) ---- */
@@ -106,13 +107,21 @@
 		regulator-boot-on;
 	};
 
-	/* LoRa radio power enable — must be HIGH before SX1262 can communicate */
-	lora_pwr_enable: lora-pwr-enable {
-		compatible = "regulator-fixed";
-		regulator-name = "lora-pwr-enable";
-		enable-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
-		regulator-boot-on;
-		startup-delay-us = <10000>;
+	/* GPS hardware reset (P1.05, active-LOW).
+	 * This pin is the Air530Z RESET line — NOT a LoRa power rail (the SX1262
+	 * is fed by pwr_enable P0.12 + tcxo_enable P0.21). Confirmed against
+	 * Arduino MeshCore (PIN_GPS_RESET=37=P1.05) and Meshtastic (PIN_GPS_REINIT).
+	 * Asserted (pin LOW) on standby/off to halt the module cleanly: the CASIC
+	 * chip ignores UART/standby-pin sleep, so holding reset is the only reliable
+	 * way to stop it drawing. Released (pin HIGH) after GPS_EN on wake.
+	 * (Previously mislabelled lora_pwr_enable + regulator-boot-on, which pinned
+	 * reset permanently de-asserted so the GPS never powered down.) */
+	gps_rst: gps-reset {
+		compatible = "gpio-leds";
+		gps_reset_pin: gps_reset {
+			gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;
+			label = "GPS Reset";
+		};
 	};
 
 	/* External TCXO power enable — SX1262 DIO3 provides reference voltage,
@@ -151,7 +160,7 @@
 	/* 150K+150K voltage divider (2:1) on AIN2 (P0.04) */
 	zephyr,user {
 		io-channels = <&adc 2>;
-		vbat-mv-multiplier = <7200>;
+		vbat-mv-multiplier = <7236>;  /* 2:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 
 	/* ---- Buzzer on PWM0 ---- */
@@ -200,9 +209,11 @@
 			/* OTP waveforms — no explicit LUT needed for SSD1681.
 			 * border-waveform controls the 1-px border during refresh:
 			 *   full    0x05 = border follows source (clean full reset)
-			 *   partial 0x3c = Hi-Z (border held, no border flash) */
+			 *   partial 0x80 = HiZ (GxEPD convention; avoids the 1-px
+			 *                  edge residue that 0x3C leaves on this
+			 *                  SSD1681 revision). */
 			full    { border-waveform = <0x05>; };
-			partial { border-waveform = <0x3c>; };
+			partial { border-waveform = <0x80>; };
 		};
 	};
 };
@@ -285,6 +296,9 @@
 
 	/* All supported environment & power sensors — auto-detected at runtime */
 	#include "../../common/sensors-i2c.dtsi"
+	/* ThinkNode M1 has a battery-backed hardware RTC — opt in to boot-time
+	 * time restore (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* ---- SPI2 for LoRa SX1262 ---- */

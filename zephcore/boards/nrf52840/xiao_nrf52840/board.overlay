@@ -1,6 +1,6 @@
 /*
  * Seeed XIAO nRF52840 — QSPI /ext for contacts (no GPS aliases)
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include "../../common/qspi-ext.dtsi"

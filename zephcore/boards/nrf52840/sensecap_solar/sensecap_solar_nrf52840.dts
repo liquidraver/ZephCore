@@ -1,6 +1,6 @@
 /*
  * Seeed SenseCAP Solar Node (P1 / P1-Pro) — nRF52840 + SX1262
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Pin map from MeshCore variants/sensecap_solar (variant.cpp, platformio.ini):
  * - SX1262: CS=P0.04, DIO1=P0.03, RST=P0.28, BUSY=P0.29, RXEN=P0.05,
@@ -37,12 +37,12 @@
 	leds {
 		compatible = "gpio-leds";
 
-		/* MeshCore P_LORA_TX_LED / LED_WHITE */
 		white_led: led_0 {
 			gpios = <&gpio0 15 GPIO_ACTIVE_HIGH>;
 			label = "White LED";
 		};
 
+		/* MeshCore P_LORA_TX_LED / LED_BLUE (upstream PR #2157) */
 		blue_led: led_1 {
 			gpios = <&gpio0 19 GPIO_ACTIVE_HIGH>;
 			label = "Blue LED";
@@ -91,13 +91,13 @@
 	zephyr,user {
 		io-channels = <&adc 7>;
 		/* Zephyr: ADC_GAIN_1_6 + ADC_REF_INTERNAL = 3600mV full-scale; 1:3 voltage divider → 3600*3 */
-		vbat-mv-multiplier = <10800>;
+		vbat-mv-multiplier = <10854>;  /* 3:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 
 	aliases {
 		led0 = &white_led;
 		led1 = &blue_led;
-		lora-tx-led = &white_led;
+		lora-tx-led = &blue_led;
 		sw0 = &user_button;
 		lora0 = &lora;
 		watchdog0 = &wdt0;
@@ -162,8 +162,15 @@
 	pinctrl-1 = <&uart0_sleep>;
 	pinctrl-names = "default", "sleep";
 
+	/* L76K is CASIC/Air530Z-family silicon — same PCAS command set as the
+	 * Wio Tracker L1 / T-Echo / ThinkNode M6 modules, so use the air530z
+	 * driver (constellation via PCAS04, fix rate via PCAS02).
+	 * on-off-gpios shares P1.05 with the gps-enable alias (T-Echo pattern):
+	 * driver powers the module for its init conversation, ZephyrGPSManager
+	 * drives the same pin for duty cycling. */
 	gnss: gnss {
-		compatible = "gnss-nmea-generic";
+		compatible = "luatos,air530z";
+		on-off-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;
 	};
 };
 

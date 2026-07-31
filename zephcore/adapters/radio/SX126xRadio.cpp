@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * SX126x hardware hooks for LoRaRadioBase — native Zephyr driver.
  */
 
@@ -40,12 +40,14 @@ void SX126xRadio::begin()
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */
 
-void SX126xRadio::hwConfigure(const struct lora_modem_config &cfg)
+bool SX126xRadio::hwConfigure(const struct lora_modem_config &cfg)
 {
 	int ret = lora_config(_dev, const_cast<struct lora_modem_config *>(&cfg));
 	if (ret < 0) {
 		LOG_ERR("lora_config failed: %d", ret);
+		return false;
 	}
+	return true;
 }
 
 void SX126xRadio::hwCancelReceive()
@@ -64,8 +66,12 @@ int16_t SX126xRadio::hwGetCurrentRSSI()
 	return sx126x_get_rssi_inst(_dev);
 }
 
-bool SX126xRadio::hwIsPreambleDetected()
+bool SX126xRadio::hwIsReceiving()
 {
+	/* MUST be non-destructive: never clear IRQ bits from this path.
+	 * Foreign-preamble release is hardware-driven (SymbNumTimeout in
+	 * non-DC, chip-internal in DC). The driver's sx126x_is_receiving()
+	 * reads rx_packet_active latch + raw IRQ bits; never clears. */
 	return sx126x_is_receiving(_dev);
 }
 
@@ -74,15 +80,29 @@ void SX126xRadio::hwSetRxBoost(bool enable)
 	sx126x_set_rx_boost(_dev, enable);
 }
 
-void SX126xRadio::hwResetAGC()
-{
-	/* Warm sleep → Calibrate(ALL) → re-calibrate image → re-apply RX settings */
-	sx126x_reset_agc(_dev);
-}
-
 bool SX126xRadio::hwIsChipBusy()
 {
 	return sx126x_is_chip_busy(_dev);
+}
+
+uint32_t SX126xRadio::hwWakeupTimeUs()
+{
+	return sx126x_get_wakeup_time_us(_dev);
+}
+
+int SX126xRadio::hwCadProbe(int8_t level)
+{
+	return sx126x_cad_probe(_dev, level);
+}
+
+void SX126xRadio::hwCadSetPeakOffset(int8_t offset)
+{
+	sx126x_cad_set_peak_offset(_dev, offset);
+}
+
+uint8_t SX126xRadio::hwCadBasePeak()
+{
+	return sx126x_cad_base_peak(_dev);
 }
 
 uint32_t SX126xRadio::getDutyCycleTimeoutRestarts() const

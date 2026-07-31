@@ -1,12 +1,18 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * CommonCLI - Common CLI command handlers for repeaters
  */
 
 #include "CommonCLI.h"
+#include "battery_curve.h"
+#include "led_gate.h"
+#include <helpers/MeshTimeSync.h>
+#include <helpers/time_sync.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <adapters/board/ZephyrBoard.h>
+#include <adapters/gps/ZephyrGPSManager.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/logging/log.h>
 #include <stdlib.h>
@@ -62,6 +68,7 @@ void CommonCLI::loadPrefs(const char* path) {
     }
 
     uint8_t pad[8];
+    uint8_t leds_byte = 0;
     bool ok = true;
 
     /* Read fields in Arduino-compatible binary order.
@@ -88,7 +95,9 @@ void CommonCLI::loadPrefs(const char* path) {
     ok = ok && prefs_read(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only)); // 114
     ok = ok && prefs_read(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));           // 115
     ok = ok && prefs_read(&file, &_prefs->bw, sizeof(_prefs->bw));                           // 116
-    ok = ok && prefs_read(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval)); // 120
+    /* 120: leds_disabled, magic-encoded. Formerly agc_reset_interval — see the
+     * LEDS_PREF_* comment in NodePrefs.h for why this is not a bare 0/1. */
+    ok = ok && prefs_read(&file, &leds_byte, sizeof(leds_byte));                              // 120
     ok = ok && prefs_read(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));    // 121
     ok = ok && prefs_read(&file, &_prefs->loop_detect, sizeof(_prefs->loop_detect));          // 122
     ok = ok && prefs_read(&file, pad, 1);                                                     // 123
@@ -111,8 +120,18 @@ void CommonCLI::loadPrefs(const char* path) {
     ok = ok && prefs_read(&file, _prefs->owner_info, sizeof(_prefs->owner_info));            // 170
     ok = ok && prefs_read(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));               // 290
     ok = ok && prefs_read(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));     // 291
-    ok = ok && prefs_read(&file, &_prefs->apc_enabled, sizeof(_prefs->apc_enabled));         // 292
-    ok = ok && prefs_read(&file, &_prefs->apc_margin, sizeof(_prefs->apc_margin));           // 293
+    /* 292-293: RESERVED — formerly apc_enabled / apc_margin (APC, removed in
+     * 1.16.6). Still read so offset 294 onward stays where deployed nodes
+     * wrote it; the values are ignored. */
+    ok = ok && prefs_read(&file, &_prefs->_reserved_apc_enabled, sizeof(_prefs->_reserved_apc_enabled)); // 292
+    ok = ok && prefs_read(&file, &_prefs->_reserved_apc_margin, sizeof(_prefs->_reserved_apc_margin));   // 293
+    ok = ok && prefs_read(&file, &_prefs->flood_max_unscoped, sizeof(_prefs->flood_max_unscoped)); // 294
+    ok = ok && prefs_read(&file, &_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert)); // 295
+    ok = ok && prefs_read(&file, &_prefs->meshtimesync, sizeof(_prefs->meshtimesync));         // 296
+    ok = ok && prefs_read(&file, &_prefs->cad_auto, sizeof(_prefs->cad_auto));                 // 297
+    ok = ok && prefs_read(&file, &_prefs->cad_offset, sizeof(_prefs->cad_offset));             // 298
+    ok = ok && prefs_read(&file, &_prefs->probe_interval, sizeof(_prefs->probe_interval)); // 299
+    ok = ok && prefs_read(&file, &_prefs->cad_busycap, sizeof(_prefs->cad_busycap));            // 300
 
     if (!ok) {
         LOG_WRN("Prefs file %s truncated, some fields use defaults", path);
@@ -120,23 +139,26 @@ void CommonCLI::loadPrefs(const char* path) {
 
     fs_close(&file);
 
+    /* Only the explicit "off" magic disables LEDs; a legacy AGC interval, an
+     * unwritten byte, or a truncated file all mean "on". */
+    _prefs->leds_disabled = (leds_byte == LEDS_PREF_OFF) ? 1 : 0;
+
     // Sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0.0f, 20.0f);
     _prefs->tx_delay_factor = constrain(_prefs->tx_delay_factor, 0.0f, 2.0f);
     _prefs->direct_tx_delay_factor = constrain(_prefs->direct_tx_delay_factor, 0.0f, 2.0f);
-    /* Migrate uninitialized pad bytes: NaN or out-of-range → default 0.5.
+    /* Migrate uninitialized pad bytes: NaN or out-of-range → default 0.2.
      * 0.0 is valid (disables reactive backoff). Old firmware upgrading
      * with zeroed pad bytes will get 0.0 = disabled; user can set explicitly. */
     if (_prefs->backoff_multiplier != _prefs->backoff_multiplier ||
         _prefs->backoff_multiplier < 0.0f || _prefs->backoff_multiplier > 10.0f) {
-        _prefs->backoff_multiplier = 0.5f;
+        _prefs->backoff_multiplier = 0.2f;
     }
     _prefs->backoff_multiplier = constrain(_prefs->backoff_multiplier, 0.0f, 2.0f);
-    /* Migrate old AF multiplier (0-9) to duty cycle percentage (0-99) */
-    if (_prefs->airtime_factor > 0.0f && _prefs->airtime_factor <= 9.0f) {
-        _prefs->airtime_factor *= 10.0f;
-    }
-    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 99.0f);
+    /* af is the Arduino airtime budget factor: duty% = 100 / (af + 1).
+     * Range matches upstream (0..9). Values >9 (from a previous build that
+     * stored af as a percentage) get clamped to 9 → 10% effective. */
+    _prefs->airtime_factor = constrain(_prefs->airtime_factor, 0.0f, 9.0f);
     _prefs->freq = constrain(_prefs->freq, 150.0f, 2500.0f);
     _prefs->bw = constrain(_prefs->bw, 7.8f, 500.0f);
     _prefs->sf = constrain(_prefs->sf, (uint8_t)5, (uint8_t)12);
@@ -148,15 +170,22 @@ void CommonCLI::loadPrefs(const char* path) {
     }
 #endif
     _prefs->multi_acks = constrain(_prefs->multi_acks, (uint8_t)0, (uint8_t)1);
-    _prefs->adc_multiplier = constrain(_prefs->adc_multiplier, 0.0f, 10.0f);
+    _prefs->adc_multiplier = constrain(_prefs->adc_multiplier, 0.0f, 30000.0f);
     _prefs->path_hash_mode = constrain(_prefs->path_hash_mode, (uint8_t)0, (uint8_t)2);
     _prefs->powersaving_enabled = constrain(_prefs->powersaving_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->gps_enabled = constrain(_prefs->gps_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, (uint8_t)0, (uint8_t)2);
     _prefs->rx_boost = constrain(_prefs->rx_boost, (uint8_t)0, (uint8_t)1);
     _prefs->rx_duty_cycle = constrain(_prefs->rx_duty_cycle, (uint8_t)0, (uint8_t)1);
-    _prefs->apc_enabled = constrain(_prefs->apc_enabled, (uint8_t)0, (uint8_t)1);
-    _prefs->apc_margin = constrain(_prefs->apc_margin, (uint8_t)6, (uint8_t)30);
+    _prefs->flood_max_unscoped = constrain(_prefs->flood_max_unscoped, (uint8_t)0, (uint8_t)64);
+    _prefs->flood_max_advert = constrain(_prefs->flood_max_advert, (uint8_t)0, (uint8_t)64);
+    _prefs->meshtimesync = constrain(_prefs->meshtimesync, (uint8_t)0, (uint8_t)1);
+    _prefs->cad_auto = constrain(_prefs->cad_auto, (uint8_t)0, (uint8_t)1);
+    _prefs->cad_offset = constrain(_prefs->cad_offset, (int8_t)CAD_OFFSET_MIN, (int8_t)CAD_OFFSET_MAX);
+    if (_prefs->probe_interval != 0 && _prefs->probe_interval < 10) {
+        _prefs->probe_interval = 10;
+    }
+    _prefs->cad_busycap = constrain(_prefs->cad_busycap, (uint8_t)0, (uint8_t)90);
 
     LOG_INF("Loaded prefs from %s", path);
 }
@@ -197,7 +226,11 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only));
     fs_write(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));
     fs_write(&file, &_prefs->bw, sizeof(_prefs->bw));
-    fs_write(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval));
+    /* 120: leds_disabled, magic-encoded (was agc_reset_interval). */
+    {
+        uint8_t leds_byte = _prefs->leds_disabled ? LEDS_PREF_OFF : LEDS_PREF_ON;
+        fs_write(&file, &leds_byte, sizeof(leds_byte));
+    }
     fs_write(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));
     fs_write(&file, &_prefs->loop_detect, sizeof(_prefs->loop_detect));
     fs_write(&file, pad, 1);
@@ -220,8 +253,16 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, _prefs->owner_info, sizeof(_prefs->owner_info));
     fs_write(&file, &_prefs->rx_boost, sizeof(_prefs->rx_boost));
     fs_write(&file, &_prefs->rx_duty_cycle, sizeof(_prefs->rx_duty_cycle));
-    fs_write(&file, &_prefs->apc_enabled, sizeof(_prefs->apc_enabled));
-    fs_write(&file, &_prefs->apc_margin, sizeof(_prefs->apc_margin));
+    /* 292-293: RESERVED — formerly APC, written back unchanged. */
+    fs_write(&file, &_prefs->_reserved_apc_enabled, sizeof(_prefs->_reserved_apc_enabled));
+    fs_write(&file, &_prefs->_reserved_apc_margin, sizeof(_prefs->_reserved_apc_margin));
+    fs_write(&file, &_prefs->flood_max_unscoped, sizeof(_prefs->flood_max_unscoped));
+    fs_write(&file, &_prefs->flood_max_advert, sizeof(_prefs->flood_max_advert));
+    fs_write(&file, &_prefs->meshtimesync, sizeof(_prefs->meshtimesync));
+    fs_write(&file, &_prefs->cad_auto, sizeof(_prefs->cad_auto));
+    fs_write(&file, &_prefs->cad_offset, sizeof(_prefs->cad_offset));
+    fs_write(&file, &_prefs->probe_interval, sizeof(_prefs->probe_interval));
+    fs_write(&file, &_prefs->cad_busycap, sizeof(_prefs->cad_busycap));
 
     fs_close(&file);
     LOG_INF("Saved prefs to %s", path);
@@ -279,6 +320,21 @@ void CommonCLI::scheduleReboot(uint8_t type)
     k_work_schedule(&_reboot_work, K_SECONDS(2));
 }
 
+/* CLI commands are case-sensitive, matching upstream Arduino MeshCore.
+ *
+ * A case-insensitive normalizer lived here from 2026-07-12 until 2026-07-19.
+ * It lowercased the first two whitespace-delimited tokens before matching, on
+ * the assumption that a value never appears before the third token.  That is
+ * false for "password <value>", whose value IS token 1 -- so any admin
+ * password containing uppercase was silently stored folded to lowercase and
+ * could never be used to log in again.  ("set guest.password <value>" was
+ * unaffected: three tokens.)
+ *
+ * Do not reintroduce input folding here.  Any scheme that rewrites the buffer
+ * before dispatch has to guess where keywords end and arguments begin, and
+ * that guess is what broke.  If case-insensitivity is wanted again, do it at
+ * the comparison sites so argument bytes are never touched.
+ */
 void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, char* reply) {
     if (strcmp(command, "start dfu") == 0) {
         /* Reboot into UF2 bootloader for firmware update */
@@ -328,6 +384,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         uint32_t curr = getRTCClock()->getCurrentTime();
         if (sender_timestamp > curr) {
             getRTCClock()->setCurrentTime(sender_timestamp + 1);
+            time_sync_report(TIME_SYNC_CLI);
+            zephcore_rtc_save(sender_timestamp + 1);  /* persist to hardware RTC */
+            MeshTimeSync* ts = _callbacks->getMeshTimeSync();
+            if (ts) ts->noteManualSync((uint32_t)(k_uptime_get() / 1000));
             uint32_t now = getRTCClock()->getCurrentTime();
             time_t t = (time_t)now;
             struct tm *tm = gmtime(&t);
@@ -347,6 +407,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         uint32_t curr = getRTCClock()->getCurrentTime();
         if (secs > curr) {
             getRTCClock()->setCurrentTime(secs);
+            time_sync_report(TIME_SYNC_CLI);
+            zephcore_rtc_save(secs);  /* persist to hardware RTC */
+            MeshTimeSync* ts = _callbacks->getMeshTimeSync();
+            if (ts) ts->noteManualSync((uint32_t)(k_uptime_get() / 1000));
             time_t t = (time_t)secs;
             struct tm *tm = gmtime(&t);
             snprintf(reply, CLI_REPLY_SIZE, "OK - clock set: %02d:%02d - %d/%d/%d UTC",
@@ -369,7 +433,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             strcpy(reply, "ERR: bad pubkey");
         }
     } else if (memcmp(command, "tempradio ", 10) == 0) {
-        strcpy(tmp, &command[10]);
+        snprintf(tmp, sizeof(tmp), "%.*s", (int)(sizeof(tmp) - 1), &command[10]);
         const char* parts[5];
         int num = mesh::Utils::parseTextParts(tmp, parts, 5);
         float freq = num > 0 ? strtof(parts[0], nullptr) : 0.0f;
@@ -385,7 +449,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             strcpy(reply, "Error: freq 150-2500, bw 7-500, sf 5-12, cr 5-8, timeout>0");
         }
     } else if (memcmp(command, "password ", 9) == 0) {
-        StrHelper::strncpy(_prefs->password, &command[9], sizeof(_prefs->password));
+        StrHelper::strzcpy(_prefs->password, &command[9], sizeof(_prefs->password));
         savePrefs();
         snprintf(reply, CLI_REPLY_SIZE, "password now: %s", _prefs->password);
     } else if (memcmp(command, "clear stats", 11) == 0) {
@@ -405,8 +469,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->airtime_factor);
         } else if (memcmp(config, "int.thresh", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->interference_threshold);
+        } else if (memcmp(config, "leds", 4) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
         } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %u", ((uint32_t)_prefs->agc_reset_interval) * 4);
+            strcpy(reply, "Removed - use rxduty instead");
         } else if (memcmp(config, "multi.acks", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->multi_acks);
         } else if (memcmp(config, "allow.read.only", 15) == 0) {
@@ -430,6 +496,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lat);
         } else if (memcmp(config, "lon", 3) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lon);
+        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "radio", 5) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.3f,%.1f,%u,%u",
                    (double)_prefs->freq, (double)_prefs->bw,
@@ -441,8 +509,10 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             float ff = _callbacks->getFloodDelayFactor();
             snprintf(reply, CLI_REPLY_SIZE, "> adaptive (est=%.1f flood=%.2f)",
                      (double)est, (double)ff);
-        } else if (memcmp(config, "apc.margin", 10) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %d dB", (int)_callbacks->getAPCTargetMargin());
+        } else if (memcmp(config, "flood.max.advert", 16) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max_advert);
+        } else if (memcmp(config, "flood.max.unscoped", 18) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max_unscoped);
         } else if (memcmp(config, "flood.max", 9) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max);
         } else if (memcmp(config, "direct.txdelay", 14) == 0) {
@@ -470,18 +540,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             } else {
                 strcpy(reply, "> strict");
             }
-        } else if (memcmp(config, "tx", 2) == 0 && (config[2] == 0 || config[2] == ' ')) {
-            if (_callbacks->isAPCEnabled()) {
-                int8_t apc = _callbacks->getAPCReduction();
-                float margin = _callbacks->getAPCMargin();
-                int effective = (int)_prefs->tx_power_dbm - (int)apc;
-                snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (max=%d apc=-%d margin=%.1f target=%d)",
-                         effective, (int)_prefs->tx_power_dbm, (int)apc, (double)margin,
-                         (int)_callbacks->getAPCTargetMargin());
-            } else {
-                snprintf(reply, CLI_REPLY_SIZE, "> %ddBm (apc=off)",
-                         (int)_prefs->tx_power_dbm);
-            }
+        } else if (strcmp(config, "tx") == 0) {
+            /* Plain number, matching upstream Arduino MeshCore's "> %d". */
+            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->tx_power_dbm);
         } else if (memcmp(config, "freq", 4) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.3f", (double)_prefs->freq);
         } else if (memcmp(config, "public.key", 10) == 0) {
@@ -501,15 +562,52 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             if (adc_mult == 0.0f) {
                 strcpy(reply, "Error: unsupported by this board");
             } else {
-                snprintf(reply, CLI_REPLY_SIZE, "> %.3f", (double)adc_mult);
+                uint16_t mv = _board->getBattMilliVolts();
+                uint16_t target_mv = battery_curve_default.ocv_mv[0];
+                if (mv > 0) {
+                    snprintf(reply, CLI_REPLY_SIZE, "> %.3f  (%u mV, target >= %u mV for 100%%)",
+                             (double)adc_mult, mv, target_mv);
+                } else {
+                    snprintf(reply, CLI_REPLY_SIZE, "> %.3f  (no ADC reading)", (double)adc_mult);
+                }
             }
-        } else if (memcmp(config, "radio.rxgain", 12) == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "rxduty", 6) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_duty_cycle);
+        } else if (memcmp(config, "gps duty", 8) == 0) {
+            uint32_t s = gps_get_poll_interval_sec();  // now-effective value
+            if (s == 0) strcpy(reply, "> always on (0)");
+            else snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)s);
         } else if (memcmp(config, "dc.restarts", 11) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u",
                      (uint32_t)_callbacks->getDutyCycleTimeoutRestarts());
+        } else if (memcmp(config, "probe.interval", 14) == 0) {
+            /* Seconds between periodic radio measurements — the noise-floor
+             * sample and the CAD probe that consumes it.  0 = probing off. */
+            snprintf(reply, CLI_REPLY_SIZE, "> %u",
+                     (uint32_t)_prefs->probe_interval);
+        } else if (memcmp(config, "cad", 3) == 0) {
+            /* Runtime state + per-level probe stats live in the radio.
+             * Remote replies get the truncated buffer like meshtimesync. */
+            size_t cap = (sender_timestamp == 0) ? CLI_REPLY_SIZE
+                                                 : CLI_REMOTE_REPLY_SIZE;
+            int n = snprintf(reply, cap, "> ");
+            if (_callbacks->formatCadStatus(reply + n, (int)cap - n) == 0) {
+                strcpy(reply, "not available");
+            }
+        } else if (memcmp(config, "meshtimesync", 12) == 0) {
+            MeshTimeSync* ts = _callbacks->getMeshTimeSync();
+            if (ts == nullptr) {
+                strcpy(reply, "not available");
+            } else {
+                /* Only the local USB CLI (sender_timestamp == 0) gets the
+                 * full evidence table; remote replies are truncated to the
+                 * packet buffer. */
+                size_t cap = (sender_timestamp == 0) ? CLI_REPLY_SIZE
+                                                     : CLI_REMOTE_REPLY_SIZE;
+                ts->formatStatus(reply, cap, getRTCClock()->getCurrentTime(),
+                                 (uint32_t)(k_uptime_get() / 1000),
+                                 _prefs->meshtimesync != 0);
+            }
         } else {
             snprintf(reply, CLI_REPLY_SIZE, "??: %s", config);
         }
@@ -535,13 +633,91 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             savePrefs();
             strcpy(reply, "OK");
         } else if (memcmp(config, "int.thresh ", 11) == 0) {
-            _prefs->interference_threshold = atoi(&config[11]);
-            savePrefs();
-            strcpy(reply, "OK");
+            /* Companion runtime never reads this (getInterferenceThreshold is
+             * only overridden in Repeater/RoomServer) — reject instead of a
+             * false OK. */
+            if (strcmp(_callbacks->getRole(), "companion") == 0) {
+                strcpy(reply, "Error: not supported on companion");
+            } else {
+                _prefs->interference_threshold = atoi(&config[11]);
+                savePrefs();
+                strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "leds ", 5) == 0) {
+            /* Master switch for every LED on the node: heartbeat, unread-message
+             * and LoRa TX activity, plus the message and shutdown flashes. Not
+             * the display backlight — that has its own UI brightness setting. */
+            const char* val = &config[5];
+            int on;
+            if (memcmp(val, "on", 2) == 0 || val[0] == '1') {
+                on = 1;
+            } else if (memcmp(val, "off", 3) == 0 || val[0] == '0') {
+                on = 0;
+            } else {
+                on = -1;
+            }
+            if (on < 0) {
+                strcpy(reply, "Error: must be on or off");
+            } else {
+                _prefs->leds_disabled = on ? 0 : 1;
+                zephcore_leds_set_disabled(_prefs->leds_disabled != 0);
+                savePrefs();
+                strcpy(reply, "OK");
+            }
         } else if (memcmp(config, "agc.reset.interval ", 19) == 0) {
-            _prefs->agc_reset_interval = atoi(&config[19]) / 4;
-            savePrefs();
-            snprintf(reply, CLI_REPLY_SIZE, "OK - interval rounded to %u", ((uint32_t)_prefs->agc_reset_interval) * 4);
+            /* Periodic AGC recalibration was removed: it reset the noise floor
+             * to its unseeded sentinel on every fire, forcing a fresh seed and
+             * a full EMA warmup, and it was already forced off under RX duty
+             * cycle.  RX duty cycle is the supported way to cut RX current.
+             * The prefs BYTE is retained (read/written, never acted on) — the
+             * on-disk layout is byte-exact and shifting it would corrupt every
+             * existing node's prefs. */
+            strcpy(reply, "Removed - use rxduty instead");
+        } else if (memcmp(config, "cad.auto ", 9) == 0) {
+            if (memcmp(&config[9], "on", 2) == 0 || memcmp(&config[9], "off", 3) == 0) {
+                _prefs->cad_auto = (config[9] == 'o' && config[10] == 'n') ? 1 : 0;
+                _callbacks->applyCadPrefs();
+                savePrefs();
+                strcpy(reply, "OK");
+            } else {
+                strcpy(reply, "Error: must be on or off");
+            }
+        } else if (memcmp(config, "cad.offset ", 11) == 0) {
+            int val = atoi(&config[11]);
+            if (val < CAD_OFFSET_MIN || val > CAD_OFFSET_MAX) {
+                snprintf(reply, CLI_REPLY_SIZE, "Error: offset range is %d..%d",
+                         CAD_OFFSET_MIN, CAD_OFFSET_MAX);
+            } else {
+                _prefs->cad_offset = (int8_t)val;
+                _callbacks->applyCadPrefs();
+                savePrefs();
+                strcpy(reply, "OK");
+            }
+        /* Governs every periodic radio measurement, not just CAD — the
+         * noise-floor sampler and the CAD probe share one reading. */
+        } else if (memcmp(config, "probe.interval ", 15) == 0) {
+            int val = atoi(&config[15]);
+            if (val != 0 && (val < 10 || val > 255)) {
+                strcpy(reply, "Error: interval is 0 (probing off) or 10-255 seconds");
+            } else {
+                _prefs->probe_interval = (uint8_t)val;
+                _callbacks->applyCadPrefs();
+                savePrefs();
+                strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "cad.busycap ", 12) == 0) {
+            int val = atoi(&config[12]);
+            if (val != 0 && (val < 10 || val > 90)) {
+                strcpy(reply, "Error: busycap is 0 (off) or 10-90 percent");
+            } else {
+                _prefs->cad_busycap = (uint8_t)val;
+                _callbacks->applyCadPrefs();
+                savePrefs();
+                strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "cad.reset", 9) == 0) {
+            _callbacks->resetCadStats();
+            strcpy(reply, "OK - CAD probe stats cleared");
         } else if (memcmp(config, "multi.acks ", 11) == 0) {
             int val = atoi(&config[11]);
             if (val == 0 || val == 1) {
@@ -584,7 +760,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "OK");
             }
         } else if (memcmp(config, "guest.password ", 15) == 0) {
-            StrHelper::strncpy(_prefs->guest_password, &config[15], sizeof(_prefs->guest_password));
+            StrHelper::strzcpy(_prefs->guest_password, &config[15], sizeof(_prefs->guest_password));
             savePrefs();
             strcpy(reply, "OK");
         } else if (memcmp(config, "prv.key ", 8) == 0) {
@@ -620,7 +796,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error: must be on or off");
             }
         } else if (memcmp(config, "radio ", 6) == 0) {
-            strcpy(tmp, &config[6]);
+            snprintf(tmp, sizeof(tmp), "%.*s", (int)(sizeof(tmp) - 1), &config[6]);
             const char* parts[4];
             int num = mesh::Utils::parseTextParts(tmp, parts, 4);
             float freq = num > 0 ? strtof(parts[0], nullptr) : 0.0f;
@@ -629,11 +805,21 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             uint8_t cr = num > 3 ? atoi(parts[3]) : 0;
             if (freq >= 150.0f && freq <= 2500.0f && sf >= 5 && sf <= 12 &&
                 cr >= 5 && cr <= 8 && bw >= 7.0f && bw <= 500.0f) {
-                _prefs->sf = sf;
-                _prefs->cr = cr;
+                /* Snapshot old params, then mutate _prefs and save so later
+                 * savePrefs() calls (set af, set name, ...) don't clobber
+                 * the new values with stale RAM. Freeze the running radio on
+                 * the old params via override so the on-air config doesn't
+                 * change until reboot. */
+                float   old_freq = _prefs->freq;
+                float   old_bw   = _prefs->bw;
+                uint8_t old_sf   = _prefs->sf;
+                uint8_t old_cr   = _prefs->cr;
                 _prefs->freq = freq;
-                _prefs->bw = bw;
+                _prefs->bw   = bw;
+                _prefs->sf   = sf;
+                _prefs->cr   = cr;
                 _callbacks->savePrefs();
+                _callbacks->freezeRadioParams(old_freq, old_bw, old_sf, old_cr);
                 strcpy(reply, "OK - reboot to apply");
             } else {
                 strcpy(reply, "Error: freq 150-2500, bw 7-500, sf 5-12, cr 5-8");
@@ -654,6 +840,24 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             _prefs->tx_delay_factor = atof(&config[8]);
             savePrefs();
             strcpy(reply, "OK (ignored: txdelay is now adaptive)");
+        } else if (memcmp(config, "flood.max.advert ", 17) == 0) {
+            int m = atoi(&config[17]);
+            if (m >= 0 && m <= 64) {
+                _prefs->flood_max_advert = (uint8_t)m;
+                savePrefs();
+                strcpy(reply, "OK");
+            } else {
+                strcpy(reply, "Error: range 0-64");
+            }
+        } else if (memcmp(config, "flood.max.unscoped ", 19) == 0) {
+            int m = atoi(&config[19]);
+            if (m >= 0 && m <= 64) {
+                _prefs->flood_max_unscoped = (uint8_t)m;
+                savePrefs();
+                strcpy(reply, "OK");
+            } else {
+                strcpy(reply, "Error: range 0-64");
+            }
         } else if (memcmp(config, "flood.max ", 10) == 0) {
             int m = atoi(&config[10]);
             if (m >= 0 && m <= 64) {
@@ -668,14 +872,21 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             savePrefs();
             strcpy(reply, "OK (ignored: direct.txdelay is now adaptive)");
         } else if (memcmp(config, "backoff.multiplier ", 19) == 0) {
-            float f = atof(&config[19]);
-            if (f >= 0.0f && f <= 2.0f) {
-                _prefs->backoff_multiplier = f;
-                _callbacks->setBackoffMultiplier(f);
-                savePrefs();
-                strcpy(reply, "OK");
+            /* Companion's setBackoffMultiplier callback is the base-class
+             * no-op and the value isn't restored at boot — reject instead of
+             * a false OK. */
+            if (strcmp(_callbacks->getRole(), "companion") == 0) {
+                strcpy(reply, "Error: not supported on companion");
             } else {
-                strcpy(reply, "Error, range 0.0-2.0");
+                float f = atof(&config[19]);
+                if (f >= 0.0f && f <= 2.0f) {
+                    _prefs->backoff_multiplier = f;
+                    _callbacks->setBackoffMultiplier(f);
+                    savePrefs();
+                    strcpy(reply, "OK");
+                } else {
+                    strcpy(reply, "Error, range 0.0-2.0");
+                }
             }
         } else if (memcmp(config, "owner.info ", 11) == 0) {
             config += 11;
@@ -698,6 +909,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error, must be 0,1, or 2");
             }
         } else if (memcmp(config, "loop.detect ", 12) == 0) {
+            /* Loop detection runs only in the Repeater/RoomServer forward
+             * path — companions never consult loop_detect. */
+            if (strcmp(_callbacks->getRole(), "companion") == 0) {
+                strcpy(reply, "Error: not supported on companion");
+                return;
+            }
             config += 12;
             uint8_t mode;
             if (memcmp(config, "off", 3) == 0) {
@@ -717,87 +934,195 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 savePrefs();
                 strcpy(reply, "OK");
             }
-        } else if (memcmp(config, "apc.margin ", 11) == 0) {
-            int val = atoi(&config[11]);
-            if (val >= 6 && val <= 30) {
-                _prefs->apc_margin = (uint8_t)val;
-                _callbacks->setAPCTargetMargin((uint8_t)val);
-                savePrefs();
-                snprintf(reply, CLI_REPLY_SIZE, "OK - APC target margin=%d dB", val);
-            } else {
-                strcpy(reply, "Error: range 6-30 dB");
-            }
         } else if (memcmp(config, "tx ", 3) == 0) {
-            if (memcmp(&config[3], "apc", 3) == 0) {
-                _prefs->apc_enabled = 1;
-                _callbacks->setAPCEnabled(true);
-                savePrefs();
-                snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%d dBm (apc=on)",
-                         (int)_prefs->tx_power_dbm);
-            } else {
-                int val = atoi(&config[3]);
-                int max_tx = 30;
+            char *end = nullptr;
+            long parsed = strtol(&config[3], &end, 10);
+            int max_tx = 30;
 #ifdef CONFIG_ZEPHCORE_MAX_TX_POWER_DBM
-                max_tx = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
+            max_tx = CONFIG_ZEPHCORE_MAX_TX_POWER_DBM;
 #endif
-                if (val < -9 || val > max_tx) {
-                    snprintf(reply, CLI_REPLY_SIZE, "Error: range -9 to %d dBm, or 'apc'", max_tx);
-                } else {
-                    _prefs->apc_enabled = 0;
-                    _prefs->tx_power_dbm = (int8_t)val;
-                    savePrefs();
-                    _callbacks->setAPCEnabled(false);
-                    _callbacks->setTxPower(_prefs->tx_power_dbm);
-                    snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%d dBm (apc=off)",
-                             (int)_prefs->tx_power_dbm);
-                }
+            if (end == &config[3] || *end != '\0' || parsed < -9 || parsed > max_tx) {
+                snprintf(reply, CLI_REPLY_SIZE, "Error: range -9 to %d dBm", max_tx);
+            } else {
+                _prefs->tx_power_dbm = (int8_t)parsed;
+                savePrefs();
+                _callbacks->setTxPower(_prefs->tx_power_dbm);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - tx power=%d dBm",
+                         (int)_prefs->tx_power_dbm);
             }
         } else if (sender_timestamp == 0 && memcmp(config, "freq ", 5) == 0) {
             float f = atof(&config[5]);
             if (f >= 150.0f && f <= 2500.0f) {
+                float old_freq = _prefs->freq;
                 _prefs->freq = f;
                 savePrefs();
+                /* Keep _prefs->freq = f in RAM so a later savePrefs() (from any
+                 * other "set" command before reboot) can't rewrite the old freq
+                 * back; freeze the running radio on the old freq until reboot,
+                 * mirroring the "set radio" handler above. */
+                _callbacks->freezeRadioParams(old_freq, _prefs->bw, _prefs->sf, _prefs->cr);
                 strcpy(reply, "OK - reboot to apply");
             } else {
                 strcpy(reply, "Error: range 150-2500 MHz");
             }
+        } else if (strcmp(config, "adc.multiplier target") == 0) {
+            strcpy(reply, "Error: need mV target  (e.g. set adc.multiplier target 4173)");
+        } else if (memcmp(config, "adc.multiplier target ", 22) == 0) {
+            /* Calibrate against a known voltage measured with a multimeter. */
+            uint16_t target_mv = (uint16_t)atoi(&config[22]);
+            uint16_t current_mv = _board->getBattMilliVolts();
+            if (current_mv == 0) {
+                strcpy(reply, "Error: no ADC reading on this board");
+            } else if (target_mv < 3000 || target_mv > 4400) {
+                strcpy(reply, "Error: target out of range (3000-4400 mV)");
+            } else {
+                float current_mult = _board->getAdcMultiplier();
+                float new_mult = current_mult * (float)target_mv / (float)current_mv;
+                _prefs->adc_multiplier = new_mult;
+                if (_board->setAdcMultiplier(new_mult)) {
+                    savePrefs();
+                    snprintf(reply, CLI_REPLY_SIZE,
+                             "OK - multiplier %.3f -> %.3f  (%u -> %u mV)",
+                             (double)current_mult, (double)new_mult,
+                             current_mv, target_mv);
+                } else {
+                    _prefs->adc_multiplier = 0.0f;
+                    strcpy(reply, "Error: unsupported by this board");
+                }
+            }
+        } else if (memcmp(config, "adc.multiplier full", 19) == 0) {
+            /* Calibrate: board must be on a full charge. Scales the current
+             * multiplier so the ADC reads the board's curve 100% point. */
+            uint16_t current_mv = _board->getBattMilliVolts();
+            if (current_mv == 0) {
+                strcpy(reply, "Error: no ADC reading on this board");
+            } else {
+                uint16_t target_mv = battery_curve_default.ocv_mv[0];
+                float current_mult = _board->getAdcMultiplier();
+                float new_mult = current_mult * (float)target_mv / (float)current_mv;
+                _prefs->adc_multiplier = new_mult;
+                if (_board->setAdcMultiplier(new_mult)) {
+                    savePrefs();
+                    snprintf(reply, CLI_REPLY_SIZE,
+                             "OK - multiplier %.3f -> %.3f  (%u -> %u mV)",
+                             (double)current_mult, (double)new_mult,
+                             current_mv, target_mv);
+                } else {
+                    _prefs->adc_multiplier = 0.0f;
+                    strcpy(reply, "Error: unsupported by this board");
+                }
+            }
         } else if (memcmp(config, "adc.multiplier ", 15) == 0) {
-            _prefs->adc_multiplier = atof(&config[15]);
-            if (_board->setAdcMultiplier(_prefs->adc_multiplier)) {
+            const char *arg = &config[15];
+            float val = atof(arg);
+            /* Reject non-numeric, NaN, inf, negative, and out-of-range values.
+             * 0 is valid (resets to DTS default). Upper bound covers all real
+             * divider/reference combinations with margin. */
+            bool bad = (val != 0.0f && val < 100.0f) || val > 30000.0f || val < 0.0f;
+            /* atof returns 0 for non-numeric strings — distinguish from literal "0" */
+            if (val == 0.0f && arg[0] != '0') bad = true;
+            if (bad) {
+                strcpy(reply, "Error: invalid multiplier (0 to reset, or 100-30000)");
+            } else if (_board->setAdcMultiplier(val)) {
+                _prefs->adc_multiplier = val;
                 savePrefs();
-                if (_prefs->adc_multiplier == 0.0f) {
+                if (val == 0.0f) {
                     strcpy(reply, "OK - using default board multiplier");
                 } else {
-                    snprintf(reply, CLI_REPLY_SIZE, "OK - multiplier set to %.3f", (double)_prefs->adc_multiplier);
+                    snprintf(reply, CLI_REPLY_SIZE, "OK - multiplier set to %.3f", (double)val);
                 }
             } else {
-                _prefs->adc_multiplier = 0.0f;
                 strcpy(reply, "Error: unsupported by this board");
             }
         } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
-            int val = atoi(&config[13]);
+            const char* arg = &config[13];
+            int val = -1;
+            if (memcmp(arg, "on", 2) == 0) val = 1;
+            else if (memcmp(arg, "off", 3) == 0) val = 0;
+            else if (arg[0] == '0' || arg[0] == '1') val = atoi(arg);
             if (val == 0 || val == 1) {
+                /* Always save (upstream f3d4d8cd), then apply live and
+                 * report when the radio has no RX boost feature. */
                 _prefs->rx_boost = (uint8_t)val;
                 savePrefs();
-                snprintf(reply, CLI_REPLY_SIZE, "OK - radio.rxgain=%d (reboot to apply)", _prefs->rx_boost);
+                if (_callbacks->setRxBoostedGain(val == 1)) {
+                    snprintf(reply, CLI_REPLY_SIZE, "OK - radio.rxgain=%d", _prefs->rx_boost);
+                } else {
+                    strcpy(reply, "Error: unsupported");
+                }
             } else {
-                strcpy(reply, "Error: must be 0 or 1");
+                strcpy(reply, "Error: must be 0, 1, on, or off");
             }
         } else if (memcmp(config, "rxduty ", 7) == 0) {
-            int val = atoi(&config[7]);
+            const char* arg = &config[7];
+            int val = -1;
+            if (memcmp(arg, "on", 2) == 0) val = 1;
+            else if (memcmp(arg, "off", 3) == 0) val = 0;
+            else if (arg[0] == '0' || arg[0] == '1') val = atoi(arg);
             if (val == 0 || val == 1) {
                 _prefs->rx_duty_cycle = (uint8_t)val;
                 savePrefs();
                 snprintf(reply, CLI_REPLY_SIZE, "OK - rxduty=%d (reboot to apply)", _prefs->rx_duty_cycle);
             } else {
-                strcpy(reply, "Error: must be 0 or 1");
+                strcpy(reply, "Error: must be 0, 1, on, or off");
+            }
+        } else if (memcmp(config, "gps duty", 8) == 0) {
+            // set gps duty <seconds> | default   (0 = always on)
+            const char* arg = config + 8;
+            while (*arg == ' ') arg++;
+            uint32_t val = 0;
+            bool ok = true;
+            if (*arg == '\0') {
+                ok = false;
+            } else if (strcmp(arg, "default") == 0) {
+                val = _callbacks->getDefaultGpsIntervalSec();
+            } else {
+                char* end = NULL;
+                unsigned long parsed = strtoul(arg, &end, 10);
+                // reject non-numeric, fractions, or trailing garbage
+                if (end == arg || *end != '\0') ok = false;
+                else val = (uint32_t)parsed;
+            }
+            if (!ok) {
+                strcpy(reply, "usage: set gps duty <seconds> | default  (0 = always on)");
+            } else {
+                if (val > 604800UL) val = 604800UL;      // cap at 1 week
+                else if (val != 0 && val < 10) val = 10; // floor 10s (0 = always on)
+                _prefs->gps_interval = val;
+                gps_set_poll_interval_sec(val);          // apply live
+                savePrefs();
+                if (val == 0) strcpy(reply, "OK - gps duty=0 (always on)");
+                else snprintf(reply, CLI_REPLY_SIZE, "OK - gps duty=%u s", (unsigned)val);
+            }
+        } else if (memcmp(config, "meshtimesync ", 13) == 0) {
+            const char* arg = &config[13];
+            if (_callbacks->getMeshTimeSync() == nullptr) {
+                strcpy(reply, "not available");
+            } else if (memcmp(arg, "on", 2) == 0) {
+                _prefs->meshtimesync = 1;
+                savePrefs();
+                strcpy(reply, "OK - meshtimesync on");
+            } else if (memcmp(arg, "off", 3) == 0) {
+                _prefs->meshtimesync = 0;
+                savePrefs();
+                strcpy(reply, "OK - meshtimesync off");
+            } else {
+                strcpy(reply, "Error: must be on or off");
             }
         } else {
-            snprintf(reply, CLI_REPLY_SIZE, "unknown config: %s", config);
+            snprintf(reply, CLI_REPLY_SIZE, "unknown config: %.230s", config);
         }
     } else if (sender_timestamp == 0 && strcmp(command, "erase") == 0) {
         bool s = _callbacks->formatFileSystem();
-        snprintf(reply, CLI_REPLY_SIZE, "File system erase: %s", s ? "OK" : "Err");
+        if (s) {
+            /* formatFileSystem() flattens the mounted NVS bonds partition,
+             * leaving stale in-RAM bond state.  Reboot (deferred so this
+             * reply transmits first) so NVS + the BT stack re-init cleanly. */
+            snprintf(reply, CLI_REPLY_SIZE, "File system erase: OK - rebooting");
+            scheduleReboot(REBOOT_NORMAL);
+        } else {
+            snprintf(reply, CLI_REPLY_SIZE, "File system erase: Err");
+        }
     } else if (memcmp(command, "ver", 3) == 0) {
         snprintf(reply, CLI_REPLY_SIZE, "%s (Build: %s)", _callbacks->getFirmwareVer(), _callbacks->getBuildDate());
     } else if (memcmp(command, "board", 5) == 0) {
@@ -811,7 +1136,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             strcpy(reply, "null");
         }
     } else if (memcmp(command, "sensor set ", 11) == 0) {
-        strcpy(tmp, &command[11]);
+        snprintf(tmp, sizeof(tmp), "%.*s", (int)(sizeof(tmp) - 1), &command[11]);
         const char* parts[2];
         int num = mesh::Utils::parseTextParts(tmp, parts, 2, ' ');
         const char* key = (num > 0) ? parts[0] : "";

@@ -1,7 +1,7 @@
 /*
  * Seeed Tracker T1000-E - Pin Control
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Pin assignments from variant.h:
  * - SPI: SCK=P0.11, MISO=P1.08, MOSI=P1.09, NSS=P0.12 (for LR1110)

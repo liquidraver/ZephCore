@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Zephyr DataStore - LittleFS-backed persistence with optional QSPI flash
  *
  * All platforms use DTS-automounted /lfs for identity, prefs, contacts.
@@ -31,6 +31,14 @@ public:
 	bool saveMainIdentity(const mesh::LocalIdentity &identity);
 	void loadPrefs(NodePrefs &prefs);
 	void savePrefs(const NodePrefs &prefs);
+	/* Shutdown-reason breadcrumb: written just before a software power-off
+	 * (low-battery auto-shutdown) so the next boot can report why the node
+	 * went down — the offline queue doesn't survive System OFF, so this
+	 * flash marker is the only reliable channel. saveShutdownReason is
+	 * best-effort (called at critically low battery). takeShutdownReason
+	 * returns the stored code (0 = none) and clears it. */
+	void saveShutdownReason(uint8_t code);
+	uint8_t takeShutdownReason();
 	void loadContacts(DataStoreHost *host);
 	void saveContacts(DataStoreHost *host);
 	void loadChannels(DataStoreHost *host);
@@ -49,6 +57,14 @@ public:
 	bool hasExternalStorage() const { return _has_ext_fs; }
 	uint32_t getExternalStorageKb() const;
 
+	/* First-boot migration helpers — see formatNVSOnly() in .cpp */
+	bool hasInitMarker() const;
+	void writeInitMarker();
+	void formatNVSOnly();
+	bool hasPrefs() const;
+	bool prefsLookLikeArduino() const;
+	bool hasOldSettingsFile() const;
+
 	static bool mount();
 	static void unmount();
 	static const char *mountPoint() { return MNT_POINT; }
@@ -59,6 +75,7 @@ private:
 	static constexpr const char *MNT_POINT = "/lfs";
 	static constexpr const char *PREFS_FILE = "/lfs/new_prefs";
 	static constexpr const char *MAIN_ID_FILE = "/lfs/_main.id";
+	static constexpr const char *SHUTDOWN_FILE = "/lfs/shutdn";
 
 	/* External QSPI flash (optional) - contacts, channels, blobs */
 	static constexpr const char *EXT_MNT_POINT = "/ext";
@@ -82,9 +99,9 @@ private:
 
 	void checkAdvBlobFile();
 	void migrateToExternalFS();
-	bool openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len);
+	bool openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len) const;
 	bool atomicReplaceFile(const char *path, const uint8_t *buf, size_t len);
-	bool exists(const char *path);
+	bool exists(const char *path) const;
 	bool removeFile(const char *path);
 	bool copyFile(const char *src, const char *dst);
 };

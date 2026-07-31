@@ -1,0 +1,14 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+config SPI_NATIVE_LINUX
+	bool "ZephCore native Linux SPI driver (spidev)"
+	default y
+	depends on DT_HAS_ZEPHCORE_SPI_NATIVE_LINUX_ENABLED
+	depends on ARCH_POSIX
+	help
+	  Enables the spi_native_linux driver, which forwards Zephyr SPI
+	  transceive calls to a Linux /dev/spidevX.Y character device via
+	  SPI_IOC_MESSAGE ioctl. Used by native_sim builds running on real
+	  Linux SBCs (Femtofox, Raspberry Pi, etc.) that have a LoRa radio
+	  wired up to a hardware SPI bus.

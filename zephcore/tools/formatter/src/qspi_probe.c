@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Universal QSPI flash probe and erase — bare-metal nRF52840 register access
  *
  * Bypasses the Zephyr QSPI driver entirely. Directly configures the nRF52840

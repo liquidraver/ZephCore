@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore - OLED display power management
  *
  * Sends I2C display-off command to SH1106/SSD1306 OLED to save power.

@@ -1,5 +1,5 @@
 # Copyright 2025 ZephCore
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 description: |
   Input multi-tap pseudo-device.
@@ -11,7 +11,7 @@ description: |
   The tap-codes array maps tap counts to output key codes:
     tap-codes[0] = code emitted for 1 tap
     tap-codes[1] = code emitted for 2 taps
-    ...up to 4 entries.
+    ...up to 5 entries.
 
   If the tap count reaches the length of tap-codes, the code is emitted
   immediately (no need to wait for more taps). Otherwise the tap-delay-ms
@@ -47,7 +47,7 @@ properties:
     description: |
       Array of output key codes for each tap count (1-based).
       Entry 0 = 1 tap, entry 1 = 2 taps, etc.
-      Maximum 4 entries.
+      Maximum 5 entries.
 
   tap-delay-ms:
     type: int

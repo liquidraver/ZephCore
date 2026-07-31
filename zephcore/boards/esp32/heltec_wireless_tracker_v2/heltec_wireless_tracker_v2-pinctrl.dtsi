@@ -1,0 +1,75 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Heltec Wireless Tracker V2 — pin control definitions
+ *
+ * Confirmed by Heltec V2.3 schematic/datasheet and MeshCore
+ * variants/heltec_tracker_v2.
+ *
+ * UART0: TX=GPIO43, RX=GPIO44
+ * UART2/GNSS: MCU TX=GPIO34, MCU RX=GPIO33
+ * I2C0 header: SDA=GPIO6, SCL=GPIO17
+ * SPI2 LoRa: SCLK=GPIO9, MOSI=GPIO10, MISO=GPIO11, NSS=GPIO8 via GPIO CS
+ * SPI3 TFT: SCLK=GPIO41, MOSI=GPIO42, CS=GPIO38
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	uart0_default: uart0_default {
+		group1 {
+			pinmux = <UART0_TX_GPIO43>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART0_RX_GPIO44>;
+			bias-pull-up;
+		};
+	};
+
+	uart2_default: uart2_default {
+		group1 {
+			pinmux = <UART2_TX_GPIO34>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART2_RX_GPIO33>;
+			bias-pull-up;
+		};
+	};
+
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO6>,
+				 <I2C0_SCL_GPIO17>;
+			drive-open-drain;
+		};
+	};
+
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO11>,
+				 <SPIM2_SCLK_GPIO9>;
+		};
+
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO10>;
+			output-low;
+		};
+	};
+
+	spim3_default: spim3_default {
+		group1 {
+			pinmux = <SPIM3_SCLK_GPIO41>,
+				 <SPIM3_CSEL_GPIO38>;
+		};
+
+		group2 {
+			pinmux = <SPIM3_MOSI_GPIO42>;
+			output-low;
+		};
+	};
+};

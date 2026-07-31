@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore RNG interface - matches Utils.h
  */
 
@@ -7,6 +7,10 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+/* On STM32, CMSIS defines an object-like macro `RNG` that collides with the
+ * mesh::RNG class below. The fixup header neutralizes it order-independently. */
+#include <mesh/stm32_cmsis_fixup.h>
 
 namespace mesh {
 

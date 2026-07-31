@@ -2,19 +2,20 @@
  * Seeed Wio Tracker L1 pin control definitions
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Pin mappings from Arduino variant.cpp:
- * - SPI0 (LoRa): SCK=P0.30, MISO=P0.03, MOSI=P0.28, CS=P1.14
+ * - SPI2 (LoRa): SCK=P0.30, MISO=P0.03, MOSI=P0.28, CS=P1.14
  * - I2C0 (OLED): SDA=P0.06, SCL=P0.05
- * - I2C1 (Grove): SDA=P1.11 (D17), SCL=P1.12 (D18)
+ * - I2C1 (Grove): SDA=P1.12 (D18), SCL=P1.11 (D17)
  * - UART (GPS): TX=P0.27, RX=P0.26
  * - QSPI: SCK=P0.21, CS=P0.25, IO0=P0.20, IO1=P0.24, IO2=P0.22, IO3=P0.23
  */
 
 &pinctrl {
-	/* SPI1 for LoRa SX1262 (uses SPI1 to avoid conflict with I2C0) */
-	spi1_default: spi1_default {
+	/* SPI2 (SPIM2) for LoRa SX1262 — dedicated SPI-only instance so it
+	 * doesn't collide with I2C0 (instance 0) or the Grove I2C1 (instance 1). */
+	spi2_default: spi2_default {
 		group1 {
 			psels = <NRF_PSEL(SPIM_SCK, 0, 30)>,
 				<NRF_PSEL(SPIM_MOSI, 0, 28)>,
@@ -22,7 +23,7 @@
 		};
 	};
 
-	spi1_sleep: spi1_sleep {
+	spi2_sleep: spi2_sleep {
 		group1 {
 			psels = <NRF_PSEL(SPIM_SCK, 0, 30)>,
 				<NRF_PSEL(SPIM_MOSI, 0, 28)>,
@@ -47,18 +48,19 @@
 		};
 	};
 
-	/* I2C1 for Grove connector */
+	/* I2C1 for Grove connector — SDA=P1.12 (D18), SCL=P1.11 (D17)
+	 * to match the physical Grove pinout (Arduino Wire1 / Meshtastic). */
 	i2c1_default: i2c1_default {
 		group1 {
-			psels = <NRF_PSEL(TWIM_SDA, 1, 11)>,
-				<NRF_PSEL(TWIM_SCL, 1, 12)>;
+			psels = <NRF_PSEL(TWIM_SDA, 1, 12)>,
+				<NRF_PSEL(TWIM_SCL, 1, 11)>;
 		};
 	};
 
 	i2c1_sleep: i2c1_sleep {
 		group1 {
-			psels = <NRF_PSEL(TWIM_SDA, 1, 11)>,
-				<NRF_PSEL(TWIM_SCL, 1, 12)>;
+			psels = <NRF_PSEL(TWIM_SDA, 1, 12)>,
+				<NRF_PSEL(TWIM_SCL, 1, 11)>;
 			low-power-enable;
 		};
 	};

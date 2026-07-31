@@ -1,0 +1,83 @@
+/*
+ * Heltec Mesh Node T096 pin control definitions
+ * Copyright (c) 2026 ZephCore
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Sources:
+ * - MeshCore variants/heltec_t096/variant.h and platformio.ini
+ * - Official Heltec Mesh_Node_T096_V0.2 schematic
+ *
+ * Confirmed T096 mappings:
+ * - SPI2 (SX1262 LoRa): SCK=P1.08, MOSI=P0.11, MISO=P0.14
+ * - SPI3 (ST7735S display): SCK=P0.20, MOSI=P0.17
+ * - I2C0: SDA=P0.07, SCL=P0.08
+ * - UART0 (UC6580 GNSS): TX=P0.25 -> GNSS_RX, RX=P0.23 <- GNSS_TX
+ */
+
+&pinctrl {
+	spi2_default: spi2_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  1, 8)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 11)>,
+				<NRF_PSEL(SPIM_MISO, 0, 14)>;
+		};
+	};
+
+	spi2_sleep: spi2_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  1, 8)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 11)>,
+				<NRF_PSEL(SPIM_MISO, 0, 14)>;
+			low-power-enable;
+		};
+	};
+
+	spi3_default: spi3_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 20)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 17)>;
+		};
+	};
+
+	spi3_sleep: spi3_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 20)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 17)>;
+			low-power-enable;
+		};
+	};
+
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 7)>,
+				<NRF_PSEL(TWIM_SCL, 0, 8)>;
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 7)>,
+				<NRF_PSEL(TWIM_SCL, 0, 8)>;
+			low-power-enable;
+		};
+	};
+
+	uart0_default: uart0_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 25)>;
+		};
+		group2 {
+			psels = <NRF_PSEL(UART_RX, 0, 23)>;
+			bias-pull-up;
+		};
+	};
+
+	uart0_sleep: uart0_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 0, 25)>,
+				<NRF_PSEL(UART_RX, 0, 23)>;
+			low-power-enable;
+		};
+	};
+};

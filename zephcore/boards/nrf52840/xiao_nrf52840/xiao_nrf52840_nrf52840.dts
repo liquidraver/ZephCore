@@ -1,6 +1,6 @@
 /*
  * Seeed XIAO nRF52840 + Wio-SX1262 on headers
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * MeshCore variants/xiao_nrf52 (plain XIAO, no GPS):
  * - SX1262: CS/RST/BUSY/DIO1/RXEN = P0.04/28/29/03/05 (D4–D1, D5)

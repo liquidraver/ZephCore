@@ -1,13 +1,19 @@
 /*
  * ZephCore - Doom Raycaster Easter Egg
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Wolf3D-style raycasting engine merged into a single file.
  * Runs on k_work_delayable at 20 FPS on the system work queue.
  * Writes directly to display via display_write() (bypasses CFB).
  *
- * ~1.7KB RAM, ~5KB flash when enabled.
+ * Two levels:
+ *   L1 — kill 2 monsters (imp + demon); a portal spawns at a random open tile.
+ *   L2 — open arena; a slow, 300-HP boss waits in a random corner. Kite and
+ *         shoot it to win. Boss is ~4× slower than the player so you can run,
+ *         turn, fire, and sprint away before it reaches you.
+ *
+ * ~1.9 KB RAM, ~6 KB flash when enabled.
  */
 
 #include "doom_game.h"
@@ -42,10 +48,14 @@ LOG_MODULE_REGISTER(doom_game, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
 #define TARGET_FPS    20
 #define FRAME_MS      (1000 / TARGET_FPS)
-#define MOVE_SPEED    (FP_ONE / 8)
+#define MOVE_SPEED    (FP_ONE / 8)   /* player */
 #define ROT_SPEED     (FP_ONE / 12)
 #define COLLISION_R   (FP_ONE / 4)
 #define MAX_ENEMIES   8
+
+#define ENEMY_SPEED   (FP_ONE / 16)  /* imp / demon */
+#define BOSS_SPEED    (FP_ONE / 32)  /* boss — half of normal, ~4× slower than player */
+#define BOSS_HP       300
 
 /* Input bitflags */
 #define DINPUT_FWD    BIT(0)
@@ -90,6 +100,7 @@ enum enemy_type {
 	ENEMY_NONE = 0,
 	ENEMY_IMP,
 	ENEMY_DEMON,
+	ENEMY_BOSS,
 };
 
 enum enemy_state {
@@ -124,6 +135,10 @@ struct doom_state {
 	int level;
 	int score;
 	bool game_over;
+	bool won;
+	bool portal_active;
+	int portal_map_x, portal_map_y;
+	int portal_anim;
 	uint32_t frame_count;
 };
 
@@ -136,7 +151,6 @@ static atomic_t input_state;
 static fixed_t zbuffer[SCREEN_W];
 static int fire_cooldown;
 
-/* Game tick work */
 static struct k_work_delayable game_tick_work;
 
 /* ========== SOUND ========== */
@@ -161,6 +175,10 @@ static const struct tone snd_hit[] = {
 };
 static const struct tone snd_death[] = {
 	{500, 80}, {400, 80}, {300, 100}, {200, 120}, {100, 150}, {0, 0}
+};
+/* Rising arpeggio — plays when portal opens and again on victory */
+static const struct tone snd_portal[] = {
+	{400, 40}, {600, 40}, {800, 40}, {1100, 80}, {0, 0}
 };
 
 static const struct tone *current_sound;
@@ -220,8 +238,13 @@ static void doom_sound_off(void)
 #endif
 }
 
-/* ========== MAP ========== */
+/* ========== MAPS ========== */
 
+/*
+ * Level 1: corridors and alcoves.
+ * Player starts south-centre facing north.
+ * Two monsters spawn NW and NE.
+ */
 static const uint8_t level_1[MAP_H][MAP_W] = {
 	{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
 	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
@@ -241,11 +264,37 @@ static const uint8_t level_1[MAP_H][MAP_W] = {
 	{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
 };
 
+/*
+ * Level 2: open boss arena with corner pillars and a hollow centre block.
+ * Long sight-lines for kiting. Player enters south-centre; boss spawns in one
+ * of four far corners chosen pseudo-randomly.
+ */
+static const uint8_t level_2[MAP_H][MAP_W] = {
+	{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,2,0,0,0,0,0,0,0,0,2,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,3,3,3,3,0,0,0,0,0,1},
+	{1,0,0,0,0,0,3,0,0,3,0,0,0,0,0,1},
+	{1,0,0,0,0,0,3,0,0,3,0,0,0,0,0,1},
+	{1,0,0,0,0,0,3,3,3,3,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,2,0,0,0,0,0,0,0,0,2,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,0,0,0,0,0,0,0,0,0,0,0,0,0,0,1},
+	{1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1},
+};
+
 static const uint8_t *current_map;
 
 static void doom_map_init(void)
 {
-	current_map = &level_1[0][0];
+	current_map = (game.level == 2)
+		? &level_2[0][0]
+		: &level_1[0][0];
 }
 
 static uint8_t doom_map_get(int x, int y)
@@ -340,7 +389,7 @@ static bool ceiling_pixel(int x, int y)
 	return brightness > threshold;
 }
 
-/* ========== ENEMY SPRITES (16x16 1-bit) ========== */
+/* ========== SPRITES (16x16 1-bit) ========== */
 
 static const uint16_t spr_imp_idle[16] = {
 	0x07C0, 0x0FE0, 0x1BB0, 0x1FF0, 0x0FE0, 0x07C0, 0x27C8, 0x77DC,
@@ -358,6 +407,24 @@ static const uint16_t spr_demon_attack[16] = {
 	0x4004, 0x600C, 0x783C, 0x7FFC, 0xFFFE, 0xF03E, 0xFBBE, 0x787C,
 	0x7FFC, 0x7FFC, 0xFFFE, 0xFFFE, 0xF83E, 0xE82E, 0xC826, 0xC826,
 };
+
+/*
+ * Boss: hulking demon — very wide, almost fully filled, wide-open jaw on attack.
+ * Distinct from the regular demon by the solid torso and broader silhouette.
+ */
+static const uint16_t spr_boss_idle[16] = {
+	0x2004, 0x300C, 0x7FFE, 0xFFFF,
+	0xE3C7, 0xFFFF, 0xDBBD, 0xFFFF,
+	0xFFFF, 0xFFFF, 0x7FFE, 0x3FFC,
+	0x1FF8, 0x0FF0, 0x0660, 0x0FF0,
+};
+static const uint16_t spr_boss_attack[16] = {
+	0x2004, 0x300C, 0x7FFE, 0xFFFF,
+	0xC003, 0xE7E7, 0x8001, 0xFFFF,
+	0xFFFF, 0xFFFF, 0x7FFE, 0x3FFC,
+	0x1FF8, 0x0FF0, 0x0660, 0x0FF0,
+};
+
 static const uint16_t spr_dying[16] = {
 	0x0000, 0x0000, 0x0000, 0x0000, 0x0200, 0x1290, 0x0840, 0x27C8,
 	0x1FF0, 0x3FF8, 0x7FFC, 0x7FFC, 0xFFFE, 0xFFFE, 0xFFFE, 0xFFFE,
@@ -365,6 +432,21 @@ static const uint16_t spr_dying[16] = {
 static const uint16_t spr_dead[16] = {
 	0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000,
 	0x0000, 0x0000, 0x0000, 0x0000, 0x4488, 0x2B54, 0x7FFC, 0xFFFE,
+};
+
+/*
+ * Portal sprites — two frames that alternate every 8 ticks (~0.4 s each):
+ *   frame A: diamond outline  (converging tips at top/bottom)
+ *   frame B: X pattern        (diverging to corners)
+ * The visual swap reads like a spinning / pulsing energy field.
+ */
+static const uint16_t spr_portal_a[16] = {
+	0x0180, 0x0240, 0x0420, 0x0810, 0x1008, 0x2004, 0x4002, 0x8001,
+	0x8001, 0x4002, 0x2004, 0x1008, 0x0810, 0x0420, 0x0240, 0x0180,
+};
+static const uint16_t spr_portal_b[16] = {
+	0x8001, 0x4002, 0x2004, 0x1008, 0x0810, 0x0420, 0x0240, 0x0180,
+	0x0180, 0x0240, 0x0420, 0x0810, 0x1008, 0x2004, 0x4002, 0x8001,
 };
 
 static const uint16_t *get_sprite_16(enum enemy_type type,
@@ -381,6 +463,9 @@ static const uint16_t *get_sprite_16(enum enemy_type type,
 	case ENEMY_DEMON:
 		return (state == ESTATE_ATTACK && (anim_tick & 4))
 			? spr_demon_attack : spr_demon_idle;
+	case ENEMY_BOSS:
+		return (state == ESTATE_ATTACK && (anim_tick & 4))
+			? spr_boss_attack : spr_boss_idle;
 	default:
 		return spr_imp_idle;
 	}
@@ -388,10 +473,88 @@ static const uint16_t *get_sprite_16(enum enemy_type type,
 
 /* ========== RAYCASTER ========== */
 
+/*
+ * Render one 16×16 sprite at world position (wx, wy).
+ * Shared by both the portal and all enemy sprites.
+ */
+static void render_one_sprite(const uint16_t *sprite,
+			      fixed_t wx, fixed_t wy,
+			      fixed_t inv_det,
+			      struct doom_player *p)
+{
+	fixed_t sx = wx - p->x;
+	fixed_t sy = wy - p->y;
+
+	fixed_t transform_x = fp_mul(inv_det,
+		fp_mul(p->dir_y, sx) - fp_mul(p->dir_x, sy));
+	fixed_t transform_y = fp_mul(inv_det,
+		fp_mul(-p->plane_y, sx) + fp_mul(p->plane_x, sy));
+
+	if (transform_y <= 0) return;
+
+	int sprite_screen_x = (SCREEN_W / 2) +
+		fp_to_int(fp_div(fp_mul(transform_x,
+			fp_from_int(SCREEN_W)), transform_y));
+
+	int sprite_h = fp_to_int(fp_abs(fp_div(
+		fp_from_int(SCREEN_H), transform_y)));
+	if (sprite_h < 3) return;
+	if (sprite_h > SCREEN_H * 2) sprite_h = SCREEN_H * 2;
+
+	int draw_start_y = (SCREEN_H - sprite_h) / 2;
+	int draw_end_y   = draw_start_y + sprite_h;
+	int draw_start_x = sprite_screen_x - sprite_h / 2;
+	int draw_end_x   = sprite_screen_x + sprite_h / 2;
+
+	int brightness = dist_to_brightness(transform_y);
+
+	for (int sc = draw_start_x; sc < draw_end_x; sc++) {
+		if (sc < 0 || sc >= SCREEN_W) continue;
+		if (transform_y >= zbuffer[sc]) continue;
+
+		int tex_x = (sc - draw_start_x) * 16 / sprite_h;
+		if (tex_x < 0) tex_x = 0;
+		if (tex_x > 15) tex_x = 15;
+
+		for (int sr = draw_start_y; sr < draw_end_y; sr++) {
+			if (sr < 0 || sr >= SCREEN_H) continue;
+
+			int tex_y = (sr - draw_start_y) * 16 / sprite_h;
+			if (tex_y < 0) tex_y = 0;
+			if (tex_y > 15) tex_y = 15;
+
+			if (sprite[tex_y] & (0x8000 >> tex_x)) {
+				uint8_t threshold =
+					bayer4x4[sr & 3][sc & 3];
+				if (brightness > threshold) {
+					render_fb[(sr / 8) * SCREEN_W + sc] |=
+						(1U << (sr & 7));
+				}
+			}
+		}
+	}
+}
+
 static void render_sprites(void)
 {
 	struct doom_player *p = &game.player;
 
+	fixed_t det = fp_mul(p->plane_x, p->dir_y) -
+		      fp_mul(p->dir_x, p->plane_y);
+	if (det == 0) return;
+	fixed_t inv_det = fp_div(FP_ONE, det);
+
+	/* Portal renders behind enemies (drawn first, no depth-sort needed) */
+	if (game.portal_active) {
+		const uint16_t *pspr = (game.portal_anim & 8)
+			? spr_portal_b : spr_portal_a;
+		render_one_sprite(pspr,
+			fp_from_int(game.portal_map_x) + FP_HALF,
+			fp_from_int(game.portal_map_y) + FP_HALF,
+			inv_det, p);
+	}
+
+	/* Collect visible enemies and sort farthest-first */
 	struct sprite_order {
 		int idx;
 		fixed_t dist;
@@ -404,14 +567,11 @@ static void render_sprites(void)
 
 		fixed_t dx = e->x - p->x;
 		fixed_t dy = e->y - p->y;
-		order[visible].idx = i;
+		order[visible].idx  = i;
 		order[visible].dist = fp_mul(dx, dx) + fp_mul(dy, dy);
 		visible++;
 	}
 
-	if (visible == 0) return;
-
-	/* Insertion sort — farthest first */
 	for (int i = 1; i < visible; i++) {
 		struct sprite_order tmp = order[i];
 		int j = i - 1;
@@ -422,67 +582,11 @@ static void render_sprites(void)
 		order[j + 1] = tmp;
 	}
 
-	fixed_t det = fp_mul(p->plane_x, p->dir_y) -
-		      fp_mul(p->dir_x, p->plane_y);
-	if (det == 0) return;
-	fixed_t inv_det = fp_div(FP_ONE, det);
-
 	for (int i = 0; i < visible; i++) {
 		struct doom_enemy *e = &game.enemies[order[i].idx];
-		const uint16_t *sprite = get_sprite_16(e->type, e->state,
-						       e->anim_tick);
-
-		fixed_t sx = e->x - p->x;
-		fixed_t sy = e->y - p->y;
-
-		fixed_t transform_x = fp_mul(inv_det,
-			fp_mul(p->dir_y, sx) - fp_mul(p->dir_x, sy));
-		fixed_t transform_y = fp_mul(inv_det,
-			fp_mul(-p->plane_y, sx) + fp_mul(p->plane_x, sy));
-
-		if (transform_y <= 0) continue;
-
-		int sprite_screen_x = (SCREEN_W / 2) +
-			fp_to_int(fp_div(fp_mul(transform_x,
-				fp_from_int(SCREEN_W)), transform_y));
-
-		int sprite_h = fp_to_int(fp_abs(fp_div(
-			fp_from_int(SCREEN_H), transform_y)));
-		if (sprite_h < 3) continue;
-		if (sprite_h > SCREEN_H * 2) sprite_h = SCREEN_H * 2;
-
-		int draw_start_y = (SCREEN_H - sprite_h) / 2;
-		int draw_end_y = draw_start_y + sprite_h;
-		int draw_start_x = sprite_screen_x - sprite_h / 2;
-		int draw_end_x = sprite_screen_x + sprite_h / 2;
-
-		int brightness = dist_to_brightness(transform_y);
-
-		for (int sc = draw_start_x; sc < draw_end_x; sc++) {
-			if (sc < 0 || sc >= SCREEN_W) continue;
-			if (transform_y >= zbuffer[sc]) continue;
-
-			int tex_x = (sc - draw_start_x) * 16 / sprite_h;
-			if (tex_x < 0) tex_x = 0;
-			if (tex_x > 15) tex_x = 15;
-
-			for (int sr = draw_start_y; sr < draw_end_y; sr++) {
-				if (sr < 0 || sr >= SCREEN_H) continue;
-
-				int tex_y = (sr - draw_start_y) * 16 / sprite_h;
-				if (tex_y < 0) tex_y = 0;
-				if (tex_y > 15) tex_y = 15;
-
-				if (sprite[tex_y] & (0x8000 >> tex_x)) {
-					uint8_t threshold =
-						bayer4x4[sr & 3][sc & 3];
-					if (brightness > threshold) {
-						render_fb[(sr / 8) * SCREEN_W + sc] |=
-							(1U << (sr & 7));
-					}
-				}
-			}
-		}
+		render_one_sprite(
+			get_sprite_16(e->type, e->state, e->anim_tick),
+			e->x, e->y, inv_det, p);
 	}
 }
 
@@ -585,7 +689,7 @@ static void raycaster_render(void)
 						   perp_dist));
 
 		int draw_start = (SCREEN_H - line_height) / 2;
-		int draw_end = draw_start + line_height;
+		int draw_end   = draw_start + line_height;
 
 		fixed_t wall_x;
 		if (!side) {
@@ -604,7 +708,7 @@ static void raycaster_render(void)
 		}
 
 		int actual_start = draw_start < 0 ? 0 : draw_start;
-		int actual_end = draw_end >= SCREEN_H ? SCREEN_H - 1 : draw_end;
+		int actual_end   = draw_end >= SCREEN_H ? SCREEN_H - 1 : draw_end;
 
 		for (int y = actual_start; y <= actual_end; y++) {
 			int tex_y = ((y - draw_start) * 8) / line_height;
@@ -669,6 +773,7 @@ static const uint8_t glyph_E[5] = {0xF, 0x8, 0xE, 0x8, 0xF};
 static const uint8_t glyph_O[5] = {0x6, 0x9, 0x9, 0x9, 0x6};
 static const uint8_t glyph_V[5] = {0x9, 0x9, 0x9, 0x6, 0x4};
 static const uint8_t glyph_R[5] = {0xE, 0x9, 0xE, 0xC, 0x9};
+static const uint8_t glyph_L[5] = {0x8, 0x8, 0x8, 0x8, 0xF};
 
 static void draw_glyph(int dx, int dy, const uint8_t *glyph)
 {
@@ -731,18 +836,27 @@ static void draw_hud(void)
 {
 	memset(&render_fb[7 * SCREEN_W], 0, SCREEN_W);
 
+	/* Separator line at y=57 */
 	for (int x = 0; x < SCREEN_W; x++) {
 		render_fb[7 * SCREEN_W + x] |= 0x01;
 	}
 
+	/* HP bar */
 	draw_glyph(1, 58, glyph_H);
 	draw_glyph(6, 58, glyph_P);
 	draw_health_bar(12, 58, game.player.health);
 
+	/* Ammo */
 	draw_glyph(48, 58, glyph_A);
 	draw_glyph(53, 58, glyph_M);
 	draw_number(59, 58, game.player.ammo);
 
+	/* Level indicator: "LV1" / "LV2" */
+	draw_glyph(76, 58, glyph_L);
+	draw_glyph(81, 58, glyph_V);
+	draw_number(87, 58, game.level);
+
+	/* Score */
 	draw_number(100, 58, game.score);
 }
 
@@ -785,7 +899,7 @@ static void draw_gun(bool firing)
 	set_px(ch_x + 2, ch_y);
 }
 
-/* ========== GAME OVER SCREEN ========== */
+/* ========== END SCREENS ========== */
 
 static const uint8_t letter_D[8] = {
 	0xFC, 0xFE, 0x86, 0x86, 0x86, 0x86, 0xFE, 0xFC
@@ -795,6 +909,15 @@ static const uint8_t letter_E[8] = {
 };
 static const uint8_t letter_A[8] = {
 	0x7C, 0xFE, 0x86, 0x86, 0xFE, 0xFE, 0x86, 0x86
+};
+static const uint8_t letter_W[8] = {
+	0x82, 0x82, 0x82, 0x92, 0xAA, 0xC6, 0x82, 0x00
+};
+static const uint8_t letter_I[8] = {
+	0xFE, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10, 0xFE
+};
+static const uint8_t letter_N[8] = {
+	0x82, 0xC2, 0xA2, 0x92, 0x8A, 0x86, 0x82, 0x00
 };
 
 static void blit_letter(int lx, int ly, const uint8_t *data)
@@ -818,25 +941,36 @@ static void draw_game_over(void)
 {
 	memset(render_fb, 0, FB_SIZE);
 
-	int start_x = (SCREEN_W - 38) / 2;
-	int start_y = 20;
+	if (game.won) {
+		/* "WIN" + score */
+		int sx = (SCREEN_W - 29) / 2;
+		int sy = 18;
+		blit_letter(sx,      sy, letter_W);
+		blit_letter(sx + 10, sy, letter_I);
+		blit_letter(sx + 20, sy, letter_N);
 
-	blit_letter(start_x, start_y, letter_D);
-	blit_letter(start_x + 10, start_y, letter_E);
-	blit_letter(start_x + 20, start_y, letter_A);
-	blit_letter(start_x + 30, start_y, letter_D);
+		/* Sub-line: score */
+		draw_number((SCREEN_W - 15) / 2, sy + 14, game.score);
+	} else {
+		/* "DEAD" */
+		int sx = (SCREEN_W - 38) / 2;
+		int sy = 20;
+		blit_letter(sx,      sy, letter_D);
+		blit_letter(sx + 10, sy, letter_E);
+		blit_letter(sx + 20, sy, letter_A);
+		blit_letter(sx + 30, sy, letter_D);
 
-	/* "game over" on one line: GAME(4 chars) + 7px gap + OVER(4 chars) = 40px */
-	int go_x = (SCREEN_W - 40) / 2;
-	int go_y = start_y + 14;
-	draw_glyph(go_x,      go_y, glyph_G);
-	draw_glyph(go_x +  5, go_y, glyph_A);
-	draw_glyph(go_x + 10, go_y, glyph_M);
-	draw_glyph(go_x + 15, go_y, glyph_E);
-	draw_glyph(go_x + 22, go_y, glyph_O);
-	draw_glyph(go_x + 27, go_y, glyph_V);
-	draw_glyph(go_x + 32, go_y, glyph_E);
-	draw_glyph(go_x + 37, go_y, glyph_R);
+		int go_x = (SCREEN_W - 40) / 2;
+		int go_y = sy + 14;
+		draw_glyph(go_x,      go_y, glyph_G);
+		draw_glyph(go_x +  5, go_y, glyph_A);
+		draw_glyph(go_x + 10, go_y, glyph_M);
+		draw_glyph(go_x + 15, go_y, glyph_E);
+		draw_glyph(go_x + 22, go_y, glyph_O);
+		draw_glyph(go_x + 27, go_y, glyph_V);
+		draw_glyph(go_x + 32, go_y, glyph_E);
+		draw_glyph(go_x + 37, go_y, glyph_R);
+	}
 }
 
 /* ========== DISPLAY ========== */
@@ -862,43 +996,36 @@ static void game_init(void)
 {
 	memset(&game, 0, sizeof(game));
 
-	game.player.x = fp_from_int(8) + FP_HALF;
-	game.player.y = fp_from_int(13) + FP_HALF;
+	game.player.x      = fp_from_int(8) + FP_HALF;
+	game.player.y      = fp_from_int(13) + FP_HALF;
 	game.player.health = 100;
-	game.player.ammo = 50;
-	game.player.dir_x = 0;
-	game.player.dir_y = -FP_ONE;
+	game.player.ammo   = 50;
+	game.player.dir_x  = 0;
+	game.player.dir_y  = -FP_ONE;
 	game.player.plane_x = (FP_ONE * 2) / 3;
 	game.player.plane_y = 0;
 
+	/* Level 1: exactly two monsters — one imp (NW), one demon (NE) */
 	game.enemies[0] = (struct doom_enemy){
-		.type = ENEMY_IMP, .state = ESTATE_IDLE,
-		.x = fp_from_int(4) + FP_HALF,
-		.y = fp_from_int(4) + FP_HALF,
+		.type   = ENEMY_IMP,
+		.state  = ESTATE_IDLE,
+		.x      = fp_from_int(4) + FP_HALF,
+		.y      = fp_from_int(4) + FP_HALF,
 		.health = 30,
 	};
 	game.enemies[1] = (struct doom_enemy){
-		.type = ENEMY_DEMON, .state = ESTATE_IDLE,
-		.x = fp_from_int(12) + FP_HALF,
-		.y = fp_from_int(4) + FP_HALF,
+		.type   = ENEMY_DEMON,
+		.state  = ESTATE_IDLE,
+		.x      = fp_from_int(12) + FP_HALF,
+		.y      = fp_from_int(4) + FP_HALF,
 		.health = 60,
 	};
-	game.enemies[2] = (struct doom_enemy){
-		.type = ENEMY_IMP, .state = ESTATE_IDLE,
-		.x = fp_from_int(8) + FP_HALF,
-		.y = fp_from_int(8) + FP_HALF,
-		.health = 30,
-	};
-	game.enemies[3] = (struct doom_enemy){
-		.type = ENEMY_DEMON, .state = ESTATE_IDLE,
-		.x = fp_from_int(4) + FP_HALF,
-		.y = fp_from_int(10) + FP_HALF,
-		.health = 60,
-	};
-	game.num_enemies = 4;
-	game.level = 1;
-	game.score = 0;
-	game.game_over = false;
+	game.num_enemies = 2;
+	game.level       = 1;
+	game.score       = 0;
+	game.game_over   = false;
+	game.won         = false;
+	game.portal_active = false;
 
 	fire_cooldown = 0;
 	atomic_set(&input_state, 0);
@@ -946,8 +1073,8 @@ static void handle_movement(uint32_t input)
 		fixed_t cos_r = FP_ONE - (ROT_SPEED / 8);
 		fixed_t sin_r = ROT_SPEED;
 
-		p->dir_x = fp_mul(old_dx, cos_r) - fp_mul(p->dir_y, sin_r);
-		p->dir_y = fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
+		p->dir_x   = fp_mul(old_dx, cos_r) - fp_mul(p->dir_y, sin_r);
+		p->dir_y   = fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
 		p->plane_x = fp_mul(old_px, cos_r) - fp_mul(p->plane_y, sin_r);
 		p->plane_y = fp_mul(old_px, sin_r) + fp_mul(p->plane_y, cos_r);
 	}
@@ -958,8 +1085,8 @@ static void handle_movement(uint32_t input)
 		fixed_t cos_r = FP_ONE - (ROT_SPEED / 8);
 		fixed_t sin_r = ROT_SPEED;
 
-		p->dir_x = fp_mul(old_dx, cos_r) + fp_mul(p->dir_y, sin_r);
-		p->dir_y = -fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
+		p->dir_x   = fp_mul(old_dx, cos_r) + fp_mul(p->dir_y, sin_r);
+		p->dir_y   = -fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
 		p->plane_x = fp_mul(old_px, cos_r) + fp_mul(p->plane_y, sin_r);
 		p->plane_y = -fp_mul(old_px, sin_r) + fp_mul(p->plane_y, cos_r);
 	}
@@ -1001,15 +1128,112 @@ static void handle_shooting(uint32_t input)
 			doom_play_sound(snd_hit);
 
 			if (e->health <= 0) {
-				e->state = ESTATE_DYING;
+				e->state     = ESTATE_DYING;
 				e->anim_tick = 0;
-				game.score += (e->type == ENEMY_DEMON) ? 200 : 100;
+				game.score  += (e->type == ENEMY_BOSS)  ? 1000 :
+					       (e->type == ENEMY_DEMON) ? 200  : 100;
 			} else {
 				e->state = ESTATE_CHASE;
 			}
 			break;
 		}
 	}
+}
+
+/*
+ * Scan the current map for open floor tiles that have open neighbours on all
+ * four cardinal sides and are at least 4 tiles (squared) from the player.
+ * Pick pseudo-randomly using frame_count as a seed.
+ */
+static void find_portal_spawn(int *out_x, int *out_y)
+{
+	int cand_x[32], cand_y[32];
+	int count = 0;
+
+	for (int y = 1; y < MAP_H - 1 && count < 32; y++) {
+		for (int x = 1; x < MAP_W - 1 && count < 32; x++) {
+			if (doom_map_get(x,     y    ) != 0) continue;
+			if (doom_map_get(x - 1, y    ) != 0) continue;
+			if (doom_map_get(x + 1, y    ) != 0) continue;
+			if (doom_map_get(x,     y - 1) != 0) continue;
+			if (doom_map_get(x,     y + 1) != 0) continue;
+
+			int pdx = x - fp_to_int(game.player.x);
+			int pdy = y - fp_to_int(game.player.y);
+			if (pdx * pdx + pdy * pdy < 16) continue;
+
+			cand_x[count] = x;
+			cand_y[count] = y;
+			count++;
+		}
+	}
+
+	if (count == 0) {
+		/* Fallback — should never trigger on the defined maps */
+		*out_x = 8;
+		*out_y = 2;
+		return;
+	}
+
+	int idx = (int)(game.frame_count % (uint32_t)count);
+	*out_x = cand_x[idx];
+	*out_y = cand_y[idx];
+}
+
+/* If all L1 enemies are dead, open a portal at a random floor tile. */
+static void check_level_complete(void)
+{
+	if (game.portal_active || game.level != 1) return;
+
+	for (int i = 0; i < game.num_enemies; i++) {
+		if (game.enemies[i].type != ENEMY_NONE &&
+		    game.enemies[i].state != ESTATE_DEAD) {
+			return;
+		}
+	}
+
+	int px, py;
+	find_portal_spawn(&px, &py);
+	game.portal_active = true;
+	game.portal_map_x  = px;
+	game.portal_map_y  = py;
+	game.portal_anim   = 0;
+	doom_play_sound(snd_portal);
+}
+
+/*
+ * Transition to level 2.
+ * Player keeps current health and ammo.
+ * Boss spawns in one of four far corners, chosen pseudo-randomly.
+ */
+static void advance_to_level2(void)
+{
+	game.level         = 2;
+	game.portal_active = false;
+	current_map        = &level_2[0][0];
+
+	/* Player respawns south-centre, facing north */
+	game.player.x       = fp_from_int(8) + FP_HALF;
+	game.player.y       = fp_from_int(13) + FP_HALF;
+	game.player.dir_x   = 0;
+	game.player.dir_y   = -FP_ONE;
+	game.player.plane_x = (FP_ONE * 2) / 3;
+	game.player.plane_y = 0;
+
+	static const int8_t boss_spots[4][2] = {
+		{2, 2}, {13, 2}, {2, 7}, {13, 7}
+	};
+	int bi = (int)(game.frame_count % 4);
+
+	memset(game.enemies, 0, sizeof(game.enemies));
+	game.enemies[0] = (struct doom_enemy){
+		.type   = ENEMY_BOSS,
+		.state  = ESTATE_CHASE,   /* immediately aggressive */
+		.x      = fp_from_int(boss_spots[bi][0]) + FP_HALF,
+		.y      = fp_from_int(boss_spots[bi][1]) + FP_HALF,
+		.health = BOSS_HP,
+	};
+	game.num_enemies = 1;
 }
 
 static void update_enemies(void)
@@ -1020,10 +1244,12 @@ static void update_enemies(void)
 		struct doom_enemy *e = &game.enemies[i];
 		if (e->type == ENEMY_NONE) continue;
 
+		fixed_t spd = (e->type == ENEMY_BOSS) ? BOSS_SPEED : ENEMY_SPEED;
+
 		switch (e->state) {
 		case ESTATE_IDLE: {
-			fixed_t dx = e->x - p->x;
-			fixed_t dy = e->y - p->y;
+			fixed_t dx   = e->x - p->x;
+			fixed_t dy   = e->y - p->y;
 			fixed_t dist = fp_mul(dx, dx) + fp_mul(dy, dy);
 			if (dist < fp_from_int(6 * 6)) {
 				e->state = ESTATE_CHASE;
@@ -1031,24 +1257,24 @@ static void update_enemies(void)
 			break;
 		}
 		case ESTATE_CHASE: {
-			fixed_t dx = p->x - e->x;
-			fixed_t dy = p->y - e->y;
+			fixed_t dx   = p->x - e->x;
+			fixed_t dy   = p->y - e->y;
 			fixed_t dist = fp_mul(dx, dx) + fp_mul(dy, dy);
 
 			if (dist < fp_from_int(2)) {
-				e->state = ESTATE_ATTACK;
+				e->state     = ESTATE_ATTACK;
 				e->anim_tick = 0;
 			} else {
-				fixed_t speed = FP_ONE / 16;
-				fixed_t move_x = fp_mul(dx, speed) /
+				fixed_t move_x = fp_mul(dx, spd) /
 					(fp_to_int(dist) + 1);
-				fixed_t move_y = fp_mul(dy, speed) /
+				fixed_t move_y = fp_mul(dy, spd) /
 					(fp_to_int(dist) + 1);
 
 				fixed_t nx = e->x + move_x;
 				fixed_t ny = e->y + move_y;
 
-				if (doom_map_get(fp_to_int(nx), fp_to_int(ny)) == 0) {
+				if (doom_map_get(fp_to_int(nx),
+						 fp_to_int(ny)) == 0) {
 					e->x = nx;
 					e->y = ny;
 				}
@@ -1058,7 +1284,9 @@ static void update_enemies(void)
 		case ESTATE_ATTACK:
 			e->anim_tick++;
 			if (e->anim_tick >= 20) {
-				int dmg = (e->type == ENEMY_DEMON) ? 15 : 8;
+				int dmg = (e->type == ENEMY_BOSS)  ? 25 :
+					  (e->type == ENEMY_DEMON) ? 15 : 8;
+
 				p->health -= dmg;
 				doom_play_sound(snd_hit);
 
@@ -1067,13 +1295,18 @@ static void update_enemies(void)
 					doom_play_sound(snd_death);
 				}
 				e->anim_tick = 0;
-				e->state = ESTATE_CHASE;
+				e->state     = ESTATE_CHASE;
 			}
 			break;
 		case ESTATE_DYING:
 			e->anim_tick++;
 			if (e->anim_tick >= 10) {
 				e->state = ESTATE_DEAD;
+				if (e->type == ENEMY_BOSS) {
+					game.game_over = true;
+					game.won       = true;
+					doom_play_sound(snd_portal);
+				}
 			}
 			break;
 		case ESTATE_DEAD:
@@ -1101,7 +1334,6 @@ static void game_tick_handler(struct k_work *work)
 			doom_sound_off();
 		}
 
-		/* Reschedule at slower rate for game over screen */
 		k_work_reschedule(&game_tick_work, K_MSEC(100));
 		return;
 	}
@@ -1120,6 +1352,24 @@ static void game_tick_handler(struct k_work *work)
 
 	update_enemies();
 
+	/* L1: spawn portal once both monsters are dead */
+	check_level_complete();
+
+	/* Portal: flicker and check if player stepped into it */
+	if (game.portal_active) {
+		game.portal_anim++;
+
+		fixed_t pdx = fp_from_int(game.portal_map_x) + FP_HALF
+			      - game.player.x;
+		fixed_t pdy = fp_from_int(game.portal_map_y) + FP_HALF
+			      - game.player.y;
+
+		/* Trigger within ~0.7 tiles (squared distance < 0.5) */
+		if (fp_mul(pdx, pdx) + fp_mul(pdy, pdy) < (FP_ONE / 2)) {
+			advance_to_level2();
+		}
+	}
+
 	memset(render_fb, 0, FB_SIZE);
 	raycaster_render();
 	draw_gun(game.player.firing && fire_cooldown > 2);
@@ -1128,7 +1378,6 @@ static void game_tick_handler(struct k_work *work)
 
 	game.frame_count++;
 
-	/* Reschedule next tick */
 	k_work_reschedule(&game_tick_work, K_MSEC(FRAME_MS));
 }
 
@@ -1140,14 +1389,12 @@ void doom_game_start(void)
 
 	LOG_INF("Doom easter egg starting!");
 
-	/* Ensure display is unblanked */
 	const struct device *dev = mc_display_get_device();
 	if (dev) {
 		display_blanking_off(dev);
 	}
 
 #ifdef CONFIG_ZEPHCORE_UI_BUZZER
-	/* Stop any firmware buzzer activity */
 	buzzer_stop();
 #endif
 
@@ -1157,7 +1404,6 @@ void doom_game_start(void)
 	k_work_init_delayable(&game_tick_work, game_tick_handler);
 	k_work_init_delayable(&sound_work, doom_sound_work_handler);
 
-	/* Start game loop */
 	k_work_reschedule(&game_tick_work, K_NO_WAIT);
 }
 
@@ -1171,7 +1417,6 @@ void doom_game_stop(void)
 	k_work_cancel_delayable(&game_tick_work);
 	doom_sound_off();
 
-	/* Clear the direct framebuffer to black */
 	const struct device *dev = mc_display_get_device();
 	if (dev) {
 		memset(render_fb, 0, FB_SIZE);

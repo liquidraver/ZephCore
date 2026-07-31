@@ -102,6 +102,23 @@
 &lora {
        dio1-gpios = <&gpio1 15 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
        rx-boosted;
+
+       /* Upstream DTS labels P1.05 as rx-enable-gpios (per-direction
+        * antenna control), but on RAK4631 this pin is the SX1262 module
+        * power-enable (HIGH = on; see MeshCore variants/rak4631). The
+        * driver toggles per-direction GPIOs each TX/RX, which would
+        * pulse this pin LOW during RX. Stop the driver from touching it
+        * by deleting the property; the gpio-hog below pins it HIGH. */
+       /delete-property/ rx-enable-gpios;
+};
+
+&gpio1 {
+       sx1262_power_en {
+               gpio-hog;
+               gpios = <5 GPIO_ACTIVE_HIGH>;
+               output-high;
+               line-name = "sx1262-power-en";
+       };
 };
 
 /* LEDs are active-high on this board (stock RAK4631 DTS used active-low). */

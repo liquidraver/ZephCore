@@ -1,0 +1,20 @@
+identifier: heltec_t114/nrf52840
+name: Heltec T114
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+ram: 256
+flash: 1024
+supported:
+  - adc
+  - ble
+  - gpio
+  - i2c
+  - spi
+  - usb_device
+  - lora
+  - gnss
+vendor: heltec

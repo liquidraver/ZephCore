@@ -1,7 +1,7 @@
 /*
  * ZephCore - PWM Buzzer with RTTTL Melody Playback
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Non-blocking RTTTL melody playback using Zephyr PWM API.
  * Notes scheduled via k_work_delayable on a dedicated work queue.

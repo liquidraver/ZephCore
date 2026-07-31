@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Heltec WiFi LoRa 32 V4.3 — Pin Control Definitions
  *
  * Pin assignments identical to V4.2 (GPIO5/CTX is plain GPIO, no pinctrl entry needed):

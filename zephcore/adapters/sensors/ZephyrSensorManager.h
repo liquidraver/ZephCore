@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Backward-compatibility shim — includes GPS manager + env sensors.
  * All callers can continue using #include "ZephyrSensorManager.h".
  */

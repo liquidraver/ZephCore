@@ -1,0 +1,180 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * LilyGo T-Beam v1.2 (SX1262) — ZephCore overlay
+ *
+ * The upstream Zephyr DTS (lilygo/ttgo_tbeam) targets the SX1276 radio
+ * variant. The v1.2 board carries an SX1262 instead, on the same SPI3
+ * wiring, so this overlay swaps the radio over to the native SX126x driver
+ * and adds the SX1262-specific control pins.
+ *
+ * Pin mapping (Arduino MeshCore variants/lilygo_tbeam_SX1262):
+ *   LoRa SPI3:    SCLK=5, MOSI=27, MISO=19, NSS=18
+ *   LoRa ctrl:    RESET=23, BUSY=32 (gpio1 0), DIO1=33 (gpio1 1)
+ *                 DIO2 = antenna RF switch, DIO3 = 1.8V TCXO
+ *   Display I2C0: SDA=21, SCL=22, SSD1306 @ 0x3C   [base DTS]
+ *   PMU I2C0:     AXP2101 @ 0x34                    [base DTS]
+ *   GPS UART1:    TX=12, RX=34, NEO-6M/M8N          [base DTS]
+ *
+ * Power (AXP2101, brought up by the stock Zephyr regulator driver from the
+ * base DTS regulator-boot-on/always-on properties):
+ *   DCDC1 = ESP32 + OLED (always-on)
+ *   ALDO2 = LoRa  -> raised to 3.3V below (upstream 2.9-3.0V)
+ *   ALDO3 = GPS   -> raised to 3.3V below (upstream 2.7-2.8V)
+ * 3.3V matches the Arduino/Meshtastic reference firmware for this board.
+ */
+
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/*
+ * User button — GPIO38, the middle button on the T-Beam (Arduino PIN_USER_BTN=38,
+ * Meshtastic BUTTON_PIN=38). The upstream ttgo_tbeam DTS defines no button, so
+ * declare the full gpio-keys node plus the single-button input chain the UI
+ * consumes (short press = page/select, long press = action), same scheme as the
+ * heltec_wifi_lora32_v3 companion.
+ *
+ * GPIO38 is input-only on the classic ESP32 (GPIO34-39 have no internal pull
+ * resistors), so request no pull and rely on the board's external pull-up — the
+ * button shorts the line to GND when pressed. (Arduino/Meshtastic set a pull-up
+ * flag here too, but it is a no-op on this pin; the external pull-up is real.)
+ */
+/ {
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		user_button: button_0 {
+			gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;  /* GPIO38 = gpio1 pin 6 */
+			label = "User Button";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+};
+
+/*
+ * BT HCI controller. The upstream ttgo_tbeam DTS does not select the ESP32 BT
+ * HCI controller, so forcing CONFIG_BT=y would otherwise leave the Espressif
+ * controller/PHY Kconfig half-configured (BT_ESP32 stays off). Enabling the HCI
+ * node selects BT_ESP32, which in turn pulls in the shared PHY.
+ *
+ * WiFi is intentionally left disabled. The companion transport is BLE, and the
+ * classic ESP32 repeater is CLI-only (WiFi OTA's functional driver + 64KB heap
+ * overflow this board's DRAM, so it's excluded in CMakeLists.txt — see there).
+ */
+/ {
+	chosen {
+		zephyr,bt-hci = &esp32_bt_hci;
+		/* GPS is powered by the AXP2101 ALDO3 rail (no discrete enable GPIO),
+		 * so the GPS manager toggles this regulator to switch GPS on/off. */
+		zephcore,gps-power = &vdd_gnss;
+		/* AXP2101 also charges the GPS V_BCKP domain (button-battery output),
+		 * so ephemeris/RTC survive ALDO3 power cuts → warm re-fix in standby.
+		 * Enabled via raw I2C at boot (VBACKUP isn't a Zephyr regulator). */
+		zephcore,gps-backup-pmu = &axp2101;
+	};
+
+	aliases {
+		/* GPIO4 LED blinks on LoRa TX, matching Arduino P_LORA_TX_LED=4
+		 * and Meshtastic LED_POWER=4. */
+		lora-tx-led = &red_led;
+	};
+};
+
+&esp32_bt_hci {
+	status = "okay";
+};
+
+/*
+ * GPIO4 LED is active-LOW on the T-Beam (Meshtastic LED_STATE_ON=0; Arduino
+ * drives the pin LOW to light it). The upstream DTS marks it active-high, so
+ * correct the polarity here — otherwise the TX LED logic is inverted.
+ */
+&red_led {
+	gpios = <&gpio0 4 GPIO_ACTIVE_LOW>;
+};
+
+/* Swap the upstream SX1276 node to a native SX1262. */
+&lora0 {
+	compatible = "semtech,sx1262";
+	spi-max-frequency = <8000000>;
+
+	/delete-property/ dio-gpios;
+	/delete-property/ power-amplifier-output;
+
+	/* RESET=GPIO23 inherited from base DTS; NSS=GPIO18 via spi3 cs-gpios. */
+	busy-gpios = <&gpio1 0 GPIO_ACTIVE_HIGH>;                     /* BUSY = GPIO32 */
+	dio1-gpios = <&gpio1 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* DIO1 = GPIO33 */
+
+	/* DIO2 drives the antenna TX/RX switch. */
+	dio2-tx-enable;
+
+	/* 1.8V TCXO via DIO3 (matches Arduino SX126X_DIO3_TCXO_VOLTAGE=1.8). */
+	dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+	tcxo-power-startup-delay-ms = <5>;
+
+	rx-boosted;
+};
+
+/* LoRa rail (ALDO2): upstream 2.9-3.0V; reference firmware runs it at 3.3V. */
+&vdd_lora {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+};
+
+/* GPS rail (ALDO3): upstream 2.7-2.8V; reference firmware runs it at 3.3V. */
+&vdd_gnss {
+	regulator-min-microvolt = <3300000>;
+	regulator-max-microvolt = <3300000>;
+};
+
+/* I2C sensors — auto-detected at runtime (OLED + AXP2101 already in base DTS). */
+&i2c0 {
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/*
+ * Flash partitions — repurpose the 192KB storage_partition (0x3B0000) as
+ * LittleFS, same as ttgo_lora32. The 4MB AMP layout keeps its MCUboot slots.
+ */
+/delete-node/ &storage_partition;
+/delete-node/ &scratch_partition;
+
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+&flash0 {
+	partitions {
+		/* LittleFS 192KB for DataStore (identity, prefs, creds) */
+		lfs_partition: partition@3b0000 {
+			label = "lfs";
+			reg = <0x3B0000 0x30000>;
+		};
+		/* BLE bond store — 16KB NVS, isolated from /lfs (see esp32_common.conf).
+		 * Placed in the unused scratch region just above lfs (lfs unchanged). */
+		storage_partition: partition@3e0000 {
+			label = "storage";
+			reg = <0x3E0000 0x4000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"

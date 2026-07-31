@@ -1,0 +1,64 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Heltec Wireless Tracker V2 — ZephCore overlay
+ *
+ * The full DTS defines: SX1262 (lora0), ST7735R 160x80 TFT, UC6580 GNSS,
+ * button, status LED, battery ADC, Vext, FEM power, I2C0, SPI2/3, BLE, WiFi.
+ * This overlay adds ZephCore-specific integration on top.
+ */
+
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+
+/ {
+	chosen {
+		/* Native USB serial/JTAG for ZephCore console and CLI. */
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+
+		/* Mono-TFT wrapper: presents PIXEL_FORMAT_MONO01 to CFB and converts
+		 * each row to RGB565 for the ST7735R colour TFT. */
+		zephyr,display = &mono_tft;
+	};
+
+	mono_tft: mono-tft {
+		compatible = "zephcore,mono-tft";
+		tft-dev = <&st7735r_160x80>;
+		width = <160>;
+		height = <80>;
+	};
+
+	/* Button chain: short tap scrolls pages, double tap goes back, long press enters. */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+};
+
+/* I2C sensors — auto-detected at runtime. Header pins per MeshCore:
+ * SDA=GPIO6, SCL=GPIO17. */
+&i2c0 {
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/*
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
+ */
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"
+
+/* USB CDC-ACM companion transport when built with boards/common/esp32s3_usb.conf. */
+#include "../../common/esp32s3_usb_otg.dtsi"

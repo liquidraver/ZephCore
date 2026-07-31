@@ -1,0 +1,22 @@
+identifier: muziworks_r1neo
+name: muzi works R1 Neo
+type: mcu
+arch: arm
+ram: 256
+flash: 1024
+toolchain:
+  - zephyr
+  - gnuarmemb
+  - xtools
+supported:
+  - adc
+  - ble
+  - gpio
+  - gnss
+  - i2c
+  - nvs
+  - pwm
+  - spi
+  - usb_device
+  - watchdog
+vendor: muziworks

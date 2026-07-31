@@ -1,5 +1,5 @@
 # Copyright (c) 2025 ZephCore
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 zephyr_library()
 zephyr_library_compile_definitions(LR20XX_DISABLE_WARNINGS)

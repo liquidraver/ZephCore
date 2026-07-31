@@ -1,6 +1,6 @@
 # LilyGo T-LoRa C6 board configuration
 
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 config BOARD_LILYGO_TLORA_C6
 	select SOC_ESP32_C6_WROOM_1U_N4

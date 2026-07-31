@@ -1,7 +1,7 @@
 /*
  * ZephCore - Doom Raycaster Easter Egg
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hidden easter egg: Wolf3D-style raycaster on the OLED display.
  * Activated by double-click + single-click joystick center on page 0.

@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: MIT
+#
+# DT-driven PSRAM auto-enable for ESP32 boards.
+#
+# Upstream Zephyr's esp32*_wroom_n*r*.dtsi files override psram0 size when
+# the chip variant has PSRAM stuffed (R-suffix in the Espressif part number).
+# We auto-enable PSRAM whenever the DTS size is non-zero — the upstream
+# Kconfig.spiram then auto-reads ESP_SPIRAM_SIZE from the same DT property.
+#
+# Boards without PSRAM include a non-R-suffix dtsi (e.g. esp32s3_wroom_n8),
+# which leaves psram0 at size = 0 — auto-detect leaves PSRAM off for them.
+# ESP32-C3 and ESP32-C6 are outside Kconfig.spiram's SOC gate entirely, so
+# this symbol doesn't exist on those builds — no effect.
+#
+# Mode (QUAD vs OCT) cannot be auto-picked here: upstream Kconfig.spiram
+# sets an unconditional `default SPIRAM_MODE_QUAD` on the choice, which wins
+# over any conditional default we'd add. ESP32-S3 R8 boards (8 MB OPI octal
+# PSRAM) must set CONFIG_SPIRAM_MODE_OCT=y in their board.conf. R2 boards
+# (2 MB QSPI quad) need nothing — QUAD is the upstream default.
+
+config ESP_SPIRAM
+	default y if (SOC_SERIES_ESP32 || SOC_SERIES_ESP32S2 || SOC_SERIES_ESP32S3 || SOC_SERIES_ESP32C5) && \
+		"$(dt_node_int_prop_int,$(dt_nodelabel_path,psram0),size)" != 0

@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Static pool PacketManager
  */
 
@@ -22,8 +22,7 @@ public:
 	Packet *removeOutboundByIdx(int i) override;
 	uint32_t getOutboundSchedule(int i) const override;
 	bool rescheduleOutbound(int i, uint32_t new_scheduled_for) override;
-	void queueInbound(Packet *packet, uint32_t scheduled_for) override;
-	Packet *getNextInbound(uint32_t now) override;
+	uint8_t peekNextOutboundPriority(uint32_t now) const override;
 };
 
 } /* namespace mesh */

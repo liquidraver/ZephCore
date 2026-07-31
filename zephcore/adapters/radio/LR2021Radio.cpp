@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * LR2021 hardware hooks for LoRaRadioBase.
  */
 
@@ -33,12 +33,14 @@ void LR2021Radio::begin()
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */
 
-void LR2021Radio::hwConfigure(const struct lora_modem_config &cfg)
+bool LR2021Radio::hwConfigure(const struct lora_modem_config &cfg)
 {
 	int ret = lora_config(_dev, const_cast<struct lora_modem_config *>(&cfg));
 	if (ret < 0) {
 		LOG_ERR("lora_config failed: %d", ret);
+		return false;
 	}
+	return true;
 }
 
 void LR2021Radio::hwCancelReceive()
@@ -57,8 +59,12 @@ int16_t LR2021Radio::hwGetCurrentRSSI()
 	return lr20xx_get_rssi_inst(_dev);
 }
 
-bool LR2021Radio::hwIsPreambleDetected()
+bool LR2021Radio::hwIsReceiving()
 {
+	/* MUST be non-destructive: never clear IRQ bits from this path.
+	 * Foreign-preamble release is hardware-driven (chip-internal release
+	 * on HEADER_ERROR / sync timeout). The driver's lr20xx_is_receiving()
+	 * reads via get_status() without clearing. */
 	return lr20xx_is_receiving(_dev);
 }
 
@@ -67,9 +73,19 @@ void LR2021Radio::hwSetRxBoost(bool enable)
 	lr20xx_set_rx_boost(_dev, enable);
 }
 
-void LR2021Radio::hwResetAGC()
+int LR2021Radio::hwCadProbe(int8_t level)
 {
-	lr20xx_reset_agc(_dev);
+	return lr20xx_cad_probe(_dev, level);
+}
+
+void LR2021Radio::hwCadSetPeakOffset(int8_t offset)
+{
+	lr20xx_cad_set_peak_offset(_dev, offset);
+}
+
+uint8_t LR2021Radio::hwCadBasePeak()
+{
+	return lr20xx_cad_base_peak(_dev);
 }
 
 } /* namespace mesh */

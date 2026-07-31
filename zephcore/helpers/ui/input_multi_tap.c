@@ -1,6 +1,6 @@
 /*
  * Copyright 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Multi-tap input filter.
  *

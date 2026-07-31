@@ -1,0 +1,71 @@
+diff --git a/drivers/spi/CMakeLists.txt b/drivers/spi/CMakeLists.txt
+--- a/drivers/spi/CMakeLists.txt
++++ b/drivers/spi/CMakeLists.txt
+@@ -88,3 +88,16 @@ if(CONFIG_SPI_SC18IS606)
+   zephyr_library_include_directories(${ZEPHYR_BASE}/drivers/mfd)
+   zephyr_library_sources(spi_sc18is606.c)
+ endif()
++
++# ZephCore patch: native_sim Linux spidev SPI driver.
++# Zephyr-side driver compiled as part of the application, host-side
++# adapt file compiled into the native_simulator INTERFACE so host
++# headers (<linux/spi/spidev.h>) don't reach the Zephyr translation unit.
++if(CONFIG_SPI_NATIVE_LINUX)
++  if(${CMAKE_HOST_SYSTEM_NAME} STREQUAL Linux)
++    zephyr_library_sources(spi_native_linux.c)
++    target_sources(native_simulator INTERFACE spi_native_linux_adapt.c)
++  else()
++    message(FATAL_ERROR "CONFIG_SPI_NATIVE_LINUX is only available on Linux hosts")
++  endif()
++endif()
+diff --git a/drivers/spi/Kconfig b/drivers/spi/Kconfig
+--- a/drivers/spi/Kconfig
++++ b/drivers/spi/Kconfig
+@@ -1,4 +1,5 @@
+ # SPI driver configuration options
++# ZephCore patch: adds native_linux SPI driver Kconfig.
+
+ # Copyright (c) 2015-2016 Intel Corporation
+ # SPDX-License-Identifier: Apache-2.0
+@@ -129,6 +130,7 @@ source "drivers/spi/Kconfig.mcux_ecspi"
+ source "drivers/spi/Kconfig.mcux_flexcomm"
+ source "drivers/spi/Kconfig.mcux_flexio"
+ source "drivers/spi/Kconfig.npcx"
++source "drivers/spi/Kconfig.native_linux"
+ source "drivers/spi/Kconfig.nrfx"
+ source "drivers/spi/Kconfig.numaker"
+ source "drivers/spi/Kconfig.nxp_s32"
+diff --git a/drivers/gpio/CMakeLists.txt b/drivers/gpio/CMakeLists.txt
+--- a/drivers/gpio/CMakeLists.txt
++++ b/drivers/gpio/CMakeLists.txt
+@@ -150,3 +150,13 @@ if(CONFIG_GPIO_SC18IS606)
+   zephyr_library_include_directories(${ZEPHYR_BASE}/drivers/mfd)
+   zephyr_library_sources(gpio_sc18is606.c)
+ endif()
++
++# ZephCore patch: native_sim Linux GPIO driver via kernel V2 chardev ioctl.
++if(CONFIG_GPIO_NATIVE_LINUX)
++  if(${CMAKE_HOST_SYSTEM_NAME} STREQUAL Linux)
++    zephyr_library_sources(gpio_native_linux.c)
++    target_sources(native_simulator INTERFACE gpio_native_linux_adapt.c)
++  else()
++    message(FATAL_ERROR "CONFIG_GPIO_NATIVE_LINUX is only available on Linux hosts")
++  endif()
++endif()
+diff --git a/drivers/gpio/Kconfig b/drivers/gpio/Kconfig
+--- a/drivers/gpio/Kconfig
++++ b/drivers/gpio/Kconfig
+@@ -1,4 +1,5 @@
+ # GPIO configuration options
++# ZephCore patch: adds native_linux GPIO driver Kconfig.
+
+ # Copyright (c) 2015 Intel Corporation
+ # SPDX-License-Identifier: Apache-2.0
+@@ -154,6 +155,7 @@ source "drivers/gpio/Kconfig.mcux_rgpio"
+ source "drivers/gpio/Kconfig.mfxstm32l152"
+ source "drivers/gpio/Kconfig.mmio32"
+ source "drivers/gpio/Kconfig.mspm0"
++source "drivers/gpio/Kconfig.native_linux"
+ source "drivers/gpio/Kconfig.nct38xx"
+ source "drivers/gpio/Kconfig.neorv32"
+ source "drivers/gpio/Kconfig.npcx"

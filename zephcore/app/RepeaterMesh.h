@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * RepeaterMesh - LoRa mesh repeater implementation
  *
  * Extends mesh::Mesh with:
@@ -12,11 +12,13 @@
 
 #pragma once
 
+#include <zephyr/sys/atomic.h>
 #include <mesh/Mesh.h>
 #include <mesh/StaticPoolPacketManager.h>
 #include <mesh/SimpleMeshTables.h>
 #include <helpers/ClientACL.h>
 #include <helpers/CommonCLI.h>
+#include <helpers/MeshTimeSync.h>
 #include <helpers/RegionMap.h>
 #include <helpers/TransportKeyStore.h>
 #include <helpers/RateLimiter.h>
@@ -28,7 +30,9 @@
 #endif
 
 #ifndef FIRMWARE_VERSION
-  #define FIRMWARE_VERSION   "v1.15.0-zephyr"
+  // Real version injected by CMakeLists.txt (-DFIRMWARE_VERSION); this fallback
+  // only applies to builds that bypass that injection and should never surface.
+  #define FIRMWARE_VERSION   "v0.0.0-dev"
 #endif
 
 #ifndef FIRMWARE_BUILD_DATE
@@ -41,7 +45,7 @@
   #ifdef CONFIG_ZEPHCORE_MAX_NEIGHBOURS
     #define MAX_NEIGHBOURS  CONFIG_ZEPHCORE_MAX_NEIGHBOURS
   #else
-    #define MAX_NEIGHBOURS  16
+    #define MAX_NEIGHBOURS  50
   #endif
 #endif
 
@@ -95,7 +99,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     RegionEntry* load_stack[8];
     RegionEntry* recv_pkt_region;
     TransportKey default_scope;
-    RateLimiter discover_limiter, anon_limiter;
+    RateLimiter discover_limiter, anon_limiter, login_fail_limiter;
     uint32_t pending_discover_tag;
     unsigned long pending_discover_until;
     bool region_load_active;
@@ -109,6 +113,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     uint8_t pending_sf;
     uint8_t pending_cr;
     int matching_peer_indexes[MAX_CLIENTS];
+    MeshTimeSync _timesync{FIRMWARE_BUILD_EPOCH};
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK)
     ObserverCreds _uplink_creds;
     bool _uplink_reboot_required;
@@ -120,21 +125,34 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
     uint8_t _uplink_last_raw[MAX_TRANS_UNIT];
     int _uplink_last_raw_len;
     unsigned long _uplink_next_status_at;
+    /* Set by the MQTT CONNACK callback (runs on the MQTT publisher thread);
+     * drained on the main thread in maintenanceLoop() so the "online" status
+     * publish never runs off-main (avoids the shared static-JSON-buffer race
+     * and off-main battery-ADC regulator toggling). */
+    atomic_t _uplink_connect_pending;
 #endif
 
     void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
+    void timeSyncTick();
     uint8_t handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood);
-    uint8_t handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
-    uint8_t handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
-    uint8_t handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data);
+    uint8_t handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len);
+    uint8_t handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len);
+    uint8_t handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len);
     int handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len);
     mesh::Packet* createSelfAdvert();
     void sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size);
     void sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, uint8_t path_hash_size);
 
+    /* Region-definition CLI (defined in app/RepeaterRegionCLI.cpp).
+     * handleRegionLoadLine: a continuation line during `region load`.
+     * handleRegionCommand:  a `region ...` command. */
+    void handleRegionLoadLine(char* command, char* reply);
+    void handleRegionCommand(char* command, char* reply);
+
 protected:
     uint8_t getDutyCyclePercent() const override {
-        return (uint8_t)_prefs.airtime_factor;
+        /* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
+        return (uint8_t)(100.0f / (_prefs.airtime_factor + 1.0f) + 0.5f);
     }
 
     bool allowPacketForward(const mesh::Packet* packet) override;
@@ -151,14 +169,29 @@ protected:
     int getInterferenceThreshold() const override {
         return _prefs.interference_threshold;
     }
-    int getAGCResetInterval() const override {
-        return ((int)_prefs.agc_reset_interval) * 4000;
-    }
     uint8_t getExtraAckTransmitCount() const override {
         return _prefs.multi_acks;
     }
 
-    bool filterRecvFloodPacket(mesh::Packet* pkt) override;
+    /* Adaptive CAD */
+    int formatCadStatus(char* buf, int cap) override {
+        return _radio->formatCadStatus(buf, cap);
+    }
+    void applyCadPrefs() override {
+        _radio->setCadParams(_prefs.cad_auto != 0, _prefs.cad_offset,
+                             _prefs.probe_interval, _prefs.cad_busycap);
+    }
+    void resetCadStats() override {
+        _radio->resetCadStats();
+    }
+    void onCadOffsetChanged(int8_t offset) override {
+        /* Staircase steps are hours apart — persisting immediately is
+         * fine for flash wear and survives unexpected reboots. */
+        _prefs.cad_offset = offset;
+        savePrefs();
+    }
+
+    mesh::DispatcherAction onRecvPacket(mesh::Packet* pkt) override;
 
     void onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) override;
     int searchPeersByHash(const uint8_t* hash) override;
@@ -200,11 +233,13 @@ public:
     bool setGpsEnabled(bool enabled) override;
     bool isGpsEnabled() const override;
     void formatGpsStatsReply(char* reply) override;
+    uint32_t getDefaultGpsIntervalSec() const override { return CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC; }
     const char* getNodeName() { return _prefs.node_name; }
     NodePrefs* getNodePrefs() { return &_prefs; }
 
     void savePrefs() override;
     void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) override;
+    void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) override;
     bool formatFileSystem() override;
     void sendSelfAdvertisement(int delay_millis, bool flood) override;
     void updateAdvertTimer() override;
@@ -213,6 +248,7 @@ public:
     void eraseLogFile() override;
     void dumpLogFile() override;
     void setTxPower(int8_t power_dbm) override;
+    bool setRxBoostedGain(bool enable) override;
     void formatNeighborsReply(char* reply) override;
     void removeNeighbor(const uint8_t* pubkey, int key_len) override;
     void formatStatsReply(char* reply) override;
@@ -222,6 +258,10 @@ public:
     mesh::LocalIdentity& getSelfId() override { return self_id; }
     void saveIdentity(const mesh::LocalIdentity& new_id) override;
     void clearStats() override;
+
+    /* Mesh time sync */
+    MeshTimeSync* getMeshTimeSync() override { return &_timesync; }
+    void noteGPSTimeSync() { _timesync.noteGPSSync((uint32_t)(k_uptime_get() / 1000)); }
 
     /* Adaptive contention window callbacks */
     float getContentionEstimate() const override {
@@ -239,30 +279,15 @@ public:
     uint32_t getDutyCycleTimeoutRestarts() const override;
     void resetDutyCycleTimeoutRestarts() override;
 
-#ifdef CONFIG_ZEPHCORE_APC
-    /* Adaptive Power Control callbacks */
-    int8_t getAPCReduction() const override {
-        return getPowerController().getPowerReduction();
-    }
-    float getAPCMargin() const override {
-        return getPowerController().getMarginEstimate();
-    }
-    bool isAPCEnabled() const override {
-        return getPowerController().isEnabled();
-    }
-    void setAPCEnabled(bool en) override {
-        getPowerController().setEnabled(en);
-    }
-    uint8_t getAPCTargetMargin() const override {
-        return getPowerController().getTargetMargin();
-    }
-    void setAPCTargetMargin(uint8_t margin_db) override {
-        getPowerController().setTargetMargin(margin_db);
-    }
-#endif
-
     void handleCommand(uint32_t sender_timestamp, char* command, char* reply);
     void loop();
+
+    /* Folds this role's own time-based work in loop() — advert timers,
+     * tempradio apply/revert, ACL flush, uplink status, mesh time sync — into
+     * the base maintenance deadline, so the event loop can arm one wake that
+     * covers both loop() and maintenanceLoop().  Every item here is an
+     * absolute deadline already; none of them was ever a poll. */
+    uint32_t msUntilNextMaintenance() override;
 
     bool hasPendingWork() const;
 };

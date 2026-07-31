@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Zephyr Environment & Power Sensors
  *
  * Auto-detects available sensors via Zephyr devicetree nodelabels.

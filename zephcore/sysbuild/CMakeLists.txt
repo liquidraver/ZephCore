@@ -49,5 +49,27 @@ if(_board_conf_candidates)
     endif()
 endif()
 
+# Share the app's flash partition layout with MCUboot.
+#
+# The app's board.overlay is applied to the app image only. Without this, MCUboot
+# falls back to the upstream Espressif base partition table, whose slot0/slot1
+# differ from the app's customised layout. The two images then agree only on
+# slot0's *start* (so the device boots), but their image-1 (OTA) slots land at
+# different addresses: the app stages an update where MCUboot never looks, so OTA
+# uploads report success and then silently boot the old image on reset.
+#
+# Feeding the same partitions.overlay to MCUboot keeps both flash maps identical.
+file(GLOB_RECURSE _board_partitions
+    "${APP_DIR}/boards/*/${_board_base}/partitions.overlay")
+if(NOT _board_partitions AND
+   EXISTS "${APP_DIR}/boards/${_board_base}/partitions.overlay")
+    set(_board_partitions "${APP_DIR}/boards/${_board_base}/partitions.overlay")
+endif()
+if(_board_partitions)
+    list(GET _board_partitions 0 _board_partitions_file)
+    set(mcuboot_EXTRA_DTC_OVERLAY_FILE "${_board_partitions_file}"
+        CACHE INTERNAL "MCUboot partitions overlay: shared with the app image")
+endif()
+
 find_package(Sysbuild REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(sysbuild LANGUAGES)
