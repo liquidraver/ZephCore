@@ -1,0 +1,9 @@
+/*
+ * Seeed Wio Tracker L1 SSD1680 ePaper Display Overlay
+ */
+
+/ {
+	chosen {
+		zephyr,display = &epd;
+	};
+};

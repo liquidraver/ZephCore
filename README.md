@@ -20,6 +20,7 @@ Other benefits:
 | Board | Radio | Extras |
 |-------|-------|--------|
 | **Wio Tracker L1** | SX1262 | GPS (L76KB), OLED (SH1106), joystick, buzzer, QSPI flash |
+| **Wio Tracker L1 ePaper** | SX1262 | GPS (L76KB), ePaper display (SSD1680), joystick, buzzer, QSPI flash |
 | **Seeed T1000-E** | LR1110 | GPS (AG3335), LEDs, button |
 | **RAK4631** / **RAK WisMesh Pocket** | SX1262 | Same `rak4631` build. GPS (u-blox MAX-7Q), optional WisBlock OLED (SSD1306), I2C sensors (SHTC3, LPS22HB, BME680) |
 | **RAK3401 1W** | SX1262 + SKY66122 (30 dBm) | GPS (u-blox MAX-7Q, optional), I2C sensors |

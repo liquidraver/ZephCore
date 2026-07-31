@@ -1,0 +1,10 @@
+# Copyright (c) 2025 MeshCore
+#
+# SPDX-License-Identifier: Apache-2.0
+
+board:
+  name: wio_tracker_l1_epaper
+  full_name: Seeed Wio Tracker L1 (SSD1680 ePaper)
+  vendor: seeed
+  socs:
+  - name: nrf52840

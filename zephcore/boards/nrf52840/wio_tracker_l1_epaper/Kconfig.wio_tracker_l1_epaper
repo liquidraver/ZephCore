@@ -1,0 +1,7 @@
+# Seeed Wio Tracker L1 (SSD1680 ePaper) board configuration
+
+# Copyright (c) 2025 MeshCore
+# SPDX-License-Identifier: Apache-2.0
+
+config BOARD_WIO_TRACKER_L1_EPAPER
+	select SOC_NRF52840_QIAA

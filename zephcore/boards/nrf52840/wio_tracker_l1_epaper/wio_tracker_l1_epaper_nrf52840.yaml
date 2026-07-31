@@ -1,0 +1,14 @@
+identifier: wio_tracker_l1_epaper/nrf52840
+name: Seeed Wio Tracker L1 (SSD1680 ePaper)
+type: mcu
+arch: arm
+toolchain:
+  - zephyr
+  - gnuarmemb
+ram: 256
+flash: 1024
+supported:
+  - gpio
+  - i2c
+  - spi
+  - ble
