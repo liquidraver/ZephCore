@@ -132,7 +132,7 @@
 	};
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
-	 * Solomon Systech SSD1680 2.13" 296x128 monochrome EPD on SPI1.
+	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD (GxEPD2_213_B74) on SPI1.
 	 * CS=P0.06, DC=P0.05, RESET=P0.02, BUSY=P0.29.
 	 */
 	mipi_dbi {
@@ -147,8 +147,8 @@
 			compatible = "solomon,ssd1680";
 			mipi-max-frequency = <4000000>;
 			reg = <1>;
-			width = <296>;
-			height = <128>;
+			width = <250>;
+			height = <122>;
 			rotation = <270>;
 			busy-gpios = <&gpio0 29 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
