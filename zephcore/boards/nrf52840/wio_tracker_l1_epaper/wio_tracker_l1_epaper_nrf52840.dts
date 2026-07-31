@@ -111,13 +111,7 @@
 		enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 	};
 
-	/* Display power gate for onboard 24-pin FPC connector */
-	disp_pwr_enable: disp-pwr-enable {
-		compatible = "regulator-fixed";
-		regulator-name = "disp-pwr-enable";
-		enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
-		regulator-boot-on;
-	};
+	/* NOTE: E-Ink FPC connector power is always-on; no software power gate needed */
 
 	zephyr,user {
 		io-channels = <&adc 7>;
@@ -132,13 +126,15 @@
 	};
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
-	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD (GxEPD2_213_B74) on SPI1.
-	 * CS=P0.06, DC=P0.05, RESET=P0.02, BUSY=P0.29.
+	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD on SPI1.
+	 * These pin assignments match the Seeed Wio Tracker L1 24-pin FPC connector.
+	 * SCK=P0.30, MOSI=P0.28 (shared SPI1 bus with LoRa)
+	 * CS=P0.06, DC=P0.13, RESET=P0.02, BUSY=P0.29.
 	 */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi1>;
-		dc-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		dc-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -226,18 +222,9 @@
 	};
 };
 
-/* I2C0 for sensors */
+/* I2C0 disabled on E-Ink board — P0.05/P0.06 freed for EPD CS/DC use */
 &i2c0 {
-	compatible = "nordic,nrf-twim";
-	status = "okay";
-	clock-frequency = <I2C_BITRATE_FAST>;
-	pinctrl-0 = <&i2c0_default>;
-	pinctrl-1 = <&i2c0_sleep>;
-	pinctrl-names = "default", "sleep";
-	zephyr,concat-buf-size = <256>;
-	zephyr,flash-buf-max-size = <256>;
-
-	#include "../../common/sensors-i2c.dtsi"
+	status = "disabled";
 };
 
 &i2c1 {
