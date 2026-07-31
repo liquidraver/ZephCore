@@ -208,6 +208,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get guest.password` | Guest access password |
 | `get owner.info` | Owner/contact info (pipes `\|` display as newlines) |
 | `get int.thresh` | Interference threshold |
+| `get leds` | LED master switch: `on` or `off` |
 | `get agc.reset.interval` | Removed - replies `use rxduty instead` |
 | `get multi.acks` | Extra ACK transmit count (`0` or `1`) |
 | `get path.hash.mode` | Path hashing algorithm: `0`, `1`, or `2` |
@@ -254,6 +255,7 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set guest.password <pwd>` | | Set guest access password |
 | `set owner.info <text>` | Use `\|` for newlines | Owner/contact information |
 | `set int.thresh <value>` | | Interference detection threshold |
+| `set leds <on\|off\|1\|0>` | default **on** | Master switch for every LED on the node, applied live and persisted: heartbeat, unread-message and LoRa TX-activity LEDs, plus the message and shutdown flashes. Works on every role, including headless repeaters where the TX LED is the only one that ever lights. Does **not** cover the display backlight, which is a separate UI brightness setting. |
 | `set agc.reset.interval <ms>` | Accepted, ignored | Removed - replies `use rxduty instead` |
 | `set multi.acks <0\|1>` | | Enable extra ACK transmits |
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |

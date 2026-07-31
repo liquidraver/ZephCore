@@ -36,6 +36,22 @@
 #define CAD_OFFSET_MIN  (-8)
 #define CAD_OFFSET_MAX  12
 
+/* leds_disabled, as stored in the repeater/room-server/observer prefs layout.
+ *
+ * It occupies the byte that used to hold agc_reset_interval (offset 120),
+ * retired when periodic AGC recalibration was removed.  That byte is NOT
+ * reusable as a plain 0/1 boolean: the old command stored seconds/4, so a node
+ * upgrading from a build that had it configured has an arbitrary small integer
+ * sitting there, and a bare non-zero test would silently kill its LEDs.  Hence
+ * a magic encoding — anything that is not one of these two values is a legacy
+ * AGC interval and decodes to the default (LEDs on).  The first savePrefs()
+ * claims the byte for good.
+ *
+ * The companion layout is unaffected: it has always stored leds_disabled as a
+ * plain 0/1 at its own offset 93. */
+#define LEDS_PREF_ON    0xA0
+#define LEDS_PREF_OFF   0xA1
+
 struct NodePrefs {
 	/* ---- Common fields (both roles) ---- */
 	float airtime_factor;
@@ -62,10 +78,7 @@ struct NodePrefs {
 	uint8_t flood_max_unscoped;     // hop limit for un-scoped (ROUTE_TYPE_FLOOD) floods
 	uint8_t flood_max_advert;       // hop limit for ADVERT floods (curbs advert churn)
 	uint8_t interference_threshold;
-	uint8_t agc_reset_interval;     // RETIRED: read/written for on-disk layout
-	                                // compatibility only, never acted on.
-	                                // "set agc.reset.interval" replies
-	                                // "use rxduty instead".
+	uint8_t leds_disabled;          // 1 = all LEDs off (heartbeat, unread, LoRa TX)
 	// Power saving
 	uint8_t powersaving_enabled;
 	// GPS settings
@@ -107,7 +120,6 @@ struct NodePrefs {
 	uint8_t path_hash_mode;         // path mode 0-2
 	uint8_t autoadd_max_hops;       // 0 = no limit, N = up to N-1 hops
 	uint8_t loop_detect;            // LOOP_DETECT_{OFF,MINIMAL,MODERATE,STRICT}
-	uint8_t leds_disabled;          // 1 = LEDs off
 	char default_scope_name[31];    // companion: default flood scope region name ("" = null)
 	uint8_t default_scope_key[16];  // companion: default flood scope TransportKey
 	uint8_t ble_disabled;           // 1 = BLE advertising off
@@ -155,7 +167,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->flood_max_unscoped = 64;  // un-scoped flood hop limit (defaults to flood_max)
 	prefs->flood_max_advert = 8;     // ADVERT flood hop limit (upstream default)
 	prefs->interference_threshold = 0;
-	prefs->agc_reset_interval = 0;
+	prefs->leds_disabled = 0;         // LEDs on
 	prefs->powersaving_enabled = 0;
 	prefs->gps_enabled = 0;
 	prefs->gps_interval = 300;        // 5 minutes

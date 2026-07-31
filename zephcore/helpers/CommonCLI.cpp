@@ -5,6 +5,7 @@
 
 #include "CommonCLI.h"
 #include "battery_curve.h"
+#include "led_gate.h"
 #include <helpers/MeshTimeSync.h>
 #include <helpers/time_sync.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
@@ -67,6 +68,7 @@ void CommonCLI::loadPrefs(const char* path) {
     }
 
     uint8_t pad[8];
+    uint8_t leds_byte = 0;
     bool ok = true;
 
     /* Read fields in Arduino-compatible binary order.
@@ -93,7 +95,9 @@ void CommonCLI::loadPrefs(const char* path) {
     ok = ok && prefs_read(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only)); // 114
     ok = ok && prefs_read(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));           // 115
     ok = ok && prefs_read(&file, &_prefs->bw, sizeof(_prefs->bw));                           // 116
-    ok = ok && prefs_read(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval)); // 120
+    /* 120: leds_disabled, magic-encoded. Formerly agc_reset_interval — see the
+     * LEDS_PREF_* comment in NodePrefs.h for why this is not a bare 0/1. */
+    ok = ok && prefs_read(&file, &leds_byte, sizeof(leds_byte));                              // 120
     ok = ok && prefs_read(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));    // 121
     ok = ok && prefs_read(&file, &_prefs->loop_detect, sizeof(_prefs->loop_detect));          // 122
     ok = ok && prefs_read(&file, pad, 1);                                                     // 123
@@ -134,6 +138,10 @@ void CommonCLI::loadPrefs(const char* path) {
     }
 
     fs_close(&file);
+
+    /* Only the explicit "off" magic disables LEDs; a legacy AGC interval, an
+     * unwritten byte, or a truncated file all mean "on". */
+    _prefs->leds_disabled = (leds_byte == LEDS_PREF_OFF) ? 1 : 0;
 
     // Sanitise bad pref values
     _prefs->rx_delay_base = constrain(_prefs->rx_delay_base, 0.0f, 20.0f);
@@ -218,7 +226,11 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->allow_read_only, sizeof(_prefs->allow_read_only));
     fs_write(&file, &_prefs->multi_acks, sizeof(_prefs->multi_acks));
     fs_write(&file, &_prefs->bw, sizeof(_prefs->bw));
-    fs_write(&file, &_prefs->agc_reset_interval, sizeof(_prefs->agc_reset_interval));
+    /* 120: leds_disabled, magic-encoded (was agc_reset_interval). */
+    {
+        uint8_t leds_byte = _prefs->leds_disabled ? LEDS_PREF_OFF : LEDS_PREF_ON;
+        fs_write(&file, &leds_byte, sizeof(leds_byte));
+    }
     fs_write(&file, &_prefs->path_hash_mode, sizeof(_prefs->path_hash_mode));
     fs_write(&file, &_prefs->loop_detect, sizeof(_prefs->loop_detect));
     fs_write(&file, pad, 1);
@@ -457,6 +469,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->airtime_factor);
         } else if (memcmp(config, "int.thresh", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->interference_threshold);
+        } else if (memcmp(config, "leds", 4) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
         } else if (memcmp(config, "agc.reset.interval", 18) == 0) {
             strcpy(reply, "Removed - use rxduty instead");
         } else if (memcmp(config, "multi.acks", 10) == 0) {
@@ -626,6 +640,27 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 strcpy(reply, "Error: not supported on companion");
             } else {
                 _prefs->interference_threshold = atoi(&config[11]);
+                savePrefs();
+                strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "leds ", 5) == 0) {
+            /* Master switch for every LED on the node: heartbeat, unread-message
+             * and LoRa TX activity, plus the message and shutdown flashes. Not
+             * the display backlight — that has its own UI brightness setting. */
+            const char* val = &config[5];
+            int on;
+            if (memcmp(val, "on", 2) == 0 || val[0] == '1') {
+                on = 1;
+            } else if (memcmp(val, "off", 3) == 0 || val[0] == '0') {
+                on = 0;
+            } else {
+                on = -1;
+            }
+            if (on < 0) {
+                strcpy(reply, "Error: must be on or off");
+            } else {
+                _prefs->leds_disabled = on ? 0 : 1;
+                zephcore_leds_set_disabled(_prefs->leds_disabled != 0);
                 savePrefs();
                 strcpy(reply, "OK");
             }

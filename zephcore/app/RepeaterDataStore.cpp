@@ -173,7 +173,11 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
     fs_read(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_read(&file, &prefs.bw, sizeof(prefs.bw));
-    fs_read(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
+    /* 120: leds_disabled, magic-encoded. Formerly agc_reset_interval — see the
+     * LEDS_PREF_* comment in NodePrefs.h for why this is not a bare 0/1.
+     * leds_byte stays 0 (→ LEDs on) if the file is short. */
+    uint8_t leds_byte = 0;
+    fs_read(&file, &leds_byte, sizeof(leds_byte));
     fs_read(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
     fs_read(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
     fs_read(&file, pad, 1);
@@ -214,6 +218,10 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     fs_read(&file, &prefs.cad_busycap, sizeof(prefs.cad_busycap));
 
     fs_close(&file);
+
+    /* Only the explicit "off" magic disables LEDs; a legacy AGC interval or an
+     * unwritten byte both mean "on". */
+    prefs.leds_disabled = (leds_byte == LEDS_PREF_OFF) ? 1 : 0;
 
     /* Migrate uninitialized backoff_multiplier (0.0 or NaN) to default */
     if (prefs.backoff_multiplier == 0.0f || prefs.backoff_multiplier != prefs.backoff_multiplier) {
@@ -318,7 +326,11 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.allow_read_only, sizeof(prefs.allow_read_only));
     fs_write(&file, &prefs.multi_acks, sizeof(prefs.multi_acks));
     fs_write(&file, &prefs.bw, sizeof(prefs.bw));
-    fs_write(&file, &prefs.agc_reset_interval, sizeof(prefs.agc_reset_interval));
+    /* 120: leds_disabled, magic-encoded (was agc_reset_interval). */
+    {
+        uint8_t leds_byte = prefs.leds_disabled ? LEDS_PREF_OFF : LEDS_PREF_ON;
+        fs_write(&file, &leds_byte, sizeof(leds_byte));
+    }
     fs_write(&file, &prefs.path_hash_mode, sizeof(prefs.path_hash_mode));
     fs_write(&file, &prefs.loop_detect, sizeof(prefs.loop_detect));
     fs_write(&file, pad, 1);

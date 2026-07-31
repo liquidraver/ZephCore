@@ -687,8 +687,17 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 - Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled)
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
-- TX LED bracketing for LoRa transmissions
+- TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
+
+**LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
+flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the
+`lora-tx-led` in `ZephyrBoard::onBeforeTransmit()`, and the message/shutdown flashes. It lives
+outside the UI layer because `ui_common.c` is only compiled when a UI is enabled, while a headless
+repeater still blinks on every transmit. `ui_common.c` overrides the weak `zephcore_leds_ui_sync()`
+hook so a CLI change also stops a lit heartbeat and refreshes the UI's LEDs page. Persisted in
+`NodePrefs.leds_disabled` (companion offset 93; repeater offset 120, magic-encoded — see §13).
+Does not cover the display backlight, which has its own UI brightness setting (`display_brightness`).
 
 ### 7.6 WiFi / MQTT / TCP Transports
 
@@ -991,6 +1000,8 @@ meshtimesync(151).
 **Repeater/room-server `/lfs/repeater/prefs` (297 bytes)** — `app/RepeaterDataStore.cpp`
 `loadPrefs()`/`savePrefs()` (same field order as `helpers/CommonCLI.cpp`; offset comments inline).
 Key ranges: name(4-36), radio(72-119), adaptive-delay(80-111, ignored at runtime),
+leds_disabled(120, magic-encoded `0xA0`/`0xA1` — the byte formerly held `agc_reset_interval`, which
+stored seconds/4, so any other value is a legacy interval and decodes to "LEDs on"),
 Arduino-bridge(127-151, read+discarded), GPS(156-161), owner_info(170-290), rx_boost/duty(290-291),
 reserved(292-293, was APC), flood_max_unscoped/advert(294-295), meshtimesync(296). Older shorter files
 load cleanly — reads past EOF are no-ops, so newer fields keep their defaults and a one-time

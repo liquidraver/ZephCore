@@ -568,6 +568,9 @@ target_sources(app PRIVATE
   helpers/MeshTimeSync.cpp
   helpers/oled_power.c
   helpers/fatal_reboot.c
+  # LED master gate ("set leds on|off"). Always compiled: helpers/ui/ui_common.c
+  # only exists in UI builds, but a headless repeater still drives lora-tx-led.
+  helpers/led_gate.c
 )
 
 # Boot-time hardware-RTC auto-discovery (compact raw-I2C). Always compiled so

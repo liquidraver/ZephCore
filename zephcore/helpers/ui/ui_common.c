@@ -19,6 +19,7 @@
 
 #include <ZephyrSensorManager.h>   /* gps_power_off_for_shutdown */
 #include "ui_mesh_actions.h"        /* mesh_disable_power_regulators (weak) */
+#include "led_gate.h"               /* shared with the LoRa TX LED */
 
 #include <zephyr/drivers/gpio.h>
 #include <zephyr/kernel.h>
@@ -87,7 +88,6 @@ static const struct gpio_dt_spec s_msg_led =
 #if HAS_HEARTBEAT_LED
 static struct k_work_delayable s_led_on_work;
 static struct k_work_delayable s_led_off_work;
-static bool s_leds_disabled;
 
 /*
  * Weak: returns current unread message count for pulse-width adaptation.
@@ -114,7 +114,7 @@ static void led_on_work_handler(struct k_work *work)
 	uint16_t mc = ui_led_get_msg_count();
 	uint16_t on_ms = (mc > 0) ? LED_ON_MSG_MS : LED_ON_MS;
 
-	if (!s_leds_disabled) {
+	if (!zephcore_leds_disabled()) {
 		gpio_pin_set_dt(&s_heartbeat_led, 1);
 #if HAS_MSG_LED
 		if (mc > 0) {
@@ -155,7 +155,7 @@ void ui_led_heartbeat_init(void)
 void ui_set_heartbeat_led(bool enabled)
 {
 #if HAS_HEARTBEAT_LED
-	if (enabled && !s_leds_disabled) {
+	if (enabled && !zephcore_leds_disabled()) {
 		if (gpio_is_ready_dt(&s_heartbeat_led)) {
 			k_work_reschedule(&s_led_on_work, K_NO_WAIT);
 		}
@@ -172,10 +172,15 @@ void ui_set_heartbeat_led(bool enabled)
 #endif
 }
 
-void ui_set_leds_disabled(bool disabled)
+/*
+ * Strong override of the weak hook in led_gate.c: react to a gate change from
+ * anywhere (UI toggle, "set leds", boot). Stops or restarts the heartbeat cycle
+ * and refreshes the UI's LED page. The gate flag itself is already set by the
+ * time we get here — do NOT call back into ui_set_leds_disabled() from here.
+ */
+void zephcore_leds_ui_sync(bool disabled)
 {
 #if HAS_HEARTBEAT_LED
-	s_leds_disabled = disabled;
 	if (disabled) {
 		k_work_cancel_delayable(&s_led_on_work);
 		k_work_cancel_delayable(&s_led_off_work);
@@ -196,6 +201,14 @@ void ui_set_leds_disabled(bool disabled)
 	ui_led_on_disabled_changed(disabled);
 }
 
+/* UI-facing spelling of the same thing. Kept because the UI toggle pages and
+ * the companion boot path call it by this name; the gate is what actually
+ * governs every LED. */
+void ui_set_leds_disabled(bool disabled)
+{
+	zephcore_leds_set_disabled(disabled);
+}
+
 /* Flash the heartbeat LED immediately on message receipt.
  * Cancels the current cycle, pulses at LED_ON_MSG_MS width, then the
  * work chain resumes the normal heartbeat automatically.
@@ -203,7 +216,7 @@ void ui_set_leds_disabled(bool disabled)
 void ui_led_flash_msg(void)
 {
 #if HAS_HEARTBEAT_LED
-	if (!s_leds_disabled && gpio_is_ready_dt(&s_heartbeat_led)) {
+	if (!zephcore_leds_disabled() && gpio_is_ready_dt(&s_heartbeat_led)) {
 		k_work_cancel_delayable(&s_led_on_work);
 		k_work_cancel_delayable(&s_led_off_work);
 		gpio_pin_set_dt(&s_heartbeat_led, 1);
@@ -213,11 +226,13 @@ void ui_led_flash_msg(void)
 }
 
 /* Flash the heartbeat LED 3 times on shutdown.
- * Used as a visual power-off indicator when the buzzer is muted. */
+ * Used as a visual power-off indicator when the buzzer is muted.
+ * Suppressed by "set leds off" — a node the user asked to keep dark stays dark
+ * even at power-off. */
 void ui_led_flash_shutdown(void)
 {
 #if HAS_HEARTBEAT_LED
-	if (gpio_is_ready_dt(&s_heartbeat_led)) {
+	if (!zephcore_leds_disabled() && gpio_is_ready_dt(&s_heartbeat_led)) {
 		for (int i = 0; i < 3; i++) {
 			gpio_pin_set_dt(&s_heartbeat_led, 1);
 			k_sleep(K_MSEC(100));

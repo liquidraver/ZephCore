@@ -26,6 +26,7 @@
 #include <zephyr/dt-bindings/adc/adc.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include "heltec_wireless_tracker_v2-pinctrl.dtsi"
 
 / {
@@ -240,8 +241,19 @@
 		 * - PA_CSD/GPIO4: active-HIGH FEM enable
 		 * - PA_CTX/GPIO5: HIGH=TX, LOW=RX/LNA
 		 * - SX1262 DIO2: internal RF switch TX select */
-		antenna-enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
-		tx-enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		/*
+		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep powers down
+		 * RTC_PERIPH (chain documented in boards/common/pm_esp32.overlay)
+		 * and GPIO4/GPIO5 are RTC-capable pads (0-21), so without the
+		 * hold the FEM comes out of a sleep disabled and parked in its
+		 * receive path — transmit goes out through a bypassed PA, tens of
+		 * dB down, and RX loses the LNA, while the node keeps relaying
+		 * and looks healthy.  Inert when CONFIG_PM=n.
+		 */
+		antenna-enable-gpios = <&gpio0 4 (GPIO_ACTIVE_HIGH |
+						 ESP32_GPIO_SLEEP_HOLD_EN)>;
+		tx-enable-gpios = <&gpio0 5 (GPIO_ACTIVE_HIGH |
+					    ESP32_GPIO_SLEEP_HOLD_EN)>;
 		dio2-tx-enable;
 
 		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;

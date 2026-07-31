@@ -4,6 +4,7 @@
 
 #include "ZephyrBoard.h"
 #include "battery_curve.h"
+#include "led_gate.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/sensor.h>
@@ -246,7 +247,13 @@ const char *ZephyrBoard::getManufacturerName() const
 void ZephyrBoard::onBeforeTransmit()
 {
 #if HAS_TX_LED
-	gpio_pin_set_dt(&tx_led, 1);
+	/* Honour the LED master gate ("set leds off"). On a headless repeater this
+	 * is the only LED that ever lights, so the gate has to be checked here and
+	 * not just in the UI layer. onAfterTransmit() still clears the pin
+	 * unconditionally, so a gate flipped mid-transmit can't strand it lit. */
+	if (!zephcore_leds_disabled()) {
+		gpio_pin_set_dt(&tx_led, 1);
+	}
 #endif
 }
 

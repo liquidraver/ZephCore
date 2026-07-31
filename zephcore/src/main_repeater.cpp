@@ -22,6 +22,7 @@ LOG_MODULE_REGISTER(zephcore_repeater_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <zephyr/drivers/hwinfo.h>
 #include <zephyr/sys/reboot.h>
 #include "oled_power.h"
+#include "led_gate.h"
 
 /* BLE controller assert handler — BT is compiled even for repeater (via zephcore_common.conf) */
 #if IS_ENABLED(CONFIG_BT_CTLR_ASSERT_HANDLER)
@@ -438,6 +439,17 @@ static mesh::SimpleMeshTables mesh_tables;
 /* RepeaterMesh requires: board, radio, ms_clock, rng, rtc, tables */
 static RepeaterMesh repeater_mesh(zephyr_board, lora_radio, ms_clock, zephyr_rng, rtc_clock, mesh_tables);
 
+/* Strong override of the weak stub in ui_mesh_actions_stubs.c: keep the prefs
+ * copy in step when the LEDs page toggles, so "get leds" reports what the node
+ * is actually doing. RAM only — a repeater has no deferred-save path off the UI
+ * thread, so a UI toggle lasts until reboot; "set leds" is what persists. */
+extern "C" void mesh_set_leds_disabled(bool disabled)
+{
+	if (repeater_mesh_ptr) {
+		repeater_mesh_ptr->getNodePrefs()->leds_disabled = disabled ? 1 : 0;
+	}
+}
+
 static void refresh_repeater_ui_radio_state(void)
 {
 	if (!repeater_mesh_ptr) {
@@ -658,6 +670,15 @@ int main(void)
 #if !IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
 	oled_sleep();
 #endif
+
+	/* Apply the persisted LED master switch ("set leds on|off"). After ui_init()
+	 * so the heartbeat cycle exists to be stopped; before the radio starts so the
+	 * first transmit already honours it. */
+	{
+		bool leds_off = repeater_mesh.getNodePrefs()->leds_disabled != 0;
+		zephcore_leds_set_disabled(leds_off);
+		LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
+	}
 
 	/* Log environment sensor availability */
 	if (env_sensors_available()) {

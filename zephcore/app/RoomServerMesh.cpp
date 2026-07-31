@@ -180,22 +180,28 @@ int RoomServerMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp,
             }
         }
 
-        /* GPS precise position — only shared via telemetry, not adverts */
-        struct gps_position gpos;
-        if (gps_get_last_known_position(&gpos)) {
-            lpp.addGPS(CH_SELF,
-                (float)(gpos.latitude_ndeg / 1e9),
-                (float)(gpos.longitude_ndeg / 1e9),
-                gpos.altitude_mm / 1000.0f);
-        }
+        /* GPS precise position — admin-only, and only via telemetry, never
+         * adverts. Guests get the rest of the LPP payload but no position:
+         * adverts already publish the operator-set prefs coordinates, so
+         * there is no reason to hand a guest login the live fix as well. */
+        if (sender->isAdmin()) {
+            struct gps_position gpos;
+            if (gps_get_last_known_position(&gpos)) {
+                lpp.addGPS(CH_SELF,
+                    (float)(gpos.latitude_ndeg / 1e9),
+                    (float)(gpos.longitude_ndeg / 1e9),
+                    gpos.altitude_mm / 1000.0f);
+            }
 
-        /* Wake GPS / extend acquire window so the next telemetry poll has
-         * a fresher fix. In repeater mode GPS is normally off between the
-         * 48h time-sync cycles — this opportunistically rearms acquire
-         * when someone actually cares about our position. No-op if GPS
-         * is disabled in prefs. */
-        if (gps_is_available() && gps_is_enabled()) {
-            gps_request_fresh_fix();
+            /* Wake GPS / extend acquire window so the next telemetry poll has
+             * a fresher fix. In repeater mode GPS is normally off between the
+             * 48h time-sync cycles — this opportunistically rearms acquire
+             * when someone actually cares about our position. No-op if GPS
+             * is disabled in prefs. Gated with the position itself so a guest
+             * can't hold the GPS awake by polling. */
+            if (gps_is_available() && gps_is_enabled()) {
+                gps_request_fresh_fix();
+            }
         }
 
         return 4 + lpp.getSize();

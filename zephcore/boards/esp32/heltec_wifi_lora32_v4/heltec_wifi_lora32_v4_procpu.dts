@@ -37,6 +37,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include <espressif/partitions_0x0_amp_16M.dtsi>
 
 / {
@@ -221,7 +222,19 @@
 		 *   GPIO2  = CSD (chip select/enable): driven HIGH during radio, LOW in sleep
 		 *   GPIO46 = CPS (TX select): HIGH during TX, LOW during RX
 		 * V4.3 (KCT8103L) uses GPIO5 instead of GPIO46 — see heltec_wifi_lora32_v43. */
-		antenna-enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;        /* GC1109 CSD = GPIO2  */
+		/*
+		 * ESP32_GPIO_SLEEP_HOLD_EN on CSD only.  Light sleep powers down
+		 * RTC_PERIPH (chain documented in boards/common/pm_esp32.overlay)
+		 * and GPIO2 is an RTC-capable pad (0-21), so it needs the hold or
+		 * the FEM comes out of a sleep disabled — no PA on transmit, no
+		 * LNA on receive.  CPS on GPIO46 is above the RTC range and sits
+		 * in VDD3P3_CPU, which stays powered through light sleep, so it
+		 * is deliberately left alone rather than given a flag the pad may
+		 * not support.  (V4.3 moved this line to GPIO5, which IS in range
+		 * and does get the flag — see heltec_wifi_lora32_v43.)
+		 */
+		antenna-enable-gpios = <&gpio0 2 (GPIO_ACTIVE_HIGH |
+						 ESP32_GPIO_SLEEP_HOLD_EN)>;   /* GC1109 CSD = GPIO2  */
 		tx-enable-gpios      = <&gpio1 14 GPIO_ACTIVE_HIGH>;       /* GC1109 CPS = GPIO46 = gpio1 pin 14 */
 
 		/* DIO2 drives the SX1262 internal RF switch (TX path select).

@@ -5,6 +5,9 @@
  * enough; this file does not need to be listed separately.
  */
 
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
+
 /*
  * The RTC timer is the wake source for every timed sleep.  Upstream leaves it
  * status = "disabled" (zephyr/dts/xtensa/espressif/esp32s3/esp32s3_common.dtsi),
@@ -33,4 +36,58 @@
  */
 &gpio0 {
 	wakeup-source;
+};
+
+/*
+ * Hold the SX1262 chip-select across light sleep.
+ *
+ * Light sleep powers down RTC_PERIPH on this SoC, and every LoRa pin on the
+ * allowlisted boards is an RTC-capable pad (GPIO 0-21), so their levels are
+ * NOT retained unless explicitly held.  The chain:
+ *
+ *   1. patches/zephyr/0012 passes GPIO_INT_WAKEUP on DIO1.  On the S3 that
+ *      lands on esp_sleep_enable_ext1_wakeup_io() (drivers/gpio/gpio_esp32.c,
+ *      SOC_PM_SUPPORT_EXT1_WAKEUP), i.e. RTC_EXT1_TRIG_EN.
+ *   2. esp_sleep_start() only forces ESP_PD_DOMAIN_RTC_PERIPH on for
+ *      RTC_EXT0_TRIG_EN | RTC_GPIO_TRIG_EN.  EXT1 is not in that mask, so the
+ *      domain is left AUTO and powered OFF for the whole sleep.
+ *   3. ext1_wakeup_prepare() then calls rtcio_hal_hold_enable() for the EXT1
+ *      pin *only*, and only because RTC_PERIPH is off — IDF's own code
+ *      treating "RTC_PERIPH down" as "this pad cannot hold its own state".
+ *      DIO1 survives; nothing else does.
+ *   4. Zephyr's general mechanism, esp32_sleep_gpio_prepare(), holds only pins
+ *      carrying ESP32_GPIO_SLEEP_HOLD_EN.  Hence this override.
+ *
+ * NSS is the pin that matters.  Undriven, it floats, and the SX1262 samples
+ * SPI commands whenever NSS is low — so a sleeping chip sitting in warm-start
+ * sleep with its entire configuration (PA config, OCP, SetTxParams) in
+ * retention RAM is exposed to whatever the floating bus does.  Nothing in the
+ * driver ever re-issues SetTxParams: lora_config() is its only writer and
+ * LoRaRadioBase::configure() short-circuits on every transmit after the first,
+ * so a corrupted TX power persists until reboot or a `set tx <new value>`.
+ * Symptom is a node that still relays but transmits ~30 dB down.
+ *
+ * Holding NSS high for the duration deselects the chip, which also makes SCK
+ * and MOSI harmless — nothing can be clocked in while CS is deasserted, so
+ * those pins do not need the pinctrl-side `sleep-hold-en`.
+ *
+ * All five allowlisted boards (heltec_wifi_lora32_v3/v4/v43,
+ * heltec_wireless_tracker/_v2) wire the radio identically — &spi2, NSS GPIO8,
+ * RESET GPIO12 — which is what lets this live in one shared overlay.  Re-check
+ * that before adding a board to the allowlist in CMakeLists.txt.
+ */
+&spi2 {
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
+};
+
+/*
+ * RESET is open-drain active-low against the SX1262's internal pull-up, so an
+ * unheld pad going high-Z already reads as "not reset" and this is belt and
+ * braces rather than a known fault.  It costs nothing and removes the question
+ * of what the pad does on the way into and out of power-down — a spurious low
+ * here would reset the radio outright.
+ */
+&lora0 {
+	reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
+				  ESP32_GPIO_SLEEP_HOLD_EN)>;
 };

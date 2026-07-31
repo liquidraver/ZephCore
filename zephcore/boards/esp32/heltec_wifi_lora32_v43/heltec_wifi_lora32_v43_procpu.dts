@@ -36,6 +36,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include <espressif/partitions_0x0_amp_16M.dtsi>
 
 / {
@@ -224,8 +225,23 @@
 		 *   GPIO2 = CSD (chip enable): driven HIGH during radio, LOW in sleep
 		 *   GPIO5 = CTX (TX/RX select): HIGH during TX, LOW during RX/LNA
 		 * V4.3 CHANGE: CTX moved from GPIO46 (GC1109 CPS) to GPIO5 (KCT8103L CTX). */
-		antenna-enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;        /* KCT8103L CSD = GPIO2 */
-		tx-enable-gpios      = <&gpio0 5 GPIO_ACTIVE_HIGH>;        /* KCT8103L CTX = GPIO5 */
+		/*
+		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep powers down
+		 * RTC_PERIPH (see boards/common/pm_esp32.overlay for the full
+		 * chain), and GPIO2/GPIO5 are RTC-capable pads (0-21), so their
+		 * state is not retained across a sleep unless explicitly held.
+		 * These two lines are the FEM's entire control surface — CSD low
+		 * disables the PA and the LNA with it, CTX low parks the part in
+		 * its receive path — so losing them means transmitting through a
+		 * bypassed PA, tens of dB down, with RX sensitivity gone too,
+		 * while the node otherwise looks healthy and keeps relaying.
+		 * The flag is ignored when CONFIG_PM=n, so this is inert on
+		 * builds that never light-sleep.
+		 */
+		antenna-enable-gpios = <&gpio0 2 (GPIO_ACTIVE_HIGH |
+						 ESP32_GPIO_SLEEP_HOLD_EN)>;   /* KCT8103L CSD = GPIO2 */
+		tx-enable-gpios      = <&gpio0 5 (GPIO_ACTIVE_HIGH |
+						 ESP32_GPIO_SLEEP_HOLD_EN)>;   /* KCT8103L CTX = GPIO5 */
 
 		/* DIO2 drives the SX1262 internal RF switch (TX path select).
 		 * Combined with tx-enable-gpios, this keeps both the internal and

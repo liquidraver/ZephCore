@@ -71,7 +71,7 @@ diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx
 index 30243ba5dc7..f0794661515 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
-@@ -6,14 +6,21 @@
+@@ -6,14 +6,52 @@
  #include <zephyr/kernel.h>
  #include <zephyr/device.h>
  #include <zephyr/drivers/lora.h>
@@ -89,6 +89,37 @@ index 30243ba5dc7..f0794661515 100644
 + * system work queue so USB/BLE/timer work items cannot delay packet RX. */
 +#define SX126X_DIO1_WQ_STACK_SIZE 2560
 +K_THREAD_STACK_DEFINE(sx126x_dio1_wq_stack, SX126X_DIO1_WQ_STACK_SIZE);
++
++/* PA ramp time handed to SetTxParams at every site that programs TX power.
++ *
++ * Deliberately 800 us where RadioLib, loramac-node and Arduino MeshCore all
++ * use 200 us -- do not "fix" this back to match them without reading the
++ * following, and do not change one call site alone: two writers disagreeing
++ * on the ramp would make TX spectral behaviour depend on which ran last.
++ *
++ * What it buys: a slower PA envelope puts less spectral energy at the burst
++ * edges, which is mask margin (ETSI EN 300 220 / FCC) at TX start and stop.
++ * That is worth most on the boards carrying an external PA or FEM, where
++ * splatter gets amplified along with the wanted signal.
++ *
++ * What it does NOT buy, despite being an easy assumption: any link-budget or
++ * noise-immunity benefit.  Ramp time shapes our own transmitter's skirts.  It
++ * does not raise TX power, change what a distant receiver hears in-band, or
++ * help its demodulator.  The only way it helps anyone's reception is by not
++ * desensitising a CO-SITED or adjacent-channel radio -- real on a hilltop
++ * with several co-located nodes, negligible between nodes kilometres apart.
++ *
++ * What it costs: 600 us more TX startup than the 200 us default, and nothing
++ * else.  The ramp completes before modulation begins -- the chip holds BUSY
++ * after SetTx until ramp-up is done, which is why RadioLib waits on exactly
++ * that edge -- so it consumes no preamble symbols at any SF/BW and does not
++ * eat into the RX duty-cycle preamble budget.  Airtime is unchanged; both
++ * reference stacks likewise exclude ramp from their time-on-air maths.  The
++ * one behavioural side effect is that the gap between "LBT reports the
++ * channel clear" and "we are actually radiating" grows by those 600 us,
++ * which is negligible against a contention window measured in milliseconds.
++ */
++#define SX126X_TX_RAMP_TIME SX126X_RAMP_800_US
 +
  #define SX126X_REST_STATE \
  	(IS_ENABLED(CONFIG_LORA_SX126X_NATIVE_SLEEP) \
@@ -728,7 +759,7 @@ index 30243ba5dc7..f0794661515 100644
  	ret = sx126x_hal_configure_tx_params(dev, config->tx_power,
  						config->frequency,
 -						SX126X_RAMP_200_US);
-+						SX126X_RAMP_800_US);
++						SX126X_TX_RAMP_TIME);
  	if (ret < 0) {
  		goto out;
  	}
@@ -862,10 +893,41 @@ index 30243ba5dc7..f0794661515 100644
  	data->tx_async_signal = async;
  	k_msgq_purge(&data->tx_msgq);
  
-@@ -777,6 +1349,31 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -777,6 +1349,62 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
++	/* Re-assert PA config, OCP and TX power immediately before SetTx.
++	 *
++	 * sx126x_config() is otherwise the only writer of these three, and the
++	 * C++ adapter's config cache (LoRaRadioBase::configure) short-circuits
++	 * on every transmit after the first -- so between two lora_config()
++	 * calls nothing re-verifies what the chip is actually holding.  The
++	 * chip keeps them in warm-start retention RAM across its sleep cycles,
++	 * which makes them precisely the state a disturbed SPI bus or a stray
++	 * command corrupts silently: the node goes on relaying, because
++	 * restart_rx re-issues SetRx constantly, while transmitting tens of dB
++	 * down until someone reboots it.  That is not hypothetical -- ESP32
++	 * light sleep leaving NSS undriven produced exactly it; the cause is
++	 * fixed at source in boards/common/pm_esp32.overlay and this is the
++	 * belt-and-braces half that stops the class of fault rather than the
++	 * one instance.
++	 *
++	 * Costs no receive time.  It runs after LBT has passed, with the chip
++	 * already committed to TX, and is ~15 bytes of SPI -- unlike forcing a
++	 * full lora_config(), which would have to tear RX down first (its
++	 * entry CAS rejects SX126X_STATE_RX) and re-run image calibration.
++	 *
++	 * Keep the ramp time identical to the sx126x_config() call site: two
++	 * writers disagreeing on it would make TX spectral behaviour depend on
++	 * which one ran last. */
++	ret = sx126x_hal_configure_tx_params(dev, data->config.tx_power,
++					     data->config.frequency,
++					     SX126X_TX_RAMP_TIME);
++	if (ret < 0) {
++		goto out_error;
++	}
++
 +#ifdef CONFIG_LORA_SX126X_NATIVE_STANDALONE /* STM32WL HAL clamps in its own configure_tx_params; its config has no is_sx1261 */
 +	/* Sec 15.2 TX Clamp workaround (datasheet errata) -- SX1262 only.
 +	 * Set bits [4:1] of register 0x08D8 before SetTx to prevent
@@ -986,7 +1048,7 @@ index 30243ba5dc7..f0794661515 100644
  	/* Set PA config and TX power */
  	ret = sx126x_hal_configure_tx_params(dev, tx_power, frequency,
 -						SX126X_RAMP_200_US);
-+						SX126X_RAMP_800_US);
++						SX126X_TX_RAMP_TIME);
  	if (ret < 0) {
  		sx126x_set_sleep(dev);
  		k_mutex_unlock(&data->lock);

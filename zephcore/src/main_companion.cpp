@@ -30,6 +30,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include "ui_task.h"
 #include "ui_mesh_actions.h"
 #include "oled_power.h"
+#include "led_gate.h"
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_BUZZER)
 #include "buzzer.h"
 #endif
@@ -1518,9 +1519,11 @@ int main(void)
 #endif
 
 	/* Restore LED enabled/disabled state from persisted prefs.
-	 * If LEDs were disabled, stop the heartbeat LED cycle. */
+	 * If LEDs were disabled, stop the heartbeat LED cycle. Straight to the gate
+	 * rather than via ui_set_leds_disabled(): the gate also governs the LoRa TX
+	 * LED and is linked into every build, UI or not. */
 	bool leds_off = companion_mesh.prefs.leds_disabled != 0;
-	ui_set_leds_disabled(leds_off);
+	zephcore_leds_set_disabled(leds_off);
 	ui_set_heartbeat_led(!leds_off);
 	LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
 
