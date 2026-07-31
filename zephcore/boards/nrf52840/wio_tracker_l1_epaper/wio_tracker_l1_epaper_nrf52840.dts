@@ -152,8 +152,6 @@
 			rotation = <270>;
 			busy-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
 
-			tssv = <0x80>;
-
 			full    { border-waveform = <0x05>; };
 			partial { border-waveform = <0x3c>; };
 		};
