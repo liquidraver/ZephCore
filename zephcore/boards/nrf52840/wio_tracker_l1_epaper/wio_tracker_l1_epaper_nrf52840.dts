@@ -8,7 +8,7 @@
  * - nRF52840 SoC with BLE
  * - SX1262 LoRa radio (DIO2 as RF switch, TCXO 1.8V)
  * - P25Q16H 2MB QSPI flash
- * - SSD1680 2.13" monochrome e-paper display (SPI)
+ * - SSD1680 2.13" monochrome e-paper display (SPI on 24-pin FPC connector)
  * - L76KB GPS module
  * - Joystick + user button
  * - Battery voltage ADC
@@ -111,6 +111,14 @@
 		enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 	};
 
+	/* Display power gate for onboard 24-pin FPC connector */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+
 	zephyr,user {
 		io-channels = <&adc 7>;
 		vbat-mv-multiplier = <7200>;
@@ -124,13 +132,13 @@
 	};
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
-	 * Solomon Systech SSD1680 296x128 monochrome EPD on SPI1.
-	 * CS=P0.06, DC=P0.05, RESET=P0.02, BUSY=P0.03.
+	 * Solomon Systech SSD1680 2.13" 296x128 monochrome EPD on SPI1.
+	 * CS=P0.06, DC=P0.29, RESET=P0.02, BUSY=P0.03.
 	 */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi1>;
-		dc-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		dc-gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
 		#address-cells = <1>;
 		#size-cells = <0>;
