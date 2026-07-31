@@ -133,12 +133,12 @@
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
 	 * Solomon Systech SSD1680 2.13" 296x128 monochrome EPD on SPI1.
-	 * CS=P0.06, DC=P0.29, RESET=P0.02, BUSY=P0.03.
+	 * CS=P0.06, DC=P0.05, RESET=P0.02, BUSY=P0.29.
 	 */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
 		spi-dev = <&spi1>;
-		dc-gpios = <&gpio0 29 GPIO_ACTIVE_HIGH>;
+		dc-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
 		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -150,7 +150,7 @@
 			width = <296>;
 			height = <128>;
 			rotation = <270>;
-			busy-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+			busy-gpios = <&gpio0 29 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
 			full    { border-waveform = <0x05>; };
 			partial { border-waveform = <0x3c>; };
