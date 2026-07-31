@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * TTGO LoRa32 — ZephCore overlay
  *
  * The upstream Zephyr DTS (ttgo_lora32_esp32_procpu.dts) already defines:
@@ -30,6 +30,13 @@
  * but we leave them to avoid changing the partition map.
  */
 /delete-node/ &storage_partition;
+/delete-node/ &scratch_partition;
+
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
 
 &flash0 {
 	partitions {
@@ -37,6 +44,12 @@
 		lfs_partition: partition@3b0000 {
 			label = "lfs";
 			reg = <0x3B0000 0x30000>;
+		};
+		/* BLE bond store — 16KB NVS, isolated from /lfs (see esp32_common.conf).
+		 * Placed in the unused scratch region just above lfs (lfs unchanged). */
+		storage_partition: partition@3e0000 {
+			label = "storage";
+			reg = <0x3E0000 0x4000>;
 		};
 	};
 };
@@ -46,6 +59,18 @@
 
 /* WiFi — required for observer MQTT connectivity */
 &wifi {
+	status = "okay";
+};
+
+/*
+ * BT HCI controller — the upstream ttgo_lora32 DTS leaves the node disabled
+ * (esp32_common.dtsi already sets chosen zephyr,bt-hci to it).  Companion
+ * builds set CONFIG_BT=y, and the hal_espressif CMake compiles the ESP32 BT
+ * controller under CONFIG_BT alone; without this node BT_ESP32 stays off and
+ * its Kconfig symbols (CONFIG_ESP32_BT_CONTROLLER_TASK_PRIO etc.) are
+ * undefined, breaking the bt.c compile.  Same fix as ttgo_tbeam.
+ */
+&esp32_bt_hci {
 	status = "okay";
 };
 

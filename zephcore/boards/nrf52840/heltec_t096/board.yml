@@ -1,0 +1,10 @@
+# Copyright (c) 2026 ZephCore
+#
+# SPDX-License-Identifier: MIT
+
+board:
+  name: heltec_t096
+  full_name: Heltec Mesh Node T096
+  vendor: heltec
+  socs:
+  - name: nrf52840

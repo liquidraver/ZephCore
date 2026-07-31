@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * XIAO nRF54L15 + Wio-SX1262 LoRa
  *
  * Pin mapping (XIAO nRF54L15 connector → Wio-SX1262):
@@ -73,12 +73,14 @@
 	partitions {
 		/* Application — expanded to use slot1 space */
 		slot0_partition: partition@10000 {
+			compatible = "zephyr,mapped-partition";
 			label = "image-0";
 			reg = <0x10000 0x13E000>;  /* 1272KB */
 		};
 
 		/* LittleFS 92KB for DataStore + file-based BLE settings */
 		lfs_partition: partition@14e000 {
+			compatible = "zephyr,mapped-partition";
 			label = "lfs";
 			reg = <0x14E000 0x17000>;
 		};

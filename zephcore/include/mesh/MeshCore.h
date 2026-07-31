@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore constants and base types
  */
 
@@ -7,6 +7,10 @@
 
 #include <stdint.h>
 #include <math.h>
+
+/* Neutralize STM32 CMSIS peripheral-instance macros (RNG, AES, ...) that
+ * collide with portable mesh identifiers. No-op off STM32. */
+#include <mesh/stm32_cmsis_fixup.h>
 
 #define MAX_HASH_SIZE        8   /* SHA256 truncated to 8 bytes for dedup */
 #define PUB_KEY_SIZE        32   /* Ed25519 public key */

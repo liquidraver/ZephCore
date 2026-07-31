@@ -1,0 +1,175 @@
+Bound the lifetime of the RX-busy latch (payload-phase deadline).
+
+sx126x_is_receiving() reports "busy" for the whole payload phase from the
+rx_packet_active latch, which patch 0003 sets when HEADER_VALID fires and clears
+only on a terminal IRQ (RX_DONE / CRC_ERR / RX_TX_TIMEOUT) or an RX (re)start.
+
+In continuous RX (SX126X_RX_TIMEOUT_CONTINUOUS) there is no symbol timer, so
+none of those events is guaranteed to arrive. A HEADER_VALID whose packet never
+completes therefore pins the TX gate true forever: the node keeps receiving but
+never transmits again until reboot, with nothing in the logs pointing at it. The
+duty-cycle parked-RX watchdog does not cover this case -- it is DC-only and
+deliberately treats rx_packet_active as a legitimate in-flight packet.
+
+Add header_seen_at_ms, stamped when the latch is promoted, and release the latch
+(clearing the sticky PREAMBLE_DETECTED / SYNC_WORD_VALID / HEADER_VALID /
+HEADER_ERR bits) once sx126x_max_payload_ms() has elapsed. That bound is the
+airtime of a 255-byte explicit-header packet at the current SF/BW with CR 4/8
+and LDRO pinned on, plus 25% and 100 ms -- deliberately generous, since firing
+early would let TX start on top of a packet that is still arriving.
+
+Arduino MeshCore added the equivalent deadline in 79ef74ea (SX1262) and
+0bd871cd (LR11X0); their preamble-phase timeout is already covered here by the
+SF-aware grace in patch 0003.
+
+Kept separate from 0003 because that patch cannot be regenerated from the tree:
+0011 and 0012 also modify this driver and would be folded into it.
+
+diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
+index 822d0f5..00faca6 100644
+--- a/drivers/lora/native/sx126x/sx126x.c
++++ b/drivers/lora/native/sx126x/sx126x.c
+@@ -82,14 +82,15 @@ static uint32_t bandwidth_to_hz(enum lora_signal_bandwidth bw)
+ }
+ 
+ /* Reset all software state that indicates "we are currently receiving":
+- * the rx_packet_active latch and the preamble-grace timestamp.  Paired
+- * write so the two fields never drift out of sync.  Called from every
+- * RX (re)start site, every terminal-event handler (RX_DONE / CRC_ERR /
+- * RX_TX_TIMEOUT), and on TX-state entry. */
++ * the rx_packet_active latch (and its deadline timestamp) and the
++ * preamble-grace timestamp.  Paired write so the fields never drift out of
++ * sync.  Called from every RX (re)start site, every terminal-event handler
++ * (RX_DONE / CRC_ERR / RX_TX_TIMEOUT), and on TX-state entry. */
+ static inline void sx126x_reset_rx_busy_signals(struct sx126x_data *data)
+ {
+ 	data->rx_packet_active = false;
+ 	atomic_set(&data->preamble_seen_at_ms, 0);
++	atomic_set(&data->header_seen_at_ms, 0);
+ }
+ 
+ /* Grace period for the PREAMBLE_DETECTED -> HEADER_VALID gap, SF/BW-aware.
+@@ -113,6 +114,53 @@ static uint32_t sx126x_preamble_grace_ms(struct sx126x_data *data)
+ 	return (uint32_t)((us + 999U) / 1000U);
+ }
+ 
++/* Upper bound on the payload phase: airtime of a maximum-length (255 byte)
++ * explicit-header packet at the current SF/BW, worst-case coding rate 4/8,
++ * plus margin.  Used by sx126x_is_receiving() to bound the lifetime of the
++ * rx_packet_active latch.
++ *
++ * Why the latch needs a deadline at all: it is cleared only by a terminal IRQ
++ * (RX_DONE / CRC_ERR / RX_TX_TIMEOUT) or an RX (re)start.  In continuous RX
++ * (SX126X_RX_TIMEOUT_CONTINUOUS) there is no symbol timer, so none of those is
++ * guaranteed to arrive -- a HEADER_VALID that never completes would pin the TX
++ * gate true forever and silently mute the node until reboot.  (The parked-RX
++ * watchdog cannot cover this: it is duty-cycle only and deliberately treats
++ * rx_packet_active as a legitimate in-flight packet.)  Mirrors the payload
++ * deadline Arduino MeshCore added in 79ef74ea / 0bd871cd.
++ *
++ * Deliberately generous: this is a stuck-state safety net, and clearing the
++ * latch early would let TX start on top of a packet that is still arriving.
++ * The low-data-rate-optimisation term is pinned at 1 (rather than read from
++ * the modem config) because DE=1 yields the larger symbol count of the two,
++ * i.e. the safer bound. */
++static uint32_t sx126x_max_payload_ms(struct sx126x_data *data)
++{
++	uint8_t sf = (uint8_t)data->config.datarate;
++	uint32_t bw_hz = bandwidth_to_hz(data->config.bandwidth);
++
++	if (bw_hz == 0 || sf < 5 || sf > 12) {
++		return 30000;  /* safe default if config is uninitialised */
++	}
++
++	/* Semtech payload-symbol count with PL=255, CRC on, explicit header,
++	 * CR = 4/8 (coded_bits = 8), DE = 1:
++	 *   n = 8 + ceil((8*PL - 4*SF + 28 + 16) / (4*(SF - DE))) * 8
++	 * SF5/SF6 use SF-1 >= 4 so the divisor is always non-zero. */
++	uint32_t numer = 8U * 255U + 28U + 16U;
++	uint32_t denom = 4U * (uint32_t)(sf - 1U);
++
++	if (numer > 4U * (uint32_t)sf) {
++		numer -= 4U * (uint32_t)sf;
++	}
++	uint32_t n_sym = 8U + ((numer + denom - 1U) / denom) * 8U;
++
++	/* n_sym * 2^sf * 1000000 / bw_hz -> us, then +25% and +100 ms margin. */
++	uint64_t us = ((uint64_t)n_sym << sf) * 1000000ULL / bw_hz;
++	uint32_t ms = (uint32_t)((us + 999U) / 1000U);
++
++	return ms + (ms / 4U) + 100U;
++}
++
+ static bool should_enable_ldro(enum lora_datarate sf, enum lora_signal_bandwidth bw,
+ 			       const struct sx126x_hal_config *config)
+ {
+@@ -1225,6 +1273,14 @@ static void sx126x_irq_work_handler(struct k_work *work)
+ 		 * is stale and we don't want a future is_receiving() to treat
+ 		 * it as live when the latch eventually clears. */
+ 		atomic_set(&data->preamble_seen_at_ms, 0);
++		/* Start the payload deadline (see sx126x_max_payload_ms).  Use 1
++		 * as the "set" sentinel if k_uptime is 0 right after boot. */
++		{
++			uint32_t now = k_uptime_get_32();
++
++			atomic_set(&data->header_seen_at_ms,
++				   (atomic_val_t)(now == 0 ? 1U : now));
++		}
+ 	}
+ 
+ 	/* Re-enable the DIO1 interrupt for the next event (unless sleeping) */
+@@ -1886,9 +1942,33 @@ bool sx126x_is_receiving(const struct device *dev)
+ 	/* Primary source of truth: software latch set by the work handler on
+ 	 * HEADER_VALID, cleared by terminal events (RX_DONE / CRC_ERR /
+ 	 * RX_TX_TIMEOUT) and RX (re)start sites.  Covers the entire payload
+-	 * phase without an SPI access. */
++	 * phase without an SPI access.
++	 *
++	 * Bounded by a payload deadline: in continuous RX no terminal IRQ is
++	 * guaranteed, so a HEADER_VALID that never completes would otherwise pin
++	 * this gate true forever and mute TX until reboot. */
+ 	if (data->rx_packet_active) {
+-		return true;
++		uint32_t seen = (uint32_t)atomic_get(&data->header_seen_at_ms);
++		uint32_t now = k_uptime_get_32();
++
++		if (seen == 0 || (now - seen) < sx126x_max_payload_ms(data)) {
++			return true;
++		}
++
++		if (k_mutex_lock(&data->lock, K_NO_WAIT) != 0) {
++			/* Chip is busy elsewhere; re-check on the next poll. */
++			return true;
++		}
++		LOG_WRN("RX latch stuck %u ms after HEADER_VALID, releasing TX gate",
++			now - seen);
++		/* Drop the sticky reception bits so the next poll starts clean. */
++		sx126x_clear_irq_status(dev, SX126X_IRQ_PREAMBLE_DETECTED |
++					     SX126X_IRQ_SYNC_WORD_VALID |
++					     SX126X_IRQ_HEADER_VALID |
++					     SX126X_IRQ_HEADER_ERR);
++		sx126x_reset_rx_busy_signals(data);
++		k_mutex_unlock(&data->lock);
++		return false;
+ 	}
+ 
+ 	if (k_mutex_lock(&data->lock, K_NO_WAIT) != 0) {
+diff --git a/drivers/lora/native/sx126x/sx126x.h b/drivers/lora/native/sx126x/sx126x.h
+index 02bbaac..762f8eb 100644
+--- a/drivers/lora/native/sx126x/sx126x.h
++++ b/drivers/lora/native/sx126x/sx126x.h
+@@ -98,6 +98,14 @@ struct sx126x_data {
+ 	 * terminal-event handler, and on TX-state entry. */
+ 	atomic_t preamble_seen_at_ms;
+ 
++	/* Timestamp (k_uptime_get_32() units, ms) at which rx_packet_active was
++	 * promoted by HEADER_VALID.  Zero means "no payload phase being timed".
++	 * Bounds the latch's lifetime: continuous RX has no symbol timer, so a
++	 * HEADER_VALID whose packet never completes produces no terminal IRQ and
++	 * would keep the TX gate closed forever.  sx126x_is_receiving() releases
++	 * the latch once sx126x_max_payload_ms() has elapsed. */
++	atomic_t header_seen_at_ms;
++
+ 	uint32_t dc_rx_time;    /* stored duty cycle rx period (15.625us steps) */
+ 	uint32_t dc_sleep_time; /* stored duty cycle sleep period (15.625us steps) */
+ 

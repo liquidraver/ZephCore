@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Adaptive Contention Window — dupe-counting based delay estimation
  */
 
@@ -11,7 +11,8 @@ namespace mesh {
 
 ContentionTracker::ContentionTracker()
 	: _next_idx(0), _ema_x256(0), _finalized_count(0),
-	  _last_retransmit_ms(0), _backoff_multiplier(DEFAULT_BACKOFF_MULT)
+	  _last_retransmit_ms(0), _last_decay_ms(0),
+	  _backoff_multiplier(DEFAULT_BACKOFF_MULT)
 {
 	memset(_ring, 0, sizeof(_ring));
 }
@@ -99,6 +100,15 @@ bool ContentionTracker::recordDupeIfTracked(uint32_t hash32, uint32_t now_ms)
 	return true;
 }
 
+int ContentionTracker::extractDupeCount(uint32_t hash32)
+{
+	int idx = findEntry(hash32);
+	if (idx < 0) return -1;
+	int count = (int)_ring[idx].dupe_count;
+	finalizeEntry(idx);  /* folds into EMA, marks inactive */
+	return count;
+}
+
 uint16_t ContentionTracker::getReactiveHeadroom(uint32_t hash32, uint32_t airtime_ms) const
 {
 	int idx = findEntry(hash32);
@@ -135,12 +145,72 @@ void ContentionTracker::tick(uint32_t now_ms)
 		}
 	}
 
-	/* Decay EMA toward 0 if no retransmit in STALE_MS */
-	if (_last_retransmit_ms != 0 && now_ms - _last_retransmit_ms > STALE_MS) {
-		if (_ema_x256 > 0) {
+	/* Decay EMA toward 0 if no retransmit in STALE_MS.  Paced by wall clock
+	 * (one 1/8 step per DECAY_PERIOD_MS) rather than one step per call, so
+	 * the decay rate no longer depends on how often the event loop happens
+	 * to call us — see DECAY_PERIOD_MS. */
+	if (_last_retransmit_ms != 0 && now_ms - _last_retransmit_ms > STALE_MS &&
+	    _ema_x256 > 0) {
+		if (_last_decay_ms == 0) {
+			/* Arm one full period in the PAST, so the loop below
+			 * applies a step on this very call.  The old code decayed
+			 * immediately on the first tick that observed staleness;
+			 * arming at now_ms instead would make the first check
+			 * (0 < DECAY_PERIOD_MS) break without decaying, deferring
+			 * onset by a whole period on every stale transition — and
+			 * would let the reset branch below starve decay entirely
+			 * for traffic that goes stale and un-stale repeatedly.
+			 * Unsigned wraparound makes this exact even near zero. */
+			_last_decay_ms = now_ms - DECAY_PERIOD_MS;
+		}
+		for (int n = 0; n < MAX_DECAY_CATCHUP; n++) {
+			if (now_ms - _last_decay_ms < DECAY_PERIOD_MS ||
+			    _ema_x256 == 0) {
+				break;
+			}
 			_ema_x256 -= _ema_x256 >> EMA_SHIFT;
+			_last_decay_ms += DECAY_PERIOD_MS;
+		}
+	} else {
+		/* Not decaying — restart the phase next time we are. */
+		_last_decay_ms = 0;
+	}
+}
+
+uint32_t ContentionTracker::msUntilNextTick(uint32_t now_ms) const
+{
+	uint32_t next = MAINTENANCE_IDLE;
+
+	/* Soonest ring entry to fall out of the observation window. */
+	for (int i = 0; i < RING_SIZE; i++) {
+		if (!_ring[i].active) {
+			continue;
+		}
+		next = maintenanceSooner(
+			next, maintenanceUntil(now_ms,
+					       _ring[i].first_seen_ms + WINDOW_MS + 1));
+	}
+
+	/* Stale-decay step, only while there is EMA left to decay. */
+	if (_last_retransmit_ms != 0 && _ema_x256 > 0) {
+		uint32_t stale_at = _last_retransmit_ms + STALE_MS + 1;
+
+		if (now_ms - _last_retransmit_ms > STALE_MS) {
+			/* Already stale: next step is one period after the last
+			 * one (or immediately, if we have not started yet). */
+			next = maintenanceSooner(
+				next, _last_decay_ms == 0
+					      ? 0
+					      : maintenanceUntil(now_ms,
+								 _last_decay_ms +
+									 DECAY_PERIOD_MS));
+		} else {
+			next = maintenanceSooner(next,
+						 maintenanceUntil(now_ms, stale_at));
 		}
 	}
+
+	return next;
 }
 
 float ContentionTracker::getContentionEstimate() const

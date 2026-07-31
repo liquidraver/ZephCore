@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * RepeaterDataStore - Filesystem storage for repeater
  *
  * Uses /lfs/repeater/ prefix to keep data separate from companion.

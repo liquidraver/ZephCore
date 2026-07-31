@@ -1,7 +1,7 @@
 /*
  * ProMicro LR2021 pin control definitions
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * SPI2 (LR2021): SCK=P1.11, MOSI=P1.15, MISO=P0.02
  * I2C0 (sensors): SDA=P1.04, SCL=P0.11

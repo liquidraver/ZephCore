@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Mesh - routing protocol layer
  */
 
@@ -7,9 +7,6 @@
 
 #include <mesh/Dispatcher.h>
 #include <mesh/ContentionTracker.h>
-#ifdef CONFIG_ZEPHCORE_APC
-#include <mesh/PowerController.h>
-#endif
 #include <mesh/RTC.h>
 
 namespace mesh {
@@ -21,7 +18,8 @@ struct GroupChannel {
 
 class MeshTables {
 public:
-	virtual bool hasSeen(const Packet *packet) = 0;
+	virtual bool wasSeen(const Packet *packet) = 0;	/* pure query, no insert */
+	virtual void markSeen(const Packet *packet) = 0;	/* explicit insert */
 	virtual void clear(const Packet *packet) = 0;
 };
 
@@ -36,13 +34,12 @@ class Mesh : public Dispatcher {
 
 protected:
 	ContentionTracker _contention;
+public:
+	/* Made public so the UI layer can query/extract per-packet dupe counts
+	 * for outbound-flood feedback (joystick channel-send "heard a repeat?"). */
 	ContentionTracker& getContentionTracker() { return _contention; }
 	const ContentionTracker& getContentionTracker() const { return _contention; }
-#ifdef CONFIG_ZEPHCORE_APC
-	PowerController _power_ctrl;
-	PowerController& getPowerController() { return _power_ctrl; }
-	const PowerController& getPowerController() const { return _power_ctrl; }
-#endif
+protected:
 	void extendPendingRetransmit(uint32_t hash32);
 
 	DispatcherAction onRecvPacket(Packet *pkt) override;
@@ -52,6 +49,11 @@ protected:
 	virtual bool allowPacketForward(const Packet *packet);
 	virtual uint32_t getRetransmitDelay(const Packet *packet);
 	virtual uint32_t getDirectRetransmitDelay(const Packet *packet) { return 0; }
+	/* Shared adaptive retransmit-delay math. CompanionMesh and RepeaterMesh
+	 * had byte-identical overrides of getRetransmitDelay/getDirectRetransmitDelay;
+	 * both now delegate here. */
+	uint32_t computeAdaptiveFloodDelay(const Packet *packet);
+	uint32_t computeAdaptiveDirectDelay(const Packet *packet);
 	/* Passive contention tracking: if true, track heard floods we don't forward
 	 * (warms the contention EMA on nodes that don't relay, e.g. companions). */
 	virtual bool passivelyTrackFloods() const { return false; }
@@ -78,6 +80,7 @@ public:
 	void begin();
 	void loop();
 	void maintenanceLoop();
+	uint32_t msUntilNextMaintenance() override;
 
 	LocalIdentity self_id;
 
@@ -86,8 +89,10 @@ public:
 	MeshTables *getTables() const { return _tables; }
 
 	Packet *createAdvert(const LocalIdentity &id, const uint8_t *app_data = nullptr, size_t app_data_len = 0);
-	Packet *createAck(uint32_t ack_crc);
-	Packet *createMultiAck(uint32_t ack_crc, uint8_t remaining);
+	Packet *createAck(const uint8_t *ack, uint8_t len);
+	Packet *createAck(uint32_t ack_crc) { return createAck((const uint8_t *)&ack_crc, 4); }
+	Packet *createMultiAck(const uint8_t *ack, uint8_t len, uint8_t remaining);
+	Packet *createMultiAck(uint32_t ack_crc, uint8_t remaining) { return createMultiAck((const uint8_t *)&ack_crc, 4, remaining); }
 	Packet *createControlData(const uint8_t *data, size_t len);
 	Packet *createDatagram(uint8_t type, const Identity &dest, const uint8_t *secret, const uint8_t *data, size_t len);
 	Packet *createAnonDatagram(uint8_t type, const LocalIdentity &sender, const Identity &dest, const uint8_t *secret, const uint8_t *data, size_t data_len);

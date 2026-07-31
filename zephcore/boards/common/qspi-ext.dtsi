@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * QSPI external flash /ext automount — optional add-on for any platform
  *
  * See nrf52_partitions_sdv7.dtsi for full include guide.

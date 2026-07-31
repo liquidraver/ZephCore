@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore - Common radio includes for LoRa mesh roles
  *
  * Shared by companion, repeater, and any future role that uses the

@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Universal QSPI flash probe and erase — bare-metal nRF52840 QSPI register access
  *
  * Probes all known pin configurations to detect external QSPI flash,

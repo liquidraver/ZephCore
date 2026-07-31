@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Radio adapter for SX127x (SX1272/SX1276/SX1278) using Zephyr loramac-node driver.
  *
  * The SX127x loramac-node driver supports the standard Zephyr LoRa API
@@ -21,9 +21,16 @@ public:
 
 	void begin() override;
 
+	/* SX127x has no RX boost feature — report unsupported so the
+	 * radio.rxgain CLI can reply "Error: unsupported". */
+	bool setRxBoost(bool enable) override {
+		(void)enable;
+		return false;
+	}
+
 protected:
 	/* Hardware primitives */
-	void hwConfigure(const struct lora_modem_config &cfg) override;
+	bool hwConfigure(const struct lora_modem_config &cfg) override;
 	void hwCancelReceive() override;
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;
@@ -33,21 +40,14 @@ protected:
 	 * will converge on this value rather than the real noise floor. */
 	int16_t hwGetCurrentRSSI() override;
 
-	/* SX127x has no preamble-detected IRQ accessible via standard API.
-	 * Always returns false — TX will not abort for a detected preamble. */
-	bool hwIsPreambleDetected() override;
+	/* SX127x has no preamble/header IRQ accessible via standard API.
+	 * Always returns false — TX will not gate on the chip-level RX-busy
+	 * signal.  isReceiving() falls back to the RSSI-based isChannelActive()
+	 * for SX127x users. */
+	bool hwIsReceiving() override;
 
 	/* SX127x has no RX boost / LNA gain switch via standard API. No-op. */
 	void hwSetRxBoost(bool enable) override;
-
-	/* SX127x loramac-node driver manages AGC automatically. No-op. */
-	void hwResetAGC() override;
-
-	/* Override public resetAGC(): hwResetAGC() is a no-op, and the
-	 * loramac-node modem mutex makes the base-class startReceive() call
-	 * fail with -EBUSY (modem STATE_BUSY during async RX), which would
-	 * set _in_recv_mode = 0 and corrupt the state machine. */
-	void resetAGC() override;
 
 	/* SX127x has no BUSY pin. Default (false) from base is correct. */
 	/* bool hwIsChipBusy() — inherited, returns false */

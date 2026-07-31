@@ -1,7 +1,7 @@
 /*
  * ZephCore - UI Task
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Wires together buttons, buzzer, and display.
  * Handles input events, page navigation, and notifications from mesh.
@@ -47,6 +47,14 @@ int ui_init(void);
 void ui_play_startup_chime(void);
 
 /**
+ * Initialize the LED heartbeat hardware.
+ * Detects led0/led1 GPIO aliases, configures pins, and starts the
+ * self-rescheduling work chain. Safe to call when no LED is present.
+ * Must be called from ui_init() in every UI variant.
+ */
+void ui_led_heartbeat_init(void);
+
+/**
  * Post a notification event to the UI.
  * Triggers buzzer melody and/or display wake depending on event type.
  * Safe to call from any thread context.
@@ -75,6 +83,19 @@ void ui_set_ble_status(bool connected, const char *name);
  */
 void ui_set_radio_params(uint32_t freq_hz, uint8_t sf, uint16_t bw_khz_x10,
 			 uint8_t cr, int8_t tx_power, int16_t noise_floor);
+
+/**
+ * Update extended live radio details for display.
+ */
+void ui_set_radio_runtime(uint8_t sync_word,
+			  uint16_t preamble_len, bool rx_duty_cycle,
+			  bool radio_ready, bool in_rx, bool tx_active);
+
+/**
+ * Update radio packet counters for display.
+ */
+void ui_set_radio_stats(uint32_t packets_rx, uint32_t packets_tx,
+			uint32_t packets_err);
 
 /**
  * Update GPS data for display.
@@ -116,8 +137,6 @@ void ui_clear_recent(void);
 /**
  * Update sensor data for display.
  */
-void ui_set_sensor_data(int16_t temp_c10, uint32_t pressure_pa,
-			uint16_t humidity_rh10, uint16_t light_lux);
 
 /**
  * Set whether GPS hardware was detected at boot.
@@ -159,14 +178,133 @@ void ui_set_leds_disabled(bool disabled);
 void ui_set_heartbeat_led(bool enabled);
 
 /**
+ * Flash the heartbeat LED immediately on message receipt.
+ * Cancels the current cycle, pulses, then resumes normal heartbeat.
+ */
+void ui_led_flash_msg(void);
+
+/**
+ * Flash the heartbeat LED 3 times as a visual shutdown indicator.
+ * Used when the buzzer is muted — gives visual feedback on power-off.
+ */
+void ui_led_flash_shutdown(void);
+
+/**
  * Set offgrid mode (client repeat) state for display page.
  */
 void ui_set_offgrid_mode(bool enabled);
 
 /**
- * Trigger a display refresh (for periodic updates from housekeeping).
+ * Register a battery-voltage provider used by ui_refresh_battery().
+ * provider() must return millivolts (0 if no battery hardware).
  */
-void ui_refresh_display(void);
+void ui_set_battery_provider(uint16_t (*provider)(void));
+
+/**
+ * Lazy battery refresh: re-read the ADC only if cached value is stale.
+ * Called from the page render path so the ADC fires at most once per
+ * 30 s and only when the display is actually being drawn.
+ */
+void ui_refresh_battery(void);
+
+/**
+ * Prepare the device for sys_poweroff(): stop heartbeat LED, blank the
+ * display, power off GPS + sensor regulators, hold LoRa in HW reset,
+ * configure SENSE on sw0 (nRF only) for button wakeup.
+ *
+ * Caller is responsible for any shutdown chime BEFORE this call and the
+ * final sys_poweroff() AFTER. Both UI variants share this so the System
+ * OFF state is consistent regardless of which UI design is compiled in.
+ */
+void ui_prepare_for_system_off(void);
+
+/**
+ * Register a power-source provider used by ui_auto_shutdown_check().
+ * provider() must return true when the device is externally powered
+ * (USB/charger present), false on battery. NULL = always treat as battery.
+ */
+void ui_set_power_source_provider(bool (*provider)(void));
+
+/**
+ * Set the runtime low-battery auto-shutdown threshold in millivolts.
+ * 0 disables the check. Seeded at boot from prefs (which default to
+ * CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) and updated live by the CLI.
+ * No-op on builds where the feature is compiled out (non-nRF52).
+ */
+void ui_set_auto_shutdown_mv(uint16_t mv);
+
+/* Reason codes passed to the shutdown hook. */
+#define UI_SHUTDOWN_LOW_BATTERY  1
+
+/* Grace period (ms) the poweroff is deferred by when the hook asks for it
+ * (an app is connected and a live notice was queued), so the notify→fetch→
+ * send round-trip can complete before power is cut. */
+#define UI_SHUTDOWN_GRACE_MS     1000
+
+/**
+ * Register a pre-shutdown hook, called from ui_auto_shutdown_check() just
+ * before power-off. The companion uses it to report the shutdown to the
+ * connected app (v-contact). Return value:
+ *   true  = an app is connected and a live notice was queued — defer the
+ *           poweroff by UI_SHUTDOWN_GRACE_MS so the app can fetch it.
+ *   false = nothing to deliver live (persist to flash instead) — power off
+ *           immediately.
+ * The hook runs on the main thread and must not block.
+ */
+typedef bool (*ui_shutdown_fn)(int reason);
+void ui_set_shutdown_hook(ui_shutdown_fn fn);
+
+/**
+ * Low-battery auto-shutdown check (companion only).
+ *
+ * Call from the periodic housekeeping tick — it self-throttles its own ADC
+ * sampling, so calling it every tick is cheap (no extra polling). When
+ * CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS is 0 this is a no-op. Otherwise,
+ * if the battery is below the threshold AND not externally powered, it shows
+ * a brief warning (3 s on OLED, instant-persist on e-paper) and powers off
+ * via ui_prepare_for_system_off() + sys_poweroff().
+ */
+void ui_auto_shutdown_check(void);
+
+/**
+ * Drop the battery-refresh freshness timestamp. The next
+ * ui_refresh_battery() call is guaranteed to sample the ADC.
+ * Use when waking the display from sleep so the user sees a current
+ * reading immediately instead of a possibly-stale cached value.
+ */
+void ui_invalidate_battery_cache(void);
+
+/**
+ * Notify UI of a received contact message.
+ * Rich UIs display the text and sender; simpler ones forward to
+ * ui_notify(UI_EVENT_CONTACT_MSG) + ui_set_msg_count().
+ *
+ * @param path_len   Hop count (OUT_PATH_UNKNOWN = direct/unknown)
+ * @param from_name  Sender display name
+ * @param text       Message text
+ * @param msg_count  Updated offline queue message count
+ */
+void ui_notify_contact_msg(uint8_t path_len, const char *from_name,
+			   const char *text, uint16_t msg_count);
+
+/**
+ * Notify UI of a received channel message.
+ * Rich UIs use all parameters; simpler ones fire ui_notify(UI_EVENT_CHANNEL_MSG).
+ *
+ * @param channel_name  Human-readable channel name
+ * @param text          Message text
+ * @param ts            Sender timestamp (epoch)
+ * @param path_len      Hop count (OUT_PATH_UNKNOWN = direct/unknown)
+ * @param msg_count     Updated offline queue message count
+ */
+void ui_notify_channel_msg(const char *channel_name, const char *text,
+			   uint32_t ts, uint8_t path_len, uint16_t msg_count);
+
+/**
+ * Notify UI that an outbound packet was transmitted.
+ * Rich UIs use this to start RTT timers; simpler ones ignore it.
+ */
+void ui_notify_packet_sent(void);
 
 #ifdef __cplusplus
 }

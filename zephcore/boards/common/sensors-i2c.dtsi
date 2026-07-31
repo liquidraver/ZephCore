@@ -1,6 +1,6 @@
 /*
  * Common I2C Sensor Definitions for ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Include this file inside an &i2cN { ... } block to define all
  * supported sensor nodes on that bus.  Sensors that are not physically
@@ -103,3 +103,8 @@ ina219: ina219@40 {
 	shunt-milliohm = <100>;
 	lsb-microamp = <10>;
 };
+
+/* Real-time clocks are NOT here — they live in the opt-in "rtc-i2c.dtsi"
+ * (included only by boards that physically have a battery-backed RTC), so
+ * their fixed addresses (0x68/0x51/0x52/0x32) can't collide with an IMU or
+ * other peripheral on boards that don't. */

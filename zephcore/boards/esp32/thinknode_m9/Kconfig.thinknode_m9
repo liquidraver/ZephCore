@@ -1,0 +1,7 @@
+config BOARD_THINKNODE_M9
+	select SOC_ESP32S3_WROOM_N16R8
+	select SOC_ESP32S3_PROCPU if BOARD_THINKNODE_M9_ESP32S3_PROCPU
+	# STC8H keypad on I2C1 @0x6C is this board's ONLY input — there is no
+	# user button in hardware. Selects the full companion UI, whose key
+	# space is built for a keyboard.
+	select ZEPHCORE_UI_KEYBOARD

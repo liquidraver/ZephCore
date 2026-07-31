@@ -1,6 +1,6 @@
 /*
  * Seeed SenseCAP Solar Node (P1 / P1-Pro) — pin control
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * MeshCore variants/sensecap_solar variant.cpp:
  * - SPI2 (SX1262): SCK=P1.13, MOSI=P1.15, MISO=P1.14

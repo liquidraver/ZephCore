@@ -1,0 +1,25 @@
+/*
+ * Device-tree half of esp32s3_usb.conf — auto-paired by the
+ * zephcore_auto_pair_overlay() helper in CMakeLists.txt, so it is applied if
+ * and only if the build actually passes boards/common/esp32s3_usb.conf.
+ *
+ * esp32s3_usb.conf disables USB Serial/JTAG and hands the shared D+/D- pins to
+ * the USB OTG controller (the CDC-ACM companion channel).  Any board whose
+ * console rides usb_serial would go silent at that moment, so the console is
+ * rerouted to uart0 here — in the paired overlay rather than in board.overlay,
+ * because board.overlay applies to EVERY build of the board regardless of role.
+ *
+ * That is the bug this file exists to prevent: xiao_esp32s3 and station_g2 used
+ * to include the reroute unconditionally, which silently moved the console (and
+ * with it the observer/repeater serial CLI, which falls back to the chosen
+ * console) onto GPIO43/44 in builds that never enabled USB OTG at all.
+ *
+ * Devicetree is processed before Kconfig, so an overlay cannot test
+ * CONFIG_ZEPHCORE_COMPANION_USB — the conf/overlay pairing is what makes this
+ * conditional.
+ *
+ * Boards whose console is already a physical uart0 (Heltec V3/V4/V43, ThinkNode
+ * M9) are unaffected: the include re-asserts the same uart0 + GPIO43/44 setup
+ * they already have.
+ */
+#include "esp32s3_console_uart0.dtsi"

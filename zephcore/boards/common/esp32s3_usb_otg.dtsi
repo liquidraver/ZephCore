@@ -1,0 +1,21 @@
+/*
+ * ESP32-S3 USB OTG (DWC2) — companion USB transport.
+ *
+ * Enables the snps,dwc2 USB OTG controller and attaches a CDC-ACM UART node
+ * for the binary companion protocol.  The DWC2 driver is only compiled when
+ * CONFIG_USB_DEVICE_STACK_NEXT=y (set by boards/common/esp32s3_usb.conf);
+ * without that conf this node is inert.
+ *
+ * Boards whose default console rides USB Serial/JTAG (shares D+/D- with USB
+ * OTG) must also reroute the console off the shared pins — see
+ * esp32s3_console_uart0.dtsi.
+ */
+zephyr_udc0: &usb_otg {
+	status = "okay";
+};
+
+&zephyr_udc0 {
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};

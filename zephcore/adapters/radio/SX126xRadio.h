@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Radio adapter for SX126x (SX1261/SX1262/SX1268) using native Zephyr driver
  */
 
@@ -22,15 +22,18 @@ public:
 
 protected:
 	/* Hardware primitives */
-	void hwConfigure(const struct lora_modem_config &cfg) override;
+	bool hwConfigure(const struct lora_modem_config &cfg) override;
 	void hwCancelReceive() override;
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;
 	int16_t hwGetCurrentRSSI() override;
-	bool hwIsPreambleDetected() override;
+	bool hwIsReceiving() override;
 	void hwSetRxBoost(bool enable) override;
-	void hwResetAGC() override;
 	bool hwIsChipBusy() override;
+	uint32_t hwWakeupTimeUs() override;
+	int hwCadProbe(int8_t level) override;
+	void hwCadSetPeakOffset(int8_t offset) override;
+	uint8_t hwCadBasePeak() override;
 };
 
 } /* namespace mesh */

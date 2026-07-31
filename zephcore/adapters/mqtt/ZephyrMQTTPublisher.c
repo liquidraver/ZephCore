@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephyrMQTTPublisher — MQTT client thread for the Observer role.
  *
  * Thread flow:
@@ -29,18 +29,28 @@ LOG_MODULE_REGISTER(mqtt_pub, CONFIG_LOG_DEFAULT_LEVEL);
 
 /* ========== Publish queue ========== */
 
-/* Pre-serialized message: topic + JSON payload (both copied at enqueue). */
+/* Pre-serialized message: JSON payload + 1-byte index into the two fixed
+ * topic strings registered at start (see enum mqtt_pub_topic). */
 #define PUB_TOPIC_MAX   160
 #define PUB_PAYLOAD_MAX 1024
 #define PUB_QUEUE_LEN   8
 
 struct pub_msg {
-	char topic[PUB_TOPIC_MAX];
-	char payload[PUB_PAYLOAD_MAX];
 	uint16_t payload_len;
+	uint8_t  topic;   /* enum mqtt_pub_topic */
+	char payload[PUB_PAYLOAD_MAX];
 };
 
 K_MSGQ_DEFINE(s_pub_queue, sizeof(struct pub_msg), PUB_QUEUE_LEN, 4);
+
+/* Producer staging slot: callers build JSON directly into this buffer via
+ * mqtt_publisher_stage() then mqtt_publisher_commit() copies it into the
+ * queue. Single producer (mesh main thread) — no lock. */
+static struct pub_msg s_stage;
+
+/* Consumer drain slot: only the MQTT thread touches it (keeps a ~1 KB
+ * struct off the thread stack). */
+static struct pub_msg s_drain;
 
 /* ========== Module state ========== */
 
@@ -282,10 +292,11 @@ static void run_poll_loop(void)
 		}
 
 		/* Drain publish queue */
-		struct pub_msg msg;
-		while (k_msgq_get(&s_pub_queue, &msg, K_NO_WAIT) == 0) {
-			int rc = do_publish(&s_client, msg.topic,
-					    msg.payload, msg.payload_len, false);
+		while (k_msgq_get(&s_pub_queue, &s_drain, K_NO_WAIT) == 0) {
+			const char *topic = (s_drain.topic == MQTT_PUB_TOPIC_PACKETS)
+					    ? s_packets_topic : s_status_topic;
+			int rc = do_publish(&s_client, topic,
+					    s_drain.payload, s_drain.payload_len, false);
 			if (rc < 0) {
 				LOG_WRN("Publish failed: %d", rc);
 				s_connected = false;
@@ -328,6 +339,21 @@ static void run_poll_loop(void)
 #define MQTT_THREAD_STACK_SIZE 12288
 #define MQTT_THREAD_PRIORITY   5
 
+/* Escalating retry backoff: DNS/connect/CONNACK failures double the delay up
+ * to the cap (a broker rejecting credentials won't fix itself in 10 s, and
+ * every TLS retry costs a full handshake). Reset on successful CONNACK. */
+#define RETRY_BACKOFF_MIN_S 5
+#define RETRY_BACKOFF_MAX_S 300
+
+static uint32_t s_retry_backoff_s = RETRY_BACKOFF_MIN_S;
+
+static void backoff_sleep(void)
+{
+	LOG_INF("MQTT retry in %u s", s_retry_backoff_s);
+	k_sleep(K_SECONDS(s_retry_backoff_s));
+	s_retry_backoff_s = MIN(s_retry_backoff_s * 2, RETRY_BACKOFF_MAX_S);
+}
+
 static void mqtt_thread_fn(void *p1, void *p2, void *p3);
 K_THREAD_DEFINE(mqtt_pub_thread, MQTT_THREAD_STACK_SIZE,
 		mqtt_thread_fn, NULL, NULL, NULL,
@@ -359,8 +385,8 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		int rc = resolve_host(s_creds->mqtt_host, s_creds->mqtt_port,
 				      &s_broker_addr);
 		if (rc < 0) {
-			LOG_WRN("DNS failed — retry in 10s");
-			k_sleep(K_SECONDS(10));
+			LOG_WRN("DNS failed");
+			backoff_sleep();
 			continue;
 		}
 
@@ -374,8 +400,8 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 
 		rc = mqtt_connect(&s_client);
 		if (rc < 0) {
-			LOG_WRN("mqtt_connect failed: %d — retry in 10s", rc);
-			k_sleep(K_SECONDS(10));
+			LOG_WRN("mqtt_connect failed: %d", rc);
+			backoff_sleep();
 			continue;
 		}
 
@@ -400,11 +426,14 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		}
 
 		if (!s_connected) {
-			LOG_WRN("CONNACK not accepted (broker rejected or no response) — retry in 10s");
+			LOG_WRN("CONNACK not accepted (broker rejected or no response)");
 			mqtt_disconnect(&s_client, NULL);
-			k_sleep(K_SECONDS(10));
+			backoff_sleep();
 			continue;
 		}
+
+		/* Connected — reset the failure backoff */
+		s_retry_backoff_s = RETRY_BACKOFF_MIN_S;
 
 		/* Publish retained "online" status */
 		publish_status(&s_client, true);
@@ -418,8 +447,8 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		}
 		mqtt_disconnect(&s_client, NULL);
 
-		LOG_INF("MQTT session ended — retry in 5s");
-		k_sleep(K_SECONDS(5));
+		LOG_INF("MQTT session ended");
+		backoff_sleep();
 	}
 }
 
@@ -442,23 +471,28 @@ void mqtt_publisher_start(const struct ObserverCreds *creds,
 	LOG_INF("MQTT publisher ready (client_id=%s)", s_client_id);
 }
 
-void mqtt_publisher_enqueue(const char *topic, const char *payload, int payload_len)
+char *mqtt_publisher_stage(size_t *size)
 {
-	struct pub_msg msg;
-
-	strncpy(msg.topic, topic, sizeof(msg.topic) - 1);
-	msg.topic[sizeof(msg.topic) - 1] = '\0';
-
-	int copy_len = payload_len;
-	if (copy_len >= (int)sizeof(msg.payload)) {
-		copy_len = (int)sizeof(msg.payload) - 1;
+	if (size) {
+		*size = sizeof(s_stage.payload);
 	}
-	memcpy(msg.payload, payload, copy_len);
-	msg.payload[copy_len] = '\0';
-	msg.payload_len = (uint16_t)copy_len;
+	return s_stage.payload;
+}
 
-	if (k_msgq_put(&s_pub_queue, &msg, K_NO_WAIT) != 0) {
-		LOG_WRN("Publish queue full — packet dropped");
+void mqtt_publisher_commit(enum mqtt_pub_topic topic, int payload_len)
+{
+	if (payload_len <= 0) {
+		return;
+	}
+	if (payload_len >= (int)sizeof(s_stage.payload)) {
+		payload_len = (int)sizeof(s_stage.payload) - 1;
+	}
+	s_stage.payload[payload_len] = '\0';
+	s_stage.payload_len = (uint16_t)payload_len;
+	s_stage.topic = (uint8_t)topic;
+
+	if (k_msgq_put(&s_pub_queue, &s_stage, K_NO_WAIT) != 0) {
+		LOG_WRN("Publish queue full — message dropped");
 	}
 }
 

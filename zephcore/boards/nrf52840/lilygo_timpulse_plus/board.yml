@@ -1,0 +1,9 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+board:
+  name: lilygo_timpulse_plus
+  full_name: LilyGo T-Impulse Plus (nRF52840 + SX1262 + SSD1315 OLED + M10 GPS)
+  vendor: lilygo
+  socs:
+    - name: nrf52840

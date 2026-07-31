@@ -1,7 +1,7 @@
 /*
  * ZephCore - Display Abstraction (CFB)
  * Copyright (c) 2025 ZephCore
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Wraps Zephyr's Character Framebuffer (CFB) subsystem with:
  * - Auto-detection from devicetree (any Zephyr-supported display)
@@ -17,7 +17,10 @@
 #define ZEPHCORE_DISPLAY_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
+
+#include <zephyr/devicetree.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -82,6 +85,49 @@ bool mc_display_is_on(void);
  */
 bool mc_display_is_epd(void);
 
+/* Color overlay support is compiled only when the devicetree has a raw
+ * RGB565 TFT under the `tft` nodelabel (the runtime probe still verifies
+ * pixel format and readiness).  Boards without one get constant-false /
+ * mono-fallback inlines so every color code path — including the ~3.8 KB
+ * overlay op queue in display.c — is dropped at compile time. */
+#define MC_DISPLAY_COLOR_PANEL DT_NODE_EXISTS(DT_NODELABEL(tft))
+
+/**
+ * @return true when a raw RGB565-capable color panel is available for
+ * optional color overlays. Monochrome displays return false.
+ */
+#if MC_DISPLAY_COLOR_PANEL
+bool mc_display_has_color(void);
+#else
+static inline bool mc_display_has_color(void)
+{
+	return false;
+}
+#endif
+
+/**
+ * Glyph cell size of the color overlay renderer in pixels.  The 6x8 font
+ * is upscaled 1.5x under CONFIG_ZEPHCORE_DISPLAY_LARGE_FONT, so this can
+ * differ from the CFB font metrics — layout math for color pages must use
+ * these, not mc_display_font_width/height().  On monochrome builds
+ * mc_display_color_text() falls back to the CFB path, so these fall back
+ * to the CFB metrics too.
+ */
+#if MC_DISPLAY_COLOR_PANEL
+uint8_t mc_display_color_font_width(void);
+uint8_t mc_display_color_font_height(void);
+#else
+static inline uint8_t mc_display_color_font_width(void)
+{
+	return mc_display_font_width();
+}
+
+static inline uint8_t mc_display_color_font_height(void)
+{
+	return mc_display_font_height();
+}
+#endif
+
 /**
  * Clear the framebuffer (fill with black).
  * Call before rendering a new frame.
@@ -98,6 +144,35 @@ void mc_display_clear(void);
  */
 void mc_display_text(int x, int y, const char *text, bool invert);
 
+/* Common RGB565 colors for optional color-capable pages. */
+#define MC_COLOR_BLACK    0x0000
+#define MC_COLOR_WHITE    0xffff
+#define MC_COLOR_GREEN    0x07e0
+#define MC_COLOR_CYAN     0x07ff
+#define MC_COLOR_YELLOW   0xffe0
+#define MC_COLOR_ORANGE   0xfd20
+#define MC_COLOR_RED      0xf800
+#define MC_COLOR_BLUE     0x001f
+#define MC_COLOR_GRAY       0x8410  /* true mid-gray — small-TFT gamma may crush it near-black */
+#define MC_COLOR_LIGHT_GRAY 0xef7d  /* ~93% white — reads as soft white on small TFTs */
+
+/**
+ * Draw text using RGB565 color when supported. On non-color displays this
+ * falls back to mc_display_text(..., invert=false).
+ *
+ * Color overlays are flushed after the normal CFB frame in mc_display_finalize().
+ */
+#if MC_DISPLAY_COLOR_PANEL
+void mc_display_color_text(int x, int y, const char *text, uint16_t color);
+#else
+static inline void mc_display_color_text(int x, int y, const char *text,
+					 uint16_t color)
+{
+	(void)color;
+	mc_display_text(x, y, text, false);
+}
+#endif
+
 /**
  * Draw a filled rectangle.
  *
@@ -109,9 +184,31 @@ void mc_display_text(int x, int y, const char *text, bool invert);
 void mc_display_fill_rect(int x, int y, int w, int h);
 
 /**
+ * Draw a filled rectangle using RGB565 color when supported. On non-color
+ * displays this falls back to mc_display_fill_rect().
+ */
+#if MC_DISPLAY_COLOR_PANEL
+void mc_display_color_fill_rect(int x, int y, int w, int h, uint16_t color);
+#else
+static inline void mc_display_color_fill_rect(int x, int y, int w, int h,
+					      uint16_t color)
+{
+	(void)color;
+	mc_display_fill_rect(x, y, w, h);
+}
+#endif
+
+/**
  * Draw a horizontal line.
  */
 void mc_display_hline(int x, int y, int w);
+
+/**
+ * Invert a rectangular region of the framebuffer.
+ * Pixels that are on (white) become off (black) and vice versa.
+ * Used to create clean dark-background modal overlays.
+ */
+void mc_display_invert_rect(int x, int y, int w, int h);
 
 /**
  * Draw a monochrome bitmap (Adafruit/Arduino format).
@@ -127,6 +224,14 @@ void mc_display_hline(int x, int y, int w);
 void mc_display_xbm(int x, int y, const uint8_t *data, int w, int h);
 
 /**
+ * ZephCore logo bitmap (128 × 13 px, MSB-first, row-major).
+ * Shared by both UI variants' splash screens. Defined in ui_common.c.
+ */
+#define ZEPHCORE_LOGO_W  128
+#define ZEPHCORE_LOGO_H  13
+extern const uint8_t zephcore_logo[];
+
+/**
  * Flush the framebuffer to the display hardware.
  * Call after all drawing operations for a frame are complete.
  */
@@ -136,6 +241,13 @@ void mc_display_finalize(void);
  * Reset the auto-off timer (called on user interaction).
  */
 void mc_display_reset_auto_off(void);
+
+/**
+ * Override the auto-off timeout (0 = revert to Kconfig default).
+ * Call from the UI layer when the user changes the screen-off duration
+ * so the Kconfig-driven timer and the UI timer stay in sync.
+ */
+void mc_display_set_auto_off_ms(uint32_t ms);
 
 /**
  * EPD-only: force a full panel reset cycle before normal page rendering.
@@ -149,6 +261,23 @@ void mc_display_epd_full_reset(void);
  * Returns NULL if display not initialized.
  */
 const struct device *mc_display_get_device(void);
+
+/**
+ * Convert UTF-8 text to the display charset for rendering.
+ * Passes ASCII unchanged, converts Latin-1 (U+00A0-U+00FF) to its native
+ * code points, maps 32 Latin-2 letters (Hungarian/Czech/Slovak/Polish/...)
+ * into font slots 128-159, folds the rest of Latin Extended-A to base ASCII
+ * letters, and strips everything else (emojis, CJK). Bytes that are not
+ * valid UTF-8 pass through unchanged, so already-converted text survives a
+ * second pass.
+ */
+void utf8_to_display(char *dst, const char *src, size_t dst_size);
+
+/**
+ * utf8_to_display() + leading-space trim (names are sometimes space-padded
+ * to game sort order).
+ */
+void utf8_to_latin1(char *dst, const char *src, size_t dst_size);
 
 #ifdef __cplusplus
 }

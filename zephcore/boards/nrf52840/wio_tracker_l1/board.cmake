@@ -1,6 +1,6 @@
 # Copyright (c) 2025 ZephCore
 #
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 board_runner_args(jlink "--device=nRF52840_xxAA" "--speed=4000")
 board_runner_args(pyocd "--target=nrf52840" "--frequency=4000000")

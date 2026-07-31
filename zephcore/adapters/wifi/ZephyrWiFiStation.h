@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephyrWiFiStation — WiFi STA connection manager for the Observer role.
  *
  * Connects to a WPA2-PSK (or open) network, obtains a DHCP lease, syncs

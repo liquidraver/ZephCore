@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * XIAO ESP32-C6 + SX1262 LoRa
  *
  * Pin mapping (from Arduino MeshCore variants/xiao_c6):
@@ -54,22 +54,10 @@
 };
 
 /*
- * Flash partitions — repartition default ESP32 layout.
- * Default storage_partition is 192KB at 0x3B0000.
- *
- * 0x3B0000 - 0x3E0000 (192KB) LittleFS (identity, contacts, channels, BLE bonds)
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
  */
-/delete-node/ &storage_partition;
-
-&flash0 {
-	partitions {
-		/* LittleFS 192KB for DataStore + file-based BLE settings */
-		lfs_partition: partition@3b0000 {
-			label = "lfs";
-			reg = <0x3B0000 0x30000>;
-		};
-	};
-};
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"

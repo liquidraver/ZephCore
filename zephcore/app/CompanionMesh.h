@@ -1,14 +1,16 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * CompanionMesh - ZephCore Companion device application layer
  */
 
 #pragma once
 
 #include <helpers/BaseChatMesh.h>
+#include <helpers/MeshTimeSync.h>
 #include <helpers/TransportKeyStore.h>
 #include <ZephyrDataStore.h>
 #include <NodePrefs.h>
+#include <zephyr/kernel.h>
 
 /* BLE push notification codes */
 #define PUSH_CODE_ADVERT              0x80
@@ -36,8 +38,10 @@
 #define AUTO_ADD_ROOM_SERVER       (1 << 3)
 #define AUTO_ADD_SENSOR            (1 << 4)
 
-/* Max BLE frame size — must match NUS MTU negotiated size */
-#define MAX_FRAME_SIZE 172
+/* Canonical definition is in ZephyrBLE.h; guard here for TUs that don't include it */
+#ifndef MAX_FRAME_SIZE
+#define MAX_FRAME_SIZE  176
+#endif
 
 /* 1 header + 32 pubkey + 1 type + 1 flags + 1 path_len + 64 path + 32 name + 4*4 fields = 148 */
 #define CONTACT_FRAME_SIZE 148
@@ -87,6 +91,12 @@ typedef void (*RadioReconfigureCallback)(void);
 /* BLE PIN change callback */
 typedef void (*PinChangeCallback)(uint32_t new_pin);
 
+/* V-contact CLI execution callback — runs a text-CLI line and fills `reply`
+ * (buffer is VCONTACT_CLI_REPLY_SIZE). Registered by main_companion so the
+ * v-contact chat reuses the same CommonCLI instance as the USB text CLI. */
+#define VCONTACT_CLI_REPLY_SIZE 256
+typedef void (*VContactCLICallback)(const char *line, char *reply);
+
 /**
  * CompanionMesh: Application layer for ZephCore Companion device
  *
@@ -106,6 +116,18 @@ public:
 	void loop();
 
 	int getOfflineQueueCount() const { return _offline_queue_count; }
+
+	/**
+	 * Build and send a self advert using the configured location policy,
+	 * path-hash mode, and default transport scope. This is the canonical
+	 * path shared by the BLE/USB CMD_SEND_SELF_ADVERT handler and the UI
+	 * (button / joystick) advert actions, so flood adverts always honor
+	 * prefs.path_hash_mode and the region scope regardless of trigger.
+	 *
+	 * @param flood  true for a flood advert, false for zero-hop.
+	 * @return false if the packet pool was full (advert not sent).
+	 */
+	bool sendSelfAdvert(bool flood) override;
 
 	/**
 	 * Handle a protocol frame from BLE.
@@ -138,6 +160,29 @@ public:
 	 */
 	void setPinChangeCallback(PinChangeCallback cb) { _pin_change_cb = cb; }
 
+	/* ---- V-contact: loopback admin contact ("v<node_name>") ----
+	 * A synthesized CHAT contact visible only to the connected BLE/USB app.
+	 * Messages to it are short-circuited into the CLI before any packet is
+	 * created — nothing ever reaches the dispatcher or the radio. Its pubkey
+	 * is SHA256("zc-vcontact" || self pubkey); no private key exists and it
+	 * is never registered in the RF RX matching path, so over-the-air
+	 * traffic addressed to it is inert. */
+	void setVContactCLICallback(VContactCLICallback cb) { _vcontact_cli_cb = cb; }
+	bool isVContactEnabled() const { return prefs.v_contact_enabled != 0; }
+	/** Queue an unsolicited v-contact message (battery alert, restart reason).
+	 *  Goes through the offline queue — delivered on next app connect/sync. */
+	void vcontactNotify(const char *text);
+	/** Push the v-contact to a connected app as a NEW_ADVERT (call after
+	 *  runtime enable or rename). No-op push when nothing is connected. */
+	void vcontactPushAdvert();
+	/** Push CONTACT_DELETED for the v-contact (call after runtime disable). */
+	void vcontactPushDeleted();
+	/** Clock became (or may have become) valid — activate the v-contact if it
+	 *  was deferred (no more 1970 adverts) and flush buffered notices so they
+	 *  carry sane timestamps. Self-gating; safe to call speculatively. Hooked
+	 *  at CMD_APP_START, CMD_SET_DEVICE_TIME, and GPS time sync. */
+	void vcontactClockSynced();
+
 	/**
 	 * Continue contact iteration (call each main loop iteration).
 	 * Returns true if contacts are still being sent.
@@ -145,16 +190,16 @@ public:
 	bool continueContactIteration();
 
 	/**
-	 * Reset contact iterator (call when new command received).
-	 * Sends PACKET_CONTACT_END if iteration was in progress.
-	 */
-	void resetContactIterator();
-
-	/**
 	 * Cancel contact iteration silently (no frame sent).
 	 * Call on BLE disconnect — there's nobody to send CONTACT_END to.
 	 */
 	void cancelContactIterator() { _contact_iter_active = false; }
+
+	/** True while a contact dump is in progress (drives the stall watchdog). */
+	bool isContactIterActive() const { return _contact_iter_active; }
+
+	/** Dump progress cursor — the watchdog re-kicks only if this stops moving. */
+	int getContactIterIdx() const { return _contact_iter_idx; }
 
 	/**
 	 * Cancel pending message sync. Un-ACKed message stays in queue.
@@ -191,11 +236,38 @@ public:
 	 */
 	const AdvertPath *findAdvertPath(const uint8_t *pubkey_prefix, int prefix_len);
 
+	/**
+	 * Queue a locally-originated DM into the BLE offline queue and signal
+	 * MSG_WAITING. The frame uses path_len = OUT_PATH_SENT (0xFE) and the
+	 * body is prefixed with "(>>✓) " on delivery or "(>>✗) " on failure so
+	 * the phone app shows a visible outcome indicator without needing
+	 * protocol-level support.
+	 */
+	void queueLocalSentContactMessage(const ContactInfo &contact, uint32_t timestamp,
+			const char *text, bool delivered);
+
+	/**
+	 * Queue a locally-originated channel message into the BLE offline queue
+	 * and signal MSG_WAITING. The body is rendered as
+	 * "<heard-marker> <node_name>: <text>" — heard_repeat picks
+	 * "(>>✓) " (at least one neighbor repeated the flood) vs "(>>✗) "
+	 * (no repeats heard within the joystick UI's feedback window).
+	 */
+	void queueLocalSentChannelMessage(uint8_t channel_idx, uint32_t timestamp,
+			const char *text, bool heard_repeat);
+
 	/* DataStoreHost interface */
 	bool onContactLoaded(const ContactInfo &c) override;
 	bool getContactForSave(uint32_t idx, ContactInfo &c) override;
 	bool onChannelLoaded(uint8_t idx, const ChannelDetails &ch) override;
 	bool getChannelForSave(uint8_t idx, ChannelDetails &ch) override;
+
+	/* Mesh time sync */
+	MeshTimeSync *getMeshTimeSync() { return &_timesync; }
+	void noteGPSTimeSync() { _timesync.noteGPSSync((uint32_t)(k_uptime_get() / 1000)); }
+	/* Paced evaluation — called from the housekeeping event (loop() only runs
+	 * on packet-driven events). */
+	void timeSyncTick();
 
 	/* Prefs (includes node_lat/lon) */
 	NodePrefs prefs;
@@ -219,6 +291,7 @@ protected:
 
 	/* Raw packet logging for app RX log */
 	void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
+	void logTx(mesh::Packet *pkt, int len) override;
 
 	/* Trace path response */
 	void onTraceRecv(mesh::Packet *packet, uint32_t tag, uint32_t auth_code, uint8_t flags,
@@ -247,14 +320,21 @@ protected:
 	uint32_t getRetransmitDelay(const mesh::Packet *packet) override;
 	uint32_t getDirectRetransmitDelay(const mesh::Packet *packet) override;
 
-	/* Companion doesn't forward, but needs surroundings awareness so its
-	 * initial TX spreads with local contention.  Enables passive EMA
-	 * warming and adaptive initial-flood jitter. */
-	bool passivelyTrackFloods() const override { return true; }
+	/* Companion initial flood jitter is fixed-window; passive flood
+	 * tracking is not needed unless forwarding is enabled. */
+	bool passivelyTrackFloods() const override { return false; }
 	uint32_t getInitialFloodJitter(const mesh::Packet *packet) override;
 
 	uint8_t getDutyCyclePercent() const override;
 	uint8_t getExtraAckTransmitCount() const override;
+
+	/* Adaptive CAD: persist the staircase's learned offset */
+	void onCadOffsetChanged(int8_t offset) override {
+		prefs.cad_offset = offset;
+		if (_store) {
+			_store->savePrefs(prefs);
+		}
+	}
 
 	/* Auto-add filtering overrides */
 	bool isAutoAddEnabled() const override;
@@ -279,6 +359,12 @@ private:
 	/* Contact iteration state */
 	bool _contact_iter_active;
 	int _contact_iter_idx;
+	/* Table bound and v-contact inclusion are snapshotted at PACKET_CONTACT_START
+	 * so the dump can never stream more entries than the total it promised: the
+	 * table grows from inbound adverts mid-dump, and vcontactReady() flips false
+	 * ->true the moment a cold-booted clock goes valid (CMD_SET_DEVICE_TIME). */
+	int _contact_iter_num;
+	bool _contact_iter_vc;
 	uint32_t _contact_iter_lastmod;
 	uint32_t _contact_iter_since;  /* Filter: only send contacts with lastmod > this */
 
@@ -318,31 +404,70 @@ private:
 	uint32_t _pending_telemetry;
 	uint32_t _pending_discovery;
 	uint32_t _pending_req;
+#ifdef CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK
+	uint32_t _pending_joystick_ping_tag;  /* tag-based match, checked before pubkey-based _pending_status */
+	uint32_t _pending_joystick_admin_tag; /* same protection for admin binary requests */
+#endif
 
 	/* Lazy contacts/channels write - batches rapid updates */
 	int64_t _dirty_contacts_expiry;
 	int64_t _dirty_channels_expiry;
 	static constexpr int64_t LAZY_WRITE_DELAY_MS = 5000;  /* 5 seconds, matches Arduino */
 
+	void onLoginSent(const ContactInfo &contact) override;
+	void onChannelAdded(ChannelDetails *ch) override;
 	void markContactsDirty();
 	void markChannelsDirty();
 	void flushDirtyContacts();
 	void flushDirtyChannels();
+
+	/* Mesh time sync (forward-only: our clock stamps outgoing DMs and peers
+	 * hold per-sender replay high-water marks) */
+	MeshTimeSync _timesync{FIRMWARE_BUILD_EPOCH, true};
+	void onAdvertTimeSample(const mesh::Identity &id, uint32_t timestamp,
+		uint8_t hops) override;
 
 	/* Protocol version negotiation */
 	uint8_t _app_target_ver;
 
 	/* Flood scope for transport filtering (all zeros = disabled) */
 	TransportKey _send_scope;
+	bool _send_scope_force_unscoped;
 
 	void clearPendingReqs() {
 		_pending_login = _pending_status = _pending_telemetry = _pending_discovery = _pending_req = 0;
+		/* _pending_joystick_ping_tag is intentionally NOT cleared here
+		 * joystick ping is independent of BLE request state. */
 	}
+
+#ifdef CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK
+public:
+	void setJoystickPingTag(uint32_t tag)  { _pending_joystick_ping_tag = tag; }
+	void clearJoystickPingTag()            { _pending_joystick_ping_tag = 0; }
+	void setJoystickAdminTag(uint32_t tag) { _pending_joystick_admin_tag = tag; }
+	void clearJoystickAdminTag()           { _pending_joystick_admin_tag = 0; }
+	/* Force a contacts-flush schedule from outside (joystick UI clears a
+	 * stale out_path_len during 5th-attempt fallback flood and needs the
+	 * change to persist to /ext/contacts3). */
+	void markContactsDirtyPublic() { markContactsDirty(); }
+private:
+#endif
 
 	bool writeFrame(const uint8_t *data, size_t len);
 	void sendPacketOk();
 	void sendPacketError(uint8_t code);
+	/* Emit the PACKET_SENT response: [PACKET_SENT][is_flood][tag:4][est_timeout:4]. */
+	void sendPacketSent(uint8_t result, uint32_t tag, uint32_t est_timeout);
 	void sendPush(uint8_t code, const uint8_t *data = nullptr, size_t len = 0);
+
+	/* Shared body for the recipient/channel sendFloodScoped overloads — both
+	 * resolve to the same default-scope logic (see the TODOs at each site). */
+	void sendFloodScopedDefault(mesh::Packet *pkt, uint32_t delay_millis);
+
+	/* Append self-telemetry as Cayenne LPP into `out`, returning bytes written.
+	 * `permissions` gates the LOCATION and ENVIRONMENT sections (battery is
+	 * always included); pass all TELEM_PERM_* bits for unconditional output. */
+	int appendSelfTelemetry(uint8_t *out, uint8_t permissions);
 
 	/** Serialize a ContactInfo into buf. If header != 0, prepend it.
 	 *  Returns total bytes written. buf must be >= CONTACT_FRAME_SIZE. */
@@ -358,6 +483,42 @@ private:
 
 	void queueContactMessage(const ContactInfo &contact, mesh::Packet *pkt,
 		uint8_t txt_type, uint32_t sender_timestamp, const uint8_t *extra, int extra_len, const char *text);
+
+	/* V-contact internals. _vcontact_lastmod == 0 means "not yet activated":
+	 * the clock was invalid (pre-1970s epoch) when we would have stamped it,
+	 * so the contact is withheld from sync/adverts until a time source
+	 * arrives — otherwise the app shows a 1970 last-heard timestamp. */
+	VContactCLICallback _vcontact_cli_cb;
+	uint8_t _vcontact_pubkey[PUB_KEY_SIZE];
+	uint32_t _vcontact_lastmod;
+	/* Dedupe app resends: a retry reuses the message timestamp (only the
+	 * attempt byte changes). The retry lands several seconds later, after other
+	 * messages, so a single last-seen slot misses it — track a ring of recent
+	 * timestamps instead. */
+	static const uint8_t VCONTACT_DEDUP_SLOTS = 16;
+	uint32_t _vcontact_recent_ts[VCONTACT_DEDUP_SLOTS];
+	uint8_t _vcontact_recent_head;
+	char _vcontact_pending[2][64];   /* notices buffered while the clock is invalid */
+	uint8_t _vcontact_pending_count;
+	/* Suppress a v-contact notice's MSG_WAITING push during the app's initial
+	 * sync. Sent before/mid sync (e.g. the reboot-cause notice flushed at
+	 * CMD_SET_DEVICE_TIME) it makes the app interleave message-sync into the
+	 * contact stream, which trips the "reset iterator on any other command"
+	 * guard and truncates the sync. Held from CMD_APP_START until the first
+	 * PACKET_NO_MORE_MSGS (end of the contacts+messages initial sync). */
+	bool _vcontact_hold_msgwait;
+	bool vcontactClockValid();
+	bool vcontactReady() { return isVContactEnabled() && _vcontact_lastmod != 0; }
+	void buildVContact(ContactInfo &c) const;
+	bool isVContactKey(const uint8_t *key, int prefix_len) const;
+	/** (Re)derive _vcontact_pubkey from the current identity. Call on boot and
+	 *  whenever the identity changes (CMD_IMPORT_PRIVATE_KEY). */
+	void deriveVContactKey();
+	/** Intercept protocol frames addressed to the v-contact. Returns true when
+	 *  the frame was fully handled (response already written). */
+	bool vcontactHandleFrame(const uint8_t *data, size_t len);
+	/** Chunk `text` into offline-queue contact messages from the v-contact. */
+	void vcontactQueueText(const char *text);
 
 	void addPendingAck(uint32_t expected, int contact_idx);
 	int findAndRemoveAck(uint32_t ack, uint32_t *out_sent_time = nullptr);

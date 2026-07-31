@@ -1,16 +1,16 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Heltec WiFi LoRa 32 V4 — ZephCore overlay
  *
  * The DTS already defines: SX1262 (lora0), SSD1306 OLED, button, LED, PWM,
- * vext_enable, adc_ctrl, fem_power, I2C0, SPI2, BLE, WiFi.
+ * vext_enable, fem_power, I2C0, SPI2, BLE, WiFi.
  * This overlay adds ZephCore-specific integration on top.
  *
  * LoRa SPI2:  SCLK=9, MOSI=10, MISO=11, NSS=8
  * LoRa ctrl:  DIO1=14, BUSY=13, RESET=12
  * FEM:        POWER=7, GC1109 CSD=2, CPS=46  (V4.2 — for V4.3/KCT8103L see heltec_wifi_lora32_v43)
  * Display I2C0: SDA=17, SCL=18, RST=21
- * Battery ADC: GPIO1 (ADC1 ch0), enable GPIO37, divider 100K/390K
+ * Battery ADC: GPIO1 = ADC1_CH0 (&adc0), enable GPIO37 active-HIGH, divider 100K/390K
  * Vext:       GPIO36 (active-HIGH, powers OLED)
  * Button:     GPIO0
  * LED:        GPIO35
@@ -26,21 +26,25 @@
 	};
 
 	/* Battery ADC — ZephCore reads via zephyr,user { io-channels }.
-	 * Multiplier: 3300mV full-scale * 5.42x empirical divider = 17886 mV.
-	 * (Same as V3 — identical resistor divider topology.) */
+	 * GPIO1 = ADC unit 1 = node &adc0 (label is 0-indexed, unit is 1-indexed);
+	 * the old &adc1 was unit 2 = GPIO11 = SX1262 MISO — always read 0.
+	 * Multiplier: Vref_internal(1100) * divider_ratio(5.2) = 5720 on the
+	 * 100K/390K divider (was 17886, which assumed a 3300mV full-scale that
+	 * ADC_REF_INTERNAL does not provide). Channel config is in the DTS. */
 	zephyr,user {
-		io-channels = <&adc1 0>;
-		vbat-mv-multiplier = <17886>;
+		io-channels = <&adc0 0>;
+		vbat-mv-multiplier = <5720>;
 	};
 
 	/* Battery ADC enable — ZephCore uses vbat_enable regulator alias.
-	 * GPIO37 (gpio1 pin 5) driven HIGH enables the ADC input path.
-	 * The DTS adc_ctrl node is power-domain-gpio which ZephCore doesn't use;
-	 * this regulator-fixed is the actual driver. */
+	 * GPIO37 (gpio1 pin 5) driven HIGH enables the ADC input path. ZephyrBoard
+	 * toggles this per read (enable, sample, disable), so the divider draws
+	 * nothing between reads. The DTS no longer defines an adc_ctrl power-domain
+	 * on the same GPIO37, so this regulator is the sole owner. */
 	vbat_enable: vbat-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vbat-enable";
-		enable-gpios = <&gpio1 5 GPIO_ACTIVE_LOW>;  /* GPIO37 = gpio1 pin 5 */
+		enable-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;  /* GPIO37 = gpio1 pin 5, HIGH enables (V4/V4.3) */
 	};
 
 	/* Button chain — same mapping as RAK4631 / WisMesh Pocket (rak4631/board.overlay). */
@@ -79,25 +83,13 @@
 };
 
 /*
- * Flash partitions — repartition 16 MB layout for ZephCore.
- * Delete lpcore slots, storage, scratch, and coredump to reclaim space.
- * Place LittleFS at 0xFA0000 - 0x1000000 (384 KB).
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
  */
-/delete-node/ &slot0_lpcore_partition;
-/delete-node/ &slot1_lpcore_partition;
-/delete-node/ &storage_partition;
-/delete-node/ &scratch_partition;
-/delete-node/ &coredump_partition;
-
-&flash0 {
-	partitions {
-		/* LittleFS 384 KB for DataStore + file-based BLE settings */
-		lfs_partition: partition@fa0000 {
-			label = "lfs";
-			reg = <0xFA0000 0x60000>;
-		};
-	};
-};
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
+/* USB CDC-ACM — companion USB transport (esp32s3_usb.conf). Heltec has a
+ * dedicated UART console, so no console reroute is needed. */
+#include "../../common/esp32s3_usb_otg.dtsi"

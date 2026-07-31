@@ -1,0 +1,9 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+board:
+  name: thinknode_m9
+  full_name: Elecrow ThinkNode M9 (ESP32-S3 + LR1110 + ST7789 TFT)
+  vendor: elecrow
+  socs:
+    - name: esp32s3

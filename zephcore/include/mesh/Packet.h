@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Packet - fundamental transmission unit
  */
 
@@ -68,8 +68,17 @@ public:
 	void setPathHashCount(uint8_t n) { path_len &= ~0x3F; path_len |= n; }
 	void setPathHashSizeAndCount(uint8_t sz, uint8_t n) { path_len = ((sz - 1) << 6) | (n & 0x3F); }
 
-	static uint8_t copyPath(uint8_t *dest, const uint8_t *src, uint8_t path_len);
-	static size_t writePath(uint8_t *dest, const uint8_t *src, uint8_t path_len);
+	/* writePath / copyPath decode the 6-bit hash_count + 2-bit hash_size
+	 * encoding in path_len, then copy hash_count*hash_size bytes from src
+	 * to dest. src_len bounds the source: if the decoded byte count would
+	 * read past src_len, the call returns 0 (no copy).
+	 *
+	 * Trusted callers writing from internal MAX_PATH_SIZE buffers must
+	 * pass MAX_PATH_SIZE. Callers handling untrusted input (BLE phone
+	 * frames, LoRa anon-request payloads) must pass the real remaining
+	 * length so a malformed path_len cannot trigger an OOB read. */
+	static size_t writePath(uint8_t *dest, const uint8_t *src, size_t src_len, uint8_t path_len);
+	static uint8_t copyPath(uint8_t *dest, const uint8_t *src, size_t src_len, uint8_t path_len);
 	static bool isValidPathLen(uint8_t path_len);
 
 	void markDoNotRetransmit() { header = 0xFF; }

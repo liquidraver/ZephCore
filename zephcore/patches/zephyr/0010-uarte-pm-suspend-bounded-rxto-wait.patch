@@ -1,0 +1,35 @@
+diff --git a/drivers/serial/uart_nrfx_uarte.c b/drivers/serial/uart_nrfx_uarte.c
+index 60e8c23cd17..e78ba2af1fe 100644
+--- a/drivers/serial/uart_nrfx_uarte.c
++++ b/drivers/serial/uart_nrfx_uarte.c
+@@ -3011,11 +3011,26 @@ static int uarte_pm_suspend(const struct device *dev)
+ 				}
+ 			}
+ #endif
++			bool rxto;
++
+ 			nrf_uarte_task_trigger(uarte, NRF_UARTE_TASK_STOPRX);
+-			while (!nrf_uarte_event_check(uarte, NRF_UARTE_EVENT_RXTO)) {
+-				/* Busy wait for event to register */
+-				Z_SPIN_DELAY(2);
+-			}
++			/* ZephCore: bound the RXTO wait. Upstream spins here
++			 * forever. In interrupt-driven mode the RX runs on a
++			 * 1-byte buffer with no ENDRX_STARTRX short, so the
++			 * receiver stops after each byte until the ISR re-arms
++			 * it -- and the ENDRX interrupt is disabled just above.
++			 * If a byte finishes in that window the receiver is
++			 * already stopped and un-rearmed, STOPRX then produces
++			 * no RXTO, and this loop never exits, hanging the caller
++			 * (the main mesh thread on GPS standby -> whole node
++			 * wedges: no LoRa/USB/BLE service until reboot). 4 ms is
++			 * orders of magnitude past the normal sub-microsecond
++			 * RXTO latency; on timeout we fall through to the
++			 * unconditional nrf_uarte_disable() below, which
++			 * force-stops the receiver regardless. */
++			NRFX_WAIT_FOR(nrf_uarte_event_check(uarte, NRF_UARTE_EVENT_RXTO),
++				      2000, 2, rxto);
++			(void)rxto;
+ 			nrf_uarte_event_clear(uarte, NRF_UARTE_EVENT_RXSTARTED);
+ 			nrf_uarte_event_clear(uarte, NRF_UARTE_EVENT_RXTO);
+ 			nrf_uarte_event_clear(uarte, NRF_UARTE_EVENT_ENDRX);

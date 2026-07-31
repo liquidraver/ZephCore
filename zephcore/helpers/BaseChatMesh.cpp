@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore BaseChatMesh implementation
  */
 
@@ -52,19 +52,19 @@ mesh::Packet *BaseChatMesh::createSelfAdvert(const char *name, double lat, doubl
 	return createAdvert(self_id, app_data, app_data_len);
 }
 
-void BaseChatMesh::sendAckTo(const ContactInfo &dest, uint32_t ack_hash)
+void BaseChatMesh::sendAckTo(const ContactInfo &dest, const uint8_t *ack_hash, uint8_t ack_len)
 {
 	if (dest.out_path_len == OUT_PATH_UNKNOWN) {
-		mesh::Packet *ack = createAck(ack_hash);
+		mesh::Packet *ack = createAck(ack_hash, ack_len);
 		if (ack) sendFloodScoped(dest, ack, TXT_ACK_DELAY);
 	} else {
 		uint32_t d = TXT_ACK_DELAY;
 		if (getExtraAckTransmitCount() > 0) {
-			mesh::Packet *a1 = createMultiAck(ack_hash, 1);
+			mesh::Packet *a1 = createMultiAck(ack_hash, ack_len, 1);
 			if (a1) sendDirect(a1, dest.out_path, dest.out_path_len, d);
 			d += 300;
 		}
-		mesh::Packet *a2 = createAck(ack_hash);
+		mesh::Packet *a2 = createAck(ack_hash, ack_len);
 		if (a2) sendDirect(a2, dest.out_path, dest.out_path_len, d);
 	}
 }
@@ -82,22 +82,36 @@ void BaseChatMesh::bootstrapRTCfromContacts()
 	}
 }
 
-ContactInfo *BaseChatMesh::allocateContactSlot()
+ContactInfo *BaseChatMesh::allocateContactSlot(bool transient_only)
 {
-	if (num_contacts < MAX_CONTACTS) {
+	int max_slots = transient_only ? (MAX_CONTACTS + MAX_ANON_CONTACTS) : MAX_CONTACTS;
+	if (num_contacts < max_slots) {
 		return &contacts[num_contacts++];
-	} else if (shouldOverwriteWhenFull()) {
+	} else if (transient_only || shouldOverwriteWhenFull()) {
 		int oldest_idx = -1;
 		uint32_t oldest_lastmod = 0xFFFFFFFF;
 		for (int i = 0; i < num_contacts; i++) {
-			bool is_favourite = (contacts[i].flags & 0x01) != 0;
-			if (!is_favourite && contacts[i].lastmod < oldest_lastmod) {
-				oldest_lastmod = contacts[i].lastmod;
-				oldest_idx = i;
+			if (transient_only) {
+				// transient/anon requests only ever recycle an existing anon slot
+				if (contacts[i].type == ADV_TYPE_NONE && contacts[i].lastmod < oldest_lastmod) {
+					oldest_lastmod = contacts[i].lastmod;
+					oldest_idx = i;
+				}
+			} else {
+				// never evict favourites or transient/anon contacts
+				bool is_favourite = (contacts[i].flags & 0x01) != 0;
+				if (!is_favourite && contacts[i].lastmod < oldest_lastmod && contacts[i].type != ADV_TYPE_NONE) {
+					oldest_lastmod = contacts[i].lastmod;
+					oldest_idx = i;
+				}
 			}
 		}
 		if (oldest_idx >= 0) {
-			onContactOverwrite(contacts[oldest_idx].id.pub_key);
+			if (!transient_only) {
+				// recycling an anon slot isn't a "contact deleted" event -- the
+				// app was never told this transient pubkey existed
+				onContactOverwrite(contacts[oldest_idx].id.pub_key);
+			}
 			return &contacts[oldest_idx];
 		}
 	}
@@ -124,6 +138,13 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, 
 	const uint8_t *app_data, size_t app_data_len)
 {
 	LOG_DBG("onAdvertRecv: timestamp=%u app_data_len=%u", timestamp, (unsigned)app_data_len);
+
+	/* Time-sample hook skips share rebroadcasts (transport codes {0,0}) —
+	 * they replay stale stored adverts and would churn the sender's tenure. */
+	if (!(packet->hasTransportCodes() &&
+	      packet->transport_codes[0] == 0 && packet->transport_codes[1] == 0)) {
+		onAdvertTimeSample(id, timestamp, packet->getPathHashCount());
+	}
 
 	AdvertDataParser parser(app_data, app_data_len);
 	if (!(parser.isValid() && parser.hasName())) {
@@ -153,6 +174,11 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, 
 		packet->header |= ROUTE_TYPE_FLOOD;
 		plen = packet->writeTo(temp_buf);
 		packet->header = save;
+	}
+
+	if (from && from->type == ADV_TYPE_NONE) {  // matched a transient anon/ANON_REQ slot -- promote to a real contact
+		*from = ContactInfo{};
+		from = nullptr;
 	}
 
 	bool is_new = false;
@@ -254,16 +280,18 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender
 			from.lastmod = getRTCClock()->getCurrentTime();
 			onMessageRecv(from, packet, timestamp, (const char *)&data[5]);
 
-			uint32_t ack_hash;
-			mesh::Utils::sha256((uint8_t *)&ack_hash, 4, data, 5 + strlen((char *)&data[5]),
-				from.id.pub_key, PUB_KEY_SIZE);
+			int text_len = strlen((char *)&data[5]);
+			uint8_t ack_hash[6];
+			mesh::Utils::sha256(ack_hash, 4, data, 5 + text_len, from.id.pub_key, PUB_KEY_SIZE);
+			ack_hash[4] = data[5 + text_len + 1];  // attempt byte (makes hash unique across retries)
+			getRNG()->random(&ack_hash[5], 1);      // random byte (makes hash unique per delivery node)
 
 			if (packet->isRouteFlood()) {
 				mesh::Packet *path = createPathReturn(from.id, secret, packet->path, packet->path_len,
-					PAYLOAD_TYPE_ACK, (uint8_t *)&ack_hash, 4);
+					PAYLOAD_TYPE_ACK, ack_hash, 6);
 				if (path) sendFloodScoped(from, path, TXT_ACK_DELAY);
 			} else {
-				sendAckTo(from, ack_hash);
+				sendAckTo(from, ack_hash, 6);
 			}
 		} else if (flags == TXT_TYPE_CLI_DATA) {
 			onCommandDataRecv(from, packet, timestamp, (const char *)&data[5]);
@@ -288,7 +316,7 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender
 					PAYLOAD_TYPE_ACK, (uint8_t *)&ack_hash, 4);
 				if (path) sendFloodScoped(from, path, TXT_ACK_DELAY);
 			} else {
-				sendAckTo(from, ack_hash);
+				sendAckTo(from, (uint8_t *)&ack_hash, 4);
 			}
 		}
 	} else if (type == PAYLOAD_TYPE_REQ && len > 4) {
@@ -335,7 +363,10 @@ bool BaseChatMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const ui
 bool BaseChatMesh::onContactPathRecv(ContactInfo &from, uint8_t *in_path, uint8_t in_path_len,
 	uint8_t *out_path, uint8_t out_path_len, uint8_t extra_type, uint8_t *extra, uint8_t extra_len)
 {
-	from.out_path_len = mesh::Packet::copyPath(from.out_path, out_path, out_path_len);
+	/* out_path is from the inner payload of a validated LoRa packet (caller path).
+	 * Existing contract is that the upstream parser bounds the available bytes;
+	 * pass MAX_PATH_SIZE to preserve behavior while making the bound explicit. */
+	from.out_path_len = mesh::Packet::copyPath(from.out_path, out_path, MAX_PATH_SIZE, out_path_len);
 	from.lastmod = getRTCClock()->getCurrentTime();
 
 	onContactPathUpdated(from);
@@ -436,6 +467,24 @@ mesh::Packet *BaseChatMesh::composeMsgPacket(const ContactInfo &recipient, uint3
 	return createDatagram(PAYLOAD_TYPE_TXT_MSG, recipient.id, recipient.getSharedSecret(self_id), temp, len);
 }
 
+int BaseChatMesh::dispatchToRecipient(mesh::Packet *pkt, const ContactInfo &recipient,
+	uint32_t &est_timeout, bool set_txt_timeout)
+{
+	uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
+	int rc;
+	if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
+		sendFloodScoped(recipient, pkt);
+		est_timeout = calcFloodTimeoutMillisFor(t);
+		rc = MSG_SEND_SENT_FLOOD;
+	} else {
+		sendDirect(pkt, recipient.out_path, recipient.out_path_len);
+		est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len);
+		rc = MSG_SEND_SENT_DIRECT;
+	}
+	if (set_txt_timeout) txt_send_timeout = futureMillis(est_timeout);
+	return rc;
+}
+
 int BaseChatMesh::sendMessage(const ContactInfo &recipient, uint32_t timestamp, uint8_t attempt,
 	const char *text, uint32_t &expected_ack, uint32_t &est_timeout)
 {
@@ -451,20 +500,7 @@ int BaseChatMesh::sendMessage(const ContactInfo &recipient, uint32_t timestamp, 
 	LOG_DBG("sendMessage: packet created, expected_ack=0x%08x raw_len=%d",
 		expected_ack, pkt->getRawLength());
 
-	uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-
-	int rc;
-	if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-		LOG_DBG("sendMessage: sending flood");
-		sendFloodScoped(recipient, pkt);
-		txt_send_timeout = futureMillis(est_timeout = calcFloodTimeoutMillisFor(t));
-		rc = MSG_SEND_SENT_FLOOD;
-	} else {
-		LOG_DBG("sendMessage: sending direct path_len=%d", recipient.out_path_len);
-		sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-		txt_send_timeout = futureMillis(est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len));
-		rc = MSG_SEND_SENT_DIRECT;
-	}
+	int rc = dispatchToRecipient(pkt, recipient, est_timeout, true);
 	LOG_DBG("sendMessage: result=%d est_timeout=%u", rc, est_timeout);
 	return rc;
 }
@@ -484,22 +520,11 @@ int BaseChatMesh::sendCommandData(const ContactInfo &recipient, uint32_t timesta
 		recipient.getSharedSecret(self_id), temp, 5 + text_len);
 	if (pkt == nullptr) return MSG_SEND_FAILED;
 
-	uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-	int rc;
-	if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-		sendFloodScoped(recipient, pkt);
-		txt_send_timeout = futureMillis(est_timeout = calcFloodTimeoutMillisFor(t));
-		rc = MSG_SEND_SENT_FLOOD;
-	} else {
-		sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-		txt_send_timeout = futureMillis(est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len));
-		rc = MSG_SEND_SENT_DIRECT;
-	}
-	return rc;
+	return dispatchToRecipient(pkt, recipient, est_timeout, true);
 }
 
 bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel &channel,
-	const char *sender_name, const char *text, int text_len)
+	const char *sender_name, const char *text, int text_len, uint32_t *out_hash)
 {
 	uint8_t temp[5 + MAX_TEXT_LEN + 32];
 	memcpy(temp, &timestamp, 4);
@@ -515,6 +540,15 @@ bool BaseChatMesh::sendGroupMessage(uint32_t timestamp, mesh::GroupChannel &chan
 
 	mesh::Packet *pkt = createGroupDatagram(PAYLOAD_TYPE_GRP_TXT, channel, temp, 5 + prefix_len + text_len);
 	if (pkt) {
+		if (out_hash) {
+			/* Stash the FNV-1a hash for the caller and pre-register it with
+			 * the contention tracker so heard retransmits get counted. The
+			 * hash is content-only (payload_type + first 8 payload bytes),
+			 * unaffected by sendFlood's later path-hash bookkeeping. */
+			uint32_t h = mesh::ContentionTracker::computePacketHash32(pkt);
+			*out_hash = h;
+			getContentionTracker().trackRetransmit(h, (uint32_t)_ms->getMillis());
+		}
 		sendFloodScoped(channel, pkt);
 		return true;
 	}
@@ -612,16 +646,9 @@ int BaseChatMesh::sendLogin(const ContactInfo &recipient, const char *password, 
 			recipient.getSharedSecret(self_id), temp, tlen);
 	}
 	if (pkt) {
-		uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-		if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-			sendFloodScoped(recipient, pkt);
-			est_timeout = calcFloodTimeoutMillisFor(t);
-			return MSG_SEND_SENT_FLOOD;
-		} else {
-			sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-			est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len);
-			return MSG_SEND_SENT_DIRECT;
-		}
+		int result = dispatchToRecipient(pkt, recipient, est_timeout, false);
+		onLoginSent(recipient);
+		return result;
 	}
 	return MSG_SEND_FAILED;
 }
@@ -640,16 +667,7 @@ int BaseChatMesh::sendAnonReq(const ContactInfo &recipient, const uint8_t *data,
 			recipient.getSharedSecret(self_id), temp, 4 + len);
 	}
 	if (pkt) {
-		uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-		if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-			sendFloodScoped(recipient, pkt);
-			est_timeout = calcFloodTimeoutMillisFor(t);
-			return MSG_SEND_SENT_FLOOD;
-		} else {
-			sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-			est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len);
-			return MSG_SEND_SENT_DIRECT;
-		}
+		return dispatchToRecipient(pkt, recipient, est_timeout, false);
 	}
 	return MSG_SEND_FAILED;
 }
@@ -669,16 +687,7 @@ int BaseChatMesh::sendRequest(const ContactInfo &recipient, const uint8_t *req_d
 		pkt = createDatagram(PAYLOAD_TYPE_REQ, recipient.id, recipient.getSharedSecret(self_id), temp, 4 + data_len);
 	}
 	if (pkt) {
-		uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-		if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-			sendFloodScoped(recipient, pkt);
-			est_timeout = calcFloodTimeoutMillisFor(t);
-			return MSG_SEND_SENT_FLOOD;
-		} else {
-			sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-			est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len);
-			return MSG_SEND_SENT_DIRECT;
-		}
+		return dispatchToRecipient(pkt, recipient, est_timeout, false);
 	}
 	return MSG_SEND_FAILED;
 }
@@ -697,16 +706,7 @@ int BaseChatMesh::sendRequest(const ContactInfo &recipient, uint8_t req_type, ui
 		pkt = createDatagram(PAYLOAD_TYPE_REQ, recipient.id, recipient.getSharedSecret(self_id), temp, sizeof(temp));
 	}
 	if (pkt) {
-		uint32_t t = _radio->getEstAirtimeFor(pkt->getRawLength());
-		if (recipient.out_path_len == OUT_PATH_UNKNOWN) {
-			sendFloodScoped(recipient, pkt);
-			est_timeout = calcFloodTimeoutMillisFor(t);
-			return MSG_SEND_SENT_FLOOD;
-		} else {
-			sendDirect(pkt, recipient.out_path, recipient.out_path_len);
-			est_timeout = calcDirectTimeoutMillisFor(t, recipient.out_path_len);
-			return MSG_SEND_SENT_DIRECT;
-		}
+		return dispatchToRecipient(pkt, recipient, est_timeout, false);
 	}
 	return MSG_SEND_FAILED;
 }
@@ -766,7 +766,7 @@ ContactInfo *BaseChatMesh::lookupContactByPubKey(const uint8_t *pub_key, int pre
 
 bool BaseChatMesh::addContact(const ContactInfo &contact)
 {
-	ContactInfo *dest = allocateContactSlot();
+	ContactInfo *dest = allocateContactSlot(contact.type == ADV_TYPE_NONE);
 	if (dest) {
 		*dest = contact;
 		dest->shared_secret_valid = false;
@@ -802,6 +802,7 @@ ChannelDetails *BaseChatMesh::addChannel(const char *name, const uint8_t *psk, s
 			mesh::Utils::sha256(dest->channel.hash, sizeof(dest->channel.hash), dest->channel.secret, psk_len);
 			StrHelper::strncpy(dest->name, name, sizeof(dest->name));
 			num_channels++;
+			onChannelAdded(dest);
 			return dest;
 		}
 	}
@@ -819,17 +820,29 @@ bool BaseChatMesh::getChannel(int idx, ChannelDetails &dest)
 
 bool BaseChatMesh::setChannel(int idx, const ChannelDetails &src)
 {
-	static uint8_t zeroes[] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+	static const uint8_t zeroes16[16] = { 0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0 };
+	static const uint8_t zeroes32[32] = { 0 };
 
 	if (idx >= 0 && idx < MAX_GROUP_CHANNELS) {
 		channels[idx] = src;
-		if (memcmp(&src.channel.secret[16], zeroes, 16) == 0) {
+		if (memcmp(&src.channel.secret[16], zeroes16, 16) == 0) {
 			mesh::Utils::sha256(channels[idx].channel.hash, sizeof(channels[idx].channel.hash),
 				src.channel.secret, 16);
 		} else {
 			mesh::Utils::sha256(channels[idx].channel.hash, sizeof(channels[idx].channel.hash),
 				src.channel.secret, 32);
 		}
+
+		/* Keep num_channels aligned to highest non-empty slot + 1.
+		 * Needed so startup logic can detect whether channels were loaded. */
+		int highest_used = -1;
+		for (int i = 0; i < MAX_GROUP_CHANNELS; i++) {
+			if (channels[i].name[0] != '\0' ||
+			    memcmp(channels[i].channel.secret, zeroes32, sizeof(zeroes32)) != 0) {
+				highest_used = i;
+			}
+		}
+		num_channels = highest_used + 1;
 		return true;
 	}
 	return false;

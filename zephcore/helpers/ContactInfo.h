@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ContactInfo - contact/peer info for mesh
  */
 
@@ -9,6 +9,11 @@
 #include <mesh/MeshCore.h>
 
 #define OUT_PATH_UNKNOWN   0xFF
+/* Marker used in BLE offline-queue frames to indicate the message was sent
+ * by THIS device (not received). Also reused by the joystick UI's local
+ * message-preview structs for the same purpose. Not a routing value —
+ * never appears in over-the-air packet path_len fields. */
+#define OUT_PATH_SENT      0xFE
 
 struct ContactInfo {
 	mesh::Identity id;

@@ -1,0 +1,32 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+# muzi works R1 Neo default configuration
+# (most subsystems also come from zephcore_common.conf + nrf52_common.conf;
+#  these are the board essentials, kept self-contained like other custom boards)
+
+# MPU + hardware stack protection
+CONFIG_ARM_MPU=y
+CONFIG_HW_STACK_PROTECTION=y
+
+# GPIO + pin control
+CONFIG_GPIO=y
+CONFIG_PINCTRL=y
+
+# Console over USB CDC-ACM (DT node + nrf52_common.conf USB stack)
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
+CONFIG_SERIAL=y
+CONFIG_UART_LINE_CTRL=y
+
+# Flash / NVS (LittleFS app data partition)
+CONFIG_FLASH=y
+CONFIG_FLASH_MAP=y
+CONFIG_NVS=y
+
+# SPI for LoRa, ADC for battery sense
+CONFIG_SPI=y
+CONFIG_ADC=y
+
+# Build UF2 by default
+CONFIG_BUILD_OUTPUT_UF2=y
+CONFIG_USE_DT_CODE_PARTITION=y

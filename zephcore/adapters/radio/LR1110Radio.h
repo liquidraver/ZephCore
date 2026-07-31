@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Radio adapter for LR1110/LR1120/LR1121 using Zephyr LoRa driver
  *
  * Thin wrapper around LoRaRadioBase — only hardware-specific hooks.
@@ -20,14 +20,17 @@ public:
 
 protected:
 	/* Hardware primitives */
-	void hwConfigure(const struct lora_modem_config &cfg) override;
+	bool hwConfigure(const struct lora_modem_config &cfg) override;
 	void hwCancelReceive() override;
 	int hwSendAsync(uint8_t *buf, uint32_t len,
 			struct k_poll_signal *sig) override;
 	int16_t hwGetCurrentRSSI() override;
-	bool hwIsPreambleDetected() override;
+	bool hwIsReceiving() override;
 	void hwSetRxBoost(bool enable) override;
-	void hwResetAGC() override;
+	uint32_t hwWakeupTimeUs() override;
+	int hwCadProbe(int8_t level) override;
+	void hwCadSetPeakOffset(int8_t offset) override;
+	uint8_t hwCadBasePeak() override;
 };
 
 } /* namespace mesh */

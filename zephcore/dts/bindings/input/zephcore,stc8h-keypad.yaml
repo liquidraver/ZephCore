@@ -1,0 +1,49 @@
+# Copyright 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+description: |
+  STC8H companion-MCU keypad (I2C).
+
+  A small helper MCU scans the key matrix and presents one register interface
+  over I2C. Used by the Elecrow ThinkNode M9, whose keypad is its only input
+  device — there is no user button on that board.
+
+  Protocol (as recovered from the stock keypad firmware — note the key
+  register is 0x01, not the 0x05 "matrix key" register that the reference
+  header documents; that define is dead code and 0x05 reads as 0xFF):
+    reg 0x01        code of the last key pressed (latched; 0x88 = invalid)
+    reg 0x01..0x04  battery millivolts, little-endian (same base register)
+    reg 0x06        state; writing 0x01 requests sleep
+
+  The MCU raises its interrupt line (idle-low, rising edge) when a key is
+  pressed. The driver reads register 0x01 on that edge and reports the result
+  through Zephyr's input subsystem. If no interrupt GPIO is supplied the
+  driver falls back to polling.
+
+  Example:
+    &i2c1 {
+        keypad: keypad@6c {
+            compatible = "zephcore,stc8h-keypad";
+            reg = <0x6c>;
+            irq-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+            poll-interval-ms = <40>;
+        };
+    };
+
+compatible: "zephcore,stc8h-keypad"
+
+include: [i2c-device.yaml]
+
+properties:
+  irq-gpios:
+    type: phandle-array
+    description: |
+      Key-press interrupt from the helper MCU. Idle-low, rising edge on press.
+      Optional — the driver polls when it is absent.
+
+  poll-interval-ms:
+    type: int
+    default: 40
+    description: |
+      Poll period. Used as the sole scan mechanism when irq-gpios is absent,
+      and as a safety net for a missed edge when it is present.

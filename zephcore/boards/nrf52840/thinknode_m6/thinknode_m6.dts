@@ -2,13 +2,13 @@
  * Elecrow ThinkNode M6 — nRF52840 + SX1262
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware (from Arduino variant.h / platformio.ini):
  * - nRF52840 SoC with BLE (DCDC regulator, NRF52BoardDCDC)
  * - SX1262 LoRa radio on SPI1 (DIO2 RF switch, DIO3 TCXO 3.3V, 22dBm)
  *   NSS=P1.12, DIO1=P1.06, RESET=P1.10, BUSY=P1.11
- * - GPS L76K on UART0 (9600 baud, generic NMEA)
+ * - GPS L76K on UART0 (9600 baud, CASIC/Air530Z — luatos,air530z driver)
  *   Control: GPS_EN=P0.06 (active-HIGH), GPS_RESET=P0.29 (active-LOW),
  *            GPS_STANDBY=P0.30, GPS_PPS=P0.31
  * - Battery ADC on AIN4 (P0.28), 1.75:1 voltage divider
@@ -79,10 +79,10 @@
 
 	/* Multi-tap detection
 	 * 1 tap  → KEY_1 = page next
-	 * 2 taps → KEY_B = flood advert
+	 * 2 taps → KEY_B = LED heartbeat toggle
 	 * 3 taps → KEY_D = buzzer mute toggle
 	 * 4 taps → KEY_C = GPS on/off
-	 * 5 taps → KEY_E = LED heartbeat toggle */
+	 * 5 taps → KEY_E = flood advert */
 	user_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
 		input-codes = <INPUT_KEY_A>;
@@ -94,7 +94,7 @@
 	 * With GAIN_1_6 + internal ref (3600mV full scale) × 1.75 = 6300 multiplier. */
 	zephyr,user {
 		io-channels = <&adc 4>;
-		vbat-mv-multiplier = <6300>;
+		vbat-mv-multiplier = <6332>;  /* 1.75:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 
 	/* Board power enable (PIN_PWR_EN = P0.27) — must be HIGH for peripherals */
@@ -116,6 +116,19 @@
 		startup-delay-us = <1000>;
 	};
 
+	/* ADC_CTRL (PIN_ADC_CTRL = P0.11) — enables the VBAT resistor divider only
+	 * while a battery read is in progress, matching Arduino MeshCore
+	 * (variant.cpp holds it LOW at rest; ThinkNodeM6Board pulses it HIGH for
+	 * the read). ZephyrBoard::getBattMilliVolts() toggles this regulator
+	 * (regulator_enable + 10ms settle, then regulator_disable) around the ADC
+	 * sample. No regulator-boot-on: it stays disabled (P0.11 LOW) until the
+	 * first read, so the divider doesn't leak current continuously. */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 11 GPIO_ACTIVE_HIGH>;
+	};
+
 	/* GPS enable (GPS_EN = P0.06, active-HIGH) — managed by ZephyrGPSManager */
 	gps_en: gps-enable {
 		compatible = "gpio-leds";
@@ -125,23 +138,9 @@
 		};
 	};
 
-	/* GPS hardware reset (GPS_RESET = P0.29, active-LOW) */
-	gps_rst: gps-reset {
-		compatible = "gpio-leds";
-		gps_reset_pin: gps_reset {
-			gpios = <&gpio0 29 GPIO_ACTIVE_LOW>;
-			label = "GPS Reset";
-		};
-	};
-
-	/* GPS standby (GPS_STANDBY = P0.30, active-HIGH = standby) */
-	gps_stby: gps-standby {
-		compatible = "gpio-leds";
-		gps_standby_pin: gps_standby {
-			gpios = <&gpio0 30 GPIO_ACTIVE_HIGH>;
-			label = "GPS Standby";
-		};
-	};
+	/* GPS_RESET (P0.29) is driven statically HIGH (de-asserted) by a gpio-hog
+	 * in &gpio0 below — see the note there. Arduino MeshCore does the same
+	 * (variant.cpp: digitalWrite(PIN_GPS_RESET, HIGH), never pulsed). */
 
 	aliases {
 		led0 = &led_red;
@@ -150,9 +149,14 @@
 		sw0 = &user_button;
 		watchdog0 = &wdt0;
 		lora0 = &lora;
-		gps-enable  = &gps_enable_pin;
-		gps-reset   = &gps_reset_pin;
-		gps-sleep-int = &gps_standby_pin;
+		/* Only gps-enable is wired into the ZephCore GPS control path.
+		 * gps-reset / gps-sleep-int are intentionally NOT aliased: the
+		 * L76K (CASIC/Air530Z) is driven by the luatos,air530z driver via
+		 * on-off-gpios, and exposing those aliases would push M6 down the
+		 * T1000-E GPS sequence in ZephyrGPSManager (HAS_GPS_SLEEP/RESET).
+		 * GPS_RESET (P0.29) and GPS_STANDBY (P0.30) are hogged HIGH in
+		 * &gpio0 instead — static drive, matching Arduino MeshCore. */
+		gps-enable = &gps_enable_pin;
 	};
 };
 
@@ -191,14 +195,30 @@
 &gpio0 {
 	status = "okay";
 
-	/* ADC control (PIN_ADC_CTRL = P0.11) — always HIGH to enable battery ADC.
-	 * Arduino code toggles this before/after ADC reads; keeping it permanently
-	 * HIGH is safe and avoids needing custom ADC ctrl support in ZephCore. */
-	adc-ctrl-hog {
+	/* ADC control (P0.11) is driven per-read by the vbat_enable regulator
+	 * (see the / node) — not hogged HIGH — so the VBAT divider only draws
+	 * current during a battery sample, matching Arduino MeshCore. */
+
+	/* GPS control lines held static, mirroring Arduino MeshCore variant.cpp
+	 * (GPS_EN is driven separately by the luatos,air530z on-off-gpios):
+	 *   GPS_STANDBY (P0.30) HIGH — L76K runs, never parked in standby.
+	 *   GPS_RESET   (P0.29) HIGH — reset de-asserted (active-LOW line).
+	 * M6 has no physical GPS switch; runtime on/off is via GPS_EN
+	 * (gps-enable alias) under software/CLI control. Hogs are used so the
+	 * pins are actively driven at boot without needing a consumer — the
+	 * gpio-leds nodes are not bound by any driver in this build. */
+	gps-standby-hog {
 		gpio-hog;
-		gpios = <11 GPIO_ACTIVE_HIGH>;
+		gpios = <30 GPIO_ACTIVE_HIGH>;
 		output-high;
-		line-name = "ADC Ctrl";
+		line-name = "GPS Standby";
+	};
+
+	gps-reset-hog {
+		gpio-hog;
+		gpios = <29 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "GPS Reset";
 	};
 };
 
@@ -208,14 +228,12 @@
 
 /* GPS on UART0 (9600 baud)
  *
- * L76K GPS module (generic NMEA, multi-constellation).
- * Control pins managed by ZephyrGPSManager via aliases:
- *   gps-enable  (GPS_EN  = P0.06): HIGH = GPS powered/active
- *   gps-reset   (GPS_RESET = P0.29): LOW = reset asserted
- *   gps-sleep-int (GPS_STANDBY = P0.30): HIGH = standby
- *
- * zephyr,deferred-init: GPS must be powered (GPS_EN HIGH) before NMEA
- * output begins. ZephyrGPSManager asserts GPS_EN then calls device_init(). */
+ * L76K GPS module — CASIC/Air530Z family, same silicon as the ThinkNode M1.
+ * Uses the luatos,air530z driver (PCAS/NMEA), which drives GPS power itself
+ * via on-off-gpios (P0.06 = GPS_EN, shared with the gps-enable alias used for
+ * runtime power control in ZephyrGPSManager). No zephyr,deferred-init: the
+ * driver powers the module on-off-gpios HIGH at init before opening the pipe.
+ * GPS_RESET (P0.29) and GPS_STANDBY (P0.30) are hogged HIGH in &gpio0. */
 &uart0 {
 	compatible = "nordic,nrf-uarte";
 	status = "okay";
@@ -225,8 +243,8 @@
 	pinctrl-names = "default", "sleep";
 
 	gnss: gnss {
-		compatible = "gnss-nmea-generic";
-		zephyr,deferred-init;
+		compatible = "luatos,air530z";
+		on-off-gpios = <&gpio0 6 GPIO_ACTIVE_HIGH>;
 	};
 };
 
@@ -241,6 +259,9 @@
 
 	/* All supported environment & power sensors — auto-detected at runtime */
 	#include "../../common/sensors-i2c.dtsi"
+	/* ThinkNode M6 has an onboard PCF8563 RTC — opt in to boot-time time
+	 * restore (auto-detected at runtime among the supported chips). */
+	#include "../../common/rtc-i2c.dtsi"
 };
 
 /* SPI1 for SX1262 LoRa */

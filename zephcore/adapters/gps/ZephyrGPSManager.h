@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Zephyr GPS Manager - GNSS power management, fix acquisition, constellation config
  *
  * Event-driven state machine: OFF → ACQUIRING → STANDBY → ACQUIRING → ...

@@ -1,0 +1,43 @@
+Mark DIO1 as a system wakeup source.
+
+Without this, enabling CONFIG_PM on an ESP32 gives a node that light-sleeps
+correctly and is deaf: the SX1262 asserts DIO1 on a received packet, but the
+SoC is not armed to wake on that pin, so the frame is dropped and the CPU only
+resumes on the next RTC timer deadline. The failure is silent and looks like a
+success on a current meter, which is the worst possible shape for it.
+
+The Zephyr ESP32 GPIO driver arms the wake in its CONFIGURE path --
+gpio_esp32_config() reads (flags & GPIO_INT_WAKEUP) at drivers/gpio/gpio_esp32.c
+and calls esp_sleep_enable_ext1_wakeup_io() -- not in the interrupt path, which
+strips the bit. So the flag has to go on gpio_pin_configure_dt(), not on the
+gpio_pin_interrupt_configure_dt() call below it.
+
+GPIO_INT_WAKEUP is deliberately NOT part of GPIO_INT_MASK (see
+include/zephyr/drivers/gpio.h), precisely so it can be passed to
+gpio_pin_configure() without tripping its "Interrupt flags are not supported"
+assert. Drivers that do not implement wakeup ignore the bit, so this stays a
+no-op on nRF/STM32/MG24 rather than needing a per-platform guard.
+
+Board caveat, not fixable here: on ESP32-S3 esp_sleep_is_valid_wakeup_gpio()
+reduces to RTC_GPIO_IS_VALID_GPIO(), i.e. GPIO 0-21 only. Boards wiring DIO1
+above that (xiao_esp32s3 GPIO39, station_g2 GPIO48, thinknode_m9 GPIO42) log
+"Pin N is not wakeup capable" and cannot use light sleep with LoRa RX at all.
+Heltec V3/V4/V43 and the Wireless Trackers put DIO1 on GPIO14 and are fine.
+
+--- a/drivers/lora/native/sx126x/sx126x_hal.c
++++ b/drivers/lora/native/sx126x/sx126x_hal.c
+@@ -150,7 +150,13 @@
+ 		LOG_ERR("DIO1 GPIO not ready");
+ 		return -ENODEV;
+ 	}
+-	ret = gpio_pin_configure_dt(&config->dio1, GPIO_INPUT);
++	/* GPIO_INT_WAKEUP: let a DIO1 assertion wake the SoC from a system
++	 * low-power state, so an inbound packet is not slept through when
++	 * CONFIG_PM is enabled. Outside GPIO_INT_MASK by design, so this is
++	 * legal here and ignored by drivers without wakeup support.
++	 */
++	ret = gpio_pin_configure_dt(&config->dio1,
++				    GPIO_INPUT | GPIO_INT_WAKEUP);
+ 	if (ret < 0) {
+ 		LOG_ERR("Failed to configure DIO1 GPIO: %d", ret);
+ 		return ret;

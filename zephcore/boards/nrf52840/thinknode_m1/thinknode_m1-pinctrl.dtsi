@@ -2,7 +2,7 @@
  * Elecrow ThinkNode M1 pin control definitions
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Pin mappings (from Arduino MeshCore variant.h):
  *

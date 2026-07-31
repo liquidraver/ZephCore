@@ -1,0 +1,175 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Elecrow ThinkNode M9 — ESP32-S3, 16MB flash, 8MB PSRAM
+ *
+ * Hardware:
+ *   MCU:     ESP32-S3-WROOM-1 (Xtensa LX7, dual-core @ 160 MHz)
+ *   Flash:   16 MB
+ *   PSRAM:   8 MB (OPI) — module variant assumed N16R8, verify at bring-up
+ *   Radio:   Semtech LR1110 on shared SPI2 (TCXO 3.3V, DIO5/DIO6 RF switch)
+ *   Display: ST7789 320x240 TFT on shared SPI2 (defined in board.overlay)
+ *   GPS:     CC1167Q (Unicore family; NOT the L76K MeshCore's variant.h
+ *            claims) on UART1 @ 115200
+ *   RTC:     PCF8563 @ 0x51 on I2C0
+ *   Console: Native USB Serial/JTAG (main firmware reroutes to uart0 and
+ *            gives the USB port to the OTG companion transport — see
+ *            board.overlay).
+ *
+ * The LR1110 node lives HERE (not board.overlay) so the standalone
+ * tools/lr1110_updater build — which replaces board.overlay with its own
+ * minimal overlay — still sees the radio.
+ */
+
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_wroom_n16r8.dtsi>
+#include "thinknode_m9-pinctrl.dtsi"
+#include <espressif/partitions_0x0_default_16M.dtsi>
+
+/ {
+	model = "Elecrow ThinkNode M9";
+	compatible = "elecrow,thinknode-m9";
+
+	/* No zephyr,console here: the M9's USB-C data lines ride a CH9102-class
+	 * USB-UART bridge into UART0 (verified on hardware — the native USB
+	 * Serial/JTAG console produced no output). The S3's native USB pads
+	 * (GPIO19/20) are not wired to the connector at all; GPIO20/21 carry the
+	 * STC8H keypad I2C bus instead. Every build of this board (app overlay
+	 * and lr1110_updater overlay alike) routes console + shell to uart0 via
+	 * boards/common/esp32s3_console_uart0.dtsi. */
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+	};
+
+	aliases {
+		uart-0 = &uart0;
+		i2c-0 = &i2c0;
+		watchdog0 = &wdt0;
+		lora0 = &lora;
+	};
+};
+
+/* 240 MHz — matches every other ESP32-S3 board in the tree (xiao_esp32s3,
+ * station_g2, heltec_*).  This was 160 MHz with the comment "HAL Kconfig
+ * minimum supported", which is not correct: hal/espressif/zephyr/Kconfig
+ * derives ESP_DEFAULT_CPU_FREQ_MHZ straight from this DT property and offers
+ * 96/120/160/240 with no floor at 160.  Nothing on this board requires the
+ * lower clock (the octal PSRAM runs at 40 MHz off its own divider, and
+ * station_g2 pairs the same OPI PSRAM with 240 MHz).
+ *
+ * Kept deliberate rather than "faster is better": the node is event-driven and
+ * idles in k_event_wait almost always, so race-to-idle makes the clock a weak
+ * lever on battery life, while the 320x240 colour panel is the one genuinely
+ * CPU-bound consumer.  240 also removes this board's only timing anomaly,
+ * which matters while the CPU-jitter entropy source is under investigation
+ * (jitter health check failed here — see memory/findings.md). */
+/* USB Serial/JTAG stays disabled (SoC default): its PHY pads are GPIO19/20,
+ * and on this board GPIO20 is the keypad's I2C1 SDA. The USJ driver's init
+ * re-attaches the USB pad (usb_serial_jtag_ll_phy_enable_pad) and enables the
+ * D+ pull-up, fighting the keypad bus. Native USB is unbonded from the
+ * connector anyway — see the chosen-node comment. */
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+/*
+ * I2C1 — STC8H keypad helper MCU @0x6C (GPIO20 SDA / GPIO21 SCL).
+ *
+ * This board has NO user button at hardware level, so the keypad is its only
+ * input device: without it the UI renders but cannot be operated. The keypad
+ * node itself lives in board.overlay alongside the rest of the app hookup.
+ */
+&i2c1 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+
+	/* CS 0 = LR1110 NSS (GPIO39), CS 1 = ST7789 TFT (GPIO16).
+	 * The TFT itself is declared in board.overlay (mipi-dbi child @1). */
+	cs-gpios = <&gpio1 7 GPIO_ACTIVE_LOW>,
+		   <&gpio0 16 GPIO_ACTIVE_LOW>;
+
+	lora: lora@0 {
+		compatible = "semtech,lr1110";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		reset-gpios = <&gpio1 13 GPIO_ACTIVE_LOW>;               /* GPIO45 */
+		busy-gpios  = <&gpio1 9 GPIO_ACTIVE_HIGH>;               /* GPIO41 */
+		dio1-gpios  = <&gpio1 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* GPIO42 */
+
+		/* TCXO 3.3V via DIO3 (Arduino LR11X0_DIO3_TCXO_VOLTAGE=3.3) */
+		tcxo-voltage-mv = <3300>;
+		tcxo-startup-delay-ms = <5>;
+
+		/* +3dB RX sensitivity for +2mA — deliberate divergence from the
+		 * Arduino variant, which leaves boosted gain off (looks like an
+		 * oversight; T1000-E and every other ZephCore LR1110 board use it). */
+		rx-boosted;
+
+		/* RF switch truth table from Arduino rfswitch_table[]:
+		 * bit0 = DIO5, bit1 = DIO6.
+		 *   STBY: DIO5=L DIO6=L   RX:    DIO5=H DIO6=L
+		 *   TX:   DIO5=H DIO6=H   TX_HP: DIO5=L DIO6=H
+		 * (MODE_TX = low-power PA path, MODE_TX_HP = high-power PA path) */
+		rfswitch-enable = <0x03>;
+		rfswitch-standby = <0x00>;
+		rfswitch-rx = <0x01>;
+		rfswitch-tx = <0x03>;
+		rfswitch-tx-hp = <0x02>;
+		rfswitch-gnss = <0x00>;
+	};
+};
+
+/* GPS — 115200 baud (the macro Arduino MeshCore actually consumes; the
+ * variant.h 9600 value is a dead macro).  GNSS driver node + enable/reset
+ * pins live in board.overlay. */
+&uart1 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart1_default>;
+	pinctrl-names = "default";
+};
+
+&gpio0 { status = "okay"; };
+
+&gpio1 {
+	status = "okay";
+
+	/* Park the SD card's CS (GPIO48) HIGH (deselected — the CS itself is
+	 * active-low). The SD slot shares SPI2 with the LR1110 and the TFT but
+	 * has no Zephyr driver; left floating, an inserted card could drive MISO
+	 * and corrupt radio/display transfers. Also protects the standalone
+	 * lr1110_updater (this hog lives in the base DTS). */
+	sd-cs-park {
+		gpio-hog;
+		gpios = <16 GPIO_ACTIVE_HIGH>;	/* GPIO48 */
+		output-high;			/* physical HIGH = deselected */
+	};
+};
+&wdt0 { status = "okay"; };
+&trng0 { status = "okay"; };
+
+&esp32_bt_hci {
+	status = "okay";
+};
+
+&wifi {
+	status = "okay";
+};

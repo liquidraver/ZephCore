@@ -2,7 +2,7 @@
  * Seeed Wio Tracker L1 - nRF52840 + SX1262
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware:
  * - nRF52840 SoC with BLE
@@ -101,10 +101,10 @@
 
 	/* Input filter: user button multi-tap detection
 	 * 1 tap  (400ms wait) → KEY_1 = page next on OLED
-	 * 2 taps (400ms wait) → KEY_B = flood advert
+	 * 2 taps (400ms wait) → KEY_B = LED heartbeat toggle
 	 * 3 taps (400ms wait) → KEY_D = buzzer mute toggle
 	 * 4 taps (400ms wait) → KEY_C = GPS on/off
-	 * 5 taps (immediate)  → KEY_E = LED heartbeat toggle */
+	 * 5 taps (immediate)  → KEY_E = flood advert */
 	user_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
 		/* No 'input' phandle — listen to ALL devices.
@@ -126,7 +126,7 @@
 	/* Battery ADC channel reference for ZephyrBoard */
 	zephyr,user {
 		io-channels = <&adc 7>;
-		vbat-mv-multiplier = <7200>;  /* 2:1 voltage divider, 3.6V ref */
+		vbat-mv-multiplier = <7236>;  /* 2:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 
 	/* Buzzer on PWM0 channel 0 (P1.00) - no enable pin needed */
@@ -223,7 +223,8 @@
 	};
 };
 
-/* I2C0 for OLED display + sensors */
+/* I2C0 for onboard OLED display only.
+ * External environment/power sensors live on the Grove bus (&i2c1). */
 &i2c0 {
 	compatible = "nordic,nrf-twim";
 	status = "okay";
@@ -249,27 +250,33 @@
 		com-invdir;
 		prechargep = <0x22>;
 	};
+};
+
+/* I2C1 for Grove connector — external environment/power sensors.
+ * Auto-detected at runtime; absent sensors fail device_is_ready() and
+ * are skipped harmlessly by ZephyrEnvSensors. */
+&i2c1 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-1 = <&i2c1_sleep>;
+	pinctrl-names = "default", "sleep";
 
 	/* All supported environment & power sensors — auto-detected at runtime */
 	#include "../../common/sensors-i2c.dtsi"
 };
 
-/* I2C1 for Grove connector - disabled by default */
-&i2c1 {
-	compatible = "nordic,nrf-twim";
-	status = "disabled";
-	pinctrl-0 = <&i2c1_default>;
-	pinctrl-1 = <&i2c1_sleep>;
-	pinctrl-names = "default", "sleep";
-};
-
-/* SPI1 for LoRa SX1262 (SPI0 conflicts with I2C0 on same serial instance) */
-&spi1 {
+/* SPI2 (SPIM2) for LoRa SX1262.
+ * Must NOT use SPIM0 (shares instance 0 with I2C0/OLED) or SPIM1 (shares
+ * instance 1 with TWIM1, which drives the Grove I2C bus &i2c1). SPIM2 is a
+ * dedicated SPI-only instance, so the radio and both I2C buses coexist. */
+&spi2 {
 	compatible = "nordic,nrf-spim";
 	status = "okay";
 	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
-	pinctrl-0 = <&spi1_default>;
-	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
 	pinctrl-names = "default", "sleep";
 
 	lora: lora@0 {

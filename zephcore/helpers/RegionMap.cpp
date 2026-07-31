@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * RegionMap - Region-based flood filtering for repeaters
  */
 
@@ -57,13 +57,15 @@ bool RegionMap::load(const char* path) {
         while (num_regions < MAX_REGION_ENTRIES) {
             auto r = &regions[num_regions];
 
-            success = fs_read(&file, &r->id, sizeof(r->id)) == sizeof(r->id);
+            ssize_t n = fs_read(&file, &r->id, sizeof(r->id));
+            if (n == 0) break;  // clean EOF
+            success = (n == sizeof(r->id));
             success = success && fs_read(&file, &r->parent, sizeof(r->parent)) == sizeof(r->parent);
             success = success && fs_read(&file, r->name, sizeof(r->name)) == sizeof(r->name);
             success = success && fs_read(&file, &r->flags, sizeof(r->flags)) == sizeof(r->flags);
             success = success && fs_read(&file, pad, sizeof(pad)) == sizeof(pad);
 
-            if (!success) break;  // EOF
+            if (!success) break;  // partial read or corruption
 
             if (r->id >= next_id) {   // make sure next_id is valid
                 next_id = r->id + 1;
@@ -73,7 +75,7 @@ bool RegionMap::load(const char* path) {
     }
     fs_close(&file);
     LOG_INF("Loaded %d regions from %s", num_regions, filepath);
-    return true;
+    return success;
 }
 
 bool RegionMap::save(const char* path) {
@@ -114,7 +116,7 @@ bool RegionMap::save(const char* path) {
     }
     fs_close(&file);
     LOG_INF("Saved %d regions to %s", num_regions, filepath);
-    return true;
+    return success;
 }
 
 RegionEntry* RegionMap::putRegion(const char* name, uint16_t parent_id, uint16_t id) {

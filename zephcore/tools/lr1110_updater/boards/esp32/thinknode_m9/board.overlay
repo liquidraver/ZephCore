@@ -1,0 +1,94 @@
+/*
+ * ThinkNode M9 LR1110 Updater overlay
+ * SPDX-License-Identifier: MIT
+ *
+ * Minimal overlay — the LR1110 lives in the base board DTS (SPI2).
+ *
+ * Console MUST ride uart0: the M9's USB-C data lines go through a
+ * CH9102-class USB-UART bridge wired to UART0 (GPIO43/44), not to the S3's
+ * native USB Serial/JTAG pads (verified on hardware — the base DTS's
+ * usb_serial console produced no output after the ROM boot log, which
+ * itself arrives via UART0). Same routing as the main firmware.
+ *
+ * Disables peripherals not needed for the update.
+ */
+
+#include "../../../../../boards/common/esp32s3_console_uart0.dtsi"
+
+/*
+ * Park the ST7789 chip-select (GPIO16) HIGH = deselected.
+ *
+ * SPI2 is shared by the LR1110, the TFT and the SD slot. This build has no
+ * display driver, so nothing would ever configure the TFT's CS and the pin
+ * would float across the whole firmware transfer — leaving the panel free
+ * to select itself on noise and drive MISO against the radio. (The SD
+ * slot's CS is parked by a hog in the base board DTS, which this overlay
+ * does not replace.)
+ */
+&gpio0 {
+	tft_cs_park {
+		gpio-hog;
+		gpios = <16 GPIO_ACTIVE_HIGH>;
+		output-high;
+	};
+};
+
+/* Disable UART1 (GPS) — not needed */
+&uart1 {
+	status = "disabled";
+};
+
+/* Disable I2C0 (RTC/sensors) — not needed */
+&i2c0 {
+	status = "disabled";
+};
+
+/* VDD_PERIPH rail — GPIO18 (VEXT_ENABLE, active-LOW) also feeds the LR1110
+ * (V1.0 schematic; field-confirmed by fdlamotte). The main firmware enables
+ * it via the tft_pwr_enable regulator in the APP overlay, which this updater
+ * does not include — left undriven, the gate floats and the radio runs on
+ * power back-fed through the SPI lines: enough to answer commands, browns
+ * out at flash-program current (Stage A verify failure, 2026-07-19). Hog
+ * the rail ON at GPIO driver init, before anything talks to the chip.
+ *
+ * The other hogs quiesce every gateable load that shares that rail — the
+ * LR1110's flash-program current peaks ride the same supply, and the
+ * updater build otherwise leaves these pins floating (pins/polarities from
+ * the main app overlay). GPS RESET (GPIO5, active-HIGH) is deliberately
+ * left alone: driving it into the disabled GPS would only leak through its
+ * protection diode. */
+&gpio0 {
+	vext-en-hog {
+		gpio-hog;
+		gpios = <18 GPIO_ACTIVE_LOW>;
+		output-high;	/* logical active = physical LOW = rail ON */
+	};
+	backlight-off-hog {
+		gpio-hog;
+		gpios = <17 GPIO_ACTIVE_LOW>;
+		output-low;	/* physical HIGH = backlight OFF (floats ON otherwise) */
+	};
+	tft-reset-hold-hog {
+		gpio-hog;
+		gpios = <14 GPIO_ACTIVE_LOW>;
+		output-high;	/* physical LOW = ST7789 held in reset, quiet + off the bus */
+	};
+	gps-off-hog {
+		gpio-hog;
+		gpios = <11 GPIO_ACTIVE_LOW>;
+		output-low;	/* physical HIGH = GPS disabled (acquisition draws 25-40 mA) */
+	};
+	buzzer-park-hog {
+		gpio-hog;
+		gpios = <9 GPIO_ACTIVE_HIGH>;
+		output-low;	/* physical LOW = low-side driver off, silent */
+	};
+};
+
+/* Marginal SPI writes on some units (a single corrupted word of the 61320
+ * fails the image signature). Flashing is not throughput-critical — the
+ * chip-side flash programming dominates — so run the bus at 2 MHz instead
+ * of the main firmware's 8 MHz. */
+&lora {
+	spi-max-frequency = <2000000>;
+};

@@ -35,6 +35,8 @@ rtt_*.log
 
 # UF2 / binary artifacts
 *.uf2
+!formatter/
+!formatter/*.uf2
 *.hex
 *.bin
 *.elf
@@ -43,6 +45,19 @@ rtt_*.log
 *.o
 *.a
 *.zip
+
+# ...except the prebuilt formatter DFU packages. These are shipped artifacts, not
+# build output: build.sh publishes them as the Mesh America configurator's `erase`
+# packages (see formatter/README.md, PROVIDER_CATALOG.md), so they must be tracked.
+!formatter/*.zip
+
+# ...and the prebuilt LR1110 radio-firmware updaters. Also shipped artifacts:
+# updating an LR1110 needs Semtech's encrypted images compiled in, so handing
+# someone a prebuilt binary is far more practical than asking them to build the
+# tool. See LR1110_updater/README.md.
+!LR1110_updater/
+!LR1110_updater/*.uf2
+!LR1110_updater/*.bin
 
 # OS junk
 .DS_Store
@@ -91,4 +106,33 @@ WEST_UPDATE.md
 THINKNODE_M1_HANDOVER.md
 CLAUDE.md
 zephcore/apc_checklist.md
-zephcore/apc.md
+RADIO_AUDIT_INDEX.md
+RX_BUSY_LATCH_PLAN.md
+zephcore/SX126X_LBT_RX_DEBUG_HANDOFF.md
+PSRAM_HANDOFF.md
+BLE_AUDIT_INDEX.md
+POWER_AUDIT_HANDOFF.md
+POWER_AUDIT_INDEX.md
+CRYPTO_AUDIT_HANDOFF.md
+CRYPTO_AUDIT_INDEX.md
+AUDIT_MASTER_PLAN.md
+usb_companion_probe.py
+CORE_MESH_AUDIT_INDEX.md
+UPLINK_AUDIT_INDEX.md
+GPS_AUDIT_INDEX.md
+UI_AUDIT_INDEX.md
+RADIO2_AUDIT_INDEX.md
+MISC_AUDIT_INDEX.md
+HANDOVER_issue34_ble_esp32.md
+PATH_HASH_AUDIT_INDEX.md
+MESHTIMESYNC_PLAN.md
+/meshtimesync-sim/
+
+# Older release notes kept local-only. Renamed 2026-07-16 to the
+# RELEASE_NOTES_<version>-zephcore.md convention; these rules follow the rename.
+# NOTE: the notes file for the CURRENT version must stay TRACKED — the release
+# workflow publishes it as the GitHub release body (body_path). Only add a rule
+# here for versions that are already released.
+releasenotes/RELEASE_NOTES_1.16.3-zephcore.md
+releasenotes/RELEASE_NOTES_1.16.4-zephcore.md
+handover_thinknode_m9.md

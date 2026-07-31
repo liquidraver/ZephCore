@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephyrWiFiStation — WiFi STA connection manager for the Observer role.
  *
  * Flow:
@@ -11,6 +11,7 @@
 
 #include "ZephyrWiFiStation.h"
 #include "observer_creds.h"
+#include "../../helpers/pm_sleep_guard.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/net/net_if.h>
@@ -181,6 +182,13 @@ void zc_wifi_station_start(const struct ObserverCreds *creds,
 	s_time_sync_cb = time_sync_cb;
 	s_wifi_link_up = false;
 	s_wifi_ready   = false;
+
+	/* Permanent, and intentionally never released: there is no
+	 * zc_wifi_station_stop() — once an uplink or observer node associates it
+	 * stays associated for the life of the boot. Light sleep would drop the
+	 * association (nothing here coordinates with the WiFi modem's own sleep),
+	 * so a node built with WiFi simply does not light-sleep. */
+	zc_pm_block_sleep();
 
 	/* Register WiFi event callback */
 	net_mgmt_init_event_callback(&wifi_cb, wifi_event_handler,

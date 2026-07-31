@@ -97,11 +97,11 @@ index 74708edbd62..7de70ad93c8 100644
 -
 -	return ret;
 -}
-+/* PM intentionally removed — the L76K ignores $PMTK161,0 (AT6558-based,
-+ * not genuine MediaTek). GPS standby uses GPIO FORCE_ON pin instead.
-+ * Also, CONFIG_PM_DEVICE_SYSTEM_MANAGED can auto-suspend devices during
-+ * idle, calling modem_chat_run_script() from an unexpected context and
-+ * potentially deadlocking the system. */
++/* PM hooks intentionally removed — the L76K ignores $PMTK161,0 (AT6558-
++ * based, not genuine MediaTek), so PM-driven software sleep can never
++ * work; standby drives the FORCE_ON GPIO and the app suspends the UART
++ * instead (ZephyrGPSManager, main thread only). PM-less also keeps
++ * modem_chat scripts out of PM callbacks (deadlock risk off sysworkq). */
  
  static int luatos_air530z_set_fix_rate(const struct device *dev, uint32_t fix_interval_ms)
  {

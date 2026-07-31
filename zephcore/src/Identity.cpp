@@ -1,14 +1,80 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
- * ZephCore Identity - Ed25519 sign/verify
+ * SPDX-License-Identifier: MIT
+ * ZephCore Identity - Ed25519 sign/verify (Monocypher backend)
+ *
+ * Backed by Monocypher (lib/monocypher). The persisted private key keeps the
+ * historical 64-byte *expanded* layout — prv[0..31] = clamped SHA-512(seed)
+ * scalar `a`, prv[32..63] = nonce prefix — so identities written by older
+ * (orlp/ed25519) firmware load, sign, and key-exchange byte-for-byte unchanged.
+ * Signing is built from Monocypher's low-level EdDSA primitives because the
+ * stored expanded key carries no seed to feed the high-level API.
  */
 
 #include <mesh/Identity.h>
 #include <string.h>
-#define ED25519_NO_SEED 1
-#include <ed_25519.h>
+#include <monocypher.h>
+#include <monocypher-ed25519.h>
 
 namespace mesh {
+
+/* Expand a 32-byte seed into the stored 64-byte private key (orlp-compatible
+ * layout): clamped SHA-512(seed)[0..31] || SHA-512(seed)[32..63]. */
+static void expandSeed(uint8_t prv[PRV_KEY_SIZE], const uint8_t seed[SEED_SIZE])
+{
+	crypto_sha512(prv, seed, SEED_SIZE);
+	prv[0]  &= 248;
+	prv[31] &= 63;
+	prv[31] |= 64;
+}
+
+/* Sign from the expanded key (no seed). RFC 8032 Ed25519 assembled from
+ * Monocypher scalar/point primitives — byte-identical to the prior orlp
+ * implementation (verified by known-answer tests). */
+static void signExpanded(uint8_t sig[SIGNATURE_SIZE],
+			 const uint8_t prv[PRV_KEY_SIZE],
+			 const uint8_t pub[PUB_KEY_SIZE],
+			 const uint8_t *msg, size_t msg_len)
+{
+	uint8_t r64[64], hram64[64], r[32], hram[32];
+	crypto_sha512_ctx h;
+
+	/* r = SHA-512(prefix || msg) mod L ; prefix = prv[32..63] */
+	crypto_sha512_init(&h);
+	crypto_sha512_update(&h, prv + 32, 32);
+	crypto_sha512_update(&h, msg, msg_len);
+	crypto_sha512_final(&h, r64);
+	crypto_eddsa_reduce(r, r64);
+
+	/* R = r·B -> sig[0..31] */
+	crypto_eddsa_scalarbase(sig, r);
+
+	/* hram = SHA-512(R || A || msg) mod L */
+	crypto_sha512_init(&h);
+	crypto_sha512_update(&h, sig, 32);
+	crypto_sha512_update(&h, pub, 32);
+	crypto_sha512_update(&h, msg, msg_len);
+	crypto_sha512_final(&h, hram64);
+	crypto_eddsa_reduce(hram, hram64);
+
+	/* S = (hram·a + r) mod L ; a = prv[0..31] -> sig[32..63] */
+	crypto_eddsa_mul_add(sig + 32, hram, prv, r);
+
+	/* r / r64 are nonce material — leaking them leaks the private key. */
+	crypto_wipe(r64, sizeof(r64));
+	crypto_wipe(r, sizeof(r));
+}
+
+/* X25519 over Ed25519 keys: convert the peer's Edwards public key to its
+ * Montgomery form, then scalar-multiply by our scalar (prv[0..31]). Raw
+ * shared secret, no output hashing — matches the prior orlp key_exchange. */
+static void calcECDH(uint8_t secret[CIPHER_KEY_SIZE * 2],
+		     const uint8_t prv[PRV_KEY_SIZE],
+		     const uint8_t other_pub[PUB_KEY_SIZE])
+{
+	uint8_t other_x[32];
+	crypto_eddsa_to_x25519(other_x, other_pub);
+	crypto_x25519(secret, prv, other_x);
+}
 
 Identity::Identity()
 {
@@ -22,7 +88,7 @@ Identity::Identity(const char *pub_hex)
 
 bool Identity::verify(const uint8_t *sig, const uint8_t *message, int msg_len) const
 {
-	return ed25519_verify(sig, message, (size_t)msg_len, pub_key) == 1;
+	return crypto_ed25519_check(sig, pub_key, message, (size_t)msg_len) == 0;
 }
 
 bool Identity::readFrom(const uint8_t *src, size_t len)
@@ -53,13 +119,20 @@ LocalIdentity::LocalIdentity(RNG *rng)
 {
 	uint8_t seed[SEED_SIZE];
 	rng->random(seed, SEED_SIZE);
-	ed25519_create_keypair(pub_key, prv_key, seed);
+	fromSeed(seed);
+	Utils::secureZeroize(seed, sizeof(seed));
+}
+
+void LocalIdentity::fromSeed(const uint8_t seed[SEED_SIZE])
+{
+	expandSeed(prv_key, seed);
+	crypto_eddsa_scalarbase(pub_key, prv_key);  /* pub = a·B */
 }
 
 bool LocalIdentity::validatePrivateKey(const uint8_t prv[64])
 {
 	uint8_t pub[32];
-	ed25519_derive_pub(pub, prv);
+	crypto_eddsa_scalarbase(pub, prv);
 	if (pub[0] == 0x00 || pub[0] == 0xFF) return false;
 
 	const uint8_t test_client_prv[64] = {
@@ -80,14 +153,23 @@ bool LocalIdentity::validatePrivateKey(const uint8_t prv[64])
 	};
 
 	uint8_t ss1[32], ss2[32];
-	ed25519_key_exchange(ss1, test_client_pub, prv);
-	ed25519_key_exchange(ss2, pub, test_client_prv);
-	if (memcmp(ss1, ss2, 32) != 0) return false;
-
-	for (int i = 0; i < 32; i++) {
-		if (ss1[i] != 0) return true;
+	calcECDH(ss1, prv, test_client_pub);
+	calcECDH(ss2, test_client_prv, pub);
+	/* Constant-time even though this self-test runs at boot before
+	 * any networking is up — hygiene + no attacker observation. */
+	if (!Utils::constantTimeEqual(ss1, ss2, 32)) {
+		Utils::secureZeroize(ss1, sizeof(ss1));
+		Utils::secureZeroize(ss2, sizeof(ss2));
+		return false;
 	}
-	return false;
+
+	bool nonzero = false;
+	for (int i = 0; i < 32; i++) {
+		if (ss1[i] != 0) { nonzero = true; break; }
+	}
+	Utils::secureZeroize(ss1, sizeof(ss1));
+	Utils::secureZeroize(ss2, sizeof(ss2));
+	return nonzero;
 }
 
 bool LocalIdentity::readFrom(const uint8_t *src, size_t len)
@@ -99,7 +181,7 @@ bool LocalIdentity::readFrom(const uint8_t *src, size_t len)
 	}
 	if (len == PRV_KEY_SIZE) {
 		memcpy(prv_key, src, PRV_KEY_SIZE);
-		ed25519_derive_pub(pub_key, prv_key);
+		crypto_eddsa_scalarbase(pub_key, prv_key);  /* derive pub from a */
 		return true;
 	}
 	return false;
@@ -119,12 +201,12 @@ size_t LocalIdentity::writeTo(uint8_t *dest, size_t max_len) const
 
 void LocalIdentity::sign(uint8_t *sig, const uint8_t *message, int msg_len) const
 {
-	ed25519_sign(sig, message, (size_t)msg_len, pub_key, prv_key);
+	signExpanded(sig, prv_key, pub_key, message, (size_t)msg_len);
 }
 
 void LocalIdentity::calcSharedSecret(uint8_t *secret, const uint8_t *other_pub_key) const
 {
-	ed25519_key_exchange(secret, other_pub_key, prv_key);
+	calcECDH(secret, prv_key, other_pub_key);
 }
 
 } /* namespace mesh */

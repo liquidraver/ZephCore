@@ -1,0 +1,79 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * RAK6421 WisBlock Pi HAT + RAK13300/RAK13302 (SX1262), IO Slot 1.
+ * Auto-paired with rak6421.conf. Defines the native_linux SPI/GPIO controllers
+ * + SX1262 node on top of linux_common.overlay's platform infra.
+ *
+ * Works on any Pi that exposes the 40-pin header on gpiochip0 (Pi 2/3/4/Zero 2).
+ * Pi 5 moved it to gpiochip4 — use rak6421_pi5.overlay instead.
+ *
+ * Pins + clock per the RAK6421 IO Slot 1 reference wiring, BCM numbering:
+ *   CS    = GPIO 8  (spidev0.0 CE0, hardware CS)
+ *   DIO1  = GPIO 22 (IO6)
+ *   RESET = GPIO 16 (IO4)
+ *   BUSY  = GPIO 24 (IO5)
+ *   DIO2 drives the antenna RF switch (DIO2_AS_RF_SWITCH);
+ *   DIO3 powers a 1.8V TCXO (DIO3_TCXO_VOLTAGE);
+ *   Enable_Pins 12 + 13 are held HIGH to enable the module's RF front-end
+ *   (driven via GPIO hogs below — needs CONFIG_GPIO_HOGS=y, set in rak6421.conf).
+ *
+ * NOTE: hardware-verified end-to-end on a Pi Zero 2 W + RAK13300 (2026-06-03):
+ * RX/TX, TCXO, and DIO2 RF switch all confirmed. The RAK13302 (1W SKY66122)
+ * additionally wants a PA gain table that ZephCore's SX126x driver does not
+ * expose; this overlay drives the 13300 correctly and the 13302 at default
+ * (non-boosted) PA.
+ */
+
+#include <zephyr/dt-bindings/gpio/gpio.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
+/ {
+	aliases {
+		lora0 = &lora_sx1262;
+	};
+
+	zephcore_gpio0: zephcore_gpio0 {
+		status = "okay";
+		compatible = "zephcore,gpio-native-linux";
+		gpio-controller;
+		gpio-chip = "/dev/gpiochip0";
+		ngpios = <64>;
+		#gpio-cells = <2>;
+
+		/* RAK6421 Enable_Pins: held high at boot to enable
+		 * the module / RF front-end. */
+		rak6421_enable {
+			gpio-hog;
+			gpios = <12 GPIO_ACTIVE_HIGH>, <13 GPIO_ACTIVE_HIGH>;
+			output-high;
+		};
+	};
+
+	zephcore_spi0: zephcore_spi0 {
+		status = "okay";
+		compatible = "zephcore,spi-native-linux";
+		spi-dev = "/dev/spidev0.0";
+		clock-frequency = <2000000>;
+		spi-mode = <0>;
+		#address-cells = <1>;
+		#size-cells = <0>;
+		/* CS is spidev0.0's HARDWARE CE0 (BCM GPIO 8). With dtparam=spi=on
+		 * the kernel SPI controller owns that pin (ALT0), so it canNOT be
+		 * grabbed as a GPIO — spidev asserts CE0 on every transfer instead.
+		 * Do NOT declare cs-gpios here (that's the Femtofox path, where CS is
+		 * a free GPIO). */
+
+		lora_sx1262: lora@0 {
+			compatible = "semtech,sx1262";
+			reg = <0>;
+			spi-max-frequency = <2000000>;
+			reset-gpios = <&zephcore_gpio0 16 GPIO_ACTIVE_LOW>;
+			busy-gpios  = <&zephcore_gpio0 24 GPIO_ACTIVE_HIGH>;
+			dio1-gpios  = <&zephcore_gpio0 22 GPIO_ACTIVE_HIGH>;
+			dio2-tx-enable;
+			dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+			tcxo-power-startup-delay-ms = <5>;
+		};
+	};
+};

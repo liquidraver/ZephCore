@@ -7,7 +7,25 @@ on:
 env:
   zephyr_sdk: 1.0.1
   python_version: 3.12
-  toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:riscv64-zephyr-elf
+  toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:xtensa-espressif_esp32_zephyr-elf:riscv64-zephyr-elf
+
+  # Mark the GitHub release as a pre-release AND skip the Mesh America catalog
+  # publish. Set to "true" for a release that should not reach ordinary users
+  # through apps.meshamerica.com's browser flasher; set back to "false" for a
+  # normal release.
+  #
+  # Two separate effects, both driven from here so they cannot drift apart:
+  #   - the release is created with prerelease: true, so GitHub does not mark it
+  #     "Latest" and it is excluded from the /releases/latest API.
+  #   - publish-catalog is skipped entirely, so the firmware-dist branch and its
+  #     catalog.json are left ALONE — the configurator keeps offering whatever
+  #     the last non-prerelease build published. Nothing is unpublished or
+  #     rolled back; that branch is simply not force-pushed this time.
+  # Release artifacts are still built and attached, so a manual download and
+  # flash works exactly as usual.
+  #
+  # 1.16.8: pre-release while ESP32 light sleep is unvalidated on hardware.
+  prerelease: "true"
 
 jobs:
   setup-zephyr:
@@ -133,6 +151,48 @@ jobs:
         path: firmware
         key: cache-firmware-esp32-repeaters-${{ github.sha }}
 
+  build-linux:
+    needs: setup-zephyr
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+        cache: 'pip'
+    - run: pip install -r requirements.txt
+
+    - uses: actions/cache/restore@v5
+      with:
+        path: modules
+        key: cache-zephyr-modules-${{ github.sha }}
+
+    - name: Setup Zephyr project
+      uses: zephyrproject-rtos/action-zephyr-setup@v1
+      with:
+        app-path: zephcore
+        toolchains: ${{ env.toolchains }}
+        sdk-version: ${{ env.zephyr_sdk }}
+
+    # native_sim presets are cross-compiled for the target SBC architecture:
+    # femtofox = ARMv7-A (32-bit), rak6421 / rak6421_pi5 = aarch64 (64-bit).
+    - name: Install cross-compile toolchains
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf \
+          gcc-aarch64-linux-gnu   g++-aarch64-linux-gnu
+
+    - name: build firmwares
+      run: bash build.sh linux
+
+    - uses: actions/cache@v5
+      with:
+        path: firmware
+        key: cache-firmware-linux-${{ github.sha }}
+
   build-esp32-companions:
     needs: setup-zephyr
     runs-on: ubuntu-latest
@@ -178,14 +238,40 @@ jobs:
         key: cache-firmware-esp32-companions-${{ github.sha }}
 
   create-release:
-    needs: [build-nrf, build-esp32-companions, build-esp32-repeaters]
+    needs: [build-nrf, build-esp32-companions, build-esp32-repeaters, build-linux]
     runs-on: ubuntu-latest
+    # Needs write to create the release AND to delete/replace an existing one for
+    # the same version (see the "replace existing release" step below).
+    permissions:
+      contents: write
+    outputs:
+      release_tag: ${{ steps.tag.outputs.release_tag }}
+      # Re-exported as a job output because the `env` context is NOT available
+      # in a job-level `if:` — publish-catalog cannot read env.prerelease
+      # directly and has to gate on this instead.
+      prerelease: ${{ env.prerelease }}
 
     steps:
-    - name: generate release tag
+    - uses: actions/checkout@v6
+
+    # Tag the release with the firmware version string itself (the single source
+    # of truth in zephcore/CMakeLists.txt), NOT a build timestamp. The same value
+    # becomes the Mesh America catalog's version key, so the configurator can
+    # compare a running device's reported firmware against the catalog and know
+    # it's up to date. A timestamp tag could never match what the device reports.
+    #
+    # NOTE: the tag is only unique per version — pushing master again without
+    # bumping ZEPHCORE_FIRMWARE_VERSION updates the existing release in place
+    # rather than cutting a new one. Bump the version to cut a new release.
+    - name: derive release tag from firmware version
       id: tag
       run: |
-        version=v$(date +"%Y%m%d.%H%M%S")
+        version=$(sed -n 's/^set(ZEPHCORE_FIRMWARE_VERSION "\(.*\)")/\1/p' zephcore/CMakeLists.txt)
+        if [ -z "$version" ]; then
+          echo "::error::Could not read ZEPHCORE_FIRMWARE_VERSION from zephcore/CMakeLists.txt"
+          exit 1
+        fi
+        echo "Release tag / catalog version: $version"
         echo "release_tag=$version" >> $GITHUB_OUTPUT
 
     - uses: actions/cache/restore@v5
@@ -203,11 +289,54 @@ jobs:
         path: firmware
         key: cache-firmware-esp32-repeaters-${{ github.sha }}
 
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-linux-${{ github.sha }}
+
     - name: upload firmware artifacts
       uses: actions/upload-artifact@v7
       with:
         name: firmware-${{ steps.tag.outputs.release_tag }}
         path: firmware
+
+    # Publish releasenotes/RELEASE_NOTES_<version>.md as the release body. The
+    # filename matches the firmware version string exactly (= the release tag), so
+    # this is a direct lookup with no name munging. Write the notes for a version
+    # before bumping to it; a missing file only warns (empty body), never fails
+    # the release.
+    - name: resolve release notes
+      id: notes
+      run: |
+        notes="releasenotes/RELEASE_NOTES_${{ steps.tag.outputs.release_tag }}.md"
+        if [ -f "$notes" ]; then
+          echo "Using release notes: $notes"
+          echo "notes_path=$notes" >> $GITHUB_OUTPUT
+        else
+          echo "::warning::No release notes at $notes — publishing with an empty body"
+          : > "${RUNNER_TEMP}/empty_notes.md"
+          echo "notes_path=${RUNNER_TEMP}/empty_notes.md" >> $GITHUB_OUTPUT
+        fi
+
+    # Replace any existing release for this version instead of piling onto it.
+    # Since the tag is the firmware version, re-pushing master without a bump
+    # reuses the tag. action-gh-release only overwrites assets with the SAME
+    # name, but our firmware filenames embed the commit hash — so a rebuild would
+    # ADD ~100 new assets beside the old ones and leave the tag pinned to the old
+    # commit. Deleting first (with the tag) makes each build a clean replacement:
+    # current assets only, tag re-created on the building commit.
+    # `|| true` — the first release of a version has nothing to delete.
+    - name: replace existing release for this version
+      env:
+        GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        tag="${{ steps.tag.outputs.release_tag }}"
+        if gh release view "$tag" >/dev/null 2>&1; then
+          echo "Existing release $tag found — deleting it (and its tag) so this build replaces it"
+          gh release delete "$tag" --yes --cleanup-tag || true
+        else
+          echo "No existing release for $tag — creating a new one"
+        fi
 
     - name: create release
       uses: softprops/action-gh-release@v2
@@ -216,6 +345,86 @@ jobs:
       with:
         tag_name: ${{ steps.tag.outputs.release_tag }}
         name: Firmware ${{ steps.tag.outputs.release_tag }}
-        body: ""
+        body_path: ${{ steps.notes.outputs.notes_path }}
+        target_commitish: ${{ github.sha }}
         draft: false
+        prerelease: ${{ env.prerelease }}
         files: firmware/*
+
+  # Publish firmware + provider catalog for the Mesh America configurator
+  # (apps.meshamerica.com). GitHub Release assets have no CORS header, so the
+  # browser flasher cannot fetch them; instead we force-push the firmware and a
+  # generated catalog.json to the `firmware-dist` orphan branch, served from
+  # CORS-clean hosts (firmware via jsDelivr, catalog via raw.githubusercontent).
+  # The stable catalog URL registered with Mesh America is:
+  #   https://raw.githubusercontent.com/<owner>/<repo>/firmware-dist/catalog.json
+  #
+  # Skipped entirely on a pre-release (see the `prerelease` env at the top).
+  # This branch is force-pushed, so skipping is the whole mechanism: the
+  # previous release's firmware and catalog.json stay exactly as they are and
+  # the configurator keeps offering that version.
+  publish-catalog:
+    needs: create-release
+    if: needs.create-release.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+    - uses: actions/checkout@v6
+
+    - uses: actions/setup-python@v6
+      with:
+        python-version: '${{ env.python_version }}'
+
+    # Pull every board's firmware back into a single firmware/ directory.
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-nrf-${{ github.sha }}
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-companions-${{ github.sha }}
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-esp32-repeaters-${{ github.sha }}
+    - uses: actions/cache/restore@v5
+      with:
+        path: firmware
+        key: cache-firmware-linux-${{ github.sha }}
+
+    - name: generate provider catalog
+      run: |
+        python gen_provider_catalog.py --firmware-dir firmware \
+          --url-base "https://cdn.jsdelivr.net/gh/${{ github.repository }}@firmware-dist" \
+          --version "${{ needs.create-release.outputs.release_tag }}" \
+          --out catalog.json
+
+    - name: publish firmware + catalog to firmware-dist branch
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      run: |
+        tag="${{ needs.create-release.outputs.release_tag }}"
+        work="$(mktemp -d)"
+        cp catalog.json "$work/"
+        cp firmware/* "$work/"
+        {
+          echo "# ZephCore firmware-dist"
+          echo
+          echo "Auto-generated distribution branch for the Mesh America device"
+          echo "configurator. Force-pushed by the \`build firmware\` workflow each"
+          echo "release -- do not edit by hand."
+          echo
+          echo "- Catalog (register this URL): https://raw.githubusercontent.com/${{ github.repository }}/firmware-dist/catalog.json"
+          echo "- Firmware (jsDelivr): https://cdn.jsdelivr.net/gh/${{ github.repository }}@firmware-dist/"
+          echo "- Built from release: $tag"
+        } > "$work/README.md"
+        cd "$work"
+        git init -q -b firmware-dist
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+        git add -A
+        git commit -q -m "firmware-dist: $tag"
+        git push -f "https://x-access-token:${GITHUB_TOKEN}@github.com/${{ github.repository }}.git" firmware-dist

@@ -1,0 +1,386 @@
+/*
+ * LilyGo T-Impulse Plus — nRF52840 + SX1262 + SSD1315 OLED + u-blox M10 GPS
+ * Copyright (c) 2026 ZephCore
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * A LoRa wristband/tracker. Hardware (from LilyGo's official pin_config.h,
+ * variant.h and the datasheets shipped in the T-Impulse-Plus repo):
+ *
+ * - nRF52840 SoC with BLE 5, native USB, Adafruit UF2 bootloader
+ *   (SoftDevice s140 v6.1.1, app @ 0x26000 — same layout as T-Echo)
+ * - SX1262 LoRa (AcSip S62F module): 22 dBm, embedded 32 MHz TCXO on DIO3,
+ *   GPIO antenna switch (VC1=TX P1.13, VC2=RX P1.07 — NOT DIO2)
+ * - SSD1315 128x64 mono OLED on I2C0 @ 0x3C (SSD1306-compatible, no reset pin)
+ * - u-blox MIA-M10Q GPS on UART0 @ 38400 baud, power enable P1.10
+ * - ZD25WQ32C 32Mbit (4MB) QSPI flash -> /ext LittleFS
+ * - ICM-20948 IMU (0x69) + SGM41562 charger (0x03) on a second I2C bus —
+ *   present but NOT used by ZephCore, so that bus is left disabled
+ * - Battery ADC on AIN3 (P0.05), divider gated by P0.25 (drive HIGH to read)
+ * - TTP223 capacitive touch button (P1.04, active-HIGH)
+ * - Haptic vibration motor (P0.22) exposed as the buzzer/notification output
+ * - Single blue LED (P0.17, active-LOW, per variant.h)
+ *
+ * Power rail:
+ * - RT9080 LDO enable P0.14 (HIGH) powers the whole 3V3 peripheral rail
+ *   (SX1262, OLED, GPS, QSPI). Brought up as a boot-on fixed regulator so it
+ *   is live before those devices initialise.
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "lilygo_timpulse_plus-pinctrl.dtsi"
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	model = "LilyGo T-Impulse Plus";
+	compatible = "lilygo,timpulse-plus";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &oled;
+	};
+
+	aliases {
+		lora0 = &lora;
+		/* Only one LED on this board — use it for both status and LoRa TX. */
+		led0 = &led_blue;
+		lora-tx-led = &led_blue;
+		sw0 = &touch_button;
+		watchdog0 = &wdt0;
+		buzzer = &buzzer;
+		gps-enable = &gps_enable_pin;
+	};
+
+	/* ---- LED ----
+	 * Single blue LED on P0.17, active-LOW (variant.h: LED_STATE_ON = 0).
+	 * The wristband is primarily an OLED + haptic device; if P0.17 is
+	 * unpopulated on a given unit, driving it is simply a no-op. */
+	leds {
+		compatible = "gpio-leds";
+
+		led_blue: led_0 {
+			gpios = <&gpio0 17 GPIO_ACTIVE_LOW>;
+			label = "Blue LED";
+		};
+	};
+
+	/* ---- Touch button (TTP223, P1.04) ----
+	 *
+	 * The only user input on the wristband. The TTP223 presents an
+	 * active-HIGH momentary output (external pull-down, Arduino uses
+	 * INPUT_PULLDOWN), so no internal pull is configured.
+	 *
+	 * Single-button UI (same scheme as T-Echo / RAK4631):
+	 *   short press (release < 1s) -> KEY_A -> multi-tap filter:
+	 *       1 tap  -> KEY_1    = next page
+	 *       2 taps -> KEY_LEFT = previous page
+	 *   long press (>= 1s)         -> KEY_ENTER = activate / confirm
+	 *
+	 * (The recessed BOOT button on P0.24 is left as the DFU/reset button and
+	 * is intentionally not wired as a runtime input.)
+	 */
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		touch_button: button_0 {
+			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "Touch Button";
+		};
+	};
+
+	/* short-press -> KEY_A (multi-tap), long-press (>=1s) -> KEY_ENTER */
+	touch_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+
+	/* ---- Power control ----
+	 * RT9080 LDO enable (P0.14). A single fixed regulator gating the entire
+	 * 3V3 peripheral rail: SX1262, SSD1315 OLED, GPS and QSPI flash. boot-on
+	 * so the regulator framework raises it before those drivers init
+	 * (REGULATOR_FIXED_INIT_PRIORITY pinned to 30 in Kconfig, ahead of the
+	 * QSPI NOR init at 41). */
+	pwr_enable: pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "pwr-enable";
+		enable-gpios = <&gpio0 14 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		startup-delay-us = <10000>;
+	};
+
+	/* Battery-measurement enable (P0.25, active-HIGH).
+	 * ZephyrBoard::getBattMilliVolts() calls regulator_enable/disable around
+	 * the ADC read so the divider only draws current during a measurement. */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 25 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* ---- GPS power control ----
+	 * GPS_EN (P1.10). gnss-nmea-generic has no on-off-gpios property, so
+	 * ZephyrGPSManager drives this pin directly via the gps-enable alias to
+	 * power the M10 up/down for duty-cycled fixes. */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* ---- Haptic motor as buzzer ----
+	 * The vibration motor (P0.22) stands in for a piezo buzzer: message and
+	 * key-feedback "beeps" become haptic pulses, which is what a wearable
+	 * wants. Driven from PWM0. */
+	pwmbuzzer {
+		compatible = "pwm-leds";
+		buzzer: buzzer {
+			pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	/* ---- Battery ADC ----
+	 * AIN3 = P0.05. Divider ratio not published — 7236 assumes a 2:1 divider
+	 * (0.6V ref x 1/6 gain x 2.0 x 1000, +0.5% SAADC gain error). VERIFY
+	 * against the board and adjust vbat-mv-multiplier if the reported voltage
+	 * is off. */
+	zephyr,user {
+		io-channels = <&adc 3>;
+		vbat-mv-multiplier = <7236>;
+	};
+};
+
+/* ---- SoC configuration ---- */
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	/* Battery voltage on P0.05 (AIN3) */
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN3>;
+		zephyr,resolution = <12>;
+	};
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+/* ---- PWM0 for the haptic motor ---- */
+&pwm0 {
+	status = "okay";
+	pinctrl-0 = <&pwm0_default>;
+	pinctrl-1 = <&pwm0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* ---- GPS on UART0 (u-blox MIA-M10Q, 38400 baud) ----
+ * The M10 streams standard NMEA at power-on, so we use gnss-nmea-generic
+ * (passive listener) rather than a u-blox UBX driver — no config commands,
+ * no blocking init. GPS power is gated by the gps-enable alias (P1.10);
+ * deferred-init lets ZephyrGPSManager raise power before the driver probes. */
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <38400>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss {
+		compatible = "gnss-nmea-generic";
+		zephyr,deferred-init;
+	};
+};
+
+/* ---- I2C0: SSD1315 OLED (64x32 glass) ----
+ * SSD1315 is SSD1306-compatible; the solomon,ssd1306 driver drives it. No
+ * hardware reset line (SCREEN_RST = -1).
+ *
+ * The physical glass is only 64x32, mapped into the controller's 128x64 RAM
+ * at column 32 / row 32 — LilyGo's Display.ino inits Adafruit_SSD1306(128,64)
+ * then calls setOffsetCursor(32,32), i.e. content is drawn into the visible
+ * window at RAM (32,32). We express that as a 64x32 panel whose origin is
+ * segment 32 / page 4 (row 32 = page 4), while keeping the vendor's 128x64
+ * COM scan: multiplex-ratio 63, display-offset 0, alternative COM pins
+ * (NOT com-sequential). The offsets are inferred from the vendor example and
+ * may need bench trimming; if the window is misplaced, the usual alternate is
+ * multiplex-ratio 31 + display-offset 32 + page-offset 0.
+ *
+ * NOTE: this only fixes the panel geometry. ZephCore's UI is laid out for
+ * 128x64 — a 64x32 panel needs a simplified "tiny" UI (not yet in ZephCore;
+ * upstream MeshCore has a ui-tiny reference). Until then content will overflow
+ * the small window even though it is now positioned correctly. */
+&i2c0 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	/* TWIM DMA needs one contiguous buffer; SSD1306 driver sends
+	 * 1 control byte + 256B framebuffer chunks in one message. Default
+	 * 16B concat buffer drops every display flush. */
+	zephyr,concat-buf-size = <257>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	oled: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <64>;
+		height = <32>;
+		segment-offset = <32>;
+		page-offset = <4>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		prechargep = <0x22>;
+	};
+};
+
+/* ---- SPI2 for LoRa SX1262 ---- */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
+	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;   /* P1.14 LORA_CS */
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		/* LoRa control pins */
+		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;     /* P0.02 */
+		busy-gpios = <&gpio0 31 GPIO_ACTIVE_HIGH>;    /* P0.31 */
+		dio1-gpios = <&gpio0 29 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* P0.29 */
+
+		/* GPIO antenna switch (not DIO2). The patched native sx126x driver
+		 * drives tx-enable on TX and rx-enable on RX, both low in standby —
+		 * matching the RadioLib setRfSwitchPins(rxEn=VC2, txEn=VC1) call in
+		 * LilyGo's example. */
+		tx-enable-gpios = <&gpio1 13 GPIO_ACTIVE_HIGH>;  /* VC1 = P1.13 (TX) */
+		rx-enable-gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;   /* VC2 = P1.07 (RX) */
+
+		/* Embedded 32 MHz TCXO on the S62F module, fed via DIO3.
+		 * (AcSip S62F datasheet: "Embedded TCXO of 32MHz". Without DIO3
+		 * control the module has no clock and stays permanently BUSY.)
+		 * 1.8V mirrors the other LilyGo/ZephCore nRF SX1262 boards; the
+		 * LilyGo RadioLib example validated the 1.6V default, so drop to
+		 * SX126X_DIO3_TCXO_1V6 if the radio fails to start. */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		/* RX boosted mode for better sensitivity (matches Arduino default). */
+		rx-boosted;
+	};
+};
+
+/* ---- QSPI Flash — ZD25WQ32C 32Mbit (4MB) ----
+ * Same nordic,qspi-nor driver + LittleFS /ext automount as the MX25R parts on
+ * T-Echo/ThinkNode — no new driver and no formatter: a blank chip auto-formats
+ * on first mount (littlefs mount-fail -> format -> mount). Configured
+ * single-line (fastread/pp) for reliable bring-up; quad can be enabled later.
+ *
+ * All values below are datasheet-confirmed (Zetta ZD25WQ32C, 2022):
+ *   - JEDEC RDID (9Fh) = BA 60 16 (MID 0xBA Zetta, type 0x60, capacity 0x16).
+ *     The nordic driver hard-fails init (-ENODEV) on an ID mismatch, so this
+ *     must be exact for /ext to mount; identity/prefs stay on internal /lfs.
+ *   - Deep power-down (B9h) supported: tDP 3us, tRES1 8us — the 10us/35us
+ *     waits below are conservative and safe. */
+&qspi {
+	status = "okay";
+	pinctrl-0 = <&qspi_default>;
+	pinctrl-1 = <&qspi_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	qspi_flash: qspi_flash@0 {
+		compatible = "nordic,qspi-nor";
+		reg = <0>;
+		writeoc = "pp";
+		readoc = "fastread";
+		sck-frequency = <16000000>;
+		jedec-id = [ba 60 16];        /* ZD25WQ32C — Zetta datasheet Table-9 */
+		size = <33554432>;            /* size is in BITS: 32Mbit = 4MB */
+		has-dpd;
+		t-enter-dpd = <10000>;        /* tDP 3us (conservative) */
+		t-exit-dpd = <35000>;         /* tRES1 8us (conservative) */
+	};
+};
+
+/* ---- USB CDC for console / repeater CLI / USB companion ---- */
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* ---- Flash partitions (SoftDevice v6, app @ 0x26000) ---- */
+#include "../../common/nrf52_partitions_sdv6.dtsi"
+
+/* ---- External QSPI flash partitions ---- */
+&qspi_flash {
+	partitions {
+		compatible = "fixed-partitions";
+		#address-cells = <1>;
+		#size-cells = <1>;
+
+		/* Full 4MB for LittleFS storage */
+		qspi_storage_partition: partition@0 {
+			label = "qspi_storage";
+			reg = <0x00000000 0x00400000>;
+		};
+	};
+};
+
+/* ---- External QSPI /ext automount ---- */
+#include "../../common/qspi-ext.dtsi"
+#include "../../common/nrf52_wakeup.dtsi"

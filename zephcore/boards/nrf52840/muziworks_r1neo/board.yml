@@ -1,0 +1,10 @@
+# Copyright (c) 2026 ZephCore
+#
+# SPDX-License-Identifier: MIT
+
+board:
+  name: muziworks_r1neo
+  full_name: muzi works R1 Neo
+  vendor: muziworks
+  socs:
+    - name: nrf52840

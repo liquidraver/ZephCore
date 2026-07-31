@@ -1,0 +1,36 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Devicetree half of boards/common/pm_esp32.conf — auto-paired by
+ * zephcore_auto_pair_overlay() in CMakeLists.txt, so passing the .conf is
+ * enough; this file does not need to be listed separately.
+ */
+
+/*
+ * The RTC timer is the wake source for every timed sleep.  Upstream leaves it
+ * status = "disabled" (zephyr/dts/xtensa/espressif/esp32s3/esp32s3_common.dtsi),
+ * and soc/espressif/common/power.c checks for it in rtc_wakeup_enable():
+ * without a ready rtc_timer device it logs "Sleep skipped. Make sure
+ * '&rtc_timer' is enabled as a wakeup source." and returns false — so
+ * CONFIG_PM=y on its own is a silent no-op.  This is the single easiest thing
+ * to forget when enabling ESP32 PM.
+ */
+&rtc_timer {
+	status = "okay";
+	wakeup-source;
+};
+
+/*
+ * Arms the GPIO wake path.  gpio_esp32_pm_action() calls
+ * esp_sleep_enable_gpio_wakeup() on PM_DEVICE_ACTION_RESUME, but only when the
+ * PORT is wakeup-capable — that is what pm_device_wakeup_is_capable() tests,
+ * and it is set by this property.  Per-PIN arming is separate and comes from
+ * patches/zephyr/0012, which passes GPIO_INT_WAKEUP on the DIO1 configure.
+ * Both halves are needed: the port enables the wake source, the pin selects
+ * which line triggers it.
+ *
+ * gpio0 covers GPIO 0-31, which is where every RTC-capable pin lives on the
+ * S3 (0-21) — so this is also the only port that can carry a LoRa DIO1 wake.
+ */
+&gpio0 {
+	wakeup-source;
+};

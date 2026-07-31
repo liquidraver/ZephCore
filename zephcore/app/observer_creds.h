@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Observer runtime credentials — stored in LittleFS, configured via serial CLI.
  *
  * All connection parameters are runtime-configurable so no credentials ever

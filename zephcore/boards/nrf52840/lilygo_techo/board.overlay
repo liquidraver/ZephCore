@@ -3,5 +3,5 @@
  * This overlay is intentionally empty; all nodes live in lilygo_techo.dts.
  * Any user-level tweaks (e.g. swapping EPD rotation) can be added here.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */

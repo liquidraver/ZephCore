@@ -1,12 +1,11 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * CompanionMesh implementation
  */
 
 #include "CompanionMesh.h"
 #include <mesh/Utils.h>
 #include <helpers/TxtDataHelpers.h>
-#include <ed_25519.h>
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -16,10 +15,14 @@
 #include <ZephyrSensorManager.h>
 #include <adapters/sensors/SimpleLPP.h>
 #include <adapters/ble/ZephyrBLE.h>
-#if IS_ENABLED(CONFIG_ZEPHCORE_UI_BUTTONS) || IS_ENABLED(CONFIG_ZEPHCORE_UI_BUZZER) || IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
+#include <adapters/gps/ZephyrGPSManager.h>
+#include <helpers/time_sync.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
+#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #include <ui_task.h>
 #define ZEPHCORE_HAS_UI_TASK 1
 #endif
+#include <joystick_ui_hooks.h>
 LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 /* Protocol commands (matches Arduino companion_radio) - sorted by opcode */
@@ -80,6 +83,7 @@ LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #define CMD_SEND_CHANNEL_DATA       0x3E
 #define CMD_SET_DEFAULT_FLOOD_SCOPE 0x3F  /* v11+ */
 #define CMD_GET_DEFAULT_FLOOD_SCOPE 0x40  /* v11+ */
+#define CMD_SEND_RAW_PACKET         0x41  /* v12+ */
 
 /* Response packet types */
 #define PACKET_OK               0x00
@@ -131,6 +135,16 @@ static inline void put_le16(uint8_t *p, uint16_t v) { p[0] = v & 0xFF; p[1] = (v
 static inline void put_le32(uint8_t *p, uint32_t v) { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; p[2] = (v >> 16) & 0xFF; p[3] = (v >> 24) & 0xFF; }
 static inline uint32_t get_le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
 
+/* UI notification helper => path_len extraction + uniform call through ui_task.h */
+#if ZEPHCORE_HAS_UI_TASK
+static void notify_contact_msg_ui(
+	const ContactInfo &contact, mesh::Packet *pkt, const char *text, int queue_count
+){
+	uint8_t path_len = (pkt && pkt->isRouteFlood()) ? pkt->path_len : OUT_PATH_UNKNOWN;
+	ui_notify_contact_msg(path_len, contact.name, text, (uint16_t)queue_count);
+}
+#endif
+
 /* Allowed client repeat frequency ranges (matches Arduino) */
 struct FreqRange {
 	uint32_t lower_freq, upper_freq;
@@ -138,7 +152,7 @@ struct FreqRange {
 
 static const FreqRange repeat_freq_ranges[] = {
 	{ 433000, 433000 },   /* 433 MHz (ISM band) */
-	{ 869000, 869000 },   /* 869 MHz (EU ISM band) */
+	{ 869495, 869495 },   /* 869.495 MHz (EU 869.4-869.65 band, 10% DC, 500mW ERP) */
 	{ 918000, 918000 },   /* 918 MHz (US ISM band) */
 };
 
@@ -164,6 +178,8 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_pin_change_cb = nullptr;
 	_contact_iter_active = false;
 	_contact_iter_idx = 0;
+	_contact_iter_num = 0;
+	_contact_iter_vc = false;
 	_contact_iter_lastmod = 0;
 	_contact_iter_since = 0;
 	_offline_queue_head = 0;
@@ -182,13 +198,27 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_pending_telemetry = 0;
 	_pending_discovery = 0;
 	_pending_req = 0;
+#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
+	_pending_joystick_ping_tag = 0;
+	_pending_joystick_admin_tag = 0;
+#endif
 	_pending_channel_head = 0;
 	_pending_channel_tail = 0;
 	_pending_channel_count = 0;
+	memset(_pending_channel_idx, 0, sizeof(_pending_channel_idx));
 	_app_target_ver = 0;
 	_dirty_contacts_expiry = 0;
 	_dirty_channels_expiry = 0;
 	memset(_send_scope.key, 0, sizeof(_send_scope.key));
+	_send_scope_force_unscoped = false;
+	_vcontact_cli_cb = nullptr;
+	memset(_vcontact_pubkey, 0, sizeof(_vcontact_pubkey));
+	_vcontact_lastmod = 0;
+	memset(_vcontact_recent_ts, 0, sizeof(_vcontact_recent_ts));
+	_vcontact_recent_head = 0;
+	memset(_vcontact_pending, 0, sizeof(_vcontact_pending));
+	_vcontact_pending_count = 0;
+	_vcontact_hold_msgwait = false;
 	memset(&prefs, 0, sizeof(prefs));
 	prefs.node_lat = 0;
 	prefs.node_lon = 0;
@@ -197,11 +227,17 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 void CompanionMesh::begin()
 {
 	BaseChatMesh::begin();
-#ifdef CONFIG_ZEPHCORE_APC
-	_power_ctrl.setSF(prefs.sf);
-	_power_ctrl.setTargetMargin(prefs.apc_margin);
-	_power_ctrl.setEnabled(prefs.apc_enabled != 0);
-#endif
+
+	/* Derive the v-contact pubkey from our identity: stable per node, unique
+	 * per device. Deliberately NOT a real keypair — no private key exists
+	 * anywhere, so nothing addressed to this key is decryptable by anyone. */
+	deriveVContactKey();
+	/* Stamp lastmod only if a time source already ran (hardware RTC restore
+	 * happens before begin()). Otherwise stay deferred (lastmod = 0) until
+	 * vcontactClockSynced() — an advert stamped now would show as 1970. */
+	if (vcontactClockValid()) {
+		_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
+	}
 }
 
 bool CompanionMesh::allowPacketForward(const mesh::Packet *packet)
@@ -222,9 +258,15 @@ void CompanionMesh::sendFloodScoped(const TransportKey &scope, mesh::Packet *pkt
 	}
 }
 
-void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *pkt, uint32_t delay_millis)
+void CompanionMesh::sendFloodScopedDefault(mesh::Packet *pkt, uint32_t delay_millis)
 {
-	/* TODO: dynamic _send_scope, depending on recipient and current 'home' Region */
+	if (_send_scope_force_unscoped) {
+		TransportKey no_scope;
+		memset(no_scope.key, 0, sizeof(no_scope.key));
+		sendFloodScoped(no_scope, pkt, delay_millis);
+		return;
+	}
+
 	TransportKey default_scope;
 	memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
 
@@ -232,14 +274,39 @@ void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *
 	sendFloodScoped(scope, pkt, delay_millis);
 }
 
+void CompanionMesh::sendFloodScoped(const ContactInfo &recipient, mesh::Packet *pkt, uint32_t delay_millis)
+{
+	/* TODO: dynamic _send_scope, depending on recipient and current 'home' Region */
+	(void)recipient;
+	sendFloodScopedDefault(pkt, delay_millis);
+}
+
 void CompanionMesh::sendFloodScoped(const mesh::GroupChannel &channel, mesh::Packet *pkt, uint32_t delay_millis)
 {
 	/* TODO: have per-channel send_scope */
-	TransportKey default_scope;
-	memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
+	(void)channel;
+	sendFloodScopedDefault(pkt, delay_millis);
+}
 
-	const TransportKey &scope = _send_scope.isNull() ? default_scope : _send_scope;
-	sendFloodScoped(scope, pkt, delay_millis);
+bool CompanionMesh::sendSelfAdvert(bool flood)
+{
+	mesh::Packet *adv;
+	if (prefs.advert_loc_policy == 0) {  /* ADVERT_LOC_NONE */
+		adv = createSelfAdvert(prefs.node_name);
+	} else {
+		adv = createSelfAdvert(prefs.node_name, prefs.node_lat, prefs.node_lon);
+	}
+	if (!adv) {
+		return false;
+	}
+	if (flood) {
+		TransportKey default_scope;
+		memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
+		sendFloodScoped(default_scope, adv, (uint32_t)0);
+	} else {
+		sendZeroHop(adv);
+	}
+	return true;
 }
 
 bool CompanionMesh::onContactPathRecv(ContactInfo &from, uint8_t *in_path, uint8_t in_path_len,
@@ -252,7 +319,7 @@ bool CompanionMesh::onContactPathRecv(ContactInfo &from, uint8_t *in_path, uint8
 		if (tag == _pending_discovery) {
 			_pending_discovery = 0;
 
-			if (in_path_len <= MAX_PATH_SIZE && out_path_len <= MAX_PATH_SIZE) {
+			if (mesh::Packet::isValidPathLen(in_path_len) && mesh::Packet::isValidPathLen(out_path_len)) {
 				uint8_t rsp[172];
 				int i = 0;
 				rsp[i++] = PUSH_CODE_PATH_DISCOVERY_RESP;
@@ -260,11 +327,9 @@ bool CompanionMesh::onContactPathRecv(ContactInfo &from, uint8_t *in_path, uint8
 				memcpy(&rsp[i], from.id.pub_key, 6);
 				i += 6;
 				rsp[i++] = out_path_len;
-				memcpy(&rsp[i], out_path, out_path_len);
-				i += out_path_len;
+				i += mesh::Packet::writePath(&rsp[i], out_path, MAX_PATH_SIZE, out_path_len);
 				rsp[i++] = in_path_len;
-				memcpy(&rsp[i], in_path, in_path_len);
-				i += in_path_len;
+				i += mesh::Packet::writePath(&rsp[i], in_path, MAX_PATH_SIZE, in_path_len);
 				sendPush(rsp[0], &rsp[1], i - 1);
 			} else {
 				LOG_WRN("onContactPathRecv: invalid path sizes: out=%d in=%d",
@@ -291,6 +356,32 @@ void CompanionMesh::loop()
 	if (_dirty_channels_expiry && now >= _dirty_channels_expiry) {
 		flushDirtyChannels();
 	}
+}
+
+void CompanionMesh::onAdvertTimeSample(const mesh::Identity &id, uint32_t timestamp,
+				       uint8_t hops)
+{
+	/* Signature already verified by mesh::Mesh before this hook fires. */
+	_timesync.onAdvertHeard(id.pub_key, timestamp, hops,
+				(uint32_t)(k_uptime_get() / 1000));
+}
+
+void CompanionMesh::timeSyncTick()
+{
+	if (!prefs.meshtimesync) return;
+	/* Shared policy (suppression/pedigree, forward-only) lives in runTick;
+	 * no companion-side bookkeeping needs shifting on a step. */
+	_timesync.runTick(*getRTCClock());
+}
+
+void CompanionMesh::onLoginSent(const ContactInfo &contact)
+{
+	memcpy(&_pending_login, contact.id.pub_key, 4);
+}
+
+void CompanionMesh::onChannelAdded(ChannelDetails *)
+{
+	markChannelsDirty();
 }
 
 void CompanionMesh::markContactsDirty()
@@ -345,6 +436,16 @@ void CompanionMesh::sendPacketOk()
 void CompanionMesh::sendPacketError(uint8_t code)
 {
 	uint8_t rsp[] = { PACKET_ERROR, code };
+	writeFrame(rsp, sizeof(rsp));
+}
+
+void CompanionMesh::sendPacketSent(uint8_t result, uint32_t tag, uint32_t est_timeout)
+{
+	uint8_t rsp[10];
+	rsp[0] = PACKET_SENT;
+	rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
+	put_le32(&rsp[2], tag);
+	put_le32(&rsp[6], est_timeout);
 	writeFrame(rsp, sizeof(rsp));
 }
 
@@ -484,27 +585,18 @@ void CompanionMesh::confirmOfflineMessage()
 	_offline_queue_count--;
 }
 
-void CompanionMesh::resetContactIterator()
-{
-	if (_contact_iter_active) {
-		// Send contact end if interrupted
-		uint8_t rsp[5];
-		rsp[0] = PACKET_CONTACT_END;
-		put_le32(&rsp[1], _contact_iter_lastmod);
-		writeFrame(rsp, sizeof(rsp));
-	}
-	_contact_iter_active = false;
-}
-
 bool CompanionMesh::continueContactIteration()
 {
 	if (!_contact_iter_active) return false;
 
-	if (_contact_iter_idx < getNumContacts()) {
+	if (_contact_iter_idx < _contact_iter_num) {
 		ContactInfo c;
+		/* getContactByIdx bounds-checks against the live table, so a slot that
+		 * disappeared under us is skipped rather than read stale. */
 		if (getContactByIdx(_contact_iter_idx, c)) {
+			// Skip transient/anon contacts (ADV_TYPE_NONE) — never synced to the app.
 			// Apply 'since' filter - only send contacts modified after the timestamp
-			if (c.lastmod > _contact_iter_since) {
+			if (c.type != ADV_TYPE_NONE && c.lastmod > _contact_iter_since) {
 				if (c.lastmod > _contact_iter_lastmod) {
 					_contact_iter_lastmod = c.lastmod;
 				}
@@ -513,6 +605,24 @@ bool CompanionMesh::continueContactIteration()
 				if (!writeFrame(rsp, n)) {
 					return true;
 				}
+			}
+		}
+		_contact_iter_idx++;
+		return true;
+	} else if (_contact_iter_idx == _contact_iter_num) {
+		// Virtual tail entry: the v-contact (never in the real table).
+		// _contact_iter_vc implies lastmod != 0 — deferred (clock-invalid)
+		// state is excluded so the app never sees a 1970 timestamp.
+		if (_contact_iter_vc && _vcontact_lastmod > _contact_iter_since) {
+			if (_vcontact_lastmod > _contact_iter_lastmod) {
+				_contact_iter_lastmod = _vcontact_lastmod;
+			}
+			ContactInfo vc;
+			buildVContact(vc);
+			uint8_t rsp[CONTACT_FRAME_SIZE];
+			size_t n = serializeContact(rsp, vc, PACKET_CONTACT);
+			if (!writeFrame(rsp, n)) {
+				return true;  /* retry this step when TX drains */
 			}
 		}
 		_contact_iter_idx++;
@@ -583,15 +693,9 @@ bool CompanionMesh::onChannelLoaded(uint8_t idx, const ChannelDetails &ch)
 
 bool CompanionMesh::getChannelForSave(uint8_t idx, ChannelDetails &ch)
 {
-	// Only save channels that have content (non-empty name or non-zero secret)
-	if (getChannel(idx, ch)) {
-		// Check if channel has any content
-		if (ch.name[0] != '\0') return true;
-		// Check if secret is non-zero
-		static const uint8_t zeroes[32] = {0};
-		if (memcmp(ch.channel.secret, zeroes, 32) != 0) return true;
-	}
-	return false;
+	/* Keep fixed-slot channel serialization compatible with Arduino.
+	 * DataStore::saveChannels() expects contiguous indexes until false. */
+	return getChannel(idx, ch);
 }
 
 /* Storage interface */
@@ -620,7 +724,9 @@ void CompanionMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8
 		memcpy(ap->pubkey_prefix, contact.id.pub_key, 7);
 		memcpy(ap->name, contact.name, sizeof(ap->name));
 		ap->recv_timestamp = (uint32_t)getRTCClock()->getCurrentTime();
-		ap->path_len = mesh::Packet::copyPath(ap->path, path, path_len);
+		/* path source is from inbound advert; upstream parser bounds it within
+		 * the packet payload.  AdvertPath::path is MAX_PATH_SIZE-sized. */
+		ap->path_len = mesh::Packet::copyPath(ap->path, path, MAX_PATH_SIZE, path_len);
 		_next_advert_path_idx = (_next_advert_path_idx + 1) % ADVERT_PATH_TABLE_SIZE;
 	}
 
@@ -656,6 +762,12 @@ ContactInfo *CompanionMesh::processAck(const uint8_t *data)
 			return lookupContactByPubKey(ci.id.pub_key, PUB_KEY_SIZE);
 		}
 	}
+	{
+		uint8_t recipient_pubkey[6];
+		if (ui_joystick_try_match_ack(ack_crc, recipient_pubkey)) {
+			return lookupContactByPubKey(recipient_pubkey, 6);
+		}
+	}
 	return checkConnectionsAck(data);
 }
 
@@ -675,8 +787,7 @@ void CompanionMesh::onMessageRecv(const ContactInfo &contact, mesh::Packet *pkt,
 	queueContactMessage(contact, pkt, TXT_TYPE_PLAIN, sender_timestamp, nullptr, 0, text);
 	sendPush(PUSH_CODE_MSG_WAITING);
 #if ZEPHCORE_HAS_UI_TASK
-	ui_set_msg_count((uint16_t)_offline_queue_count);
-	ui_notify(UI_EVENT_CONTACT_MSG);
+	notify_contact_msg_ui(contact, pkt, text, _offline_queue_count);
 #endif
 }
 
@@ -702,8 +813,7 @@ void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet
 	memcpy(&frame[i], contact.id.pub_key, 6);
 	i += 6;
 
-	// path_len: 0xFF if direct, else actual path_len
-	frame[i++] = (pkt && pkt->isRouteFlood()) ? pkt->path_len : 0xFF;
+	frame[i++] = (pkt && pkt->isRouteFlood()) ? pkt->path_len : OUT_PATH_UNKNOWN;
 
 	// txt_type
 	frame[i++] = txt_type;
@@ -730,6 +840,459 @@ void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet
 	queueOfflineMessage(frame, i);
 }
 
+/* ========== V-contact: loopback admin contact ==========
+ * A synthesized CHAT contact ("v<node_name>") that exists only toward the
+ * connected BLE/USB app. Chat messages to it run the text CLI; replies and
+ * unsolicited notices (battery alert, restart reason) come back as normal
+ * contact messages via the offline queue. Invariants:
+ *   - never enters the real contacts table (and thus never the RF RX
+ *     matching path) — CMD_ADD_UPDATE_CONTACT is intercepted to a no-op OK;
+ *   - no packet object is ever created for it — interception happens before
+ *     any sendMessage/sendRequest path, so nothing can reach the radio;
+ *   - its pubkey is SHA256-derived with no private key, so even hand-crafted
+ *     over-the-air traffic addressed to it is undecryptable and dropped. */
+
+void CompanionMesh::buildVContact(ContactInfo &c) const
+{
+	memcpy(c.id.pub_key, _vcontact_pubkey, PUB_KEY_SIZE);
+	c.type = ADV_TYPE_CHAT;
+	c.flags = 0;
+	c.out_path_len = 0;  /* zero-hop direct — renders as "0 hops" in the app */
+	c.shared_secret_valid = false;
+	memset(c.out_path, 0, sizeof(c.out_path));
+	c.name[0] = 'v';
+	StrHelper::strzcpy(&c.name[1], prefs.node_name, sizeof(c.name) - 1);
+	c.last_advert_timestamp = _vcontact_lastmod;
+	c.lastmod = _vcontact_lastmod;
+	c.gps_lat = 0;
+	c.gps_lon = 0;
+	c.sync_since = 0;
+}
+
+bool CompanionMesh::isVContactKey(const uint8_t *key, int prefix_len) const
+{
+	if (!isVContactEnabled()) return false;
+	if (prefix_len > PUB_KEY_SIZE) prefix_len = PUB_KEY_SIZE;
+	return memcmp(key, _vcontact_pubkey, prefix_len) == 0;
+}
+
+bool CompanionMesh::vcontactClockValid()
+{
+	/* Anything before the firmware build epoch is a never-synced clock. */
+	return (uint32_t)getRTCClock()->getCurrentTime() >= (uint32_t)FIRMWARE_BUILD_EPOCH;
+}
+
+void CompanionMesh::vcontactClockSynced()
+{
+	if (!isVContactEnabled() || !vcontactClockValid()) {
+		return;
+	}
+	if (_vcontact_lastmod == 0) {
+		/* Deferred activation: first valid time source — stamp and announce.
+		 * From here the contact also appears in CMD_GET_CONTACTS syncs. */
+		vcontactPushAdvert();
+	}
+	/* Flush notices buffered while the clock was invalid; queueing them now
+	 * gives them real timestamps instead of 1970. */
+	for (uint8_t i = 0; i < _vcontact_pending_count; i++) {
+		vcontactQueueText(_vcontact_pending[i]);
+	}
+	_vcontact_pending_count = 0;
+}
+
+void CompanionMesh::vcontactQueueText(const char *text)
+{
+	/* Offline-queue frames cap at 172 bytes and the V3 header takes 16, so
+	 * split long CLI replies into <=150-char chunks, preferring line breaks.
+	 * Each chunk becomes its own chat message; getCurrentTimeUnique() keeps
+	 * their timestamps strictly increasing so the app orders them. */
+	static const size_t CHUNK_MAX = 150;
+	ContactInfo vc;
+	buildVContact(vc);
+
+	const char *p = text;
+	size_t remaining = strlen(text);
+	while (remaining > 0) {
+		size_t take = remaining;
+		if (take > CHUNK_MAX) {
+			take = CHUNK_MAX;
+			for (size_t i = take; i > CHUNK_MAX / 2; i--) {
+				if (p[i - 1] == '\n') { take = i; break; }
+			}
+		}
+		char chunk[CHUNK_MAX + 1];
+		memcpy(chunk, p, take);
+		chunk[take] = '\0';
+		size_t adv = take;
+		for (size_t i = 0; i < take; i++) {
+			if (chunk[i] == '\r') chunk[i] = ' ';  /* CRLF CLI output → LF */
+		}
+		while (take > 0 && (chunk[take - 1] == '\n' || chunk[take - 1] == ' ')) {
+			chunk[--take] = '\0';  /* trim trailing break of this bubble */
+		}
+		if (take > 0) {
+			queueContactMessage(vc, nullptr, TXT_TYPE_PLAIN,
+				getRTCClock()->getCurrentTimeUnique(), nullptr, 0, chunk);
+		}
+		p += adv;
+		remaining -= adv;
+	}
+	/* Suppress the "you have messages" prompt during the app's initial sync
+	 * (CMD_APP_START until the first PACKET_NO_MORE_MSGS). Sent mid-sync it
+	 * makes the app interleave message-sync into the contact stream and
+	 * truncate it. The message is already safe in the offline queue and the
+	 * app's own initial message-sync drains it — so no prompt is needed inside
+	 * the window. Outside it, the prompt goes out immediately. */
+	if (!_vcontact_hold_msgwait) {
+		sendPush(PUSH_CODE_MSG_WAITING);
+	}
+}
+
+void CompanionMesh::vcontactNotify(const char *text)
+{
+	if (!isVContactEnabled() || !text || !text[0]) return;
+	LOG_INF("vcontact notify: %s", text);
+	if (!vcontactClockValid()) {
+		/* Clock never synced — a message queued now would show as 1970.
+		 * Buffer it; vcontactClockSynced() flushes with a real timestamp.
+		 * Drop-oldest when full (restart reason + battery is the whole
+		 * expected population). */
+		if (_vcontact_pending_count >= (uint8_t)ARRAY_SIZE(_vcontact_pending)) {
+			memmove(_vcontact_pending[0], _vcontact_pending[1],
+				sizeof(_vcontact_pending[0]) * (ARRAY_SIZE(_vcontact_pending) - 1));
+			_vcontact_pending_count = ARRAY_SIZE(_vcontact_pending) - 1;
+		}
+		strncpy(_vcontact_pending[_vcontact_pending_count], text,
+			sizeof(_vcontact_pending[0]) - 1);
+		_vcontact_pending[_vcontact_pending_count][sizeof(_vcontact_pending[0]) - 1] = '\0';
+		_vcontact_pending_count++;
+		return;
+	}
+	vcontactQueueText(text);
+}
+
+void CompanionMesh::deriveVContactKey()
+{
+	/* v-contact pubkey = SHA256("zc-vcontact" || self pubkey). Re-run whenever
+	 * the identity changes (boot, CMD_IMPORT_PRIVATE_KEY) so the key always
+	 * tracks the current identity. */
+	static const char vc_salt[] = "zc-vcontact";
+	mesh::Utils::sha256(_vcontact_pubkey, PUB_KEY_SIZE,
+		(const uint8_t *)vc_salt, sizeof(vc_salt) - 1,
+		self_id.pub_key, PUB_KEY_SIZE);
+}
+
+void CompanionMesh::vcontactPushAdvert()
+{
+	if (!isVContactEnabled()) return;
+	if (!vcontactClockValid()) {
+		/* Defer — an advert stamped now would carry a 1970 timestamp.
+		 * vcontactClockSynced() re-runs this once a time source arrives. */
+		return;
+	}
+	/* Bump lastmod so incremental contact syncs (since > 0) pick up the
+	 * rename/re-enable. */
+	_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
+	ContactInfo vc;
+	buildVContact(vc);
+	uint8_t rsp[CONTACT_FRAME_SIZE];
+	size_t n = serializeContact(rsp, vc);  /* no header — push code is separate */
+	sendPush(PUSH_CODE_NEW_ADVERT, rsp, n);
+}
+
+void CompanionMesh::vcontactPushDeleted()
+{
+	sendPush(PUSH_CODE_CONTACT_DELETED, _vcontact_pubkey, PUB_KEY_SIZE);
+}
+
+bool CompanionMesh::vcontactHandleFrame(const uint8_t *data, size_t len)
+{
+	if (!isVContactEnabled()) return false;
+
+	switch (data[0]) {
+	case CMD_SEND_TXT_MSG:
+		/* Same frame layout as the real handler: cmd(1) + txt_type(1) +
+		 * attempt(1) + timestamp(4) + pub_key_prefix(6) + text(N). */
+		if (len >= 14 && isVContactKey(&data[7], 6)) {
+			uint8_t txt_type = data[1];
+			if (txt_type != TXT_TYPE_PLAIN && txt_type != TXT_TYPE_CLI_DATA) {
+				sendPacketError(ERR_UNSUPPORTED);
+				return true;
+			}
+			uint32_t msg_timestamp = get_le32(&data[3]);
+
+			/* Extract the text now — needed both for the ack hash below and
+			 * for the CLI call. */
+			char line[MAX_TEXT_LEN + 1];
+			size_t text_len = len - 13;
+			if (text_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN;
+			memcpy(line, &data[13], text_len);
+			line[text_len] = '\0';
+
+			/* Compute the SAME delivery-ack the app expects for this exact
+			 * (timestamp, attempt, text): sha256 over ts(4) + (attempt&3)(1) +
+			 * text, salted with our pubkey — identical to composeMsgPacket() on
+			 * the real send path. The old code sent a RANDOM ack, which never
+			 * matched the value the app derives locally, so the app treated the
+			 * loopback message as un-acked and resent it once (attempt=1) a few
+			 * seconds later → duplicate reply. Emitting the correct SENT +
+			 * CONFIRMED up front (before the CLI runs) settles the app at once. */
+			uint8_t hbuf[5 + MAX_TEXT_LEN];
+			memcpy(hbuf, &data[3], 4);          /* timestamp, on-wire LE bytes */
+			hbuf[4] = (data[2] & 3);            /* attempt & 3 */
+			memcpy(&hbuf[5], line, text_len);
+			uint32_t ack = 0;
+			mesh::Utils::sha256((uint8_t *)&ack, 4, hbuf, 5 + text_len,
+				self_id.pub_key, PUB_KEY_SIZE);
+			if (ack == 0) ack = 1;
+
+			sendPacketSent(MSG_SEND_SENT_DIRECT, ack, 3000);
+			uint8_t ack_push[8];
+			memcpy(ack_push, &ack, 4);
+			memset(&ack_push[4], 0, 4);         /* trip time: 0 ms */
+			sendPush(PUSH_CODE_SEND_CONFIRMED, ack_push, 8);
+
+			/* Dedupe app resends: a retry reuses the message timestamp (only
+			 * the attempt byte changes). The correct ack above should stop most
+			 * retries, but a CONFIRMED lost under BLE congestion still triggers
+			 * one — and it lands after other messages, so match against a ring
+			 * of recent timestamps (a single last-seen slot misses it). A
+			 * surviving retry re-acks (done above) without re-running the CLI. */
+			bool dup = false;
+			if (msg_timestamp != 0) {
+				for (uint8_t i = 0; i < VCONTACT_DEDUP_SLOTS; i++) {
+					if (_vcontact_recent_ts[i] == msg_timestamp) { dup = true; break; }
+				}
+				if (!dup) {
+					_vcontact_recent_ts[_vcontact_recent_head] = msg_timestamp;
+					_vcontact_recent_head =
+						(_vcontact_recent_head + 1) % VCONTACT_DEDUP_SLOTS;
+				}
+			}
+
+			if (!dup) {
+				/* Phone keyboards autocapitalize the first letter of a
+				 * chat line, so a v-contact command arrives as "Get cad".
+				 * Fold character 0 only.
+				 *
+				 * Safe by construction: character 0 is always inside the
+				 * command verb -- no CLI command takes an argument at
+				 * position 0 -- so this cannot alter a value.  Deliberately
+				 * NOT generalized beyond one character: the previous attempt
+				 * folded the first two whitespace-delimited tokens and
+				 * silently lowercased admin passwords (see the comment above
+				 * CommonCLI::handleCommand in helpers/CommonCLI.cpp).
+				 *
+				 * Must stay after the delivery-ack hash above, which covers
+				 * the original text the app will match against. */
+				if (line[0] >= 'A' && line[0] <= 'Z') {
+					line[0] = (char)(line[0] - 'A' + 'a');
+				}
+
+				LOG_INF("vcontact CLI: '%s'", line);
+				char reply[VCONTACT_CLI_REPLY_SIZE];
+				reply[0] = '\0';
+				if (_vcontact_cli_cb) {
+					_vcontact_cli_cb(line, reply);
+				} else {
+					strcpy(reply, "CLI not available");
+				}
+				if (reply[0] != '\0') {
+					vcontactQueueText(reply);
+				}
+			} else {
+				LOG_DBG("vcontact CLI: dup ts=%u, re-ack only", msg_timestamp);
+			}
+			return true;
+		}
+		return false;
+
+	case CMD_GET_CONTACT_BY_KEY:
+		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
+			ContactInfo vc;
+			buildVContact(vc);
+			uint8_t rsp[CONTACT_FRAME_SIZE];
+			size_t n = serializeContact(rsp, vc, PACKET_CONTACT);
+			writeFrame(rsp, n);
+			return true;
+		}
+		return false;
+
+	case CMD_GET_ADVERT_PATH:
+		/* The v-contact appears in the app's contact list, so the app queries
+		 * its advert path (at connect, and around a config/identity import). The
+		 * v-contact has no over-the-air advert, so the real handler's
+		 * findAdvertPath() misses and returns ERR_NOT_FOUND — which the app
+		 * surfaces as a fatal "not found" that aborts the whole operation. The
+		 * v-contact IS this node (loopback), so its path is direct (zero hops):
+		 * answer that here, before the real handler runs. Frame layout matches
+		 * the real handler: [cmd][reserved][7-byte pubkey prefix]. */
+		if (len >= 2 + 7 && isVContactKey(&data[2], 7)) {
+			uint8_t rsp[6];
+			size_t i = 0;
+			rsp[i++] = PACKET_ADVERT_PATH;
+			put_le32(&rsp[i], _vcontact_lastmod ? _vcontact_lastmod
+				: (uint32_t)getRTCClock()->getCurrentTime()); i += 4;
+			rsp[i++] = 0;  // path_len = 0 → direct (zero hop)
+			writeFrame(rsp, i);
+			return true;
+		}
+		return false;
+
+	case CMD_ADD_UPDATE_CONTACT:
+	case CMD_RESET_PATH:
+		/* Never let the v-contact into the real contacts table (it must stay
+		 * out of the RF RX matching path); path resets are meaningless for a
+		 * loopback contact. Reply OK so app-side flows don't surface errors. */
+		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
+			sendPacketOk();
+			return true;
+		}
+		return false;
+
+	case CMD_REMOVE_CONTACT:
+		/* App-side delete turns the feature off (mirrors user intent);
+		 * `set v.contact on` (USB CLI) brings it back. */
+		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
+			prefs.v_contact_enabled = 0;
+			_store->savePrefs(prefs);
+			sendPacketOk();
+			return true;
+		}
+		return false;
+
+	case CMD_SEND_TELEMETRY_REQ:
+		/* Contact telemetry request: [cmd][3 reserved][32-byte pubkey].
+		 * The v-contact represents THIS node, so its telemetry is our own
+		 * self-telemetry. Synthesize the SENT ack the app blocks on, then push
+		 * a TELEMETRY_RESPONSE tagged with the v-contact key so the app matches
+		 * it to the loopback contact. (Real contacts fall through to the async
+		 * RF path below; the loopback key just isn't in the contacts table.) */
+		if (len >= 4 + PUB_KEY_SIZE && isVContactKey(&data[4], PUB_KEY_SIZE)) {
+			uint32_t tag = 0;
+			getRNG()->random((uint8_t *)&tag, 4);
+			if (tag == 0) tag = 1;
+			sendPacketSent(MSG_SEND_SENT_DIRECT, tag, 3000);
+
+			uint8_t rsp[8 + 4 + 11 + 11 + (12 * POWER_MAX_CHANNELS) + 8];
+			int i = 0;
+			rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
+			rsp[i++] = 0;  /* reserved */
+			memcpy(&rsp[i], _vcontact_pubkey, 6);
+			i += 6;
+			i += appendSelfTelemetry(&rsp[i],
+				TELEM_PERM_BASE | TELEM_PERM_LOCATION | TELEM_PERM_ENVIRONMENT);
+			sendPush(rsp[0], &rsp[1], i - 1);
+			return true;
+		}
+		return false;
+
+	default:
+		/* Every other pubkey-addressed opcode (login, binary req,
+		 * path discovery, export, ...) resolves the contact via
+		 * lookupContactByPubKey(); the v-contact is never in the table, so
+		 * they fail with ERR_NOT_FOUND before any packet exists. */
+		return false;
+	}
+}
+
+void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
+	uint32_t timestamp, const char *text, bool delivered)
+{
+	if (!text) return;
+	uint8_t frame[MAX_FRAME_SIZE];
+	int i = 0;
+
+	if (_app_target_ver >= 3) {
+		frame[i++] = PACKET_CONTACT_MSG_V3;
+		frame[i++] = 0;  // SNR (local origin, no incoming packet)
+		frame[i++] = 0;  // reserved1
+		frame[i++] = 0;  // reserved2
+	} else {
+		frame[i++] = PACKET_CONTACT_MSG_RECV;
+	}
+	memcpy(&frame[i], contact.id.pub_key, 6);
+	i += 6;
+	/* path_len = 0 → phone app renders "0 hops" / direct. OUT_PATH_SENT
+	 * (0xFE) gets misrendered as "62 hops" because the app does
+	 * path_len & 63 unconditionally. We're not over the air for the
+	 * BLE-app mirror; "0 hops between sender and viewer" is literally
+	 * true when you sent it yourself. */
+	frame[i++] = 0;
+	frame[i++] = TXT_TYPE_PLAIN;
+	put_le32(&frame[i], timestamp);
+	i += 4;
+
+	/* DM wire-text has no sender prefix (the sender is the pubkey field).
+	 * For local-sent mirrors the phone app would otherwise show them as
+	 * messages *from* the contact, indistinguishable from incoming. Prepend
+	 * a visible delivery indicator so the user can tell at a glance both
+	 * which side sent it and whether it was acked. */
+	const char *marker = delivered ? "(>>\xe2\x9c\x93) "    /* (>>✓) UTF-8 */
+								   : "(>>\xe2\x9c\x97) ";   /* (>>✗) UTF-8 */
+	size_t marker_len = strlen(marker);
+	if (i + marker_len <= sizeof(frame)) {
+		memcpy(&frame[i], marker, marker_len);
+		i += marker_len;
+	}
+	size_t text_len = strlen(text);
+	if (i + text_len > sizeof(frame)) {
+		text_len = sizeof(frame) - i;
+	}
+	memcpy(&frame[i], text, text_len);
+	i += text_len;
+
+	LOG_DBG("queueLocalSentContactMessage: frame_len=%d delivered=%d", i, (int)delivered);
+	queueOfflineMessage(frame, i);
+	sendPush(PUSH_CODE_MSG_WAITING);
+}
+
+void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
+	uint32_t timestamp, const char *text, bool heard_repeat)
+{
+	if (!text) return;
+	uint8_t frame[MAX_FRAME_SIZE];
+	int i = 0;
+
+	if (_app_target_ver >= 3) {
+		frame[i++] = PACKET_CHANNEL_MSG_V3;
+		frame[i++] = 0;  // SNR
+		frame[i++] = 0;  // reserved1
+		frame[i++] = 0;  // reserved2
+	} else {
+		frame[i++] = PACKET_CHANNEL_MSG_RECV;
+	}
+	frame[i++] = channel_idx;
+	/* path_len = 0 (matches the DM mirror — phone renders "0 hops"
+	 * instead of garbled-modulo-63 for OUT_PATH_SENT). */
+	frame[i++] = 0;
+	frame[i++] = TXT_TYPE_PLAIN;
+	put_le32(&frame[i], timestamp);
+	i += 4;
+
+	/* Channel wire-text is "<sender_name>: <body>" — the same prefix
+	 * BaseChatMesh::sendGroupMessage applied over LoRa.  Prepend a
+	 * heard/unheard marker so the phone app can distinguish whether the
+	 * mesh propagated our flood. */
+	const char *marker = heard_repeat ? "(>>\xe2\x9c\x93) "    /* (>>✓) UTF-8 */
+									  : "(>>\xe2\x9c\x97) ";   /* (>>✗) UTF-8 */
+	int n = snprintf((char *)&frame[i], sizeof(frame) - i, "%s%s: ", marker, prefs.node_name);
+	if (n < 0) n = 0;
+	if ((size_t)n > sizeof(frame) - i) n = sizeof(frame) - i;
+	i += n;
+	size_t text_len = strlen(text);
+	if (i + text_len > sizeof(frame)) {
+		text_len = sizeof(frame) - i;
+	}
+	memcpy(&frame[i], text, text_len);
+	i += text_len;
+
+	LOG_DBG("queueLocalSentChannelMessage: frame_len=%d channel_idx=%d heard=%d",
+		i, channel_idx, (int)heard_repeat);
+	queueOfflineMessage(frame, i);
+	sendPush(PUSH_CODE_MSG_WAITING);
+}
+
 void CompanionMesh::onCommandDataRecv(const ContactInfo &contact, mesh::Packet *pkt,
 	uint32_t sender_timestamp, const char *text)
 {
@@ -739,6 +1302,10 @@ void CompanionMesh::onCommandDataRecv(const ContactInfo &contact, mesh::Packet *
 	markConnectionActive(contact);
 	queueContactMessage(contact, pkt, TXT_TYPE_CLI_DATA, sender_timestamp, nullptr, 0, text);
 	sendPush(PUSH_CODE_MSG_WAITING);
+	{
+		struct ui_joystick_cli_data cli = { text };
+		ui_notify_joystick_event(UI_JOYSTICK_CLI_RESPONSE, contact.id.pub_key, &cli);
+	}
 }
 
 void CompanionMesh::onSignedMessageRecv(const ContactInfo &contact, mesh::Packet *pkt,
@@ -753,8 +1320,7 @@ void CompanionMesh::onSignedMessageRecv(const ContactInfo &contact, mesh::Packet
 	queueContactMessage(contact, pkt, TXT_TYPE_SIGNED_PLAIN, sender_timestamp, sender_prefix, 4, text);
 	sendPush(PUSH_CODE_MSG_WAITING);
 #if ZEPHCORE_HAS_UI_TASK
-	ui_set_msg_count((uint16_t)_offline_queue_count);
-	ui_notify(UI_EVENT_CONTACT_MSG);
+	notify_contact_msg_ui(contact, pkt, text, _offline_queue_count);
 #endif
 }
 
@@ -765,7 +1331,12 @@ uint32_t CompanionMesh::calcFloodTimeoutMillisFor(uint32_t pkt_airtime_millis) c
 
 uint32_t CompanionMesh::calcDirectTimeoutMillisFor(uint32_t pkt_airtime_millis, uint8_t path_len) const
 {
-	return 500 + (uint32_t)((pkt_airtime_millis * 6.0f + 250) * (path_len + 1));
+	/* path_len is the packed hash-size-encoded byte (top 2 bits = hash_size-1,
+	 * bottom 6 = hop count) — mask to the real hop count before scaling, or
+	 * any path learned at path_hash_mode>0 inflates this by up to ~17x
+	 * (e.g. a 3-hop path at 2-byte hashes encodes as 67, not 3). */
+	uint8_t path_hash_count = path_len & 63;
+	return 500 + (uint32_t)((pkt_airtime_millis * 6.0f + 250) * (path_hash_count + 1));
 }
 
 void CompanionMesh::onSendTimeout()
@@ -797,8 +1368,8 @@ void CompanionMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh
 	uint8_t channel_idx = findChannelIdx(channel);
 	frame[i++] = channel_idx;
 
-	// path_len: 0xFF if direct, else actual path_len
-	frame[i++] = (pkt && pkt->isRouteFlood()) ? pkt->path_len : 0xFF;
+	uint8_t path_len = (pkt && pkt->isRouteFlood()) ? pkt->path_len : OUT_PATH_UNKNOWN;
+	frame[i++] = path_len;
 
 	// txt_type
 	frame[i++] = TXT_TYPE_PLAIN;
@@ -819,8 +1390,14 @@ void CompanionMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh
 	queueOfflineMessage(frame, i);
 	sendPush(PUSH_CODE_MSG_WAITING);
 #if ZEPHCORE_HAS_UI_TASK
-	ui_set_msg_count((uint16_t)_offline_queue_count);
-	ui_notify(UI_EVENT_CHANNEL_MSG);
+	{
+		ChannelDetails ch;
+		const char *ch_name = "";
+		if (getChannel(channel_idx, ch)) ch_name = ch.name;
+		ui_notify_channel_msg(
+			ch_name, text, timestamp, path_len, (uint16_t)_offline_queue_count
+		);
+	}
 #endif
 }
 
@@ -842,7 +1419,7 @@ void CompanionMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::P
 
 	uint8_t channel_idx = findChannelIdx(channel);
 	frame[i++] = channel_idx;
-	frame[i++] = (pkt && pkt->isRouteFlood()) ? pkt->path_len : 0xFF;
+	frame[i++] = (pkt && pkt->isRouteFlood()) ? pkt->path_len : OUT_PATH_UNKNOWN;
 	frame[i++] = (uint8_t)(data_type & 0xFF);
 	frame[i++] = (uint8_t)(data_type >> 8);
 	frame[i++] = (uint8_t)data_len;
@@ -857,6 +1434,138 @@ void CompanionMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::P
 		i, channel_idx, (int)data_type);
 	queueOfflineMessage(frame, i);
 	sendPush(PUSH_CODE_MSG_WAITING);
+}
+
+int CompanionMesh::appendSelfTelemetry(uint8_t *reply, uint8_t permissions)
+{
+	int i = 0;
+	const uint8_t CH_SELF = 1;
+
+	// Battery voltage: [channel][LPP_VOLTAGE=116][2-byte 0.01V big-endian]
+	uint16_t batt_mv = _batt_cb ? _batt_cb() : 0;
+	reply[i++] = CH_SELF;
+	reply[i++] = 116;  // LPP_VOLTAGE
+	uint16_t batt_scaled = batt_mv / 10;
+	reply[i++] = (batt_scaled >> 8) & 0xFF;
+	reply[i++] = batt_scaled & 0xFF;
+
+	// GPS position if authorized and available
+	if (permissions & TELEM_PERM_LOCATION) {
+		struct gps_position pos;
+		if (gps_is_available() && gps_get_last_known_position(&pos)) {
+			reply[i++] = CH_SELF;
+			reply[i++] = 136;  // LPP_GPS
+			int32_t lat = (int32_t)(pos.latitude_ndeg / 100000);
+			int32_t lon = (int32_t)(pos.longitude_ndeg / 100000);
+			int32_t alt = pos.altitude_mm / 10;
+			reply[i++] = (lat >> 16) & 0xFF;
+			reply[i++] = (lat >> 8) & 0xFF;
+			reply[i++] = lat & 0xFF;
+			reply[i++] = (lon >> 16) & 0xFF;
+			reply[i++] = (lon >> 8) & 0xFF;
+			reply[i++] = lon & 0xFF;
+			reply[i++] = (alt >> 16) & 0xFF;
+			reply[i++] = (alt >> 8) & 0xFF;
+			reply[i++] = alt & 0xFF;
+		} else if (prefs.node_lat != 0 || prefs.node_lon != 0) {
+			// Use configured position
+			reply[i++] = CH_SELF;
+			reply[i++] = 136;  // LPP_GPS
+			int32_t lat = (int32_t)(prefs.node_lat * 10000);
+			int32_t lon = (int32_t)(prefs.node_lon * 10000);
+			int32_t alt = 0;
+			reply[i++] = (lat >> 16) & 0xFF;
+			reply[i++] = (lat >> 8) & 0xFF;
+			reply[i++] = lat & 0xFF;
+			reply[i++] = (lon >> 16) & 0xFF;
+			reply[i++] = (lon >> 8) & 0xFF;
+			reply[i++] = lon & 0xFF;
+			reply[i++] = (alt >> 16) & 0xFF;
+			reply[i++] = (alt >> 8) & 0xFF;
+			reply[i++] = alt & 0xFF;
+		}
+	}
+
+	/* Sensors are read once here.  External temp/humidity/pressure require
+	 * TELEM_PERM_ENVIRONMENT, but the MCU die temperature is reported under
+	 * base permission — matching Arduino MeshCore (15e259c5) and ZephCore's
+	 * own repeater/room-server telemetry, neither of which gates it. */
+	struct env_data env;
+	bool env_ok = (env_sensors_read(&env) == 0);
+	bool temp_reported = false;
+
+	if (permissions & TELEM_PERM_ENVIRONMENT) {
+		if (env_ok) {
+			if (env.has_temperature) {
+				temp_reported = true;
+				reply[i++] = CH_SELF;
+				reply[i++] = LPP_TEMPERATURE;
+				int16_t temp = (int16_t)(env.temperature_c * 10);
+				reply[i++] = (temp >> 8) & 0xFF;
+				reply[i++] = temp & 0xFF;
+			}
+			if (env.has_humidity) {
+				reply[i++] = CH_SELF;
+				reply[i++] = LPP_RELATIVE_HUMIDITY;
+				reply[i++] = (uint8_t)(env.humidity_pct * 2);
+			}
+			if (env.has_pressure) {
+				reply[i++] = CH_SELF;
+				reply[i++] = LPP_BAROMETRIC_PRESSURE;
+				uint16_t press = (uint16_t)(env.pressure_hpa * 10);
+				reply[i++] = (press >> 8) & 0xFF;
+				reply[i++] = press & 0xFF;
+			}
+		}
+
+		// Power monitor telemetry (INA219/INA3221/ina2xx)
+		if (power_sensors_available()) {
+			struct power_data pwr;
+			if (power_sensors_read(&pwr) == 0) {
+				uint8_t ch = CH_SELF + 1;
+				for (int j = 0; j < pwr.num_channels; j++) {
+					if (pwr.channels[j].valid) {
+						// Voltage: [ch][LPP_VOLTAGE=116][2-byte 0.01V]
+						reply[i++] = ch;
+						reply[i++] = 116;
+						uint16_t v = (uint16_t)(pwr.channels[j].voltage_v * 100);
+						reply[i++] = (v >> 8) & 0xFF;
+						reply[i++] = v & 0xFF;
+						// Current: [ch][LPP_CURRENT=117][2-byte 0.001A]
+						reply[i++] = ch;
+						reply[i++] = 117;
+						uint16_t c = (uint16_t)(pwr.channels[j].current_a * 1000);
+						reply[i++] = (c >> 8) & 0xFF;
+						reply[i++] = c & 0xFF;
+						// Power: [ch][LPP_POWER=128][2-byte 1W]
+						reply[i++] = ch;
+						reply[i++] = 128;
+						uint16_t p = (uint16_t)(pwr.channels[j].power_w);
+						reply[i++] = (p >> 8) & 0xFF;
+						reply[i++] = p & 0xFF;
+						ch++;
+					}
+				}
+			}
+		}
+	}
+
+	/* MCU die temperature — reported under base permission, but only when no
+	 * external sensor already supplied a CH_SELF temperature (never emit two). */
+	if (!temp_reported && env_ok && env.has_mcu_temperature) {
+		reply[i++] = CH_SELF;
+		reply[i++] = LPP_TEMPERATURE;
+		int16_t temp = (int16_t)(env.mcu_temperature_c * 10);
+		reply[i++] = (temp >> 8) & 0xFF;
+		reply[i++] = temp & 0xFF;
+	}
+
+	// Trigger GPS wake for fresh fix on next request
+	if (gps_is_available() && gps_is_enabled()) {
+		gps_request_fresh_fix();
+	}
+
+	return i;
 }
 
 uint8_t CompanionMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp,
@@ -897,136 +1606,24 @@ uint8_t CompanionMesh::onContactRequest(const ContactInfo &contact, uint32_t sen
 		if (permissions & TELEM_PERM_BASE) {
 			LOG_INF("onContactRequest: telemetry authorized (perms=0x%02x)", permissions);
 
-			// Build Cayenne LPP telemetry response
-			int i = 0;
-
-			// Reflect sender_timestamp back as tag (4 bytes)
+			// Build Cayenne LPP telemetry response: reflect sender_timestamp
+			// back as a 4-byte tag, then append battery/GPS/env/power.
 			memcpy(reply, &sender_timestamp, 4);
-			i += 4;
-
-			const uint8_t CH_SELF = 1;
-
-			// Battery voltage: [channel][LPP_VOLTAGE=116][2-byte 0.01V big-endian]
-			uint16_t batt_mv = _batt_cb ? _batt_cb() : 0;
-			reply[i++] = CH_SELF;
-			reply[i++] = 116;  // LPP_VOLTAGE
-			uint16_t batt_scaled = batt_mv / 10;
-			reply[i++] = (batt_scaled >> 8) & 0xFF;
-			reply[i++] = batt_scaled & 0xFF;
-
-			// GPS position if authorized and available
-			if (permissions & TELEM_PERM_LOCATION) {
-				struct gps_position pos;
-				if (gps_is_available() && gps_get_last_known_position(&pos)) {
-					reply[i++] = CH_SELF;
-					reply[i++] = 136;  // LPP_GPS
-					int32_t lat = (int32_t)(pos.latitude_ndeg / 100000);
-					int32_t lon = (int32_t)(pos.longitude_ndeg / 100000);
-					int32_t alt = pos.altitude_mm / 10;
-					reply[i++] = (lat >> 16) & 0xFF;
-					reply[i++] = (lat >> 8) & 0xFF;
-					reply[i++] = lat & 0xFF;
-					reply[i++] = (lon >> 16) & 0xFF;
-					reply[i++] = (lon >> 8) & 0xFF;
-					reply[i++] = lon & 0xFF;
-					reply[i++] = (alt >> 16) & 0xFF;
-					reply[i++] = (alt >> 8) & 0xFF;
-					reply[i++] = alt & 0xFF;
-				} else if (prefs.node_lat != 0 || prefs.node_lon != 0) {
-					// Use configured position
-					reply[i++] = CH_SELF;
-					reply[i++] = 136;  // LPP_GPS
-					int32_t lat = (int32_t)(prefs.node_lat * 10000);
-					int32_t lon = (int32_t)(prefs.node_lon * 10000);
-					int32_t alt = 0;
-					reply[i++] = (lat >> 16) & 0xFF;
-					reply[i++] = (lat >> 8) & 0xFF;
-					reply[i++] = lat & 0xFF;
-					reply[i++] = (lon >> 16) & 0xFF;
-					reply[i++] = (lon >> 8) & 0xFF;
-					reply[i++] = lon & 0xFF;
-					reply[i++] = (alt >> 16) & 0xFF;
-					reply[i++] = (alt >> 8) & 0xFF;
-					reply[i++] = alt & 0xFF;
-				}
-			}
-
-			// Environment sensors if authorized and available
-			if (permissions & TELEM_PERM_ENVIRONMENT) {
-				struct env_data env;
-				if (env_sensors_read(&env) == 0) {
-					if (env.has_temperature) {
-						reply[i++] = CH_SELF;
-						reply[i++] = LPP_TEMPERATURE;
-						int16_t temp = (int16_t)(env.temperature_c * 10);
-						reply[i++] = (temp >> 8) & 0xFF;
-						reply[i++] = temp & 0xFF;
-					} else if (env.has_mcu_temperature) {
-						// MCU die temp as fallback when no external sensor
-						reply[i++] = CH_SELF;
-						reply[i++] = LPP_TEMPERATURE;
-						int16_t temp = (int16_t)(env.mcu_temperature_c * 10);
-						reply[i++] = (temp >> 8) & 0xFF;
-						reply[i++] = temp & 0xFF;
-					}
-					if (env.has_humidity) {
-						reply[i++] = CH_SELF;
-						reply[i++] = LPP_RELATIVE_HUMIDITY;
-						reply[i++] = (uint8_t)(env.humidity_pct * 2);
-					}
-					if (env.has_pressure) {
-						reply[i++] = CH_SELF;
-						reply[i++] = LPP_BAROMETRIC_PRESSURE;
-						uint16_t press = (uint16_t)(env.pressure_hpa * 10);
-						reply[i++] = (press >> 8) & 0xFF;
-						reply[i++] = press & 0xFF;
-					}
-				}
-
-				// Power monitor telemetry (INA219/INA3221/ina2xx)
-				if (power_sensors_available()) {
-					struct power_data pwr;
-					if (power_sensors_read(&pwr) == 0) {
-						uint8_t ch = CH_SELF + 1;
-						for (int j = 0; j < pwr.num_channels; j++) {
-							if (pwr.channels[j].valid) {
-								// Voltage: [ch][LPP_VOLTAGE=116][2-byte 0.01V]
-								reply[i++] = ch;
-								reply[i++] = 116;
-								uint16_t v = (uint16_t)(pwr.channels[j].voltage_v * 100);
-								reply[i++] = (v >> 8) & 0xFF;
-								reply[i++] = v & 0xFF;
-								// Current: [ch][LPP_CURRENT=117][2-byte 0.001A]
-								reply[i++] = ch;
-								reply[i++] = 117;
-								uint16_t c = (uint16_t)(pwr.channels[j].current_a * 1000);
-								reply[i++] = (c >> 8) & 0xFF;
-								reply[i++] = c & 0xFF;
-								// Power: [ch][LPP_POWER=128][2-byte 1W]
-								reply[i++] = ch;
-								reply[i++] = 128;
-								uint16_t p = (uint16_t)(pwr.channels[j].power_w);
-								reply[i++] = (p >> 8) & 0xFF;
-								reply[i++] = p & 0xFF;
-								ch++;
-							}
-						}
-					}
-				}
-			}
-
-			// Trigger GPS wake for fresh fix on next request
-			if (gps_is_available() && gps_is_enabled()) {
-				gps_request_fresh_fix();
-			}
-
-			return i;
+			int n = appendSelfTelemetry(&reply[4], permissions);
+			return 4 + n;
 		} else {
 			LOG_INF("onContactRequest: telemetry denied for contact");
 		}
 	}
 
 	return 0;  // Unknown request or denied
+}
+
+void CompanionMesh::logTx(mesh::Packet *, int)
+{
+#if ZEPHCORE_HAS_UI_TASK
+	ui_notify_packet_sent();
+#endif
 }
 
 void CompanionMesh::onContactResponse(const ContactInfo &contact, const uint8_t *data, uint8_t len)
@@ -1077,8 +1674,42 @@ void CompanionMesh::onContactResponse(const ContactInfo &contact, const uint8_t 
 			i += 6;
 		}
 		sendPush(rsp[0], &rsp[1], i - 1);
+		{
+			struct ui_joystick_login_data login = {
+				rsp[0] == PUSH_CODE_LOGIN_SUCCESS,
+				rsp[1],  /* permissions (0 for fail/legacy) */
+				tag,     /* server_time */
+			};
+			ui_notify_joystick_event(UI_JOYSTICK_LOGIN_RESULT, contact.id.pub_key, &login);
+		}
 		return;
 	}
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
+	/* Joystick-originated requests (ping and admin binary): tag-based match takes priority
+	 * over the pubkey-based _pending_status check below.  Without this, a stale
+	 * _pending_status for the same repeater would intercept any response and forward it
+	 * to BLE, causing a joystick timeout. */
+	if ((_pending_joystick_ping_tag  && tag == _pending_joystick_ping_tag) ||
+	    (_pending_joystick_admin_tag && tag == _pending_joystick_admin_tag)) {
+		_pending_joystick_ping_tag  = 0;
+		_pending_joystick_admin_tag = 0;
+		int8_t snr_remote = INT8_MIN;
+		if (len >= 48) {
+			int16_t rs;
+			memcpy(&rs, &data[46], 2);
+			snr_remote = (int8_t)(rs / 4);
+		}
+		struct ui_joystick_req_response_data rr = {
+			(int8_t)_radio->getLastSNR(),
+			snr_remote,
+			len > 4 ? &data[4] : nullptr,
+			(uint8_t)(len > 4 ? len - 4 : 0),
+		};
+		ui_notify_joystick_event(UI_JOYSTICK_REQ_RESPONSE, contact.id.pub_key, &rr);
+		return;
+	}
+#endif
 
 	// Check for status response
 	if (_pending_status && len > 4 && memcmp(&_pending_status, contact.id.pub_key, 4) == 0) {
@@ -1136,6 +1767,22 @@ void CompanionMesh::onContactResponse(const ContactInfo &contact, const uint8_t 
 		i += data_len;
 		sendPush(rsp[0], &rsp[1], i - 1);
 		return;
+	}
+
+	{
+		int8_t snr_remote = INT8_MIN;
+		if (len >= 48) {
+			int16_t rs;
+			memcpy(&rs, &data[46], 2);
+			snr_remote = (int8_t)(rs / 4);
+		}
+		struct ui_joystick_req_response_data rr = {
+			(int8_t)_radio->getLastSNR(),
+			snr_remote,
+			len > 4 ? &data[4] : nullptr,
+			(uint8_t)(len > 4 ? len - 4 : 0),
+		};
+		ui_notify_joystick_event(UI_JOYSTICK_REQ_RESPONSE, contact.id.pub_key, &rr);
 	}
 }
 
@@ -1195,6 +1842,15 @@ void CompanionMesh::onControlDataRecv(mesh::Packet *packet)
 		return;
 	}
 
+	if (packet->payload_len >= 6 + PUB_KEY_SIZE &&
+	    (packet->payload[0] & 0xF0) == CTL_TYPE_NODE_DISCOVER_RESP &&
+	    (packet->payload[0] & 0x0F) == ADV_TYPE_REPEATER) {
+		struct ui_joystick_discover_data dd = {
+			(int8_t)packet->getSNR(), (int8_t)((int8_t)packet->payload[1] / 4), packet->path_len
+		};
+		ui_notify_joystick_event(UI_JOYSTICK_DISCOVER_RESP, &packet->payload[6], &dd);
+	}
+
 	uint8_t buf[MAX_FRAME_SIZE];
 	int i = 0;
 	buf[i++] = PUSH_CODE_CONTROL_DATA;
@@ -1232,47 +1888,19 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 
 uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
 {
-	float factor = getContentionTracker().getFloodDelayFactor();
-	uint32_t airtime = _radio->getEstAirtimeFor(
-		packet->getPathByteLen() + packet->payload_len + 2);
-	uint32_t max_jitter = (uint32_t)(5 * airtime * factor);
-	/* Airtime-scaled ceiling: never exceed ~6 airtimes of spread. */
-	uint32_t airtime_cap = 6 * airtime;
-	if (max_jitter > airtime_cap) max_jitter = airtime_cap;
-	/* Absolute cap: avoid excessive latency in very dense areas.
-	 * Reactive backoff will fine-tune further if needed. */
-	if (max_jitter > 2000) max_jitter = 2000;
-	/* Floor: give downstream nodes time to finish RX processing
-	 * and return to RX mode before we TX (~20ms settle) */
-	return 20 + getRNG()->nextInt(0, max_jitter + 1);
+	return computeAdaptiveFloodDelay(packet);
 }
 
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	uint32_t airtime = _radio->getEstAirtimeFor(
-		packet->getPathByteLen() + packet->payload_len + 2);
-	/* Jitter around Arduino direct factor 0.3 using a per-packet factor
-	 * in the range [0.25, 0.40]. */
-	uint32_t factor_milli = (uint32_t)getRNG()->nextInt(250, 401);
-	uint32_t max_jitter = (airtime * factor_milli) / 1000;
-	/* Floor: give downstream nodes time to finish RX processing
-	 * and return to RX mode before we TX (~20ms settle + jitter) */
-	return 20 + getRNG()->nextInt(0, max_jitter + 1);
+	return computeAdaptiveDirectDelay(packet);
 }
 
 uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
 {
-	float factor = getContentionTracker().getFloodDelayFactor();
-	uint32_t airtime = _radio->getEstAirtimeFor(
-		packet->getPathByteLen() + packet->payload_len + 2);
-	uint32_t max_jitter = (uint32_t)(5 * airtime * factor);
-	/* Companion spreads less aggressively than a repeater: half the
-	 * airtime ceiling, and a tighter absolute cap (1000ms vs 2000ms). */
-	uint32_t airtime_cap = 3 * airtime;
-	if (max_jitter > airtime_cap) max_jitter = airtime_cap;
-	if (max_jitter > 1000) max_jitter = 1000;
-	if (max_jitter == 0) return 0;
-	return getRNG()->nextInt(0, max_jitter + 1);
+	(void)packet;
+	/* Fixed companion origin jitter window: 20..150ms (inclusive). */
+	return 20 + getRNG()->nextInt(0, 131);
 }
 
 uint8_t CompanionMesh::getDutyCyclePercent() const
@@ -1405,45 +2033,72 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	/* Debug: log all incoming commands */
 	LOG_DBG("CMD: 0x%02x len=%u", data[0], (unsigned)len);
 
-	// Reset contact iterator when any new command is received (except during iteration)
-	if (data[0] != CMD_GET_CONTACTS && _contact_iter_active) {
-		resetContactIterator();
+	/* An active contact dump survives interleaved commands — the app is free to
+	 * talk to us mid-sync and does (it sets the clock on a cold boot, and
+	 * pipelines CMD_GET_CHANNEL bursts).  Aborting the iterator here truncated
+	 * the dump with a premature PACKET_CONTACT_END after whatever had streamed,
+	 * so the app waited forever for the rest.  Upstream interleaves the same way
+	 * (MyMesh::checkSerialInterface); CMD_APP_START remains the only reset. */
+
+	/* V-contact interception — must run before any contact lookup so a frame
+	 * addressed to the loopback contact can never create a radio packet. */
+	if (vcontactHandleFrame(data, len)) {
+		return true;
 	}
 
 	switch (data[0]) {
-	case CMD_APP_START:
-		if (len >= 8) {
-			// Reset contact iterator for fresh start
-			_contact_iter_active = false;
-
-			// Return SELF_INFO
-			uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
-			size_t i = 0;
-			rsp[i++] = PACKET_SELF_INFO;
-			rsp[i++] = ADV_TYPE_CHAT;
-			rsp[i++] = prefs.tx_power_dbm;
-			rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
-			memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
-			int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
-			int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
-			put_le32(&rsp[i], lat); i += 4;
-			put_le32(&rsp[i], lon); i += 4;
-			rsp[i++] = prefs.multi_acks;
-			rsp[i++] = prefs.advert_loc_policy;
-			// Telemetry modes: (env << 4) | (loc << 2) | base
-			rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
-			rsp[i++] = prefs.manual_add_contacts;
-			put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
-			put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
-			rsp[i++] = prefs.sf;
-			rsp[i++] = prefs.cr;
-			size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
-			memcpy(&rsp[i], prefs.node_name, name_len);
-			i += name_len;
-			writeFrame(rsp, i);
+	case CMD_APP_START: {
+		if (len < 8) {
+			sendPacketError(ERR_ILLEGAL_ARG);
 			return true;
 		}
-		break;
+		// Reset per-session state for a fresh app session. BLE/USB also run
+		// this cleanup on disconnect, but the serial transport has no
+		// disconnect event, so APP_START is its authoritative session-reset
+		// point: drop a stale contact iteration (a leftover PACKET_CONTACT_END
+		// would confuse the new session's sync state machine), a half-finished
+		// message sync, and free an abandoned Ed25519 sign buffer (else an 8KB
+		// leak if the previous session dropped mid-CMD_SIGN). Idempotent — all
+		// no-ops when the state is already clean.
+		_contact_iter_active = false;
+		cancelSyncPending();
+		cleanupSignState();
+
+		/* New session: suppress v-contact notice MSG_WAITING until the initial
+		 * sync (contacts + messages) completes at PACKET_NO_MORE_MSGS. */
+		_vcontact_hold_msgwait = true;
+
+		/* If a time source already ran (hardware RTC, GPS), activate the
+		 * deferred v-contact and flush buffered notices for this session. */
+		vcontactClockSynced();
+
+		// Return SELF_INFO
+		uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
+		size_t i = 0;
+		rsp[i++] = PACKET_SELF_INFO;
+		rsp[i++] = ADV_TYPE_CHAT;
+		rsp[i++] = prefs.tx_power_dbm;
+		rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
+		memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
+		int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
+		int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
+		put_le32(&rsp[i], lat); i += 4;
+		put_le32(&rsp[i], lon); i += 4;
+		rsp[i++] = prefs.multi_acks;
+		rsp[i++] = prefs.advert_loc_policy;
+		// Telemetry modes: (env << 4) | (loc << 2) | base
+		rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
+		rsp[i++] = prefs.manual_add_contacts;
+		put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
+		put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
+		rsp[i++] = prefs.sf;
+		rsp[i++] = prefs.cr;
+		size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
+		memcpy(&rsp[i], prefs.node_name, name_len);
+		i += name_len;
+		writeFrame(rsp, i);
+		return true;
+	}
 
 	case CMD_GET_CONTACTS:
 		if (_contact_iter_active) {
@@ -1456,10 +2111,19 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				_contact_iter_since = 0;
 			}
 
-			// Send PACKET_CONTACT_START with total count (unfiltered)
+			// Send PACKET_CONTACT_START with total count (unfiltered, but excluding
+			// transient anon slots -- continueContactIteration() never streams those)
+			_contact_iter_num = getNumContacts();
+			_contact_iter_vc = vcontactReady();  /* virtual tail entry (post time sync) */
+			uint32_t total = 0;
+			for (int i = 0; i < _contact_iter_num; i++) {
+				ContactInfo c;
+				if (getContactByIdx(i, c) && c.type != ADV_TYPE_NONE) total++;
+			}
+			if (_contact_iter_vc) total++;
 			uint8_t rsp[5];
 			rsp[0] = PACKET_CONTACT_START;
-			put_le32(&rsp[1], (uint32_t)getNumContacts());
+			put_le32(&rsp[1], total);
 			writeFrame(rsp, sizeof(rsp));
 			_contact_iter_idx = 0;
 			_contact_iter_lastmod = 0;
@@ -1480,6 +2144,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			c.out_path_len = data[i++];
 			memcpy(c.out_path, &data[i], MAX_PATH_SIZE); i += MAX_PATH_SIZE;
 			memcpy(c.name, &data[i], 32); i += 32;
+			c.name[31] = '\0';  /* defensive null-term — matches CMD_SET_CHANNEL pattern */
 			c.last_advert_timestamp = get_le32(&data[i]); i += 4;
 			c.gps_lat = 0;
 			c.gps_lon = 0;
@@ -1559,12 +2224,17 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		// Format: [cmd][channel_idx]
 		// Response: [code][idx][32 name][16 secret] = 50 bytes (matches Arduino)
 		// Arduino returns channel info even if slot is empty (name[0]=='\0')
-		if (len >= 2 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			static int64_t last_get_channel_ms;
 			int64_t now_ms = _ms->getMillis();
 			uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
 			last_get_channel_ms = now_ms;
 			LOG_DBG("CMD_GET_CHANNEL idx=%u dt=%ums", data[1], dt_ms);
+			drainPendingChannelInfos();
 			if (!enqueuePendingChannelInfo(data[1])) {
 				sendPacketError(ERR_BAD_STATE);
 				return true;
@@ -1572,17 +2242,20 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			drainPendingChannelInfos();
 			return true;
 		}
-		break;
 
 	case CMD_SET_CHANNEL:
 		// Format: [cmd][idx][32 name][16 or 32 secret]
 		// Arduino rejects 32-byte secrets, but we accept 16-byte (50 bytes total)
-		if (len >= 2 + 32 + 32 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		if (len >= 2 + 32 + 32) {
 			// 32-byte secret not supported (matches Arduino)
 			sendPacketError(ERR_UNSUPPORTED);
 			return true;
 		}
-		if (len >= 2 + 32 + 16 && data[1] < MAX_GROUP_CHANNELS) {
+		if (len >= 2 + 32 + 16) {
 			ChannelDetails ch;
 			// Copy name (null-terminate if needed)
 			memcpy(ch.name, &data[2], 32);
@@ -1599,7 +2272,8 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			}
 			return true;
 		}
-		break;
+		sendPacketError(ERR_ILLEGAL_ARG);
+		return true;
 
 	case CMD_GET_BATT_AND_STORAGE: {
 		uint8_t rsp[11];
@@ -1782,12 +2456,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 					}
 
 					// Response: RESP_CODE_SENT + is_flood(1) + expected_ack(4) + est_timeout(4)
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					put_le32(&rsp[2], expected_ack);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, expected_ack, est_timeout);
 				} else {
 					sendPacketError(ERR_TABLE_FULL);
 				}
@@ -1804,7 +2473,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_SEND_CHANNEL_TXT_MSG:
 		// Arduino format: [cmd][txt_type][channel_idx][4-byte timestamp][text...]
 		// Minimum: 1 + 1 + 1 + 4 + 1 = 8 bytes
-		if (len >= 8) {
+		if (len < 8) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			int i = 1;
 			uint8_t txt_type = data[i++];
 			uint8_t ch_idx = data[i++];
@@ -1829,24 +2502,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			}
 			return true;
 		}
-		break;
 
 	case CMD_SEND_SELF_ADVERT: {
-		mesh::Packet *adv;
-		if (prefs.advert_loc_policy == 0) {  /* ADVERT_LOC_NONE */
-			adv = createSelfAdvert(prefs.node_name);
-		} else {
-			adv = createSelfAdvert(prefs.node_name, prefs.node_lat, prefs.node_lon);
-		}
-		if (adv) {
-			/* Optional param: data[1] == 1 means flood, else zero-hop */
-			if (len >= 2 && data[1] == 1) {
-				TransportKey default_scope;
-				memcpy(default_scope.key, prefs.default_scope_key, sizeof(default_scope.key));
-				sendFloodScoped(default_scope, adv, (uint32_t)0);
-			} else {
-				sendZeroHop(adv);
-			}
+		/* Optional param: data[1] == 1 means flood, else zero-hop */
+		bool flood = (len >= 2 && data[1] == 1);
+		if (sendSelfAdvert(flood)) {
 			sendPacketOk();
 		} else {
 			sendPacketError(ERR_TABLE_FULL);
@@ -1885,6 +2545,15 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			 * connection parameters now without disrupting
 			 * channel/contact/message throughput. */
 			zephcore_ble_conn_params_ready();
+
+			/* Full initial sync (contacts + messages) complete: stop
+			 * suppressing v-contact notice prompts. Any notice queued during
+			 * the window was just drained by this message-sync; if one raced in
+			 * after the last peek, prompt for it now. */
+			_vcontact_hold_msgwait = false;
+			if (_offline_queue_count > 0) {
+				sendPush(PUSH_CODE_MSG_WAITING);
+			}
 		}
 		return true;
 	}
@@ -1896,6 +2565,10 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			memcpy(prefs.node_name, &data[1], nlen);
 			prefs.node_name[nlen] = '\0';
 			_store->savePrefs(prefs);
+			/* Push the new name to BLE so scanners see it without a reboot. */
+			zephcore_ble_update_name(prefs.node_name);
+			/* v-contact name tracks the node name — update the app's copy. */
+			vcontactPushAdvert();
 		}
 		sendPacketOk();
 		return true;
@@ -1923,9 +2596,6 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				prefs.cr = cr;
 				prefs.client_repeat = repeat;
 				_store->savePrefs(prefs);
-#ifdef CONFIG_ZEPHCORE_APC
-				_power_ctrl.setSF(sf);
-#endif
 				if (_radio_reconfig_cb) _radio_reconfig_cb();
 				LOG_INF("SET_RADIO_PARAMS: client_repeat=%d", repeat);
 				sendPacketOk();
@@ -1990,6 +2660,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			if (gps_has_time_sync()) {
 				LOG_DBG("Ignoring phone time sync - GPS time sync active");
 				sendPacketOk();
+				vcontactClockSynced();  /* GPS time counts as valid too */
 				return true;
 			}
 
@@ -1998,7 +2669,13 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			// Arduino: only allow setting time forward (prevents time attacks)
 			if (secs >= curr) {
 				getRTCClock()->setCurrentTime(secs);
+				time_sync_report(TIME_SYNC_APP);
+				zephcore_rtc_save(secs);  /* persist to hardware RTC */
+				_timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
 				sendPacketOk();
+				/* App just gave us wall time — activate the deferred
+				 * v-contact and flush buffered notices. */
+				vcontactClockSynced();
 			} else {
 				sendPacketError(ERR_ILLEGAL_ARG);
 			}
@@ -2008,17 +2685,29 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		return true;
 
 	case CMD_DEVICE_QUERY:
-		if (len >= 2) {
+		if (len < 2) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+		{
 			_app_target_ver = data[1];  // Which version of protocol does app understand
 			#ifndef FIRMWARE_BUILD_DATE
 			#define FIRMWARE_BUILD_DATE __DATE__
 			#endif
+			#ifndef FIRMWARE_VERSION
+			#define FIRMWARE_VERSION "v0.0.0-dev"  // real value injected by CMakeLists.txt
+			#endif
+			/* Wire format reserves 40 bytes for the board name. Require room
+			 * for a null terminator within those 40 bytes so a phone parsing
+			 * it as a C-string never reads past the field. */
+			static_assert(sizeof(CONFIG_ZEPHCORE_BOARD_NAME) <= 40,
+				"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
 			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
-			static const uint8_t version[20] = "v1.15.1-zephyr";
+			static const uint8_t version[20] = FIRMWARE_VERSION;  // injected by CMakeLists.txt
 			uint8_t rsp[82];
 			rsp[0] = PACKET_DEVICE_INFO;
-			rsp[1] = 11;  // FIRMWARE_VER_CODE - v11 = CMD_SET/GET_DEFAULT_FLOOD_SCOPE
+			rsp[1] = 13;  // FIRMWARE_VER_CODE - v13 = CMD_SEND_ANON_REQ to non-contact pubkey (transient anon contacts)
 			rsp[2] = (MAX_CONTACTS / 2 > 255) ? 255 : (MAX_CONTACTS / 2);  // protocol byte, app multiplies by 2
 			rsp[3] = MAX_GROUP_CHANNELS;
 			put_le32(&rsp[4], prefs.ble_pin ? prefs.ble_pin : 123456);  // BLE PIN
@@ -2030,7 +2719,6 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			writeFrame(rsp, sizeof(rsp));
 			return true;
 		}
-		break;
 
 	case CMD_GET_TUNING_PARAMS: {
 		uint8_t rsp[9];
@@ -2042,11 +2730,13 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	}
 
 	case CMD_SET_TUNING_PARAMS:
-		if (len >= 9) {
-			prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
-			prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
-			_store->savePrefs(prefs);
+		if (len < 9) {
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
 		}
+		prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
+		prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
+		_store->savePrefs(prefs);
 		sendPacketOk();
 		return true;
 
@@ -2235,7 +2925,24 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				mesh::LocalIdentity new_identity;
 				new_identity.readFrom(&data[1], PRV_KEY_SIZE);
 				if (_store->saveMainIdentity(new_identity)) {
+					/* The v-contact key is derived from our identity, so it
+					 * changes with the new key. Tell the connected app to drop
+					 * the old v-contact (old key), re-derive, then re-advertise
+					 * the new one — otherwise the app's cached loopback contact
+					 * points at a key we no longer recognise (messaging + its
+					 * advert-path query break until a reboot re-syncs). Order
+					 * matters: delete uses the CURRENT (old) key. */
+					bool vc_was_enabled = isVContactEnabled();
+					if (vc_was_enabled) vcontactPushDeleted();
 					self_id = new_identity;
+					deriveVContactKey();
+					/* New identity → old advert timestamp is meaningless. Clear
+					 * it so vcontactPushAdvert() re-activates cleanly: with a
+					 * valid clock it stamps + emits now; without one it defers
+					 * and vcontactClockSynced() (the lastmod==0 path) emits at the
+					 * next time-sync instead of only after a reboot. */
+					_vcontact_lastmod = 0;
+					if (vc_was_enabled) vcontactPushAdvert();
 					/* Reload contacts to invalidate ECDH shared secrets */
 					resetContacts();
 					_store->loadContacts(this);
@@ -2288,15 +2995,11 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				int result = sendLogin(*contact, password, est_timeout);
 				LOG_DBG("CMD_SEND_LOGIN: sendLogin returned %d, est_timeout=%u", result, est_timeout);
 				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					memcpy(&_pending_login, contact->id.pub_key, 4);  // match in onContactResponse()
+					/* _pending_login was set by onLoginSent (BaseChatMesh::sendLogin hook);
+					 * clear the other pending fields manually — clearPendingReqs() would wipe it. */
+					_pending_status = _pending_telemetry = _pending_discovery = _pending_req = 0;
 					LOG_DBG("CMD_SEND_LOGIN: _pending_login set to %08x", _pending_login);
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					memcpy(&rsp[2], &_pending_login, 4);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, _pending_login, est_timeout);
 				} else {
 					sendPacketError(ERR_TABLE_FULL);
 				}
@@ -2317,12 +3020,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				if (result != MSG_SEND_FAILED) {
 					clearPendingReqs();
 					memcpy(&_pending_status, contact->id.pub_key, 4);  // legacy matching scheme
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, tag, est_timeout);
 				} else {
 					sendPacketError(ERR_BAD_STATE);
 				}
@@ -2358,134 +3056,20 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			// Self-telemetry request: return battery, GPS, and environment data
 			// Format: Cayenne LPP: [channel][type][data...]
 			// Response: [PUSH_CODE_TELEMETRY_RESPONSE][reserved][6-byte pubkey][telemetry_data]
-			uint8_t rsp[96];  // header(8)+batt(4)+gps(11)+env(11)+pwr(36)=70 worst case
+			// Worst-case size tracks POWER_MAX_CHANNELS so a future bump can't
+			// silently overflow this stack buffer. With current value 4:
+			// header(8) + batt(4) + gps(11) + env(temp4+hum3+press4=11)
+			// + power(POWER_MAX_CHANNELS * 12 = 48) + 8 byte safety pad = 90.
+			uint8_t rsp[8 + 4 + 11 + 11 + (12 * POWER_MAX_CHANNELS) + 8];
 			int i = 0;
 			rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
 			rsp[i++] = 0;  // reserved
 			memcpy(&rsp[i], self_id.pub_key, 6);
 			i += 6;  // pubkey prefix
 
-			// Channel 1 = TELEM_CHANNEL_SELF
-			const uint8_t CH_SELF = 1;
-
-			// Battery voltage: [channel][LPP_VOLTAGE=116][2-byte 0.01V big-endian]
-			uint16_t batt_mv = _batt_cb ? _batt_cb() : 0;
-			rsp[i++] = CH_SELF;
-			rsp[i++] = 116;  // LPP_VOLTAGE
-			uint16_t batt_scaled = batt_mv / 10;  // 0.01V resolution
-			rsp[i++] = (batt_scaled >> 8) & 0xFF;  // Big-endian
-			rsp[i++] = batt_scaled & 0xFF;
-
-			// GPS position if available: [channel][LPP_GPS=136][3-byte lat][3-byte lon][3-byte alt]
-			// Use last known position even when GPS is sleeping (power-save mode)
-			struct gps_position pos;
-			if (gps_is_available() && gps_get_last_known_position(&pos)) {
-				rsp[i++] = CH_SELF;
-				rsp[i++] = 136;  // LPP_GPS
-				// Lat/lon in 0.0001 degrees (signed 24-bit)
-				int32_t lat = (int32_t)(pos.latitude_ndeg / 100000);  // nano-degrees to 0.0001 degrees
-				int32_t lon = (int32_t)(pos.longitude_ndeg / 100000);
-				int32_t alt = pos.altitude_mm / 10;  // mm to 0.01m
-				rsp[i++] = (lat >> 16) & 0xFF;
-				rsp[i++] = (lat >> 8) & 0xFF;
-				rsp[i++] = lat & 0xFF;
-				rsp[i++] = (lon >> 16) & 0xFF;
-				rsp[i++] = (lon >> 8) & 0xFF;
-				rsp[i++] = lon & 0xFF;
-				rsp[i++] = (alt >> 16) & 0xFF;
-				rsp[i++] = (alt >> 8) & 0xFF;
-				rsp[i++] = alt & 0xFF;
-			} else if (prefs.node_lat != 0 || prefs.node_lon != 0) {
-				// Use configured position
-				rsp[i++] = CH_SELF;
-				rsp[i++] = 136;  // LPP_GPS
-				int32_t lat = (int32_t)(prefs.node_lat * 10000);
-				int32_t lon = (int32_t)(prefs.node_lon * 10000);
-				int32_t alt = 0;
-				rsp[i++] = (lat >> 16) & 0xFF;
-				rsp[i++] = (lat >> 8) & 0xFF;
-				rsp[i++] = lat & 0xFF;
-				rsp[i++] = (lon >> 16) & 0xFF;
-				rsp[i++] = (lon >> 8) & 0xFF;
-				rsp[i++] = lon & 0xFF;
-				rsp[i++] = (alt >> 16) & 0xFF;
-				rsp[i++] = (alt >> 8) & 0xFF;
-				rsp[i++] = alt & 0xFF;
-			}
-
-			// Environment sensors
-			{
-				struct env_data env;
-				if (env_sensors_read(&env) == 0) {
-					// Temperature: [channel][LPP_TEMPERATURE=103][2-byte 0.1C signed big-endian]
-					if (env.has_temperature) {
-						rsp[i++] = CH_SELF;
-						rsp[i++] = LPP_TEMPERATURE;
-						int16_t temp = (int16_t)(env.temperature_c * 10);
-						rsp[i++] = (temp >> 8) & 0xFF;
-						rsp[i++] = temp & 0xFF;
-					} else if (env.has_mcu_temperature) {
-						// MCU die temp as fallback when no external sensor
-						rsp[i++] = CH_SELF;
-						rsp[i++] = LPP_TEMPERATURE;
-						int16_t temp = (int16_t)(env.mcu_temperature_c * 10);
-						rsp[i++] = (temp >> 8) & 0xFF;
-						rsp[i++] = temp & 0xFF;
-					}
-					// Humidity: [channel][LPP_RELATIVE_HUMIDITY=104][1-byte 0.5%]
-					if (env.has_humidity) {
-						rsp[i++] = CH_SELF;
-						rsp[i++] = LPP_RELATIVE_HUMIDITY;
-						rsp[i++] = (uint8_t)(env.humidity_pct * 2);
-					}
-					// Pressure: [channel][LPP_BAROMETRIC_PRESSURE=115][2-byte 0.1hPa big-endian]
-					if (env.has_pressure) {
-						rsp[i++] = CH_SELF;
-						rsp[i++] = LPP_BAROMETRIC_PRESSURE;
-						uint16_t press = (uint16_t)(env.pressure_hpa * 10);
-						rsp[i++] = (press >> 8) & 0xFF;
-						rsp[i++] = press & 0xFF;
-					}
-				}
-			}
-
-			// Power monitor telemetry (INA219/INA3221/ina2xx)
-			if (power_sensors_available()) {
-				struct power_data pwr;
-				if (power_sensors_read(&pwr) == 0) {
-					uint8_t ch = CH_SELF + 1;
-					for (int j = 0; j < pwr.num_channels; j++) {
-						if (pwr.channels[j].valid) {
-							// Voltage: [ch][LPP_VOLTAGE=116][2-byte 0.01V]
-							rsp[i++] = ch;
-							rsp[i++] = 116;
-							uint16_t v = (uint16_t)(pwr.channels[j].voltage_v * 100);
-							rsp[i++] = (v >> 8) & 0xFF;
-							rsp[i++] = v & 0xFF;
-							// Current: [ch][LPP_CURRENT=117][2-byte 0.001A]
-							rsp[i++] = ch;
-							rsp[i++] = 117;
-							uint16_t c = (uint16_t)(pwr.channels[j].current_a * 1000);
-							rsp[i++] = (c >> 8) & 0xFF;
-							rsp[i++] = c & 0xFF;
-							// Power: [ch][LPP_POWER=128][2-byte 1W]
-							rsp[i++] = ch;
-							rsp[i++] = 128;
-							uint16_t p = (uint16_t)(pwr.channels[j].power_w);
-							rsp[i++] = (p >> 8) & 0xFF;
-							rsp[i++] = p & 0xFF;
-							ch++;
-						}
-					}
-				}
-			}
-
+			// Self-telemetry is unconditional (all permission bits set).
+			i += appendSelfTelemetry(&rsp[i], TELEM_PERM_BASE | TELEM_PERM_LOCATION | TELEM_PERM_ENVIRONMENT);
 			writeFrame(rsp, i);
-
-			// Trigger GPS wake so next telemetry request has fresh location
-			if (gps_is_available() && gps_is_enabled()) {
-				gps_request_fresh_fix();
-			}
 		} else if (len >= 4 + PUB_KEY_SIZE) {
 			// Contact telemetry request: [cmd][3 reserved bytes][32-byte pubkey]
 			ContactInfo *contact = lookupContactByPubKey(&data[4], PUB_KEY_SIZE);
@@ -2495,12 +3079,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				if (result != MSG_SEND_FAILED) {
 					clearPendingReqs();
 					_pending_telemetry = tag;
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, tag, est_timeout);
 				} else {
 					sendPacketError(ERR_BAD_STATE);
 				}
@@ -2525,12 +3104,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				if (result != MSG_SEND_FAILED) {
 					clearPendingReqs();
 					_pending_req = tag;
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, tag, est_timeout);
 				} else {
 					sendPacketError(ERR_BAD_STATE);
 				}
@@ -2564,12 +3138,7 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				if (result != MSG_SEND_FAILED) {
 					clearPendingReqs();
 					_pending_discovery = tag;
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, tag, est_timeout);
 				} else {
 					sendPacketError(ERR_BAD_STATE);
 				}
@@ -2592,7 +3161,8 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 				rsp[i++] = PACKET_ADVERT_PATH;
 				put_le32(&rsp[i], ap->recv_timestamp); i += 4;
 				rsp[i++] = ap->path_len;
-				i += mesh::Packet::writePath(&rsp[i], ap->path, ap->path_len);
+				/* Trusted source: AdvertPath::path is MAX_PATH_SIZE-sized. */
+				i += mesh::Packet::writePath(&rsp[i], ap->path, MAX_PATH_SIZE, ap->path_len);
 				writeFrame(rsp, i);
 			} else {
 				sendPacketError(ERR_NOT_FOUND);
@@ -2607,19 +3177,50 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		// Format: [PACKET_CUSTOM_VARS][key1:val1,key2:val2,...]
 		uint8_t rsp[64];
 		char *dp = (char *)&rsp[1];
+		char *const rsp_end = (char *)&rsp[sizeof(rsp)];
 		rsp[0] = PACKET_CUSTOM_VARS;
 
-		// GPS settings
+		// snprintf returns the would-be length, NOT bytes actually written.
+		// We must check truncation and only advance dp on real progress —
+		// otherwise dp can outrun the initialized portion of rsp and
+		// writeFrame(rsp, dp-rsp) leaks adjacent stack to the phone.
+
 		bool first = true;
 		if (gps_is_available()) {
-			dp += snprintf(dp, 20, "gps:%d", gps_is_enabled() ? 1 : 0);
-			first = false;
+			size_t remaining = (size_t)(rsp_end - dp);
+			int n = snprintf(dp, remaining, "gps:%d", gps_is_enabled() ? 1 : 0);
+			if (n > 0 && (size_t)n < remaining) {
+				dp += n;
+				first = false;
+			}
 		}
 		uint32_t gps_interval = gps_get_poll_interval_sec();
 		if (gps_interval > 0) {
-			if (!first) *dp++ = ',';
-			dp += snprintf(dp, 20, "gps_interval:%u", gps_interval);
-			first = false;
+			size_t remaining = (size_t)(rsp_end - dp);
+			// Reserve 1 byte for the leading ',' if needed
+			if (!first && remaining > 0) {
+				*dp++ = ',';
+				remaining--;
+			}
+			int n = snprintf(dp, remaining, "gps_interval:%u", (unsigned)gps_interval);
+			if (n > 0 && (size_t)n < remaining) {
+				dp += n;
+				first = false;
+			}
+			// If snprintf would have truncated, dp stays put — writeFrame
+			// sends only what we successfully wrote.
+		}
+		{
+			size_t remaining = (size_t)(rsp_end - dp);
+			if (!first && remaining > 0) {
+				*dp++ = ',';
+				remaining--;
+			}
+			int n = snprintf(dp, remaining, "meshtimesync:%d",
+					 prefs.meshtimesync ? 1 : 0);
+			if (n > 0 && (size_t)n < remaining) {
+				dp += n;
+			}
 		}
 		// Note: Environment sensors are auto-detected, no settings needed
 
@@ -2659,6 +3260,10 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 					} else {
 						sendPacketError(ERR_ILLEGAL_ARG);
 					}
+				} else if (strcmp(key, "meshtimesync") == 0) {
+					prefs.meshtimesync = (val[0] == '1') ? 1 : 0;
+					_store->savePrefs(prefs);
+					sendPacketOk();
 				} else {
 					sendPacketError(ERR_ILLEGAL_ARG);
 				}
@@ -2671,13 +3276,22 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		return true;
 
 	case CMD_SET_FLOOD_SCOPE_KEY:
-		/* Set current send_scope key: [cmd][0][16-byte key] or [cmd][0] (null key) */
+		/* Set send scope mode (Arduino MeshCore PR #2492, ver 12+):
+		 * [cmd][0][16-byte key] = explicit scoped override
+		 * [cmd][0]             = clear scope override (use default_scope from prefs)
+		 * [cmd][1]             = explicit unscoped (sticky flag, bypasses default_scope)
+		 */
 		if (len >= 2 && data[1] == 0) {
 			if (len >= 2 + 16) {
 				memcpy(_send_scope.key, &data[2], sizeof(_send_scope.key));
 			} else {
 				memset(_send_scope.key, 0, sizeof(_send_scope.key));
 			}
+			_send_scope_force_unscoped = false;
+			sendPacketOk();
+		} else if (len == 2 && data[1] == 1) {
+			_send_scope_force_unscoped = true;
+			memset(_send_scope.key, 0, sizeof(_send_scope.key));
 			sendPacketOk();
 		} else {
 			sendPacketError(ERR_ILLEGAL_ARG);
@@ -2782,7 +3396,9 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 		return true;
 
 	case CMD_SEND_CHANNEL_DATA: {
-		if (len < 4) {
+		/* Minimum frame: cmd(1) + channel_idx(1) + path_len(1) + path(0..) +
+		 * data_type(2) + payload(0..) = 5 bytes when path is empty. */
+		if (len < 5) {
 			sendPacketError(ERR_ILLEGAL_ARG);
 			return true;
 		}
@@ -2796,9 +3412,25 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 			return true;
 		}
 
+		/* Compute decoded path byte count and ensure source frame has room
+		 * for path + data_type. (path_len is the 6-bit hash_count + 2-bit
+		 * hash_size encoding; writePath itself will reject if src_len is
+		 * too small, but failing here also rejects truncated data_type.) */
+		uint8_t hash_count = path_len & 63;
+		uint8_t hash_size  = (path_len >> 6) + 1;
+		size_t path_bytes  = (path_len == OUT_PATH_UNKNOWN) ? 0
+		                                                  : (size_t)hash_count * hash_size;
+		if ((size_t)i + path_bytes + 2 > len) {
+			LOG_WRN("CMD_SEND_CHANNEL_DATA short frame: len=%u need >=%u",
+				(unsigned)len, (unsigned)(i + path_bytes + 2));
+			sendPacketError(ERR_ILLEGAL_ARG);
+			return true;
+		}
+
 		uint8_t path[MAX_PATH_SIZE];
 		if (path_len != OUT_PATH_UNKNOWN) {
-			i += mesh::Packet::writePath(path, &data[i], path_len);
+			/* src_len = remaining bytes from data[i] onward. */
+			i += mesh::Packet::writePath(path, &data[i], len - i, path_len);
 		}
 
 		uint16_t data_type = ((uint16_t)data[i]) | (((uint16_t)data[i + 1]) << 8);
@@ -2825,23 +3457,51 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	case CMD_SEND_ANON_REQ:
 		if (len >= 1 + PUB_KEY_SIZE + 1) {
 			ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+			if (contact == nullptr) {
+				/* FIRMWARE_VER_CODE 13+: allow requests to a non-contact pubkey by
+				 * creating a transient "anon" contact (ADV_TYPE_NONE). These are never
+				 * persisted or synced to the app; re-lookup to get the stable slot. */
+				ContactInfo anon{};
+				memcpy(anon.id.pub_key, &data[1], PUB_KEY_SIZE);
+				anon.out_path_len = 0;       // zero-hop direct by default
+				anon.type = ADV_TYPE_NONE;   // transient/unknown
+				anon.lastmod = getRTCClock()->getCurrentTime();  // so slot recycling is LRU, not always slot 0
+				if (addContact(anon)) {
+					contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+				}
+			}
 			if (contact) {
 				uint32_t tag, est_timeout;
 				int result = sendAnonReq(*contact, &data[1 + PUB_KEY_SIZE], len - 1 - PUB_KEY_SIZE, tag, est_timeout);
 				if (result != MSG_SEND_FAILED) {
 					clearPendingReqs();
 					_pending_req = tag;
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = (result == MSG_SEND_SENT_FLOOD) ? 1 : 0;  // is_flood
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
+					sendPacketSent(result, tag, est_timeout);
 				} else {
 					sendPacketError(ERR_BAD_STATE);
 				}
 			} else {
-				sendPacketError(ERR_NOT_FOUND);
+				sendPacketError(ERR_TABLE_FULL);
+			}
+		} else {
+			sendPacketError(ERR_ILLEGAL_ARG);
+		}
+		return true;
+
+	case CMD_SEND_RAW_PACKET:
+		if (len >= 4) {
+			mesh::Packet *pkt = obtainNewPacket();
+			if (pkt) {
+				uint8_t priority = data[1];
+				if (tryParsePacket(pkt, &data[2], len - 2)) {
+					sendPacket(pkt, priority, 0);
+					sendPacketOk();
+				} else {
+					releasePacket(pkt);
+					sendPacketError(ERR_ILLEGAL_ARG);
+				}
+			} else {
+				sendPacketError(ERR_TABLE_FULL);
 			}
 		} else {
 			sendPacketError(ERR_ILLEGAL_ARG);

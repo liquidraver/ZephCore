@@ -1,0 +1,286 @@
+Subject: [PATCH] lora: sx126x: band-aware RSSI/AGC calibration (DS Sec 6.1.6)
+
+The SX126x RSSI and AGC gain-tune registers are band-specific.  Semtech ships
+the chip calibrated for 868-915 MHz on their EVK and publishes a second value
+set for 470-490 MHz (DS rev 2.2 Table 6-4, section added Dec 2024).  We wrote
+none of them, so sub-GHz builds ran the 868-915 calibration.
+
+That is not cosmetic.  Per DS Sec 6.1.6 an incorrect RSSI produces "an
+incorrect gain selection in LoRa and GFSK mode", which "can result in a missed
+detection (packet loss) or decreased resistance to interference".
+
+Register 0x08AC is shared: bits 7:2 are AgcSensiAdjust, bits 1:0 select the RX
+gain mode.  The driver's 0x94/0x96 constants therefore also wrote the 868-915
+AgcSensiAdjust (0x94 >> 2 == 0x25) at every RX-gain re-apply, which would have
+clobbered any calibration installed elsewhere.  All four write sites now build
+the byte from the cached per-band value.
+
+The low-band column is the datasheet's 470-490 MHz EVK calibration, applied
+below 600 MHz.  It is NOT a 433 MHz calibration -- Semtech publishes no such
+column -- but it is the nearest published low-band data and beats leaving the
+868-915 tunes in place.  A true 433 figure needs the DS Sec 6.1.6 generator
+sweep on real hardware.
+
+Applied from sx126x_config() after SetRfFrequency so a runtime band change
+re-selects it, and re-applied after each Calibrate(ALL) alongside the existing
+CalibrateImage re-issue.
+
+--- a/drivers/lora/native/sx126x/sx126x_regs.h
++++ b/drivers/lora/native/sx126x/sx126x_regs.h
+@@ -175,10 +175,34 @@
+ #define SX126X_LORA_SYNC_WORD_PUBLIC        0x3444
+ #define SX126X_LORA_SYNC_WORD_PRIVATE       0x1424
+ 
+-/* RX Gain */
++/* RX Gain.
++ *
++ * 0x08AC is a shared register: bits 7:2 are AgcSensiAdjust (DS Table 6-4,
++ * band-dependent RSSI/AGC calibration) and bits 1:0 select the RX gain mode.
++ * The legacy 0x94/0x96 constants are the 868-915 MHz band values -- they
++ * happen to encode AgcSensiAdjust 0x25 (0x94 >> 2 == 0x25).  Writing them
++ * verbatim in a 470-490 MHz build silently installs the wrong AGC
++ * calibration, so build the byte with SX126X_RX_GAIN_VAL() instead.
++ */
+ #define SX126X_REG_RX_GAIN                  0x08AC
+ #define SX126X_RX_GAIN_POWER_SAVING         0x94
+ #define SX126X_RX_GAIN_BOOSTED              0x96
++#define SX126X_RX_GAIN_BOOST_BITS           0x02
++#define SX126X_RX_GAIN_VAL(sensi, boosted) \
++	(uint8_t)(((sensi) << 2) | ((boosted) ? SX126X_RX_GAIN_BOOST_BITS : 0U))
++
++/* RSSI / AGC calibration registers (DS Sec 6.1.6, Table 6-4).
++ * The chip ships calibrated for 868-915 MHz on the Semtech EVK; the
++ * datasheet publishes a second column for 470-490 MHz. */
++#define SX126X_REG_AGC_RSSI_MEAS_CAL_H      0x089C  /* bits 4:0 */
++#define SX126X_REG_AGC_RSSI_MEAS_CAL_L      0x089D
++#define SX126X_REG_AGC_GFORST_POWTHR        0x08B9
++#define SX126X_REG_AGC_GAIN_TUNE_1_2        0x08F5  /* .. 0x08FB, 7 bytes */
++#define SX126X_AGC_GAIN_TUNE_LEN            7
++
++/* AgcSensiAdjust (0x08AC bits 7:2) per band */
++#define SX126X_AGC_SENSI_ADJUST_HIGH_BAND   0x25    /* 868-915 MHz (default) */
++#define SX126X_AGC_SENSI_ADJUST_LOW_BAND    0x22    /* 470-490 MHz */
+ 
+ /* RX Gain Retention (DS Sec 9.6) -- tells chip to preserve 0x08AC across
+  * mode transitions (sleep/standby/TX -> RX).  Without retention, the
+--- a/drivers/lora/native/sx126x/sx126x.h
++++ b/drivers/lora/native/sx126x/sx126x.h
+@@ -70,6 +70,13 @@
+ 	bool rx_duty_cycle_enabled;
+ 	bool rx_boost_enabled;
+ 
++	/* AgcSensiAdjust value for the configured band (DS Table 6-4), cached
++	 * because it shares register 0x08AC with the RX gain bits and so has
++	 * to be re-applied by every RX-gain write.  Defaults to the 868-915
++	 * value the chip ships with; sx126x_config() re-selects it per
++	 * frequency. */
++	uint8_t agc_sensi_adjust;
++
+ 	/* RX-busy latch: set by the work handler when HEADER_VALID fires for
+ 	 * a real packet, cleared on RX_DONE / CRC_ERR / RX_TX_TIMEOUT / RX
+ 	 * (re)start / TX-state entry.  Read by sx126x_is_receiving() as the
+--- a/drivers/lora/native/sx126x/sx126x.c
++++ b/drivers/lora/native/sx126x/sx126x.c
+@@ -307,9 +307,117 @@
+ 	return sx126x_hal_write_regs(dev, SX126X_REG_LORA_SYNC_WORD_MSB, buf, 2);
+ }
+ 
++/* RSSI / AGC band calibration (DS Sec 6.1.6, Table 6-4).
++ *
++ * Semtech: "The power seen by the SX1261/2 analog front-end is affected by
++ * external components such as the matching network and RF switches.  An
++ * incorrect RSSI results in a sensitivity degradation in (G)FSK mode and an
++ * incorrect gain selection in LoRa and GFSK mode.  An incorrect gain can
++ * result in a missed detection (packet loss) or decreased resistance to
++ * interference."  So this is an RX-performance register set, not telemetry
++ * cosmetics.
++ *
++ * The chip ships calibrated for 868-915 MHz on the Semtech EVK, which is why
++ * the high-band tunes are all zero -- writing them is a no-op against a fresh
++ * chip and exists only so that a runtime band change (`set freq`) restores
++ * them after a low-band build has installed the other set.
++ *
++ * IMPORTANT: the low-band column is the datasheet's 470-490 MHz EVK
++ * calibration.  It is NOT a 433 MHz calibration -- Semtech publishes no such
++ * column.  Applying it below 600 MHz is "the nearest published values for a
++ * low band" and is expected to beat leaving the 868-915 calibration in place,
++ * but a true 433 MHz figure needs the DS Sec 6.1.6 generator sweep on real
++ * hardware.  Do not present these numbers as calibrated for 433.
++ */
++struct sx126x_agc_band_cal {
++	uint8_t rssi_meas_cal_h;                          /* 0x089C, bits 4:0 */
++	uint8_t rssi_meas_cal_l;                          /* 0x089D */
++	uint8_t gforst_powthr;                            /* 0x08B9 */
++	uint8_t sensi_adjust;                             /* 0x08AC, bits 7:2 */
++	uint8_t gain_tune[SX126X_AGC_GAIN_TUNE_LEN];      /* 0x08F5 .. 0x08FB */
++};
++
++static const struct sx126x_agc_band_cal sx126x_agc_cal_high = {
++	.rssi_meas_cal_h = 0x01,
++	.rssi_meas_cal_l = 0x53,
++	.gforst_powthr   = 0x0A,
++	.sensi_adjust    = SX126X_AGC_SENSI_ADJUST_HIGH_BAND,
++	.gain_tune       = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 },
++};
++
++static const struct sx126x_agc_band_cal sx126x_agc_cal_low = {
++	.rssi_meas_cal_h = 0x01,
++	.rssi_meas_cal_l = 0x27,
++	.gforst_powthr   = 0x04,
++	.sensi_adjust    = SX126X_AGC_SENSI_ADJUST_LOW_BAND,
++	/* GainTune_1_2, _3_4, _5_6, _7_8, _9_10, _11_12, _13 */
++	.gain_tune       = { 0xDE, 0xE2, 0x32, 0x44, 0x33, 0x34, 0x04 },
++};
++
++/* Band split.  The datasheet only characterises 470-490 and 868-915, so any
++ * threshold between them is a judgement call; 600 MHz sits clear of both the
++ * 433/470 group and the 779/868/915 group that sx126x_calibrate_image()
++ * already distinguishes. */
++#define SX126X_AGC_LOW_BAND_MAX_HZ 600000000
++
++static const struct sx126x_agc_band_cal *sx126x_agc_cal_for(uint32_t freq)
++{
++	return (freq < SX126X_AGC_LOW_BAND_MAX_HZ) ? &sx126x_agc_cal_low
++						   : &sx126x_agc_cal_high;
++}
++
++/* Apply the band's RSSI/AGC calibration.  Caches AgcSensiAdjust for the RX
++ * gain writes, which share register 0x08AC, but does NOT touch 0x08AC itself
++ * -- sx126x_set_rx_gain() owns that register and runs later in
++ * sx126x_config(). */
++static int sx126x_apply_agc_band_cal(const struct device *dev, uint32_t freq)
++{
++	struct sx126x_data *data = dev->data;
++	const struct sx126x_agc_band_cal *cal = sx126x_agc_cal_for(freq);
++	uint8_t val;
++	int ret;
++
++	data->agc_sensi_adjust = cal->sensi_adjust;
++
++	/* Bits 4:0 only -- preserve the rest of 0x089C. */
++	ret = sx126x_hal_read_regs(dev, SX126X_REG_AGC_RSSI_MEAS_CAL_H, &val, 1);
++	if (ret < 0) {
++		return ret;
++	}
++	val = (val & ~0x1FU) | (cal->rssi_meas_cal_h & 0x1FU);
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_AGC_RSSI_MEAS_CAL_H, &val, 1);
++	if (ret < 0) {
++		return ret;
++	}
++
++	val = cal->rssi_meas_cal_l;
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_AGC_RSSI_MEAS_CAL_L, &val, 1);
++	if (ret < 0) {
++		return ret;
++	}
++
++	val = cal->gforst_powthr;
++	ret = sx126x_hal_write_regs(dev, SX126X_REG_AGC_GFORST_POWTHR, &val, 1);
++	if (ret < 0) {
++		return ret;
++	}
++
++	return sx126x_hal_write_regs(dev, SX126X_REG_AGC_GAIN_TUNE_1_2,
++				     cal->gain_tune,
++				     SX126X_AGC_GAIN_TUNE_LEN);
++}
++
++/* Byte to write to 0x08AC: band AgcSensiAdjust in bits 7:2, gain mode in 1:0. */
++static uint8_t sx126x_rx_gain_byte(const struct device *dev, bool boosted)
++{
++	struct sx126x_data *data = dev->data;
++
++	return SX126X_RX_GAIN_VAL(data->agc_sensi_adjust, boosted);
++}
++
+ static int sx126x_set_rx_gain(const struct device *dev, bool boosted)
+ {
+-	uint8_t val = boosted ? SX126X_RX_GAIN_BOOSTED : SX126X_RX_GAIN_POWER_SAVING;
++	uint8_t val = sx126x_rx_gain_byte(dev, boosted);
+ 
+ 	/* Host-driven RX paths do not rely on retention: the chip resets
+ 	 * 0x08AC to power-saving (0x94) on every SetRx command, and
+@@ -661,6 +769,11 @@
+ 		 * EU868 / 433 / 779 MHz operation. */
+ 		if (data->config_valid) {
+ 			sx126x_calibrate_image(dev, data->config.frequency);
++			/* Same reasoning for the AGC band calibration (DS
++			 * Sec 6.1.6): cheap insurance against Calibrate(ALL)
++			 * disturbing the RSSI / gain-tune registers.  0x08AC
++			 * itself is restored by the RX-gain write below. */
++			sx126x_apply_agc_band_cal(dev, data->config.frequency);
+ 		}
+ 
+ 		/* Re-apply DIO2 as RF switch -- Calibrate resets it */
+@@ -715,8 +828,8 @@
+ 	 * after SetRx) before writing.  The gain is therefore applied after the radio
+ 	 * has entered RX but before any preamble can arrive -- giving a clean AGC
+ 	 * state for each new packet regardless of the previous packet's signal level. */
+-	uint8_t gain = data->rx_boost_enabled ? SX126X_RX_GAIN_BOOSTED
+-					      : SX126X_RX_GAIN_POWER_SAVING;
++	uint8_t gain = sx126x_rx_gain_byte(dev, data->rx_boost_enabled);
++
+ 	sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &gain, 1);
+ 	return 0;
+ }
+@@ -1156,6 +1269,15 @@
+ 		goto out;
+ 	}
+ 
++	/* Install the band's RSSI/AGC calibration (DS Sec 6.1.6) before the
++	 * RX gain write below, which consumes the AgcSensiAdjust this caches.
++	 * Re-run on every config so a runtime frequency change switches bands
++	 * instead of leaving the previous band's tunes installed. */
++	ret = sx126x_apply_agc_band_cal(dev, config->frequency);
++	if (ret < 0) {
++		goto out;
++	}
++
+ 	/* Configure PA and TX power based on chip variant and frequency */
+ 	ret = sx126x_hal_configure_tx_params(dev, config->tx_power,
+ 						config->frequency,
+@@ -1607,8 +1729,8 @@
+ 	 * SetRx without retention, and lora_config sets gain before going to
+ 	 * sleep, so without this the first packet would be received in
+ 	 * power-saving gain regardless of DTS rx-boosted. */
+-	uint8_t gain = data->rx_boost_enabled ? SX126X_RX_GAIN_BOOSTED
+-					      : SX126X_RX_GAIN_POWER_SAVING;
++	uint8_t gain = sx126x_rx_gain_byte(dev, data->rx_boost_enabled);
++
+ 	sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &gain, 1);
+ 
+ 	k_mutex_unlock(&data->lock);
+@@ -2281,6 +2403,11 @@
+ 		 * (902-928 MHz band) which kills RX sensitivity on
+ 		 * EU868 / 433 / 779 MHz operation. */
+ 		sx126x_calibrate_image(dev, data->config.frequency);
++		/* Same reasoning for the AGC band calibration (DS Sec 6.1.6):
++		 * cheap insurance against Calibrate(ALL) disturbing the RSSI /
++		 * gain-tune registers.  0x08AC itself is restored by the
++		 * RX-gain write on the restart path. */
++		sx126x_apply_agc_band_cal(dev, data->config.frequency);
+ 
+ 		/* Re-apply DIO2 as RF switch -- Calibrate resets it. */
+ 		if (hal_cfg->dio2_tx_enable) {
+@@ -2352,8 +2479,8 @@
+ 	 * chip-internal sleep->RX wakes restore it (DS sec 9.6: mandatory for
+ 	 * SetRxDutyCycle -- without this every window after the first sleep
+ 	 * listens at power-saving gain, a silent -3 dB sensitivity loss). */
+-	uint8_t gain = data->rx_boost_enabled ? SX126X_RX_GAIN_BOOSTED
+-					      : SX126X_RX_GAIN_POWER_SAVING;
++	uint8_t gain = sx126x_rx_gain_byte(dev, data->rx_boost_enabled);
++
+ 	sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &gain, 1);
+ 	sx126x_retain_rx_gain(dev);
+ 
+@@ -2427,6 +2554,10 @@
+ 	 * pick up the boost setting even when the user never calls the
+ 	 * sx126x_set_rx_boost() extension API. */
+ 	data->rx_boost_enabled = config->rx_boosted;
++	/* Match the calibration the chip ships with, so any 0x08AC write that
++	 * happens before the first sx126x_config() keeps the factory value
++	 * rather than zeroing AgcSensiAdjust. */
++	data->agc_sensi_adjust = SX126X_AGC_SENSI_ADJUST_HIGH_BAND;
+ 	atomic_set(&data->dc_timeout_restarts, 0);
+ 	k_work_init_delayable(&data->dc_watchdog_work,
+ 			      sx126x_dc_watchdog_handler);

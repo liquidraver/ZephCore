@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore - Repeater (USB CLI, Event-Driven)
  *
  * This is the main entry point for the repeater role.
@@ -33,18 +33,42 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 }
 #endif
 
-/* USB CDC with 1200 baud touch detection (when not using auto-init) */
-#if !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
-#include <ZephyrRepeaterUSB.h>
+/* USB CDC ACM init + 1200-baud DFU + DTR callbacks (shared with companion).
+ *
+ * Gate on the CDC-ACM class driver, NOT on DT_HAS_COMPAT_STATUS_OKAY alone: a
+ * board overlay may expose a cdc_acm_uart DT node unconditionally (the shared
+ * esp32s3_usb_otg.dtsi does), so the node can be present while the class driver
+ * — and therefore zephcore_usbd_* and the device object — is not compiled
+ * (e.g. an ESP32-S3 repeater built without esp32s3_usb.conf). This mirrors the
+ * repeater CMake condition that compiles ZephyrUSBCDC.cpp. */
+#define ZEPHCORE_USB_STACK \
+	(IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS))
+
+#if ZEPHCORE_USB_STACK && !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT)
+#include <ZephyrUSBCDC.h>
 #endif
 
 #include <app/RepeaterDataStore.h>
 #include <app/RepeaterMesh.h>
 #include <adapters/clock/ZephyrRTCClock.h>
+#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <ZephyrSensorManager.h>
 
 /* UI subsystem (display, buttons, buzzer) */
 #include "ui_task.h"
+
+/* Headless repeaters link the weak no-op ui_* stubs (ui_headless_stubs.c), so
+ * the periodic UI refresh in the maintenance pass is pure work for nothing on
+ * them.  Guard the hot path on a real ui_* implementation being linked; the
+ * one-shot calls at init and in the CLI reply path stay unguarded, matching
+ * the rest of the file.
+ *
+ * This MUST mirror the CMake condition that selects the stubs, not the display
+ * devicetree node: ZEPHCORE_UI_DESIGN_BUTTON is enabled by BUTTONS *or*
+ * DISPLAY *or* BUZZER, so a board with buttons/buzzer and no panel still links
+ * the real UI and still needs these updates. */
+#define ZEPHCORE_HAS_UI (IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || \
+			 IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK))
 
 /* Radio + mesh includes (shared header selects LR1110 or SX126x) */
 #include <mesh/RadioIncludes.h>
@@ -74,16 +98,42 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 #define MESH_EVENT_LORA_RX       BIT(0)  /* LoRa packet received */
 #define MESH_EVENT_LORA_TX_DONE  BIT(1)  /* LoRa TX complete */
 #define MESH_EVENT_CLI_RX        BIT(2)  /* CLI command received */
-#define MESH_EVENT_HOUSEKEEPING  BIT(3)  /* Periodic housekeeping (noise floor, etc.) */
+#define MESH_EVENT_MAINTENANCE   BIT(3)  /* A maintenance deadline came due */
 #define MESH_EVENT_GPS_ACTION    BIT(4)  /* GPS state change (must run on main thread!) */
 #define MESH_EVENT_TX_DRAIN      BIT(5)  /* Outbound packet delay expired, run checkSend */
-#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN)
+#define MESH_EVENT_RTC_SAVE      BIT(6)  /* Hardware-RTC write requested off-main */
+#define MESH_EVENT_INIT_ADVERT   BIT(7)  /* Deferred boot advert — send on main thread */
+#define MESH_EVENT_WAKE          BIT(8)  /* Off-main state set; run loop() promptly */
+#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_MAINTENANCE | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_RTC_SAVE | MESH_EVENT_INIT_ADVERT | MESH_EVENT_WAKE)
 
-/* Housekeeping interval - infrequent to preserve power savings */
-#define HOUSEKEEPING_INTERVAL_MS CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
+/* Maintenance is deadline-driven, not periodic: after every pass the loop asks
+ * the mesh when its soonest pending deadline is (msUntilNextMaintenance) and
+ * arms a single one-shot wake for exactly that moment.  An idle repeater with
+ * nothing scheduled therefore sleeps until its next real deadline instead of
+ * waking on a fixed cadence.
+ *
+ * MAINTENANCE_BACKSTOP_MS bounds that: it caps how long we will go without a
+ * pass even when everything reports idle, so a deadline that is missed or
+ * mis-reported degrades to the old behaviour instead of wedging.
+ * MAINTENANCE_MIN_MS floors it, so an item that is due-but-blocked (radio
+ * mid-packet, duty-cycle sleep window) re-arms shortly rather than spinning. */
+#define MAINTENANCE_BACKSTOP_MS CONFIG_ZEPHCORE_MAINTENANCE_BACKSTOP_MS
+#define MAINTENANCE_MIN_MS      50
 
 /* Event object for mesh loop */
 static struct k_event mesh_events;
+
+/* Pending epoch for a deferred zephcore_rtc_save() — gps_fix_callback runs on
+ * the GNSS modem_chat worker thread, where the RTC's blocking I2C transactions
+ * would stall NMEA ingest. Stash the latest epoch and let the main thread
+ * perform the write; concurrent posts coalesce into one save. */
+static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
+
+static void request_rtc_save(uint32_t epoch)
+{
+	atomic_set(&pending_rtc_epoch, (atomic_val_t)epoch);
+	k_event_post(&mesh_events, MESH_EVENT_RTC_SAVE);
+}
 
 /* USB CDC state */
 static const struct device *usb_dev;
@@ -93,21 +143,31 @@ static char cli_line_buf[CLI_LINE_BUF_SIZE];
 static char cli_reply_buf[256];
 static uint16_t cli_line_idx;
 
+/* Completed CLI lines are handed to the MAIN thread for execution.  Byte
+ * assembly + echo (cli_rx_work_fn) runs on sysworkq and touches no mesh
+ * state, but handleCommand() mutates the lock-free packet pool / dispatcher
+ * that loop() also touches — running it on sysworkq races the main loop.
+ * So we queue the finished line and let the event loop run handleCommand(). */
+struct cli_cmd_line { char buf[CLI_LINE_BUF_SIZE]; };
+K_MSGQ_DEFINE(cli_cmd_queue, sizeof(struct cli_cmd_line), 4, 4);
+
 /* Work items for event-driven processing */
 static void cli_rx_work_fn(struct k_work *work);
-static void housekeeping_timer_fn(struct k_timer *timer);
+static void maintenance_timer_fn(struct k_timer *timer);
 static void tx_drain_work_fn(struct k_work *work);
 static void initial_advert_work_fn(struct k_work *work);
 K_WORK_DEFINE(cli_rx_work, cli_rx_work_fn);
 K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
 K_WORK_DELAYABLE_DEFINE(initial_advert_work, initial_advert_work_fn);
 
-/* Housekeeping timer for periodic tasks (noise floor calibration, etc.) */
-K_TIMER_DEFINE(housekeeping_timer, housekeeping_timer_fn, NULL);
+/* One-shot maintenance wake, re-armed after every loop pass (see
+ * arm_maintenance_wake).  Not periodic — the period is the deadline. */
+K_TIMER_DEFINE(maintenance_timer, maintenance_timer_fn, NULL);
 
 /* Forward declarations */
 #ifdef ZEPHCORE_LORA
 static RepeaterMesh *repeater_mesh_ptr;
+static void refresh_repeater_ui_radio_state(void);
 #endif
 
 /* Print string to USB serial */
@@ -154,22 +214,22 @@ static void cli_rx_work_fn(struct k_work *work)
 				LOG_INF("CLI cmd len=%d: %.40s%s", cli_line_idx,
 					cli_line_buf, cli_line_idx > 40 ? "..." : "");
 
-				/* Process CLI command */
-#ifdef ZEPHCORE_LORA
-				if (repeater_mesh_ptr) {
-					cli_reply_buf[0] = '\0';
-					repeater_mesh_ptr->handleCommand(0, cli_line_buf, cli_reply_buf);
-					if (cli_reply_buf[0] != '\0') {
-						/* Arduino format: newline, then "  -> reply" */
-						cli_print("\r\n  -> ");
-						cli_print(cli_reply_buf);
-					}
+				/* Hand the command to the main thread (see cli_cmd_queue).
+				 * The reply + trailing newline are emitted there, exactly
+				 * matching the previous inline output order. */
+				struct cli_cmd_line c;
+				strncpy(c.buf, cli_line_buf, sizeof(c.buf) - 1);
+				c.buf[sizeof(c.buf) - 1] = '\0';
+				if (k_msgq_put(&cli_cmd_queue, &c, K_NO_WAIT) == 0) {
+					k_event_post(&mesh_events, MESH_EVENT_CLI_RX);
+				} else {
+					cli_print("\r\n  -> busy\r\n");
 				}
-#endif
 				cli_line_idx = 0;
+			} else {
+				/* Empty line — just emit the newline (no command to run) */
+				cli_print("\r\n");
 			}
-			/* New line for next command */
-			cli_print("\r\n");
 		} else if (byte == 0x7F || byte == 0x08) {
 			/* Backspace - echo backspace sequence */
 			if (cli_line_idx > 0) {
@@ -190,11 +250,73 @@ static void cli_rx_work_fn(struct k_work *work)
 	}
 }
 
-/* Housekeeping timer callback - signals event to wake mesh loop periodically */
-static void housekeeping_timer_fn(struct k_timer *timer)
+#ifdef ZEPHCORE_LORA
+/* Run queued CLI commands on the MAIN thread (see cli_cmd_queue).  Output
+ * order matches the old inline path exactly: "\r\n  -> reply" when there is
+ * a reply, then a trailing "\r\n". */
+static void process_cli_commands(void)
+{
+	struct cli_cmd_line c;
+	while (repeater_mesh_ptr && k_msgq_get(&cli_cmd_queue, &c, K_NO_WAIT) == 0) {
+		cli_reply_buf[0] = '\0';
+		repeater_mesh_ptr->handleCommand(0, c.buf, cli_reply_buf);
+		refresh_repeater_ui_radio_state();
+		if (cli_reply_buf[0] != '\0') {
+			cli_print("\r\n  -> ");
+			cli_print(cli_reply_buf);
+		}
+		cli_print("\r\n");
+	}
+}
+#endif
+
+/* Maintenance deadline expired — wake the mesh loop to run the pass. */
+static void maintenance_timer_fn(struct k_timer *timer)
 {
 	ARG_UNUSED(timer);
-	k_event_post(&mesh_events, MESH_EVENT_HOUSEKEEPING);
+	k_event_post(&mesh_events, MESH_EVENT_MAINTENANCE);
+}
+
+/* Ask the mesh for its soonest pending deadline and arm the one-shot for it.
+ * Called after every loop pass, whatever woke us: any event may have created
+ * or cleared a deadline (a queued advert, a CLI tempradio command, a CAD probe
+ * that just ran), so the schedule is recomputed from scratch each time rather
+ * than tracked incrementally.
+ *
+ * The backstop below is an unconditional CEILING on the wait, not a fallback
+ * used only when everything reports idle.  That means it must stay well above
+ * the shortest legitimate recurring deadline (the noise-floor sampler, and the
+ * CAD probe) or it becomes the effective period and the deadline scheduling
+ * buys nothing — see ZEPHCORE_MAINTENANCE_BACKSTOP_MS. */
+static void arm_maintenance_wake(void)
+{
+	uint32_t delay = MAINTENANCE_BACKSTOP_MS;
+	uint32_t next = MAINTENANCE_BACKSTOP_MS;
+
+#ifdef ZEPHCORE_LORA
+	if (repeater_mesh_ptr) {
+		next = repeater_mesh_ptr->msUntilNextMaintenance();
+
+		if (next < delay) {
+			delay = next;
+		}
+	}
+#endif
+
+	if (delay < MAINTENANCE_MIN_MS) {
+		delay = MAINTENANCE_MIN_MS;
+	}
+
+	/* Both figures, because which one is binding is the whole diagnosis:
+	 *   next=15000 armed=15000  — a real deadline won; working as intended
+	 *   next=15000 armed=5000   — the backstop is clamping (it must stay
+	 *                             above the noise-floor/CAD intervals)
+	 *   next=0     armed=50     — a deadline reports due but its state is
+	 *                             not advancing; repeated = spin
+	 * mesh::MAINTENANCE_IDLE (0x7FFFFFFF) as `next` means nothing pending. */
+	LOG_DBG("maint: next=%u armed=%u", (unsigned)next, (unsigned)delay);
+
+	k_timer_start(&maintenance_timer, K_MSEC(delay), K_NO_WAIT);
 }
 
 #ifdef ZEPHCORE_LORA
@@ -220,22 +342,29 @@ static void tx_drain_work_fn(struct k_work *work)
 	k_event_post(&mesh_events, MESH_EVENT_TX_DRAIN);
 }
 
-/* Deferred initial advertisement — gives GPS time to get a fix at boot */
+/* Deferred initial advertisement — gives GPS time to get a fix at boot.
+ * Runs on sysworkq (the 10 s delay timer), so it must NOT send the advert
+ * here: sendSelfAdvertisement() mutates the packet pool / dispatcher shared
+ * with loop().  Post an event and let the main thread send it. */
 static void initial_advert_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
-#ifdef ZEPHCORE_LORA
-	if (repeater_mesh_ptr) {
-		LOG_INF("Sending deferred initial advertisement");
-		repeater_mesh_ptr->sendSelfAdvertisement(500, false);
-	}
-#endif
+	k_event_post(&mesh_events, MESH_EVENT_INIT_ADVERT);
 }
 
 static void tx_queued_callback(uint32_t delay_ms, void *user_data)
 {
 	ARG_UNUSED(user_data);
 	k_work_reschedule(&tx_drain_work, K_MSEC(delay_ms));
+}
+
+/* Off-main code (MQTT CONNACK, SNTP) set state that loop() must drain.  Post
+ * only — this runs on the MQTT publisher / WiFi thread, and k_event_post is
+ * the sole thing safe to do from there. */
+static void wake_callback(void *user_data)
+{
+	ARG_UNUSED(user_data);
+	k_event_post(&mesh_events, MESH_EVENT_WAKE);
 }
 #endif
 
@@ -261,6 +390,10 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 	if (utc_time > 0) {
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
+		/* Defer the hardware-RTC write to the main thread — blocking I2C
+		 * here would stall NMEA ingest (gps_fix_callback runs in the
+		 * GNSS modem_chat worker context). */
+		request_rtc_save((uint32_t)utc_time);
 	}
 
 	int lat_deg = (int)lat;
@@ -275,6 +408,11 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 
 #ifdef ZEPHCORE_LORA
 static mesh::ZephyrBoard zephyr_board;
+
+static uint16_t get_battery_mv(void)
+{
+	return zephyr_board.getBattMilliVolts();
+}
 
 /* Radio is constructed with no prefs pointer; main() binds it to
  * repeater_mesh._prefs via setPrefs() before repeater_mesh.begin(). */
@@ -299,6 +437,34 @@ static mesh::SimpleMeshTables mesh_tables;
 
 /* RepeaterMesh requires: board, radio, ms_clock, rng, rtc, tables */
 static RepeaterMesh repeater_mesh(zephyr_board, lora_radio, ms_clock, zephyr_rng, rtc_clock, mesh_tables);
+
+static void refresh_repeater_ui_radio_state(void)
+{
+	if (!repeater_mesh_ptr) {
+		return;
+	}
+
+	ui_set_radio_params(
+		lora_radio.getActiveFrequencyHz(),
+		lora_radio.getActiveSpreadingFactor(),
+		lora_radio.getActiveBandwidthKHzX10(),
+		lora_radio.getActiveCodingRate(),
+		lora_radio.getConfiguredTxPower(),
+		lora_radio.getNoiseFloor());
+
+	ui_set_radio_runtime(
+		lora_radio.getActiveSyncWord(),
+		lora_radio.getActivePreambleLength(),
+		lora_radio.isRxDutyCycleEnabled(),
+		lora_radio.isRadioReady(),
+		lora_radio.isInRecvMode(),
+		lora_radio.isTxActive());
+
+	ui_set_radio_stats(
+		lora_radio.getPacketsRecv(),
+		lora_radio.getPacketsSent(),
+		lora_radio.getPacketsRecvErrors());
+}
 #endif
 
 /* Repeater event loop */
@@ -309,9 +475,8 @@ static void repeater_event_loop(void)
 	/* Print startup banner (no prompt - Arduino style) */
 	cli_print("\r\n=== ZephCore Repeater ===\r\n");
 
-	/* Start housekeeping timer for periodic maintenance tasks */
-	k_timer_start(&housekeeping_timer, K_MSEC(HOUSEKEEPING_INTERVAL_MS),
-		      K_MSEC(HOUSEKEEPING_INTERVAL_MS));
+	/* Arm the first maintenance wake; every pass below re-arms it. */
+	arm_maintenance_wake();
 
 	for (;;) {
 		/* Wait for any mesh event - blocks until signaled */
@@ -325,55 +490,99 @@ static void repeater_event_loop(void)
 		}
 
 #ifdef ZEPHCORE_LORA
+		/* Run queued CLI commands here (main thread) BEFORE loop() drains
+		 * any outbound packets they enqueued — keeps all mesh-state
+		 * mutation on the main thread (see cli_cmd_queue). */
+		if (events & MESH_EVENT_CLI_RX) {
+			process_cli_commands();
+		}
+
+		/* Deferred boot advert — sent on the main thread (see
+		 * initial_advert_work_fn); loop() below drains the queued packet. */
+		if (repeater_mesh_ptr && (events & MESH_EVENT_INIT_ADVERT)) {
+			LOG_INF("Sending deferred initial advertisement");
+			repeater_mesh_ptr->sendSelfAdvertisement(500, false);
+		}
+
 		/* Packet processing — only on radio/CLI/TX events */
 		if (repeater_mesh_ptr &&
 		    (events & (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE |
-			       MESH_EVENT_CLI_RX | MESH_EVENT_TX_DRAIN))) {
+			       MESH_EVENT_CLI_RX | MESH_EVENT_TX_DRAIN |
+			       MESH_EVENT_WAKE))) {
 			repeater_mesh_ptr->loop();
 		}
 #endif
 
-		/* Periodic housekeeping — maintenance + display refresh */
-		if (events & MESH_EVENT_HOUSEKEEPING) {
 #ifdef ZEPHCORE_LORA
-			/* Radio maintenance: noise floor calibration, AGC reset,
-			 * RX watchdog.  Separated from loop() so these never run
-			 * on packet-driven events. */
+		/* Radio maintenance runs OPPORTUNISTICALLY, on every pass, whatever
+		 * woke us — not only when its own timer fired.
+		 *
+		 * Every item inside is deadline-gated internally, so this is nearly
+		 * free when nothing is due.  The point is what it does to a busy
+		 * node: a hilltop repeater is already waking constantly for packets,
+		 * so maintenance rides along on those wakes, its deadlines advance,
+		 * and arm_maintenance_wake() below keeps pushing the timer out — the
+		 * maintenance timer then almost never fires and costs no wakes at
+		 * all.  Running it only on its own event (as this did originally)
+		 * inverted that: the busiest nodes, which can least afford it, paid
+		 * the full timer cadence on top of their packet wakes, and every
+		 * blocked sample burned a retry against a channel that is busy for
+		 * sustained reasons (real traffic in isReceiving(), the RSSI
+		 * prefilter) rather than the transient duty-cycle sleep window the
+		 * retries were sized for.
+		 *
+		 * Ordering matters: this sits AFTER packet processing so an inbound
+		 * frame is handled before we spend SPI time on an RSSI sweep. */
+		if (repeater_mesh_ptr) {
+			repeater_mesh_ptr->maintenanceLoop();
+		}
+#endif
+
+		/* A maintenance deadline came due — run the time-based work too. */
+		if (events & MESH_EVENT_MAINTENANCE) {
+#ifdef ZEPHCORE_LORA
+			/* Drive loop() so time-based actions (advert timers,
+			 * tempradio set/revert, contacts flush, uplink status)
+			 * still fire when no LoRa/CLI traffic wakes the loop. */
 			if (repeater_mesh_ptr) {
-				repeater_mesh_ptr->maintenanceLoop();
-				/* Also drive loop() so time-based actions (advert
-				 * timers, tempradio set/revert, contacts flush,
-				 * uplink status) still fire when no LoRa/CLI
-				 * traffic wakes the event loop. */
 				repeater_mesh_ptr->loop();
 			}
 #endif
 
+#if ZEPHCORE_HAS_UI
 			ui_set_clock(rtc_clock.getCurrentTime());
 
 #ifdef ZEPHCORE_LORA
-			/* Refresh radio params (noise floor changes from calibration) */
-			if (repeater_mesh_ptr) {
-				NodePrefs *p = repeater_mesh_ptr->getNodePrefs();
-				ui_set_radio_params(
-					(uint32_t)(p->freq * 1000000.0f + 0.5f),
-					p->sf,
-					(uint16_t)(p->bw * 10.0f + 0.5f),
-					p->cr,
-					p->tx_power_dbm,
-					lora_radio.getNoiseFloor());
-			}
+			/* Refresh live radio state (noise floor, TX power
+			 * reduction, RX/TX mode, packet counters).  Headless
+			 * repeaters compile this out entirely — every ui_set_*
+			 * below it is a weak no-op there (ui_headless_stubs.c),
+			 * so the whole block was pure work for nothing. */
+			refresh_repeater_ui_radio_state();
 
-			/* Battery every ~60s (12 × 5s housekeeping) */
-			static uint8_t batt_counter;
-			if (++batt_counter >= 12) {
-				batt_counter = 0;
-				ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
+			/* Battery is now refreshed lazily from ui_pages_render() with
+			 * a 30 s freshness guard — no periodic ADC fire here. */
+#endif
+#endif /* ZEPHCORE_HAS_UI */
+		}
+
+		/* Off-main RTC write request (gps_fix_callback runs in modem_chat
+		 * context — see request_rtc_save()). Perform the blocking I2C
+		 * write here on the main thread instead. */
+		if (events & MESH_EVENT_RTC_SAVE) {
+			zephcore_rtc_save((uint32_t)atomic_get(&pending_rtc_epoch));
+#ifdef ZEPHCORE_LORA
+			/* GPS just set the clock — arm the mesh time-sync drift envelope. */
+			if (repeater_mesh_ptr) {
+				repeater_mesh_ptr->noteGPSTimeSync();
 			}
 #endif
-
-			ui_refresh_display();
 		}
+
+		/* Re-arm for the soonest deadline this pass left behind.  Done for
+		 * every wake, not just maintenance ones: a CLI command, an inbound
+		 * packet or a GPS fix can all create or clear a deadline. */
+		arm_maintenance_wake();
 	}
 }
 
@@ -385,8 +594,16 @@ int main(void)
 	zephyr_board.clearBootloaderMagic();
 #endif
 
-	/* Wait for USB CDC to enumerate before any logging */
-	k_sleep(K_MSEC(2000));
+	/* USB CDC init up front so the host can enumerate, then wait for the
+	 * host to open the port (DTR asserted) — event-driven via the usbd
+	 * message callback.  Unplugged → 2 s timeout, no banner; attached →
+	 * banner reaches the user the moment the port opens. */
+#if ZEPHCORE_USB_STACK && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart) && \
+	!IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT) && \
+	(IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS))
+	zephcore_usbd_init();
+	zephcore_usbd_wait_dtr(2000);
+#endif
 	LOG_INF("=== ZephCore Repeater starting ===");
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
@@ -415,11 +632,22 @@ int main(void)
 	/* Initialize sensor manager */
 	sensor_manager_init();
 
+	/* Restore wall-clock time from a battery-backed hardware RTC if present
+	 * (shown tagged "L" until the next GPS/CLI sync; no-op if no RTC). */
+	{
+		uint32_t rtc_epoch;
+		if (zephcore_rtc_restore(&rtc_epoch)) {
+			rtc_clock.setCurrentTime(rtc_epoch);
+		}
+	}
+
 	/* Set GPS to repeater mode: power off now, wake every 48h for time sync only.
 	 * This prevents GPS from draining power on boards that have it (e.g., Wio Tracker). */
 	if (gps_is_available()) {
 		gps_set_fix_callback(gps_fix_callback);
 		gps_set_event_callback(gps_event_callback);
+		/* Apply persisted GPS duty interval (repeater default 48h; 0 = always on) */
+		gps_set_poll_interval_sec(repeater_mesh.getNodePrefs()->gps_interval);
 		gps_set_repeater_mode(true);
 	}
 
@@ -446,18 +674,15 @@ int main(void)
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 	lora_radio.setTxDoneCallback(lora_tx_done_callback, nullptr);
 	repeater_mesh.setTxQueuedCallback(tx_queued_callback, nullptr);
+	repeater_mesh.setWakeCallback(wake_callback, nullptr);
 
-	/* Load or generate identity BEFORE begin() */
+	/* Load or generate identity BEFORE begin(). First-boot keygen runs
+	 * the layered entropy mixer + Ed25519 derive + reserved-prefix
+	 * guard inside ZephyrRNG::generateFirstBootIdentity. */
 	mesh::LocalIdentity self_identity;
 	if (!data_store.loadIdentity(self_identity)) {
 		LOG_INF("No identity found, generating new keypair...");
-		self_identity = mesh::LocalIdentity(&zephyr_rng);
-		/* Ensure pub_key[0] is not reserved (0x00 or 0xFF) */
-		int count = 0;
-		while (count < 10 && (self_identity.pub_key[0] == 0x00 || self_identity.pub_key[0] == 0xFF)) {
-			self_identity = mesh::LocalIdentity(&zephyr_rng);
-			count++;
-		}
+		mesh::ZephyrRNG::generateFirstBootIdentity(self_identity);
 		data_store.saveIdentity(self_identity);
 		LOG_INF("New identity saved");
 	}
@@ -496,16 +721,13 @@ int main(void)
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(prefs->rx_boost != 0);
 	lora_radio.enableRxDutyCycle(prefs->rx_duty_cycle != 0);
+	lora_radio.setCadParams(prefs->cad_auto != 0, prefs->cad_offset,
+				prefs->probe_interval, prefs->cad_busycap);
 
 	/* Feed initial UI state from loaded prefs */
 	ui_set_node_name(prefs->node_name);
-	ui_set_radio_params(
-		(uint32_t)(prefs->freq * 1000000.0f + 0.5f),  /* MHz → Hz */
-		prefs->sf,
-		(uint16_t)(prefs->bw * 10.0f + 0.5f),         /* kHz → 0.1 kHz */
-		prefs->cr,
-		prefs->tx_power_dbm,
-		lora_radio.getNoiseFloor());
+	refresh_repeater_ui_radio_state();
+	ui_set_battery_provider(get_battery_mv);
 	ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
 	ui_set_gps_available(gps_is_available());
 
@@ -515,14 +737,14 @@ int main(void)
 	k_work_schedule(&initial_advert_work, K_SECONDS(10));
 #endif
 
-	/* Initialize USB serial for CLI */
-#if !IS_ENABLED(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT) && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
-	zephcore_usbd_init();
-#endif
-#if DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
+	/* USB CDC was initialized earlier (right after clearBootloaderMagic).
+	 * Just acquire the device handle for the CLI's UART IRQ binding below. */
+#if ZEPHCORE_USB_STACK && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)
 	usb_dev = DEVICE_DT_GET_ONE(zephyr_cdc_acm_uart);
 #else
-	/* No CDC ACM (e.g. ESP32 usb_serial) — use chosen console UART */
+	/* No CDC ACM class driver (e.g. ESP32 usb_serial, or an ESP32-S3 repeater
+	 * built without esp32s3_usb.conf where the cdc_acm DT node exists but the
+	 * class isn't compiled) — use the chosen console UART. */
 	usb_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_console));
 #endif
 	if (device_is_ready(usb_dev)) {

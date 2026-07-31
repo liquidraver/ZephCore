@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore MainBoard interface
  */
 
@@ -17,6 +17,7 @@ namespace mesh {
 class MainBoard {
 public:
 	virtual uint16_t getBattMilliVolts() = 0;
+	virtual uint8_t  getBattPercent() { return 0; }
 	virtual float getMCUTemperature() { return NAN; }
 	virtual bool setAdcMultiplier(float multiplier) { (void)multiplier; return false; }
 	virtual float getAdcMultiplier() const { return 0.0f; }

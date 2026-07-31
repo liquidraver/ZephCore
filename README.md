@@ -28,9 +28,14 @@ Other benefits:
 | **ThinkNode M3** | LR1110 | GPS, buzzer, two buttons, RGB LEDs |
 | **ThinkNode M6** | SX1262 | GPS (L76K), QSPI flash, RGB LEDs |
 | **LilyGo T-Echo** | SX1262 (TCXO 1.8V) | GPS (L76K), 1.54" e-paper (SSD1681), BME280, QSPI flash, touch-button backlight |
+| **Heltec T114** | SX1262 | 1.14" TFT (ST7789V); screenless build via `no_display.conf` |
+| **Heltec Mesh Node T096** | SX1262 + KCT8103L PA/FEM | UC6580 GNSS, ST7735S 160×80 TFT, button, LED, battery ADC |
 | **Ikoka Nano 30dBm** | SX1262 (E22-900M30S, 30 dBm PA) | RGB LEDs |
+| **GAT562 30S Mesh Kit** | SX1262 (30 dBm / 1 W PA) | RAK4631 core module. OLED (SSD1306), 5-way joystick, buzzer, GPS, BME280 pad, 2×18650 + solar |
 | **SenseCAP Solar** | SX1262 | GPS (L76K), QSPI flash, battery monitor |
 | **XIAO nRF52840 + Wio-SX1262** | SX1262 | Bare XIAO + Wio-SX1262 expansion |
+| **ProMicro SX1262** | SX1262 (E22-900M30S) | GPS, battery ADC, button, LED |
+| **muzi works R1 Neo** | SX1262 | GPS, RTC, buzzer, button, LEDs, soft power-off |
 
 ### ESP32
 
@@ -44,6 +49,11 @@ Other benefits:
 | **Heltec V3** | ESP32-S3 | SX1262 | OLED (SSD1306), 8MB flash |
 | **Heltec V4.2** | ESP32-S3 | SX1262 + GC1109 PA | OLED (SSD1306), 16MB flash, 2MB PSRAM |
 | **Heltec V4.3** | ESP32-S3 | SX1262 + KCT8103L PA | OLED (SSD1306), 16MB flash, 2MB PSRAM |
+| **Heltec Wireless Tracker V1.1** | ESP32-S3 | SX1262 | ST7735R 160×80 TFT, UC6580 GPS |
+| **Heltec Wireless Tracker V2** | ESP32-S3FN8 | SX1262 + KCT8103L PA/FEM | ST7735R 160x80 TFT, UC6580 GNSS, battery ADC |
+| **ThinkNode M9** | ESP32-S3 | LR1110 | ST7789 320x240 TFT, CC1167Q GPS, PCF8563 RTC, buzzer, 16MB flash, 8MB PSRAM |
+| **LilyGo T-Beam v1.2** | ESP32 (PICO-D4) | SX1262 | AXP2101 PMU, GNSS, USB-UART CLI |
+| **TTGO LoRa32** | ESP32 (PICO-D4) | **SX1276** (loramac-node backend) | SX127x reference board, USB-UART CLI |
 
 ### Other
 
@@ -51,6 +61,9 @@ Other benefits:
 |-------|-----|-------|--------|
 | **XIAO nRF54L15 + Wio-SX1262** | nRF54L15 | SX1262 | FLPR multicore, RRAM storage |
 | **XIAO MG24 + Wio-SX1262** | EFR32MG24 | SX1262 | BLE (SiLabs blob) |
+| **Seeed LoRa-E5 mini** | STM32WL (STM32WLE5JC) | Integrated sub-GHz (SX1262-class) | No BLE/USB — companion + CLI over USART1 |
+
+ZephCore also runs as a **native Linux process** on SBCs (Femtofox / Luckfox Pico Mini, Raspberry Pi + RAK6421 HAT) with a real SX1262 on SPI/GPIO and the companion app connecting over TCP — see [LINUX_NATIVE.md](zephcore/LINUX_NATIVE.md).
 
 For exact `west build -b` board strings, flash methods, and special setup, see the [supported boards list](zephcore/boards/supported_boards.md) and the [Board Porting Guide](zephcore/boards/example_board/README.md).
 
@@ -58,6 +71,7 @@ For exact `west build -b` board strings, flash methods, and special setup, see t
 
 - **Companion** (default) -- connects to MeshCore mobile apps via BLE. Contacts, channels, offline message queue.
 - **Repeater** -- forwards packets, configured via USB serial CLI. See the [Repeater CLI Command Reference](zephcore/Repeater_CLI_commands.md) for all available commands.
+- **Room Server** -- store-and-forward shared message room (a "BBS"). Clients log in with an admin or guest password and post messages; the server pushes each new post to every other logged-in client. No BLE; configured via the same USB serial CLI as the repeater.
 - **Observer** (ESP32 only) -- listen-only node that publishes received LoRa packets to MQTT over WiFi STA. Configured at runtime via serial CLI.
 
 ## Building
@@ -72,20 +86,20 @@ cd <cloned folder>
 west init -l zephcore
 west update
 
-# Companion (with logging)
+# Companion (production — default, no extra conf needed)
 west build -b wio_tracker_l1 zephcore --pristine
 
-# Companion (production, no logging, no USB)
+# Companion (debug logging)
 west build -b wio_tracker_l1 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/prod.conf"
+  -DEXTRA_CONF_FILE="boards/common/debug.conf"
 
-# Repeater (with logging)
+# Repeater
 west build -b rak4631 zephcore --pristine -- \
   -DEXTRA_CONF_FILE="boards/common/repeater.conf"
 
-# Repeater (production)
+# Repeater (debug logging)
 west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/prod.conf"
+  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/debug.conf"
 
 # Repeater with packet logging (clean RAW/RX/TX lines only, no debug spam)
 west build -b rak4631 zephcore --pristine -- \
@@ -95,6 +109,10 @@ west build -b rak4631 zephcore --pristine -- \
 west build -b xiao_esp32s3/esp32s3/procpu zephcore --pristine --sysbuild -- \
   -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/wifi_ota.conf"
 
+# Room Server (store-and-forward BBS, USB CLI)
+west build -b rak4631 zephcore --pristine -- \
+  -DEXTRA_CONF_FILE="boards/common/room_server.conf"
+
 # Observer (ESP32, listen-only WiFi+MQTT)
 west build -b xiao_esp32c3 zephcore --pristine -- \
   -DEXTRA_CONF_FILE="boards/common/observer.conf"
@@ -102,8 +120,9 @@ west build -b xiao_esp32c3 zephcore --pristine -- \
 # Formatter (factory-reset utility)
 west build -b wio_tracker_l1 zephcore/tools/formatter --pristine
 
-# BLE debug logging overlay
-west build -b rak4631 zephcore --pristine -- -DCONFIG_ZEPHCORE_BLE_LOG_LEVEL_DBG=y
+# BLE debug logging (debug.conf enables logging; the flag raises the BLE adapter to DBG)
+west build -b rak4631 zephcore --pristine -- \
+  -DEXTRA_CONF_FILE="boards/common/debug.conf" -DCONFIG_ZEPHCORE_BLE_LOG_LEVEL_DBG=y
 ```
 
 Output binaries are in `build/zephyr/` -- `.hex`, `.uf2`, and DFU `.zip` as applicable.
@@ -166,15 +185,15 @@ The old `txdelay`, `rxdelay`, and `direct.txdelay` commands are still accepted f
 
 **CLI commands:**
 - `get txdelay` -- shows adaptive status: contention estimate and current flood delay factor
-- `get/set backoff.multiplier` -- reactive backoff cap (default 0.5, range 0.0-2.0). Set to 0 to disable reactive backoff (EMA window still works). Higher values allow more per-packet deferral in dense areas.
+- `get/set backoff.multiplier` -- per-dupe reactive backoff multiplier (default 0.2, range 0.0-2.0). Set to 0 to disable reactive backoff (EMA window still works). Higher values allow more per-packet deferral in dense areas.
 
 **Compatibility**: Purely local behavior, no wire protocol changes. Works alongside Arduino MeshCore repeaters -- their retransmits are counted as dupes just the same.
 
 ## Power Saving
 
-- **LoRa RX duty cycle**: CAD-based receive windowing reduces LoRa RX current from ~10-15mA to ~3-5mA. Auto-enabled for SX1262 companion and repeater builds (toggleable at runtime via `set rxduty on/off`). Disabled for LR1110 (mid-preamble lock issue) and SX127x.
+- **LoRa RX duty cycle**: chip-autonomous receive windowing (sniff mode) reduces LoRa RX current from ~10-15mA to ~3-5mA. Off by default; toggle at runtime with `set rxduty on/off` (SX126x only — unsupported on LR1110 due to a mid-preamble lock issue, and on SX127x). Window timing is auto-sized per SF/BW/preamble from the SX126x datasheet constraints.
 - **Adaptive Power Control (APC)**: compiled in by default but disabled at runtime. Enable per-node with `set tx apc` -- automatically reduces TX power when echo SNR shows excess margin, ramping back up if echoes drop. See [apc.md](zephcore/apc.md).
-- **USB disabled in production**: Saves ~2-5mA and 62KB flash when logging is off
+- **Production by default**: No logging, no asserts, reboot-on-fatal. Add `debug.conf` to enable logging.
 - **GPIO-gated GPS**: Powered on only during fix acquisition
 
 ## Configuration
@@ -190,14 +209,16 @@ Key Kconfig options (set in board configs or via `-D` flags):
 | `CONFIG_ZEPHCORE_RADIO_LR1110` | n | LR1110/LR1120/LR1121 (custom driver) |
 | `CONFIG_ZEPHCORE_RADIO_LR2021` | n | LR2021 (custom driver) |
 | `CONFIG_ZEPHCORE_RADIO_SX127X` | n | SX1272/SX1276/SX1278 (loramac-node backend) |
-| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | auto | CAD-based RX power saving (auto ON for companion+SX1262, OFF for LR1110/SX127x) |
+| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | n | RX duty cycle (sniff mode) boot default; runtime toggle via `set rxduty on/off` (SX126x only) |
 | `CONFIG_ZEPHCORE_APC` | y (compiled in, runtime OFF) | Adaptive Power Control — enable at runtime via CLI |
 | `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM` | 22 | Initial TX power; lower for boards with external PA |
 | `CONFIG_ZEPHCORE_MAX_TX_POWER_DBM` | 22 | Hard cap (radio adapter clamps above this) |
 | `CONFIG_ZEPHCORE_MAX_CONTACTS` | 350 | Contact storage slots (companion) |
 | `CONFIG_ZEPHCORE_MAX_CHANNELS` | 40 | Channel slots (companion) |
 | `CONFIG_ZEPHCORE_BLE_PASSKEY` | 123456 | BLE pairing PIN |
-| `CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | GPS fix interval (seconds) |
+| `CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | Companion GPS duty interval between fixes (seconds, 10–86400); always-on is a runtime setting (`set gps duty 0`) |
+| `CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` | 300 | Cold-start window for the very first fix (longer to allow almanac download) |
+| `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC` | 172800 | Repeater/room-server GPS duty interval boot default (48 h); 0 = always-on |
 | `CONFIG_ZEPHCORE_WIFI_OTA` | n | WiFi AP + HTTP OTA updates (ESP32 repeaters, requires `--sysbuild`) |
 | `CONFIG_ZEPHCORE_REPEATER_UPLINK` | n | Repeater WiFi+MQTT uplink (ESP32) |
 | `CONFIG_ZEPHCORE_PACKET_LOGGING` | n | Arduino-compatible mesh packet logging |
@@ -208,7 +229,7 @@ Key Kconfig options (set in board configs or via `-D` flags):
 ```
 zephcore/
   src/              Core mesh engine (Mesh, Dispatcher, Packet, Identity, ContentionTracker)
-  app/              Companion / Repeater / Observer role implementations
+  app/              Companion / Repeater / Room Server / Observer role implementations
   adapters/
     ble/            BLE NUS transport
     board/          GPIO, LED, power management
@@ -220,24 +241,34 @@ zephcore/
     radio/          LoRa radio drivers (SX126x, LR1110, LR2021, SX127x)
     rng/            Random number generator
     sensors/        I2C sensor auto-detection
+    transport/      TCP companion (native Linux) + serial companion (STM32WL)
     usb/            USB serial transport (CDC-ACM, V3 framing)
     wifi/           WiFi station client
   helpers/
-    ui/             Display, buzzer, button input
+    ui/             Shared UI plumbing (display, buzzer, multi-tap input)
+    ui-button/      Single-button page UI
+    ui-joystick/    5-way joystick UI (Wio Tracker L1)
   boards/
     nrf52840/       nRF52840 board overlays and configs
-    esp32/          ESP32-C3/C6/S3 board overlays and configs
+    esp32/          ESP32 (classic + C3/C6/S3) board overlays and configs
     nrf54l/         nRF54L15 board overlay and config
     mg24/           EFR32MG24 board overlay and config
+    stm32wl/        Seeed LoRa-E5 board overlay and config
+    linux_native/   native_sim presets (Femtofox, RAK6421)
     common/         Shared Kconfig fragments and devicetree includes
-  lib/              ED25519 crypto library
+  lib/              Monocypher crypto library (Ed25519/X25519)
   patches/          Auto-applied patches to the Zephyr tree
 ```
 
 ## License
 
-Same license as the upstream MeshCore project.
+MIT License — see [`zephcore/LICENSE`](zephcore/LICENSE). Same license as the
+upstream MeshCore project, which this work relies heavily on (see the
+[official meshcore repo](https://github.com/meshcore-dev/MeshCore/)).
+
+A few vendored dependencies carry their own (compatible) licenses — see the
+notice at the bottom of `LICENSE` for details (Monocypher, Zephyr patches).
 
 ![aXa0YNLq_700w_0](https://github.com/user-attachments/assets/ddce17fd-7b83-4dc7-999f-0519593fcc3d)
 
-(FYI this is sarcasm, the whole project is 99,9% claude and cursor backed, relying heavily on the [official meshcore repo](https://github.com/meshcore-dev/MeshCore/) and the work they do in it)
+(FYI the whole project is 99,9% claude and cursor backed, relying heavily on the [official meshcore repo](https://github.com/meshcore-dev/MeshCore/) and the work they do in it)

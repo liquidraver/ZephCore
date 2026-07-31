@@ -1,6 +1,6 @@
 # ProMicro LR2021 board configuration
 # Copyright (c) 2025 ZephCore
-# SPDX-License-Identifier: Apache-2.0
+# SPDX-License-Identifier: MIT
 
 config BOARD_PROMICRO_LR2021
 	select SOC_NRF52840_QIAA

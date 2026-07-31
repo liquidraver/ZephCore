@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * BQ Station G2 — ZephCore overlay
  *
  * Adds LoRa radio, display, GPS, button, and filesystem on top of the
@@ -85,27 +85,21 @@
 };
 
 /*
- * Flash partitions — repartition default ESP32-S3 16 MB layout.
- * Default storage_partition is 192 KB at 0xFB0000.
- * Delete unused partitions (lpcore, scratch, coredump) to reclaim space.
- *
- * 0xFA0000 - 0x1000000 (384KB) LittleFS (identity, contacts, channels, BLE bonds)
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
  */
-/delete-node/ &slot0_lpcore_partition;
-/delete-node/ &slot1_lpcore_partition;
-/delete-node/ &storage_partition;
-/delete-node/ &scratch_partition;
-/delete-node/ &coredump_partition;
-
-&flash0 {
-	partitions {
-		/* LittleFS 384KB for DataStore + file-based BLE settings */
-		lfs_partition: partition@fa0000 {
-			label = "lfs";
-			reg = <0xFA0000 0x60000>;
-		};
-	};
-};
 
 /* LittleFS auto-mount — standard /lfs mount point */
 #include "../../common/filesystem.dtsi"
+
+/* USB OTG companion transport. The node is inert unless the build enables the
+ * USB device stack via boards/common/esp32s3_usb.conf.
+ *
+ * station_g2 consoles over USB Serial/JTAG (board DTS), which shares D+/D- with
+ * USB OTG — so the console reroute to uart0 lives in the auto-paired
+ * boards/common/esp32s3_usb.overlay and applies only when that conf is passed.
+ * Do NOT include esp32s3_console_uart0.dtsi here: it would move the console
+ * (and the observer/repeater serial CLI that falls back to it) onto GPIO43/44
+ * in every build of this board, including the ones still using USB Serial/JTAG. */
+#include "../../common/esp32s3_usb_otg.dtsi"

@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * nRF52840 partition layout — SoftDevice s140 v6 + UF2 bootloader
  *
  * See nrf52_partitions_sdv7.dtsi for full include guide.
@@ -17,7 +17,8 @@
  *
  * Memory map (1MB internal flash):
  *   0x00000 - 0x26000  (152KB) SoftDevice s140 v6 (reserved)
- *   0x26000 - 0xD4000  (696KB) Application
+ *   0x26000 - 0xD0000  (680KB) Application
+ *   0xD0000 - 0xD4000  (16KB)  NVS settings/bonds (storage_partition)
  *   0xD4000 - 0xF4000  (128KB) LittleFS (/lfs automount)
  *   0xF4000 - 0x100000 (48KB)  UF2 bootloader (reserved)
  */
@@ -31,6 +32,9 @@
 		 * script, causing "region RAM overflowed" on the first build.
 		 * Set it here so all boards using this DTSI get it for free. */
 		zephyr,sram = &sram0;
+		/* BLE bonds live in the NVS storage_partition, not the /lfs
+		 * settings file — see boards/common/nrf52_common.conf. */
+		zephyr,settings-partition = &storage_partition;
 	};
 };
 
@@ -47,10 +51,22 @@
 			reg = <0x00000000 0x00026000>;
 		};
 
-		/* Application — 696KB */
+		/* Application — 680KB (16KB trimmed from the top for the NVS
+		 * settings partition below; lfs is left byte-identical). */
 		code_partition: partition@26000 {
 			label = "Application";
-			reg = <0x00026000 0x000AE000>;
+			reg = <0x00026000 0x000AA000>;
+		};
+
+		/* BLE bond store — 16KB NVS (Zephyr settings backend).  Carved
+		 * from the END of the app slot so lfs_partition keeps the same
+		 * offset+size: identity/prefs/contacts in /lfs survive this change.
+		 * Isolating bonds here stops settings-write churn from corrupting
+		 * the /lfs LittleFS volume.  Label "storage" so the existing
+		 * factory-reset path (formatFileSystem) erases it too. */
+		storage_partition: partition@d0000 {
+			label = "storage";
+			reg = <0x000D0000 0x00004000>;
 		};
 
 		/* LittleFS — 128KB: identity, prefs, contacts, channels, blobs */

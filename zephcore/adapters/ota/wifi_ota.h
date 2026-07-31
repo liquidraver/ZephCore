@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * WiFi OTA Firmware Update — Public API
  *
  * Starts a WiFi AP + HTTP server for browser-based firmware upload.

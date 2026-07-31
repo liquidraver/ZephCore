@@ -1,0 +1,343 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * GAT562 30S Mesh Kit — nRF52840 + SX1262 on a RAK4631 core module, with a
+ * 30 dBm (1 W) external PA, SSD1306 OLED, GPS, buzzer, 2x18650 + solar input.
+ *
+ * LoRa wiring is identical to the RAK4631 WisBlock core:
+ *   SCK P1.11  MOSI P1.12  MISO P1.13  NSS P1.10
+ *   RST P1.06  BUSY P1.14  DIO1 P1.15  PWR_EN P1.05 (hog HIGH)
+ *   DIO2 = T/R switch, DIO3 = TCXO.
+ *
+ * GAT562-specific vs a stock RAK4631:
+ *   - DIO3 TCXO at 1.8 V   (matches the official MeshCore GAT562 variant)
+ *   - Battery multiplier 6232 (vs 6161): 3 * 1.75 * 1.187 * 1000
+ *   - Buzzer on P1.01 (PWM0)
+ *   - GPS: AT6558R on UART0 @ 9600 (MCU RX P0.15 / TX P0.16), luatos,air530z
+ *     driver, power via on-off-gpios on WB_IO2/P1.02
+ *   - 6 buttons on GPIO SENSE (sense-edge-mask) so DIO1 keeps a GPIOTE chan
+ *   - LEDs active-high: green P1.03 (LoRa TX), blue P1.04
+ *   - User button P0.09 (NFC1)
+ */
+
+/dts-v1/;
+#include <nordic/nrf52840_qiaa.dtsi>
+#include "gat562_30s-pinctrl.dtsi"
+#include <zephyr/dt-bindings/adc/nrf-saadc.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
+
+/ {
+	model = "GAT562 30S Mesh Kit";
+	compatible = "gat,gat562-30s";
+
+	chosen {
+		zephyr,sram = &sram0;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &code_partition;
+		zephyr,console = &cdc_acm_uart;
+		zephyr,shell-uart = &cdc_acm_uart;
+		zephyr,display = &ssd1306;
+	};
+
+	aliases {
+		lora0 = &lora;
+		led0 = &green_led;
+		led1 = &blue_led;
+		lora-tx-led = &green_led;
+		sw0 = &user_button;
+		buzzer = &buzzer;
+		watchdog0 = &wdt0;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+		/* Active-high on GAT562 (LED_STATE_ON = 1; TX LED driven HIGH) */
+		green_led: led_1 {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "Green LED";
+		};
+		blue_led: led_2 {
+			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+	};
+
+	/*
+	 * Inputs: back/menu button (P0.09) + 5-way joystick (P0.28/04/30/31/26).
+	 * The joystick drives the companion menu UI (ZEPHCORE_UI_JOYSTICK). The
+	 * back button is a single GPIO whose tap-count/hold is decoded by the
+	 * filters below — same scheme as the Wio Tracker L1:
+	 *   1 tap  -> KEY_1 (back/cancel)   long hold -> KEY_POWER
+	 *   2 taps -> KEY_B (LED)        3 -> KEY_D (buzzer)
+	 *   4 taps -> KEY_C (GPS)           5 -> KEY_E (advert)
+	 * (NFC pins P0.09/P0.10 are freed for GPIO by nfct-pins-as-gpios above.)
+	 */
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		user_button: button_0 {
+			gpios = <&gpio0 9 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "Back Button";
+		};
+
+		joystick_up: button_1 {
+			gpios = <&gpio0 28 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_UP>;
+			label = "Joystick Up";
+		};
+
+		joystick_down: button_2 {
+			gpios = <&gpio0 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_DOWN>;
+			label = "Joystick Down";
+		};
+
+		joystick_left: button_3 {
+			gpios = <&gpio0 30 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_LEFT>;
+			label = "Joystick Left";
+		};
+
+		joystick_right: button_4 {
+			gpios = <&gpio0 31 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_RIGHT>;
+			label = "Joystick Right";
+		};
+
+		joystick_press: button_5 {
+			gpios = <&gpio0 26 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_ENTER>;
+			label = "Joystick Press";
+		};
+	};
+
+	/* Back button: short tap -> KEY_A (feeds multitap), hold >=1s -> KEY_POWER */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_POWER>;
+		long-delay-ms = <1000>;
+	};
+
+	/* Tap-count decode of the back button. No 'input' phandle: KEY_A is
+	 * emitted by the longpress pseudo-device, not by &buttons. */
+	user_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_B INPUT_KEY_D INPUT_KEY_C INPUT_KEY_E>;
+		tap-delay-ms = <400>;
+	};
+
+	/* Onboard buzzer on P1.01 (PWM0). The official MeshCore variant defines
+	 * PIN_BUZZER=33 (P1.01); its PIN_GPS_EN=33 is vestigial template cruft —
+	 * the UART GPS is always-on and needs no enable, so P1.01 is the buzzer. */
+	pwmbuzzer {
+		compatible = "pwm-leds";
+		buzzer: buzzer {
+			pwms = <&pwm0 0 PWM_MSEC(20) PWM_POLARITY_NORMAL>;
+		};
+	};
+
+	/* Battery sense: AIN3 = P0.05 with the GAT562 divider (~1.73x) */
+	zephyr,user {
+		io-channels = <&adc 3>;
+		vbat-mv-multiplier = <6259>;	/* 1.73:1 divider, 3.6V ref; corrected from Arduino 3.0V AREF + nRF SAADC gain */
+	};
+};
+
+&reg0 {
+	status = "okay";
+};
+
+&reg1 {
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+&uicr {
+	gpio-as-nreset;
+	nfct-pins-as-gpios;	/* free P0.09 / P0.10 for the user button */
+};
+
+&gpiote {
+	status = "okay";
+};
+
+&gpio0 {
+	status = "okay";
+
+	/*
+	 * Route the 6 button/joystick edge interrupts (P0.04/09/26/28/30/31)
+	 * through the shared GPIO SENSE/PORT event instead of dedicating a
+	 * GPIOTE IN channel to each. The nRF52840 has only 8 GPIOTE channels;
+	 * with 6 buttons each taking one (gpio-keys uses GPIO_INT_EDGE_BOTH),
+	 * the SX1262 DIO1 interrupt could be starved of a channel, so CAD/TX/RX
+	 * "done" IRQs never fire and every RF op times out (CAD failed -116).
+	 * Moving the slow button inputs to sense frees all 6 channels for DIO1.
+	 * Mask = (1<<4)|(1<<9)|(1<<26)|(1<<28)|(1<<30)|(1<<31).
+	 */
+	sense-edge-mask = <0xD4000210>;
+};
+
+&gpio1 {
+	status = "okay";
+
+	/* SX1262 module power-enable on P1.05: held HIGH. The native sx126x
+	 * driver must not toggle this per-direction (it is module power, not a
+	 * per-TX/RX antenna switch), so it is hogged instead of being a
+	 * rx-enable-gpios on the lora node. */
+	sx1262_power_en {
+		gpio-hog;
+		gpios = <5 GPIO_ACTIVE_HIGH>;
+		output-high;
+		line-name = "sx1262-power-en";
+	};
+
+	/* GPS power-enable on WB_IO2 / P1.02 is NOT hogged here: the AT6558R is
+	 * driven by the luatos,air530z driver, which owns this line via
+	 * on-off-gpios (see &uart0) so ZephyrGPSManager can power the receiver
+	 * down for low-power operation. */
+};
+
+&adc {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@3 {
+		reg = <3>;
+		zephyr,gain = "ADC_GAIN_1_6";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME(ADC_ACQ_TIME_MICROSECONDS, 10)>;
+		zephyr,input-positive = <NRF_SAADC_AIN3>;	/* P0.05 */
+		zephyr,resolution = <12>;
+	};
+};
+
+/*
+ * GPS: AT6558R UART NMEA receiver on UART0 @ 9600 baud (MCU RX P0.15 <- GPS
+ * TX, MCU TX P0.16 -> GPS RX). Multi-constellation (GPS + GLONASS). Matches
+ * the official MeshCore gat562_30s_mesh_kit variant (MicroNMEALocationProvider
+ * on Serial1, 9600 baud).
+ *
+ * Driven by the luatos,air530z driver — the AT6558R is a CASIC-protocol part,
+ * so the driver's $PCAS03 init trims the NMEA stream to GGA+RMC (+GSV when
+ * CONFIG_GNSS_SATELLITES) and $PMTK869 enables EASY fast-TTFF. Same driver and
+ * chip as the rak_wismesh_tag board. GPS power is managed by the driver via
+ * on-off-gpios (WB_IO2 / P1.02, active-high), so ZephyrGPSManager can power
+ * the receiver down — no always-on gpio-hog. Because the driver brings the
+ * module up only after the UART backend is ready, the plain interrupt-driven
+ * RX feeds the modem backend correctly and no CONFIG_UART_ASYNC_API is needed.
+ */
+&uart0 {
+	compatible = "nordic,nrf-uarte";
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-1 = <&uart0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	gnss: gnss {
+		compatible = "luatos,air530z";
+		on-off-gpios = <&gpio1 2 GPIO_ACTIVE_HIGH>;	/* WB_IO2 / P1.02 GPS power */
+	};
+};
+
+/* UART1 unused — the GPS is on UART0 (see above). */
+&uart1 {
+	status = "disabled";
+};
+
+/* LoRa SX1262 on SPI1 — RAK4631 core-module wiring */
+&spi1 {
+	compatible = "nordic,nrf-spi";
+	status = "okay";
+	cs-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;		/* NSS P1.10 */
+	pinctrl-0 = <&spi1_default>;
+	pinctrl-1 = <&spi1_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <1000000>;
+		reset-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;		/* RST  P1.06 */
+		busy-gpios = <&gpio1 14 GPIO_ACTIVE_HIGH>;		/* BUSY P1.14 */
+		dio1-gpios = <&gpio1 15 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;	/* DIO1 P1.15 */
+		dio2-tx-enable;						/* DIO2 = T/R switch */
+		/* 1.8 V TCXO via DIO3 — matches the official MeshCore GAT562 variant
+		 * (SX126X_DIO3_TCXO_VOLTAGE 1.8). The TCXO on the RAK4631 core runs
+		 * fine at 1.8 V; 3.3 V also works on this unit, but 1.8 V mirrors the
+		 * vendor's known-good value. The module is a TCXO part: without DIO3
+		 * control it has no clock and sits in permanent BUSY.  NOTE: the SX1262
+		 * signals CAD/TX/RX "done" on DIO1, which needs a free nRF GPIOTE
+		 * channel.  This board's 6 buttons are routed to GPIO SENSE (see
+		 * sense-edge-mask on &gpio0) so they don't consume all 8 channels and
+		 * starve DIO1 — without that, every RF op times out ("CAD failed -116"). */
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+		rx-boosted;
+	};
+};
+
+/* I2C0: SSD1306 OLED @ 0x3C + auto-detected sensors (BME280 pad, etc.) */
+&i2c0 {
+	compatible = "nordic,nrf-twi";
+	status = "okay";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	ssd1306: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		prechargep = <0x22>;
+	};
+
+	#include "../../common/sensors-i2c.dtsi"
+};
+
+/* PWM0 drives the buzzer on P1.01 */
+&pwm0 {
+	status = "okay";
+	pinctrl-0 = <&pwm0_default>;
+	pinctrl-1 = <&pwm0_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/*
+ * No external QSPI flash on the GAT562 core module. The SoC leaves &qspi
+ * disabled by default; pin it explicitly so a probe of an absent chip can
+ * never hang boot.
+ */
+&qspi {
+	status = "disabled";
+};
+
+/* USB CDC-ACM: console + repeater CLI */
+zephyr_udc0: &usbd {
+	compatible = "nordic,nrf-usbd";
+	status = "okay";
+
+	cdc_acm_uart: cdc_acm_uart {
+		compatible = "zephyr,cdc-acm-uart";
+	};
+};
+
+/* SoftDevice s140 v6 + UF2 bootloader flash layout (app @ 0x26000) */
+#include "../../common/nrf52_partitions_sdv6.dtsi"
+
+/* Mark the buttons node as a System OFF wakeup source */
+#include "../../common/nrf52_wakeup.dtsi"

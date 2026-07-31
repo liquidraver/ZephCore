@@ -17,7 +17,7 @@
  * Include this in any nRF52 board DTS that defines a 'buttons' gpio-keys node.
  * Boards without buttons (e.g. ikoka_nano, rak4631) should NOT include this.
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 &buttons {

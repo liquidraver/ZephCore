@@ -1,0 +1,276 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Heltec Wireless Tracker V2 — ZephCore procpu DTS
+ *
+ * Hardware:
+ *   MCU:    ESP32-S3FN8, 8 MB flash
+ *   Radio:  SX1262 on SPI2, KCT8103L external PA/FEM
+ *   GNSS:   UC6580 on UART2
+ *   TFT:    ST7735R-compatible 0.96" 160x80 on SPI3
+ *   Button: GPIO0
+ *   LED:    GPIO18
+ *
+ * Pin mappings are verified against:
+ *   - Heltec Wireless Tracker V2.3 schematic and V2 datasheet
+ *   - MeshCore variants/heltec_tracker_v2
+ *
+ * PA_CPS appears on GPIO46 in the Heltec pin map/schematic but MeshCore's V2
+ * variant does not drive it. ZephCore leaves GPIO46 unclaimed until the exact
+ * KCT8103L CPS behavior for this revision is confirmed.
+ */
+
+/dts-v1/;
+
+#include <espressif/esp32s3/esp32s3_fn8.dtsi>
+#include <espressif/partitions_0x0_amp_8M.dtsi>
+#include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/lora/sx126x.h>
+#include "heltec_wireless_tracker_v2-pinctrl.dtsi"
+
+/ {
+	model = "Heltec Wireless Tracker V2 PROCPU";
+	compatible = "heltec,wireless-tracker-v2", "espressif,esp32s3";
+
+	aliases {
+		led0 = &status_led;
+		lora-tx-led = &status_led;
+		uart-0 = &uart0;
+		uart-2 = &uart2;
+		i2c-0 = &i2c0;
+		lora0 = &lora0;
+		sw0 = &button0;
+		watchdog0 = &wdt0;
+		gnss = &gnss;
+		gps-enable = &gps_enable_pin;
+		display0 = &st7735r_160x80;
+	};
+
+	chosen {
+		zephyr,sram = &sram1;
+		zephyr,console = &usb_serial;
+		zephyr,shell-uart = &usb_serial;
+		zephyr,flash = &flash0;
+		zephyr,code-partition = &slot0_partition;
+		zephyr,bt-hci = &esp32_bt_hci;
+		zephyr,display = &st7735r_160x80;
+	};
+
+	leds {
+		compatible = "gpio-leds";
+
+		status_led: led_0 {
+			gpios = <&gpio0 18 GPIO_ACTIVE_HIGH>;
+			label = "Status LED";
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		button0: button_0 {
+			gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			label = "USER SW";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+	};
+
+	/* Vext powers the TFT and UC6580 GNSS rail. Keep it on; ZephCore gates
+	 * GNSS by holding/releasing the GNSS reset line and gates only the TFT
+	 * backlight at runtime. */
+	vext_enable: tft_pwr_enable: vext-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vext";
+		enable-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		regulator-always-on;
+		startup-delay-us = <10000>;
+	};
+
+	/* GPIO21 drives the TFT backlight switch. */
+	disp_pwr_enable: disp-pwr-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "disp-pwr-enable";
+		enable-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
+	};
+
+	/* GPIO35 is the UC6580 reset/run line. HIGH releases reset/runs GNSS. */
+	gps_en: gps-enable {
+		compatible = "gpio-leds";
+
+		gps_enable_pin: gps_enable {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "GPS Enable";
+		};
+	};
+
+	/* FEM LDO power supply: VFEM_Ctrl = GPIO7. */
+	fem_power: fem-power {
+		compatible = "regulator-fixed";
+		regulator-name = "fem-power";
+		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+		regulator-always-on;
+		startup-delay-us = <1000>;
+	};
+
+	/* ADC_Ctrl = GPIO2. ZephCore enables it only while sampling battery. */
+	vbat_enable: vbat-enable {
+		compatible = "regulator-fixed";
+		regulator-name = "vbat-enable";
+		enable-gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+	};
+
+	zephyr,user {
+		io-channels = <&adc0 0>;
+		/* MeshCore V2 uses a 5.42x empirical battery scale. With ESP32-S3
+		 * ADC_REF_INTERNAL (1100 mV), raw-to-battery multiplier is 5962 mV. */
+		vbat-mv-multiplier = <5962>;
+	};
+
+	mipi_dbi_st7735r_160x80 {
+		compatible = "zephyr,mipi-dbi-spi";
+		spi-dev = <&spi3>;
+		dc-gpios = <&gpio1 8 GPIO_ACTIVE_HIGH>;    /* GPIO40 */
+		reset-gpios = <&gpio1 7 GPIO_ACTIVE_LOW>;  /* GPIO39 */
+		write-only;
+		status = "okay";
+		#address-cells = <1>;
+		#size-cells = <0>;
+
+		st7735r_160x80: st7735r@0 {
+			compatible = "sitronix,st7735r";
+			mipi-max-frequency = <24000000>;
+			mipi-mode = "MIPI_DBI_MODE_SPI_4WIRE";
+			reg = <0>;
+			width = <160>;
+			height = <80>;
+			inversion-on;
+			x-offset = <0>;
+			y-offset = <24>;
+			madctl = <0xa8>;
+			colmod = <0x05>;
+			invctr = <7>;
+			vmctr1 = <0x0e>;
+			pwctr1 = [a2 02 84];
+			pwctr2 = [c1];
+			pwctr3 = [0a 00];
+			pwctr4 = [8a 2a];
+			pwctr5 = [8a ee];
+			frmctr1 = [01 26 2e];
+			frmctr2 = [01 26 2e];
+			frmctr3 = [01 26 2e 01 26 2e];
+			gamctrp1 = [0f 1a 0f 18 2f 28 20 22 1f 1b 23 37 00 07 02 10];
+			gamctrn1 = [0f 1b 0f 17 33 2c 29 2e 30 2e 30 3b 00 07 03 10];
+			caset = [00 00 00 9f];
+			raset = [00 18 00 67];
+		};
+	};
+};
+
+&adc0 {
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel@0 {
+		reg = <0>;
+		zephyr,gain = "ADC_GAIN_1";
+		zephyr,reference = "ADC_REF_INTERNAL";
+		zephyr,acquisition-time = <ADC_ACQ_TIME_DEFAULT>;
+		zephyr,resolution = <12>;
+	};
+};
+
+/* ADC unit 2 channel 0 maps to GPIO11 on ESP32-S3, which is LoRa MISO here. */
+&adc1 {
+	status = "disabled";
+};
+
+&uart0 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart0_default>;
+	pinctrl-names = "default";
+};
+
+&uart2 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart2_default>;
+	pinctrl-names = "default";
+
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+		status = "okay";
+	};
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_FAST>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+};
+
+&spi2 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+
+	lora0: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;
+		busy-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
+		dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+
+		/* KCT8103L control per MeshCore:
+		 * - PA_CSD/GPIO4: active-HIGH FEM enable
+		 * - PA_CTX/GPIO5: HIGH=TX, LOW=RX/LNA
+		 * - SX1262 DIO2: internal RF switch TX select */
+		antenna-enable-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
+		tx-enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		dio2-tx-enable;
+
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <5>;
+		rx-boosted;
+		spi-max-frequency = <4000000>;
+		status = "okay";
+	};
+};
+
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	pinctrl-0 = <&spim3_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;  /* GPIO38 */
+	use-iomux;
+};
+
+&timer0 { status = "okay"; };
+&timer1 { status = "okay"; };
+&timer2 { status = "okay"; };
+&timer3 { status = "okay"; };
+
+&wdt0 { status = "okay"; };
+&trng0 { status = "okay"; };
+
+&esp32_bt_hci { status = "okay"; };
+&wifi { status = "okay"; };
+&usb_serial { status = "okay"; };
+&st7735r_160x80 { status = "okay"; };

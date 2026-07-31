@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * LR11xx Zephyr LoRa driver — extension API
  *
  * Functions extending the standard Zephyr lora_driver_api with
@@ -51,6 +51,19 @@ bool lr11xx_is_receiving(const struct device *dev);
 void lr11xx_set_rx_boost(const struct device *dev, bool enable);
 
 /**
+ * @brief Radio deaf time per duty-cycle wake transition, in microseconds
+ *
+ * Context restore + PLL lock plus the DTS-configured TCXO startup delay
+ * where fitted.  Used by the adapter (LoRaRadioBase) to size duty-cycle
+ * windows so the wake transition is charged against the preamble-catch
+ * budget — same accounting as the SX126x.
+ *
+ * @param dev LoRa device
+ * @return Transition deaf time in microseconds
+ */
+uint32_t lr11xx_get_wakeup_time_us(const struct device *dev);
+
+/**
  * @brief Get a random number from the radio
  *
  * Uses LR11xx hardware RNG.
@@ -72,6 +85,39 @@ uint32_t lr11xx_get_random(const struct device *dev);
  * @param dev LoRa device
  */
 void lr11xx_reset_agc(const struct device *dev);
+
+/**
+ * @brief Set the adaptive-CAD operating detPeak offset
+ *
+ * Signed delta applied to the per-SF base cadDetPeak on every LBT CAD.
+ * Takes effect on the next CAD — no reconfigure needed.  Clamped
+ * in-driver to the LR11xx scale (48-90).
+ *
+ * @param dev    LoRa device
+ * @param offset Signed offset from the base table value
+ */
+void lr11xx_cad_set_peak_offset(const struct device *dev, int8_t offset);
+
+/**
+ * @brief Per-SF base cadDetPeak for the currently configured SF
+ *
+ * @param dev LoRa device
+ * @return Base detPeak (56-68 on this family)
+ */
+uint8_t lr11xx_cad_base_peak(const struct device *dev);
+
+/**
+ * @brief Run one blocking calibration CAD at base detPeak + peak_offset
+ *
+ * Uses the operating modem config (SF/BW/symbol count).  Leaves the chip
+ * in STANDBY — the caller must restart RX afterwards.  Mesh loop thread
+ * only.
+ *
+ * @param dev         LoRa device
+ * @param peak_offset Signed offset from the base table value
+ * @return 1 = activity detected, 0 = channel free, <0 = error
+ */
+int lr11xx_cad_probe(const struct device *dev, int8_t peak_offset);
 
 #ifdef __cplusplus
 }

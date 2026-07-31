@@ -1,0 +1,69 @@
+/*
+ * Common I2C Real-Time-Clock descriptors for ZephCore
+ * SPDX-License-Identifier: MIT
+ *
+ * OPT-IN: include this inside an &i2cN { ... } block ONLY on boards that
+ * physically have a battery/cap-backed RTC. Kept separate from
+ * sensors-i2c.dtsi because these declare fixed I2C addresses (0x68/0x51/
+ * 0x52/0x32) that collide with common parts — an IMU/accelerometer sits at
+ * 0x68 (same as DS3231). Including this on a board without an RTC would risk
+ * a devicetree unit-address clash and a runtime mis-probe, so it is opt-in.
+ *
+ * Usage (board overlay/dts, alongside the sensors include):
+ *   &i2c0 {
+ *       #include "../../common/sensors-i2c.dtsi"
+ *       #include "../../common/rtc-i2c.dtsi"
+ *   };
+ *
+ * These bind NO Zephyr RTC driver — they're data-only descriptors the
+ * boot-time auto-discovery (adapters/clock/ZephyrRTCDiscover.c) probes via
+ * raw I2C to restore wall-clock time at boot. A chip that isn't actually
+ * present fails the probe and is skipped. One chip per I2C address:
+ *
+ *  Chip      │ Addr │ Also covers (same regs)
+ *  ──────────┼──────┼─────────────────────────
+ *  DS3231    │ 0x68 │ DS1307, DS3232
+ *  PCF8563   │ 0x51 │ —   (PCF85063A is 0x51 too but differs — override)
+ *  RV3028    │ 0x52 │ —
+ *  RX8130CE  │ 0x32 │ —   (RV8803 is 0x32 too but differs — override)
+ *
+ * status-reg 0xFF means the power-loss flag is in the seconds byte. A board
+ * with a same-address variant should /delete-node/ the conflicting one and
+ * add its own in the board overlay.
+ */
+
+rtc_ds3231: rtc-ds3231@68 {
+	compatible = "zephcore,rtc-i2c";
+	reg = <0x68>;
+	time-reg = <0x00>;
+	date-index = <4>;
+	status-reg = <0x0F>;   /* control/status */
+	status-mask = <0x80>;  /* OSF — oscillator stopped */
+};
+
+rtc_pcf8563: rtc-pcf8563@51 {
+	compatible = "zephcore,rtc-i2c";
+	reg = <0x51>;
+	time-reg = <0x02>;
+	date-index = <3>;      /* PCF8563 puts date before weekday */
+	status-reg = <0xFF>;   /* flag is in the seconds byte */
+	status-mask = <0x80>;  /* VL — clock integrity not guaranteed */
+};
+
+rtc_rv3028: rtc-rv3028@52 {
+	compatible = "zephcore,rtc-i2c";
+	reg = <0x52>;
+	time-reg = <0x00>;
+	date-index = <4>;
+	status-reg = <0x0e>;   /* status */
+	status-mask = <0x01>;  /* PORF — power-on reset */
+};
+
+rtc_rx8130ce: rtc-rx8130ce@32 {
+	compatible = "zephcore,rtc-i2c";
+	reg = <0x32>;
+	time-reg = <0x10>;
+	date-index = <4>;
+	status-reg = <0x1d>;   /* flag */
+	status-mask = <0x02>;  /* VLF — voltage low */
+};

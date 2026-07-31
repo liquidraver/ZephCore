@@ -1,2 +1,7 @@
+*.c    text eol=lf
+*.h    text eol=lf
+*.cpp  text eol=lf
+*.hpp  text eol=lf
+
 patches/zephyr/*.patch text eol=lf
 patches/modules/loramac-node/*.patch text eol=crlf

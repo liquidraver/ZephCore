@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Static pool PacketManager - no dynamic allocation
  */
 
@@ -46,14 +46,7 @@ struct PacketQueue {
 		}
 		if (best_idx < 0) return nullptr;
 
-		Packet *top = _table[best_idx];
-		for (int i = best_idx; i < _num - 1; i++) {
-			_table[i] = _table[i + 1];
-			_pri_table[i] = _pri_table[i + 1];
-			_schedule_table[i] = _schedule_table[i + 1];
-		}
-		_num--;
-		return top;
+		return removeByIdx(best_idx);
 	}
 
 	Packet *removeByIdx(int i) {
@@ -96,6 +89,17 @@ struct PacketQueue {
 		return (i < _num) ? _schedule_table[i] : 0;
 	}
 
+	/* Priority of the next packet that get(now) would return, without
+	 * removing it.  Returns 0xFF if no due packet exists. */
+	uint8_t peekPriority(uint32_t now) const {
+		uint8_t best = 0xFF;
+		for (int j = 0; j < _num; j++) {
+			if ((int32_t)(_schedule_table[j] - now) > 0) continue;
+			if (_pri_table[j] < best) best = _pri_table[j];
+		}
+		return best;
+	}
+
 	bool reschedule(int i, uint32_t new_scheduled_for) {
 		if (i >= _num) return false;
 		_schedule_table[i] = new_scheduled_for;
@@ -109,7 +113,6 @@ struct PacketQueue {
 static Packet _packet_pool[POOL_SIZE];
 static PacketQueue _unused;
 static PacketQueue _send_queue;
-static PacketQueue _rx_queue;
 static bool _initialized = false;
 
 static void init_pool() {
@@ -193,18 +196,9 @@ bool StaticPoolPacketManager::rescheduleOutbound(int i, uint32_t new_scheduled_f
 	return _send_queue.reschedule(i, new_scheduled_for);
 }
 
-void StaticPoolPacketManager::queueInbound(Packet *packet, uint32_t scheduled_for)
+uint8_t StaticPoolPacketManager::peekNextOutboundPriority(uint32_t now) const
 {
-	if (!_rx_queue.add(packet, 0, scheduled_for)) {
-		LOG_WRN("queueInbound: FULL (%d entries) — dropping type=%d",
-			_rx_queue.count(), packet->getPayloadType());
-		free(packet);
-	}
-}
-
-Packet *StaticPoolPacketManager::getNextInbound(uint32_t now)
-{
-	return _rx_queue.get(now);
+	return _send_queue.peekPriority(now);
 }
 
 } /* namespace mesh */

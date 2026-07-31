@@ -53,10 +53,12 @@ typedef lr11xx_status_t lr1110_status_t;
 /* ── Types ─────────────────────────────────────────────────── */
 
 #define LR1110_BL_VERSION_LENGTH   4
+#define LR1110_BL_HASH_LENGTH      16
 #define LR1110_BL_PIN_LENGTH       4
 #define LR1110_BL_CHIP_EUI_LENGTH  8
 #define LR1110_BL_JOIN_EUI_LENGTH  8
 
+typedef uint8_t lr1110_bootloader_hash_t[LR1110_BL_HASH_LENGTH];
 typedef uint8_t lr1110_bootloader_pin_t[LR1110_BL_PIN_LENGTH];
 typedef uint8_t lr1110_bootloader_chip_eui_t[LR1110_BL_CHIP_EUI_LENGTH];
 typedef uint8_t lr1110_bootloader_join_eui_t[LR1110_BL_JOIN_EUI_LENGTH];
@@ -118,6 +120,33 @@ lr1110_status_t lr1110_bootloader_get_version(const void *context,
 	lr1110_bootloader_version_t *version);
 
 lr1110_status_t lr1110_bootloader_erase_flash(const void *context);
+
+/* 16-byte digest of the image currently in flash (opcode 0x8004). Lets the
+ * host confirm what actually landed, rather than trusting fire-and-forget
+ * WriteFlashEncrypted calls that never read back. */
+lr1110_status_t lr1110_bootloader_get_hash(const void *context,
+	lr1110_bootloader_hash_t hash);
+
+/* TCXO supply voltage codes for lr1110_bootloader_set_tcxo_mode() */
+#define LR1110_TCXO_CTRL_1_6V 0x00
+#define LR1110_TCXO_CTRL_1_7V 0x01
+#define LR1110_TCXO_CTRL_1_8V 0x02
+#define LR1110_TCXO_CTRL_2_2V 0x03
+#define LR1110_TCXO_CTRL_2_4V 0x04
+#define LR1110_TCXO_CTRL_2_7V 0x05
+#define LR1110_TCXO_CTRL_3_0V 0x06
+#define LR1110_TCXO_CTRL_3_3V 0x07
+
+/* Calibrate all blocks (LF_RC|HF_RC|PLL|ADC|IMG|PLL_TX) */
+#define LR1110_CALIB_ALL 0x3F
+
+/* Power the TCXO from DIO3 and use it as the XOSC source. `timeout` is in
+ * 32.768 kHz RTC ticks (1 tick = 30.52 us). Must be followed by a
+ * calibration — changing the clock source invalidates the previous one. */
+lr1110_status_t lr1110_bootloader_set_tcxo_mode(const void *context,
+	uint8_t tune, uint32_t timeout);
+
+lr1110_status_t lr1110_bootloader_calibrate(const void *context, uint8_t calib_param);
 
 lr1110_status_t lr1110_bootloader_write_flash_encrypted(const void *context,
 	uint32_t offset, const uint32_t *data, uint8_t length);

@@ -1,0 +1,73 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * Elecrow ThinkNode M9 — Pin Control Definitions
+ *
+ * Pin mapping (from Arduino MeshCore variants/thinknode_m9):
+ *   Shared SPI2: SCLK=GPIO40, MOSI=GPIO47, MISO=GPIO38
+ *                (LR1110 NSS=GPIO39, ST7789 CS=GPIO16, SD CS=GPIO48 unused)
+ *   I2C0:        SDA=GPIO7, SCL=GPIO6   (PCF8563 RTC + env sensors)
+ *   UART1:       RX=GPIO2, TX=GPIO3     (L76K GPS; upstream setPins(2,3))
+ *   LEDC ch0:    GPIO9                  (buzzer)
+ *   Console:     uart0 GPIO43/44 via esp32s3_console_uart0.dtsi (board.overlay)
+ */
+
+#include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
+#include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
+
+&pinctrl {
+	/* SPI2 — LR1110 radio + ST7789 TFT (CS per device via cs-gpios) */
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO38>,
+				 <SPIM2_SCLK_GPIO40>;
+		};
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO47>;
+			output-low;
+		};
+	};
+
+	/* I2C0 — PCF8563 RTC + optional environment sensors */
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO7>,
+				 <I2C0_SCL_GPIO6>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	/* I2C1 — STC8H keypad helper MCU @0x6C. Separate bus from the RTC and
+	 * sensors; the keypad is this board's only input device. */
+	i2c1_default: i2c1_default {
+		group1 {
+			pinmux = <I2C1_SDA_GPIO20>,
+				 <I2C1_SCL_GPIO21>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	/* UART1 — L76K GPS (GPIO2 = GPS TX → CPU RX, GPIO3 = GPS RX → CPU TX) */
+	uart1_default: uart1_default {
+		group1 {
+			pinmux = <UART1_TX_GPIO3>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART1_RX_GPIO2>;
+			bias-pull-up;
+		};
+	};
+
+	/* LEDC channel 0 — buzzer PWM on GPIO9 */
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO9>;
+			output-enable;
+		};
+	};
+};

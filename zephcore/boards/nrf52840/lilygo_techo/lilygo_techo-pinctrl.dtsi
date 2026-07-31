@@ -2,7 +2,7 @@
  * LilyGo T-Echo pin control definitions
  * Copyright (c) 2026 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Pin mappings (from Arduino MeshCore variant.h):
  *

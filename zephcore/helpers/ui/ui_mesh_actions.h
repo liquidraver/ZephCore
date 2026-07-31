@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore UI ↔ Mesh Action Helpers
  *
  * Deferred UI button actions and periodic housekeeping display refresh.
@@ -60,6 +60,15 @@ void mesh_set_offgrid_mode(bool enable);
 void mesh_set_leds_disabled(bool disabled);
 void mesh_disable_power_regulators(void);
 void mesh_reboot_to_ota_dfu(void);
+void mesh_save_brightness(uint8_t brightness);
+void mesh_save_and_restart(void);
+void mesh_set_wake_on_msg(bool enabled);
+void mesh_save_screen_off_secs(uint16_t secs);
+/* path_hash_mode: 0/1/2 → 1/2/3 bytes per hop appended to outbound flood path */
+void mesh_save_path_hash_mode(uint8_t mode);
+/* GPS duty-cycle interval in seconds (0 = always on). Applied live immediately
+ * (lightweight); the flash write is deferred to the mesh thread. */
+void mesh_save_gps_duty_sec(uint32_t sec);
 
 #ifdef __cplusplus
 }

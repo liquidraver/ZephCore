@@ -1,0 +1,73 @@
+/*
+ * SPDX-License-Identifier: MIT
+ *
+ * ZephCore native Linux PLATFORM overlay (auto-paired with linux_common.conf,
+ * applied automatically for BOARD=native_sim).
+ *
+ * Platform infrastructure ONLY — it disables native_sim's emulated SPI/GPIO
+ * and SDL display, and sets up the LittleFS partition. The radio wiring and
+ * the native_linux SPI/GPIO controller nodes live in the per-device preset
+ * overlay (femtofox.overlay, rak6421.overlay, rak6421_pi5.overlay).
+ *
+ * You MUST pass a device preset via EXTRA_CONF_FILE, e.g.
+ *   -DEXTRA_CONF_FILE="boards/linux_native/femtofox.conf"
+ * A bare `-b native_sim` build with no device preset has no SX1262 node and
+ * will fail to link the radio adapter (no `lora0` alias).
+ */
+
+/* Disable the native_sim emulated controllers — each device preset adds its
+ * own zephcore_spi0 / zephcore_gpio0 backed by real /dev/spidev* + /dev/gpiochip*. */
+&spi0 {
+	status = "disabled";
+};
+
+&gpio0 {
+	status = "disabled";
+};
+
+/* LittleFS on native_sim's simulated flash.
+ * The native_sim board DTS allocates the first 1MB (0x0..0xfffff) for
+ * MCUBoot + OTA slots. The second half (0x100000..0x1fffff = 1MB) is unused;
+ * use 512KB of it for LittleFS — 128 × 4KB blocks, plenty for identity,
+ * prefs, contacts, and channels.
+ * The sim-flash is FILE-BACKED on native_sim (ARCH_POSIX): it persists across
+ * restarts in meshcore_settings_<hostname>.bin in the binary's working dir
+ * (see patches/zephyr/0008-flash-sim-per-node-file.patch). Pass --flash=<path>
+ * to override, or --flash_in_ram to make it ephemeral. */
+&flash0 {
+	partitions {
+		lfs_partition: partition@100000 {
+			label = "lfs";
+			reg = <0x00100000 0x00080000>; /* 512 KB */
+		};
+	};
+};
+
+#include "../common/filesystem.dtsi"
+
+/* Disable the SDL emulated display + touch (headless SBC; the SDL2 dev library
+ * isn't a useful dep, and HAS_SDL would otherwise get selected). */
+&sdl_dc {
+	status = "disabled";
+};
+
+&input_sdl_touch {
+	status = "disabled";
+};
+
+/ {
+	chosen {
+		/delete-property/ zephyr,display;
+		/delete-property/ zephyr,touch;
+	};
+	aliases {
+		/* native_sim's base DTS attaches led0 to the emulated gpio0 we just
+		 * disabled; drop it so helpers/ui/ui_common.c has no dangling
+		 * DEVICE_DT_GET. */
+		/delete-property/ led0;
+	};
+};
+
+/ {
+	/delete-node/ leds;
+};

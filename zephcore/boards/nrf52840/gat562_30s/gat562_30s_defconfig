@@ -1,0 +1,30 @@
+# SPDX-License-Identifier: MIT
+# GAT562 30S Mesh Kit default configuration
+# (most subsystems also come from zephcore_common.conf + nrf52_common.conf;
+#  these are the board essentials, kept self-contained like other custom boards)
+
+# MPU + hardware stack protection
+CONFIG_ARM_MPU=y
+CONFIG_HW_STACK_PROTECTION=y
+
+# GPIO + pin control
+CONFIG_GPIO=y
+CONFIG_PINCTRL=y
+
+# Console over USB CDC-ACM (DT node + nrf52_common.conf USB stack)
+CONFIG_CONSOLE=y
+CONFIG_UART_CONSOLE=y
+CONFIG_SERIAL=y
+CONFIG_UART_LINE_CTRL=y
+
+# Flash / NVS (LittleFS app data partition)
+CONFIG_FLASH=y
+CONFIG_FLASH_MAP=y
+CONFIG_NVS=y
+
+# SPI for LoRa, ADC for battery sense
+CONFIG_SPI=y
+CONFIG_ADC=y
+
+# SEGGER RTT (matches the RAK4631 base this board derives from)
+CONFIG_USE_SEGGER_RTT=y

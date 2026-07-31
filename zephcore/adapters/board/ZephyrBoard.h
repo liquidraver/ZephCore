@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Zephyr MainBoard base - nRF52840 DK and generic
  */
 
@@ -12,6 +12,7 @@ namespace mesh {
 class ZephyrBoard : public MainBoard {
 public:
 	uint16_t getBattMilliVolts() override;
+	uint8_t  getBattPercent() override;
 	float getMCUTemperature() override;
 	bool setAdcMultiplier(float multiplier) override;
 	float getAdcMultiplier() const override;
@@ -24,6 +25,7 @@ public:
 	bool startOTAUpdate(const char *id, char reply[]) override;  /* Reboot into BLE OTA DFU */
 	void clearBootloaderMagic();      /* Clear stale GPREGRET values at startup */
 	uint8_t getStartupReason() const override;
+	bool isExternalPowered() override;  /* nRF52: VBUS present (USB/charger); else false */
 
 private:
 	/* Runtime override for vbat-mv-multiplier. Units match DT `vbat-mv-multiplier`

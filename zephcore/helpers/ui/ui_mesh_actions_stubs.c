@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * Weak stubs for companion-only UI mesh actions.
  *
  * Repeater builds with a display compile ui_task.c which references these

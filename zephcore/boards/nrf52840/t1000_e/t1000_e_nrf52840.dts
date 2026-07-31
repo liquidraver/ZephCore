@@ -2,7 +2,7 @@
  * Seeed Tracker T1000-E - nRF52840 + LR1110
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware:
  * - nRF52840 SoC with BLE
@@ -74,10 +74,10 @@
 
 	/* Input filter: user button multi-tap detection
 	 * 1 tap  (400ms wait) → KEY_1 = page next (no-op without display)
-	 * 2 taps (400ms wait) → KEY_B = flood advert
+	 * 2 taps (400ms wait) → KEY_B = LED heartbeat toggle
 	 * 3 taps (400ms wait) → KEY_D = buzzer mute toggle
 	 * 4 taps (400ms wait) → KEY_C = GPS on/off
-	 * 5 taps (immediate)  → KEY_E = LED heartbeat toggle */
+	 * 5 taps (immediate)  → KEY_E = flood advert */
 	user_btn_multitap {
 		compatible = "zephcore,input-multi-tap";
 		/* No 'input' phandle — listen to ALL devices.
@@ -102,7 +102,7 @@
 	/* Battery ADC channel reference for ZephyrBoard */
 	zephyr,user {
 		io-channels = <&adc 0>;
-		vbat-mv-multiplier = <7200>;  /* 2:1 voltage divider, 3.6V ref */
+		vbat-mv-multiplier = <7236>;  /* 2:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 
 	/* Buzzer on PWM0 channel 0 (P0.25) with enable on P1.05 */

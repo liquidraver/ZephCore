@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * RepeaterMesh - LoRa mesh repeater implementation
  */
 
@@ -7,6 +7,7 @@
 #include <mesh/Utils.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/TxtDataHelpers.h>
+#include <helpers/MeshcoreJson.h>
 #include <adapters/radio/LoRaRadioBase.h>
 #include <adapters/sensors/SimpleLPP.h>
 #include <adapters/sensors/ZephyrEnvSensors.h>
@@ -48,11 +49,18 @@ static void simple_sort(T* arr, int count, Comparator cmp) {
 LOG_MODULE_REGISTER(zephcore_repeater, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+#define UPLINK_STATUS_INTERVAL_MS 300000
 static RepeaterMesh *s_uplink_mesh;
+/* Runs on the WiFi thread; the mesh time-sync module is main-thread-only, so
+ * flag the trusted sync and let loop() arm suppression + drift envelope. */
+static atomic_t s_uplink_sntp_pending;
 static void uplink_time_sync_cb(uint32_t unix_ts)
 {
 	if (s_uplink_mesh) {
 		s_uplink_mesh->getRTCClock()->setCurrentTime(unix_ts);
+		atomic_set(&s_uplink_sntp_pending, 1);
+		/* Wake the main loop rather than waiting for its next deadline. */
+		s_uplink_mesh->notifyWake();
 	}
 }
 #endif
@@ -77,9 +85,6 @@ static void uplink_time_sync_cb(uint32_t unix_ts)
 #define LAZY_CONTACTS_WRITE_DELAY   5000
 #define SERVER_RESPONSE_DELAY       300
 #define TXT_ACK_DELAY               200
-
-#define CTL_TYPE_NODE_DISCOVER_REQ   0x80
-#define CTL_TYPE_NODE_DISCOVER_RESP  0x90
 
 /* Helper: futureMillis */
 static inline unsigned long futureMillis(uint32_t delta_ms) {
@@ -130,12 +135,51 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
 
     if (client == nullptr) {
         uint8_t perms;
-        if (strcmp((char*)data, _prefs.password) == 0) {
+
+        /* Constant-time comparison: zero-pad BOTH the received password and
+         * the stored passwords into cleared buffers (copying only up to the
+         * NUL) before comparing full-width. Don't trust the stored buffer to
+         * be zero-padded: a password set over a longer previous value via the
+         * CLI leaves trailing garbage past the NUL (and such garbage may
+         * already be persisted in flash on upgraded devices). Comparing the
+         * raw stored buffer full-width would then fail to match a correct
+         * password. Compare both unconditionally so timing is identical for
+         * any wrong password regardless of which (admin/guest) it most
+         * resembles. */
+        uint8_t received[sizeof(_prefs.password)] = {0};
+        uint8_t admin_pw[sizeof(_prefs.password)] = {0};
+        uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
+        size_t r_len = strnlen((const char *)data, sizeof(received) - 1);
+        memcpy(received, data, r_len);
+        memcpy(admin_pw, _prefs.password, strnlen(_prefs.password, sizeof(admin_pw) - 1));
+        memcpy(guest_pw, _prefs.guest_password, strnlen(_prefs.guest_password, sizeof(guest_pw) - 1));
+
+        bool admin_match = mesh::Utils::constantTimeEqual(received,
+                                                          admin_pw,
+                                                          sizeof(received));
+        bool guest_match = mesh::Utils::constantTimeEqual(received,
+                                                          guest_pw,
+                                                          sizeof(received));
+
+        /* An empty stored guest password disables guest access (as
+         * CONFIG_ZEPHCORE_GUEST_PASSWORD documents) rather than matching an
+         * empty submitted password and letting anyone in. Both compares above
+         * still run unconditionally, so timing is unchanged. */
+        if (_prefs.guest_password[0] == 0) guest_match = false;
+
+        if (admin_match) {
             perms = PERM_ACL_ADMIN;
-        } else if (strcmp((char*)data, _prefs.guest_password) == 0) {
+        } else if (guest_match) {
             perms = PERM_ACL_GUEST;
         } else {
-            LOG_WRN("Invalid password");
+            /* Apply global failed-login rate limit. The check itself is
+             * unconditional regardless of admin/guest path so its timing
+             * doesn't leak which credential the attempt was closer to. */
+            if (!login_fail_limiter.allow(getRTCClock()->getCurrentTime())) {
+                LOG_WRN("Login rate-limited (failed attempts exceeded)");
+            } else {
+                LOG_WRN("Invalid password");
+            }
             return 0;
         }
 
@@ -173,10 +217,21 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     return 13;
 }
 
-uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
+uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+        if (data_len < 1) return 0;
         reply_path_len = *data++;
-        mesh::Packet::copyPath(reply_path, data, reply_path_len);
+        data_len--;
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -187,10 +242,21 @@ uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_
     return 0;
 }
 
-uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
+uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+        if (data_len < 1) return 0;
         reply_path_len = *data++;
-        mesh::Packet::copyPath(reply_path, data, reply_path_len);
+        data_len--;
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -202,10 +268,21 @@ uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t 
     return 0;
 }
 
-uint8_t RepeaterMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data) {
+uint8_t RepeaterMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
     if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+        if (data_len < 1) return 0;
         reply_path_len = *data++;
-        mesh::Packet::copyPath(reply_path, data, reply_path_len);
+        data_len--;
+        /* data is anon-req-supplied; bound copy with remaining data_len.
+         * If the claimed path is longer than the bytes provided, copyPath
+         * rejects (returns 0) and leaves reply_path stale — fall back to a
+         * flood reply instead of emitting a corrupt direct path (F2).
+         * path_len == 0 is a valid zero-hop direct reply, so don't treat
+         * its (also-0) return as a rejection. */
+        if (reply_path_len != 0 &&
+            mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+            reply_path_len = OUT_PATH_UNKNOWN;
+        }
 
         memcpy(reply_data, &sender_timestamp, 4);
         uint32_t now = getRTCClock()->getCurrentTime();
@@ -472,7 +549,13 @@ void RepeaterMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_mill
 
 bool RepeaterMesh::allowPacketForward(const mesh::Packet* packet) {
     if (_prefs.disable_fwd) return false;
-    if (packet->isRouteFlood() && packet->getPathHashCount() >= _prefs.flood_max) return false;
+    if (packet->isRouteFlood()) {
+        if (packet->getPathHashCount() >= _prefs.flood_max) return false;
+        // un-scoped floods can be clamped to a lower hop limit than scoped (transport) floods
+        if (packet->getRouteType() == ROUTE_TYPE_FLOOD && packet->getPathHashCount() >= _prefs.flood_max_unscoped) return false;
+        // ADVERT floods get their own (typically tighter) hop ceiling to curb advert churn
+        if (packet->getPayloadType() == PAYLOAD_TYPE_ADVERT && packet->getPathHashCount() >= _prefs.flood_max_advert) return false;
+    }
     if (packet->isRouteFlood() && recv_pkt_region == nullptr) return false;
     if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
         const uint8_t* maximums;
@@ -554,35 +637,17 @@ void RepeaterMesh::logTxFail(mesh::Packet* pkt, int len) {
 }
 
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-    float factor = getContentionTracker().getFloodDelayFactor();
-    uint32_t airtime = _radio->getEstAirtimeFor(
-        packet->getPathByteLen() + packet->payload_len + 2);
-    uint32_t max_jitter = (uint32_t)(5 * airtime * factor);
-    /* Airtime-scaled ceiling: never exceed ~6 airtimes of spread
-     * (keeps SF7/narrow-BW configs from wasting time in oversized jitter windows). */
-    uint32_t airtime_cap = 6 * airtime;
-    if (max_jitter > airtime_cap) max_jitter = airtime_cap;
-    /* Absolute cap: avoid excessive latency in very dense areas.
-     * Reactive backoff will fine-tune further if needed. */
-    if (max_jitter > 2000) max_jitter = 2000;
-    /* Floor: give downstream nodes time to finish RX processing
-     * and return to RX mode before we TX (~20ms settle) */
-    return 20 + getRNG()->nextInt(0, max_jitter + 1);
+    return computeAdaptiveFloodDelay(packet);
 }
 
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-    uint32_t airtime = _radio->getEstAirtimeFor(
-        packet->getPathByteLen() + packet->payload_len + 2);
-    /* Jitter around Arduino direct factor 0.3 using a per-packet factor
-     * in the range [0.25, 0.40]. */
-    uint32_t factor_milli = (uint32_t)getRNG()->nextInt(250, 401);
-    uint32_t max_jitter = (airtime * factor_milli) / 1000;
-    /* Floor: give downstream nodes time to finish RX processing
-     * and return to RX mode before we TX (~20ms settle + jitter). */
-    return 20 + getRNG()->nextInt(0, max_jitter + 1);
+    return computeAdaptiveDirectDelay(packet);
 }
 
-bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
+mesh::DispatcherAction RepeaterMesh::onRecvPacket(mesh::Packet* pkt) {
+    // Determine the request packet's region so sendFloodReply() can echo the same
+    // scope. Runs for every packet (not just floods) so recv_pkt_region is cleared
+    // for direct packets instead of inheriting the last flood's region.
     if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
         recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
     } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
@@ -594,7 +659,7 @@ bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* pkt) {
     } else {
         recv_pkt_region = nullptr;
     }
-    return false;
+    return Mesh::onRecvPacket(pkt);
 }
 
 void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) {
@@ -609,11 +674,11 @@ void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, c
         if (data[4] == 0 || data[4] >= ' ') {
             reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
         } else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
-            reply_len = handleAnonRegionsReq(sender, timestamp, &data[5]);
+            reply_len = handleAnonRegionsReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
         } else if (data[4] == ANON_REQ_TYPE_OWNER && packet->isRouteDirect()) {
-            reply_len = handleAnonOwnerReq(sender, timestamp, &data[5]);
+            reply_len = handleAnonOwnerReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
         } else if (data[4] == ANON_REQ_TYPE_BASIC && packet->isRouteDirect()) {
-            reply_len = handleAnonClockReq(sender, timestamp, &data[5]);
+            reply_len = handleAnonClockReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
         } else {
             reply_len = 0;
         }
@@ -661,6 +726,14 @@ static bool isShare(const mesh::Packet* packet) {
 void RepeaterMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp,
                                 const uint8_t* app_data, size_t app_data_len) {
     mesh::Mesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
+
+    /* Signature already verified by mesh::Mesh before this hook fires.
+     * Skip share rebroadcasts — they replay stale stored adverts and would
+     * churn the original sender's tenure. */
+    if (!isShare(packet)) {
+        _timesync.onAdvertHeard(id.pub_key, timestamp, packet->getPathHashCount(),
+                                (uint32_t)(k_uptime_get() / 1000));
+    }
 
     if (packet->getPathHashCount() == 0 && !isShare(packet)) {
         AdvertDataParser parser(app_data, app_data_len);
@@ -735,7 +808,7 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
                 }
             }
 
-            uint8_t temp[166];
+            uint8_t temp[5 + CLI_REMOTE_REPLY_SIZE];
             char* command = (char*)&data[5];
             char* reply = (char*)&temp[5];
             if (is_retry) {
@@ -773,7 +846,9 @@ bool RepeaterMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const ui
     if (i >= 0 && i < acl.getNumClients()) {
         LOG_DBG("PATH to client, path_len=%d", path_len);
         auto client = acl.getClientByIdx(i);
-        client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len);
+        /* path source bounded by upstream packet parser; client->out_path
+         * is MAX_PATH_SIZE-sized. */
+        client->out_path_len = mesh::Packet::copyPath(client->out_path, path, MAX_PATH_SIZE, path_len);
         client->last_activity = getRTCClock()->getCurrentTime();
     }
     return false;
@@ -849,7 +924,13 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
       _cli(board, rtc, acl, &_prefs, this),
       region_map(key_store), temp_map(key_store),
       discover_limiter(4, 120),
-      anon_limiter(4, 180) {
+      anon_limiter(4, 180),
+      /* Failed-login rate limit: 4 wrong-password attempts per 180s. Matches
+       * anon_limiter's shape so legitimate operators don't notice; brute-force
+       * attempts hit the cap quickly and trip the LOG_WRN below. Global rate
+       * (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
+       * Phase 4 (mitigation for upstream MeshCore#2556). */
+      login_fail_limiter(4, 180) {
 
     _store = nullptr;
     last_millis = 0;
@@ -873,8 +954,7 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     initNodePrefs(&_prefs);
     strcpy(_prefs.node_name, "Repeater");
     _prefs.advert_loc_policy = ADVERT_LOC_PREFS;  // Repeaters always advertise prefs coordinates
-    _prefs.flood_advert_interval = 25;            // hours
-    _prefs.loop_detect = LOOP_DETECT_MINIMAL;
+    _prefs.loop_detect = LOOP_DETECT_MODERATE;
     _prefs.path_hash_mode = 1;
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
     memset(&_uplink_creds, 0, sizeof(_uplink_creds));
@@ -887,6 +967,7 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     _uplink_last_rssi = 0.0f;
     _uplink_last_raw_len = 0;
     _uplink_next_status_at = 0;
+    atomic_set(&_uplink_connect_pending, 0);
 #endif
 }
 
@@ -898,11 +979,6 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
      * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
     mesh::Mesh::begin();
     _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
-#ifdef CONFIG_ZEPHCORE_APC
-    _power_ctrl.setSF(_prefs.sf);
-    _power_ctrl.setTargetMargin(_prefs.apc_margin);
-    _power_ctrl.setEnabled(_prefs.apc_enabled != 0);
-#endif
     acl.load(_store->getAclPath(), self_id);
     region_map.load(_store->getRegionsPath());
 
@@ -944,11 +1020,20 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
         mqtt_publisher_start(&_uplink_creds, _prefs.node_name,
                              _uplink_status_topic, _uplink_packets_topic);
         mqtt_publisher_set_connect_cb([]() {
+            /* Runs on the MQTT publisher thread — DON'T publish here. It would
+             * race the main-thread producer on the publisher's staging buffer
+             * and toggle the battery-ADC regulator off-main. Defer to the main
+             * loop via an atomic flag drained in maintenanceLoop(). */
             if (s_uplink_mesh) {
-                s_uplink_mesh->publishUplinkStatus("online");
+                atomic_set(&s_uplink_mesh->_uplink_connect_pending, 1);
+                /* Wake the main loop so "online" publishes immediately.
+                 * Without this the flag waits for whatever deadline fires
+                 * next — up to UPLINK_STATUS_INTERVAL_MS (5 min) on an idle
+                 * repeater, since maintenance no longer ticks every 5 s. */
+                s_uplink_mesh->notifyWake();
             }
         });
-        _uplink_next_status_at = futureMillis(300000);
+        _uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
         LOG_INF("Repeater uplink active: %s", _uplink_packets_topic);
     } else {
         LOG_INF("Repeater uplink inactive");
@@ -1085,6 +1170,10 @@ void RepeaterMesh::setTxPower(int8_t power_dbm) {
     radio_set_tx_power(power_dbm);
 }
 
+bool RepeaterMesh::setRxBoostedGain(bool enable) {
+    return getRadioDriver(_radio).setRxBoost(enable);
+}
+
 void RepeaterMesh::formatNeighborsReply(char* reply) {
     char* dp = reply;
 
@@ -1170,36 +1259,12 @@ void RepeaterMesh::resetDutyCycleTimeoutRestarts() {
     getRadioDriver(_radio).resetDutyCycleTimeoutRestarts();
 }
 
+/* Region-def CLI (handleRegionLoadLine / handleRegionCommand) and its static
+ * parser helpers live in app/RepeaterRegionCLI.cpp. */
+
 void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
     if (region_load_active) {
-        if (StrHelper::isBlank(command)) {
-            region_map = temp_map;
-            region_load_active = false;
-            sprintf(reply, "OK - loaded %d regions", region_map.getCount());
-        } else {
-            char* np = command;
-            while (*np == ' ') np++;
-            int indent = np - command;
-
-            char* ep = np;
-            while (RegionMap::is_name_char(*ep)) ep++;
-            if (*ep) { *ep++ = 0; }
-
-            while (*ep && *ep != 'F') ep++;
-
-            if (indent > 0 && indent < 8 && strlen(np) > 0) {
-                auto parent = load_stack[indent - 1];
-                if (parent) {
-                    auto old = region_map.findByName(np);
-                    auto nw = temp_map.putRegion(np, parent->id, old ? old->id : 0);
-                    if (nw) {
-                        nw->flags = old ? old->flags : (*ep == 'F' ? 0 : REGION_DENY_FLOOD);
-                        load_stack[indent] = nw;
-                    }
-                }
-            }
-            reply[0] = 0;
-        }
+        handleRegionLoadLine(command, reply);
         return;
     }
 
@@ -1270,129 +1335,7 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
         }
         reply[0] = 0;
     } else if (memcmp(command, "region", 6) == 0) {
-        reply[0] = 0;
-        const char* parts[4];
-        int n = mesh::Utils::parseTextParts(command, parts, 4, ' ');
-
-        if (n == 1) {
-            region_map.exportTo(reply, 160);
-        } else if (n >= 2 && strcmp(parts[1], "load") == 0) {
-            temp_map.resetFrom(region_map);
-            memset(load_stack, 0, sizeof(load_stack));
-            load_stack[0] = &temp_map.getWildcard();
-            region_load_active = true;
-        } else if (n >= 2 && strcmp(parts[1], "save") == 0) {
-            _prefs.discovery_mod_timestamp = getRTCClock()->getCurrentTime();
-            savePrefs();
-            bool success = region_map.save(_store->getRegionsPath());
-            strcpy(reply, success ? "OK" : "Err - save failed");
-        } else if (n >= 3 && strcmp(parts[1], "allowf") == 0) {
-            auto region = region_map.findByNamePrefix(parts[2]);
-            if (region) {
-                region->flags &= ~REGION_DENY_FLOOD;
-                strcpy(reply, "OK");
-            } else {
-                strcpy(reply, "Err - unknown region");
-            }
-        } else if (n >= 3 && strcmp(parts[1], "denyf") == 0) {
-            auto region = region_map.findByNamePrefix(parts[2]);
-            if (region) {
-                region->flags |= REGION_DENY_FLOOD;
-                strcpy(reply, "OK");
-            } else {
-                strcpy(reply, "Err - unknown region");
-            }
-        } else if (n >= 3 && strcmp(parts[1], "get") == 0) {
-            auto region = region_map.findByNamePrefix(parts[2]);
-            if (region) {
-                auto parent = region_map.findById(region->parent);
-                if (parent && parent->id != 0) {
-                    sprintf(reply, " %s (%s) %s", region->name, parent->name, (region->flags & REGION_DENY_FLOOD) ? "" : "F");
-                } else {
-                    sprintf(reply, " %s %s", region->name, (region->flags & REGION_DENY_FLOOD) ? "" : "F");
-                }
-            } else {
-                strcpy(reply, "Err - unknown region");
-            }
-        } else if (n >= 3 && strcmp(parts[1], "home") == 0) {
-            auto home = region_map.findByNamePrefix(parts[2]);
-            if (home) {
-                region_map.setHomeRegion(home);
-                sprintf(reply, " home is now %s", home->name);
-            } else {
-                strcpy(reply, "Err - unknown region");
-            }
-        } else if (n == 2 && strcmp(parts[1], "home") == 0) {
-            auto home = region_map.getHomeRegion();
-            sprintf(reply, " home is %s", home ? home->name : "*");
-        } else if (n >= 3 && strcmp(parts[1], "default") == 0) {
-            if (strcmp(parts[2], "<null>") == 0) {
-                region_map.setDefaultRegion(nullptr);
-                memset(default_scope.key, 0, sizeof(default_scope.key));
-                region_map.save(_store->getRegionsPath());  // persist in one atomic step
-                sprintf(reply, " default scope is now <null>");
-            } else {
-                auto def = region_map.findByNamePrefix(parts[2]);
-                if (def == nullptr) {
-                    def = region_map.putRegion(parts[2], 0);  // auto-create the default region
-                }
-                if (def) {
-                    def->flags = 0;   // make sure allow flood enabled
-                    region_map.setDefaultRegion(def);
-                    region_map.getTransportKeysFor(*def, &default_scope, 1);
-                    region_map.save(_store->getRegionsPath());  // persist in one atomic step
-                    sprintf(reply, " default scope is now %s", def->name);
-                } else {
-                    strcpy(reply, "Err - region table full");
-                }
-            }
-        } else if (n == 2 && strcmp(parts[1], "default") == 0) {
-            auto def = region_map.getDefaultRegion();
-            sprintf(reply, " default scope is %s", def ? def->name : "<null>");
-        } else if (n >= 3 && strcmp(parts[1], "put") == 0) {
-            auto parent = n >= 4 ? region_map.findByNamePrefix(parts[3]) : &region_map.getWildcard();
-            if (parent == nullptr) {
-                strcpy(reply, "Err - unknown parent");
-            } else {
-                auto region = region_map.putRegion(parts[2], parent->id);
-                if (region == nullptr) {
-                    strcpy(reply, "Err - unable to put");
-                } else {
-                    region->flags = 0;   // New default: enable flood
-                    strcpy(reply, "OK - (flood allowed)");
-                }
-            }
-        } else if (n >= 3 && strcmp(parts[1], "remove") == 0) {
-            auto region = region_map.findByName(parts[2]);
-            if (region) {
-                if (region_map.removeRegion(*region)) {
-                    strcpy(reply, "OK");
-                } else {
-                    strcpy(reply, "Err - not empty");
-                }
-            } else {
-                strcpy(reply, "Err - not found");
-            }
-        } else if (n >= 3 && strcmp(parts[1], "list") == 0) {
-            uint8_t mask = 0;
-            bool invert = false;
-            if (strcmp(parts[2], "allowed") == 0) {
-                mask = REGION_DENY_FLOOD;
-                invert = false;
-            } else if (strcmp(parts[2], "denied") == 0) {
-                mask = REGION_DENY_FLOOD;
-                invert = true;
-            } else {
-                strcpy(reply, "Err - use 'allowed' or 'denied'");
-                return;
-            }
-            int len = region_map.exportNamesTo(reply, 160, mask, invert);
-            if (len == 0) {
-                strcpy(reply, "-none-");
-            }
-        } else {
-            strcpy(reply, "Err - ??");
-        }
+        handleRegionCommand(command, reply);
     } else if (memcmp(command, "discover.neighbors", 18) == 0) {
         const char* sub = command + 18;
         while (*sub == ' ') sub++;
@@ -1407,240 +1350,10 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
     }
 }
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-bool RepeaterMesh::saveUplinkCreds()
-{
-    if (!_store) return false;
-    return observer_creds_save(&_uplink_creds, _store->getBasePath());
-}
-
-bool RepeaterMesh::handleUplinkCommand(const char *command, char *reply)
-{
-    if (memcmp(command, "get uplink.", 11) == 0) {
-        const char *key = command + 11;
-        if (strcmp(key, "enable") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", isUplinkEnabled() ? "on" : "off");
-        } else if (strcmp(key, "wifi.ssid") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.wifi_ssid[0] ? _uplink_creds.wifi_ssid : "(not set)");
-        } else if (strcmp(key, "mqtt.host") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_host[0] ? _uplink_creds.mqtt_host : "(not set)");
-        } else if (strcmp(key, "mqtt.port") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_uplink_creds.mqtt_port);
-        } else if (strcmp(key, "mqtt.tls") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_uplink_creds.mqtt_tls);
-        } else if (strcmp(key, "mqtt.user") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_user[0] ? _uplink_creds.mqtt_user : "(not set)");
-        } else if (strcmp(key, "mqtt.iata") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> %s", _uplink_creds.mqtt_iata[0] ? _uplink_creds.mqtt_iata : "(not set)");
-        } else if (strcmp(key, "status") == 0) {
-            snprintf(reply, CLI_REPLY_SIZE, "> enabled=%s wifi=%s mqtt=%s reboot_required=%s",
-                     isUplinkEnabled() ? "yes" : "no",
-                     zc_wifi_station_is_connected() ? "up" : "down",
-                     mqtt_publisher_is_connected() ? "up" : "down",
-                     _uplink_reboot_required ? "yes" : "no");
-        } else {
-            snprintf(reply, CLI_REPLY_SIZE, "unknown config: uplink.%s", key);
-        }
-        return true;
-    }
-
-    if (memcmp(command, "set uplink.", 11) == 0) {
-        const char *cfg = command + 11;
-        const char *val = strchr(cfg, ' ');
-        if (!val) {
-            strcpy(reply, "Error: value required");
-            return true;
-        }
-        int key_len = (int)(val - cfg);
-        val++;
-
-        if (key_len == 6 && memcmp(cfg, "enable", 6) == 0) {
-            if (strcmp(val, "on") == 0) {
-                setUplinkEnabled(true);
-            } else if (strcmp(val, "off") == 0) {
-                setUplinkEnabled(false);
-            } else {
-                strcpy(reply, "Error: must be on or off");
-                return true;
-            }
-        } else if (key_len == 9 && memcmp(cfg, "wifi.ssid", 9) == 0) {
-            StrHelper::strncpy(_uplink_creds.wifi_ssid, val, sizeof(_uplink_creds.wifi_ssid));
-        } else if (key_len == 8 && memcmp(cfg, "wifi.psk", 8) == 0) {
-            StrHelper::strncpy(_uplink_creds.wifi_psk, val, sizeof(_uplink_creds.wifi_psk));
-        } else if (key_len == 9 && memcmp(cfg, "mqtt.host", 9) == 0) {
-            StrHelper::strncpy(_uplink_creds.mqtt_host, val, sizeof(_uplink_creds.mqtt_host));
-        } else if (key_len == 9 && memcmp(cfg, "mqtt.port", 9) == 0) {
-            int port = atoi(val);
-            if (port < 1 || port > 65535) {
-                strcpy(reply, "Error: port range 1-65535");
-                return true;
-            }
-            _uplink_creds.mqtt_port = (uint16_t)port;
-        } else if (key_len == 8 && memcmp(cfg, "mqtt.tls", 8) == 0) {
-            _uplink_creds.mqtt_tls = (atoi(val) != 0) ? 1 : 0;
-        } else if (key_len == 9 && memcmp(cfg, "mqtt.user", 9) == 0) {
-            StrHelper::strncpy(_uplink_creds.mqtt_user, val, sizeof(_uplink_creds.mqtt_user));
-        } else if (key_len == 13 && memcmp(cfg, "mqtt.password", 13) == 0) {
-            StrHelper::strncpy(_uplink_creds.mqtt_password, val, sizeof(_uplink_creds.mqtt_password));
-        } else if (key_len == 9 && memcmp(cfg, "mqtt.iata", 9) == 0) {
-            StrHelper::strncpy(_uplink_creds.mqtt_iata, val, sizeof(_uplink_creds.mqtt_iata));
-        } else {
-            snprintf(reply, CLI_REPLY_SIZE, "unknown config: uplink.%.*s", key_len, cfg);
-            return true;
-        }
-
-        if (!saveUplinkCreds()) {
-            strcpy(reply, "Error: save failed");
-            return true;
-        }
-        markUplinkRebootRequired();
-        strcpy(reply, "OK - reboot to apply");
-        return true;
-    }
-
-    return false;
-}
-
-void RepeaterMesh::publishUplinkPacket(mesh::Packet *pkt)
-{
-    if (!isUplinkEnabled() || !mqtt_publisher_is_connected()) return;
-    if (_uplink_packets_topic[0] == '\0') return;
-
-    char raw_hex[MAX_TRANS_UNIT * 2 + 1];
-    mesh::Utils::toHex(raw_hex, _uplink_last_raw, _uplink_last_raw_len);
-    raw_hex[_uplink_last_raw_len * 2] = '\0';
-
-    uint8_t hash_bytes[MAX_HASH_SIZE];
-    char hash_hex[MAX_HASH_SIZE * 2 + 1];
-    pkt->calculatePacketHash(hash_bytes);
-    mesh::Utils::toHex(hash_hex, hash_bytes, MAX_HASH_SIZE);
-    hash_hex[MAX_HASH_SIZE * 2] = '\0';
-
-    uint32_t now_epoch = getRTCClock()->getCurrentTime();
-    struct tm tm_now;
-    time_t t = (time_t)now_epoch;
-    gmtime_r(&t, &tm_now);
-
-    char ts_buf[48];
-    char time_buf[12], date_buf[32];
-    snprintf(ts_buf, sizeof(ts_buf), "%04d-%02d-%02dT%02d:%02d:%02d.000000",
-             tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
-    snprintf(time_buf, sizeof(time_buf), "%02d:%02d:%02d",
-             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
-    snprintf(date_buf, sizeof(date_buf), "%d/%d/%04d",
-             tm_now.tm_mday, tm_now.tm_mon + 1, tm_now.tm_year + 1900);
-
-    static char json_buf[1024];
-    int json_len = snprintf(json_buf, sizeof(json_buf),
-        "{"
-        "\"type\":\"PACKET\","
-        "\"origin\":\"%s\","
-        "\"origin_id\":\"%s\","
-        "\"timestamp\":\"%s\","
-        "\"direction\":\"rx\","
-        "\"time\":\"%s\","
-        "\"date\":\"%s\","
-        "\"len\":\"%d\","
-        "\"packet_type\":\"%u\","
-        "\"route\":\"%s\","
-        "\"payload_len\":\"%u\","
-        "\"raw\":\"%s\","
-        "\"SNR\":\"%d\","
-        "\"RSSI\":\"%d\","
-        "\"score\":\"%d\","
-        "\"hash\":\"%s\""
-        "}",
-        _prefs.node_name,
-        _uplink_pubkey_hex,
-        ts_buf,
-        time_buf,
-        date_buf,
-        _uplink_last_raw_len,
-        (unsigned)pkt->getPayloadType(),
-        pkt->isRouteDirect() ? "D" : "F",
-        (unsigned)pkt->payload_len,
-        raw_hex,
-        (int)pkt->getSNR(),
-        (int)_uplink_last_rssi,
-        (int)(_uplink_last_score * 1000.0f),
-        hash_hex);
-
-    if (json_len <= 0 || json_len >= (int)sizeof(json_buf)) {
-        return;
-    }
-    mqtt_publisher_enqueue(_uplink_packets_topic, json_buf, json_len);
-}
-
-void RepeaterMesh::publishUplinkStatus(const char *status)
-{
-    if (!isUplinkEnabled()) return;
-    if (_uplink_status_topic[0] == '\0') return;
-
-    auto& radio_driver = getRadioDriver(_radio);
-    uint32_t now_epoch = getRTCClock()->getCurrentTime();
-    struct tm tm_now;
-    time_t t = (time_t)now_epoch;
-    gmtime_r(&t, &tm_now);
-
-    char ts_buf[48];
-    snprintf(ts_buf, sizeof(ts_buf), "%04d-%02d-%02dT%02d:%02d:%02d.000000",
-             tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
-             tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
-
-    char radio_buf[48];
-    snprintf(radio_buf, sizeof(radio_buf), "%.3f,%.1f,%u,%u",
-             (double)_prefs.freq, (double)_prefs.bw,
-             (unsigned)_prefs.sf, (unsigned)_prefs.cr);
-
-    static char json_buf[768];
-    int json_len = snprintf(json_buf, sizeof(json_buf),
-        "{"
-        "\"status\":\"%s\","
-        "\"timestamp\":\"%s\","
-        "\"origin\":\"%s\","
-        "\"origin_id\":\"%s\","
-        "\"radio\":\"%s\","
-        "\"model\":\"%s\","
-        "\"firmware_version\":\"%s\","
-        "\"client_version\":\"zephcoretomqtt/1.1\","
-        "\"stats\":{"
-            "\"battery_mv\":%u,"
-            "\"uptime_secs\":%u,"
-            "\"debug_flags\":%u,"
-            "\"queue_len\":%u,"
-            "\"noise_floor\":%d,"
-            "\"tx_air_secs\":%u,"
-            "\"rx_air_secs\":%u,"
-            "\"recv_errors\":%u"
-        "}"
-        "}",
-        status,
-        ts_buf,
-        _prefs.node_name,
-        _uplink_pubkey_hex,
-        radio_buf,
-#ifdef CONFIG_ZEPHCORE_BOARD_NAME
-        CONFIG_ZEPHCORE_BOARD_NAME,
-#else
-        "unknown",
-#endif
-        FIRMWARE_VERSION,
-        (unsigned)_board.getBattMilliVolts(),
-        (unsigned)(uptime_millis / 1000),
-        (unsigned)_err_flags,
-        (unsigned)_mgr->getOutboundTotal(),
-        _radio->getNoiseFloor(),
-        (unsigned)(getTotalAirTime() / 1000),
-        (unsigned)(getReceiveAirTime() / 1000),
-        (unsigned)radio_driver.getPacketsRecvErrors());
-
-    if (json_len <= 0 || json_len >= (int)sizeof(json_buf)) {
-        return;
-    }
-    mqtt_publisher_enqueue(_uplink_status_topic, json_buf, json_len);
-}
-#endif
+/* MQTT uplink methods (saveUplinkCreds / handleUplinkCommand /
+ * publishUplinkPacket / publishUplinkStatus) live in app/RepeaterUplink.cpp,
+ * compiled only when CONFIG_ZEPHCORE_REPEATER_UPLINK && CONFIG_MQTT_LIB.
+ * The uplink init (WiFi/MQTT start + topic strings) stays in begin() above. */
 
 void RepeaterMesh::loop() {
     mesh::Mesh::loop();
@@ -1674,15 +1387,96 @@ void RepeaterMesh::loop() {
     }
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+    /* MQTT (re)connected — publish the initial "online" status here on the main
+     * thread (the CONNACK callback only sets this flag, off-main). */
+    if (atomic_cas(&_uplink_connect_pending, 1, 0)) {
+        publishUplinkStatus("online");
+    }
     if (_uplink_next_status_at && millisHasNowPassed(_uplink_next_status_at)) {
         publishUplinkStatus("online");
-        _uplink_next_status_at = futureMillis(300000);
+        _uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
+    }
+    if (atomic_cas(&s_uplink_sntp_pending, 1, 0)) {
+        /* SNTP set the clock (trusted) — arm suppression + drift envelope. */
+        _timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
     }
 #endif
+
+    timeSyncTick();
 
     uint32_t now = k_uptime_get();
     uptime_millis += now - last_millis;
     last_millis = now;
+}
+
+uint32_t RepeaterMesh::msUntilNextMaintenance() {
+    uint32_t now = (uint32_t)_ms->getMillis();
+    uint32_t next = mesh::Mesh::msUntilNextMaintenance();
+
+    /* Advert timers.  0 means "disabled" for both — flood defaults to 47 h,
+     * periodic local advert is off unless configured. */
+    if (next_flood_advert) {
+        next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_flood_advert));
+    }
+    if (next_local_advert) {
+        next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_local_advert));
+    }
+
+    /* Temporary radio params: apply, then revert. Both CLI-armed, both 0 when idle. */
+    if (set_radio_at) {
+        next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, set_radio_at));
+    }
+    if (revert_radio_at) {
+        next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, revert_radio_at));
+    }
+
+    /* Deferred ACL write-back. */
+    if (dirty_contacts_expiry) {
+        next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, dirty_contacts_expiry));
+    }
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+    if (_uplink_next_status_at) {
+        next = mesh::maintenanceSooner(next,
+                                       mesh::maintenanceUntil(now, _uplink_next_status_at));
+    }
+#endif
+
+    /* Mesh time sync evaluates at most every 15 min, and only when enabled. */
+    if (_prefs.meshtimesync) {
+        next = mesh::maintenanceSooner(
+            next, _timesync.msUntilNextEval((uint32_t)(k_uptime_get() / 1000)));
+    }
+
+    return next;
+}
+
+void RepeaterMesh::timeSyncTick() {
+    if (!_prefs.meshtimesync) return;
+    if (!_timesync.runTick(*getRTCClock())) return;
+
+    /* Step applied — wall-clock-anchored bookkeeping must move with it, or a
+     * backward step underflows the unsigned "seconds ago" math. 0 = unset
+     * sentinel. */
+    int64_t delta = _timesync.lastStepDelta();
+#if MAX_NEIGHBOURS > 0
+    for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+        if (neighbours[i].heard_timestamp == 0) continue;
+        int64_t shifted = (int64_t)neighbours[i].heard_timestamp + delta;
+        neighbours[i].heard_timestamp = (shifted > 0) ? (uint32_t)shifted : 1;
+    }
+#endif
+    for (int i = 0; i < acl.getNumClients(); i++) {
+        ClientInfo* c = acl.getClientByIdx(i);
+        if (c->last_activity == 0) continue;
+        int64_t shifted = (int64_t)c->last_activity + delta;
+        c->last_activity = (shifted > 0) ? (uint32_t)shifted : 1;
+    }
+    /* A backward step would otherwise wedge these shut until wall-clock
+     * catch-up. */
+    discover_limiter.reset();
+    anon_limiter.reset();
+    login_fail_limiter.reset();
 }
 
 bool RepeaterMesh::hasPendingWork() const {

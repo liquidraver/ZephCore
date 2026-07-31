@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore UI ↔ Mesh Action Helpers
  *
  * Deferred UI button actions and periodic housekeeping display refresh.
@@ -14,6 +14,7 @@
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/regulator.h>
+#include <zephyr/sys/reboot.h>
 
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
@@ -26,15 +27,23 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 #include <ZephyrBLE.h>
 #include <ZephyrSensorManager.h>
 #include "ui_task.h"
+#include <joystick_ui_hooks.h>
 #include "ui_mesh_actions.h"
 
 /* UI action bit flags — set from input thread, consumed by mesh event loop */
-#define UI_ACTION_FLOOD_ADVERT   BIT(0)
-#define UI_ACTION_GPS_TOGGLE     BIT(1)
-#define UI_ACTION_BUZZER_TOGGLE  BIT(2)
-#define UI_ACTION_ZEROHOP_ADVERT BIT(3)
-#define UI_ACTION_OFFGRID_TOGGLE BIT(4)
-#define UI_ACTION_LEDS_TOGGLE    BIT(5)
+#define UI_ACTION_FLOOD_ADVERT      BIT(0)
+#define UI_ACTION_GPS_TOGGLE        BIT(1)
+#define UI_ACTION_BUZZER_TOGGLE     BIT(2)
+#define UI_ACTION_ZEROHOP_ADVERT    BIT(3)
+#define UI_ACTION_OFFGRID_TOGGLE    BIT(4)
+#define UI_ACTION_LEDS_TOGGLE       BIT(5)
+#define UI_ACTION_BLE_TOGGLE        BIT(6)
+#define UI_ACTION_BRIGHTNESS_SAVE   BIT(7)
+#define UI_ACTION_SAVE_RESTART      BIT(8)
+#define UI_ACTION_WAKE_ON_MSG_SAVE  BIT(9)
+#define UI_ACTION_SCREEN_OFF_SAVE   BIT(10)
+#define UI_ACTION_PATH_HASH_MODE_SAVE BIT(11)
+#define UI_ACTION_GPS_DUTY_SAVE     BIT(12)
 
 /* Module-local pointers, set by init */
 static CompanionMesh *s_mesh;
@@ -55,6 +64,12 @@ static atomic_t pending_gps_enabled;
 static atomic_t pending_buzzer_quiet;
 static atomic_t pending_offgrid_enabled;
 static atomic_t pending_leds_disabled;
+static atomic_t pending_ble_disabled;
+static atomic_t pending_brightness;
+static atomic_t pending_wake_on_msg;
+static atomic_t pending_screen_off_secs;
+static atomic_t pending_path_hash_mode;
+static atomic_t pending_gps_duty_sec;
 
 extern "C" void ui_mesh_actions_init(struct k_event *mesh_events,
 				     uint32_t mesh_event_ui_action,
@@ -99,6 +114,54 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 extern "C" void mesh_ble_set_enabled(bool enable)
 {
 	zephcore_ble_set_enabled(enable);
+	atomic_set(&pending_ble_disabled, enable ? 0 : 1);
+	atomic_or(&pending_ui_actions, UI_ACTION_BLE_TOGGLE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_save_brightness(uint8_t brightness)
+{
+	atomic_set(&pending_brightness, (atomic_val_t)brightness);
+	atomic_or(&pending_ui_actions, UI_ACTION_BRIGHTNESS_SAVE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_save_and_restart(void)
+{
+	atomic_or(&pending_ui_actions, UI_ACTION_SAVE_RESTART);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_set_wake_on_msg(bool enabled)
+{
+	atomic_set(&pending_wake_on_msg, enabled ? 1 : 0);
+	atomic_or(&pending_ui_actions, UI_ACTION_WAKE_ON_MSG_SAVE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_save_screen_off_secs(uint16_t secs)
+{
+	atomic_set(&pending_screen_off_secs, (atomic_val_t)secs);
+	atomic_or(&pending_ui_actions, UI_ACTION_SCREEN_OFF_SAVE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_save_path_hash_mode(uint8_t mode)
+{
+	atomic_set(&pending_path_hash_mode, (atomic_val_t)mode);
+	atomic_or(&pending_ui_actions, UI_ACTION_PATH_HASH_MODE_SAVE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
+}
+
+extern "C" void mesh_save_gps_duty_sec(uint32_t sec)
+{
+	/* Apply immediately (lightweight, no flash) — same split as mesh_gps_set_enabled. */
+	gps_set_poll_interval_sec(sec);
+
+	/* Defer the flash write (savePrefs) to mesh thread */
+	atomic_set(&pending_gps_duty_sec, (atomic_val_t)sec);
+	atomic_or(&pending_ui_actions, UI_ACTION_GPS_DUTY_SAVE);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
 
 extern "C" void mesh_set_buzzer_quiet(bool quiet)
@@ -165,24 +228,12 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & (UI_ACTION_FLOOD_ADVERT | UI_ACTION_ZEROHOP_ADVERT)) {
 		bool flood = !!(actions & UI_ACTION_FLOOD_ADVERT);
-		mesh::Packet *adv;
-		if (s_mesh->prefs.advert_loc_policy == 0) {
-			adv = s_mesh->createSelfAdvert(
-				s_mesh->prefs.node_name);
-		} else {
-			adv = s_mesh->createSelfAdvert(
-				s_mesh->prefs.node_name,
-				s_mesh->prefs.node_lat,
-				s_mesh->prefs.node_lon);
-		}
-		if (adv) {
-			if (flood) {
-				s_mesh->sendFlood(adv);
-				LOG_INF("flood advert sent (button)");
-			} else {
-				s_mesh->sendZeroHop(adv);
-				LOG_INF("zero-hop advert sent (button)");
-			}
+		/* Route through the shared canonical path so flood adverts honor
+		 * prefs.path_hash_mode and the default transport scope, matching
+		 * the mobile-app CMD_SEND_SELF_ADVERT behavior. */
+		if (s_mesh->sendSelfAdvert(flood)) {
+			LOG_INF("%s advert sent (button)",
+				flood ? "flood" : "zero-hop");
 		}
 	}
 
@@ -217,9 +268,54 @@ extern "C" void mesh_handle_ui_actions(void)
 		need_save = true;
 	}
 
-	if (need_save) {
+	if (actions & UI_ACTION_BLE_TOGGLE) {
+		bool bd = atomic_get(&pending_ble_disabled) != 0;
+		s_mesh->prefs.ble_disabled = bd ? 1 : 0;
+		LOG_INF("ble_disabled=%d (button)", bd);
+		need_save = true;
+	}
+
+	if (actions & UI_ACTION_BRIGHTNESS_SAVE) {
+		uint8_t br = (uint8_t)atomic_get(&pending_brightness);
+		s_mesh->prefs.display_brightness = br;
+		LOG_INF("display_brightness=%d (button)", br);
+		need_save = true;
+	}
+
+	if (actions & UI_ACTION_WAKE_ON_MSG_SAVE) {
+		s_mesh->prefs.wake_on_msg = atomic_get(&pending_wake_on_msg) ? 1 : 0;
+		LOG_INF("wake_on_msg=%d (button)", s_mesh->prefs.wake_on_msg);
+		need_save = true;
+	}
+
+	if (actions & UI_ACTION_SCREEN_OFF_SAVE) {
+		s_mesh->prefs.screen_off_secs = (uint16_t)atomic_get(&pending_screen_off_secs);
+		LOG_INF("screen_off_secs=%d (button)", s_mesh->prefs.screen_off_secs);
+		need_save = true;
+	}
+
+	if (actions & UI_ACTION_PATH_HASH_MODE_SAVE) {
+		uint8_t mode = (uint8_t)atomic_get(&pending_path_hash_mode);
+		if (mode > 2) mode = 2;  /* clamp to valid range (0-2 → 1-3 bytes) */
+		s_mesh->prefs.path_hash_mode = mode;
+		LOG_INF("path_hash_mode=%d (%d bytes per hop)", mode, mode + 1);
+		need_save = true;
+	}
+
+	if (actions & UI_ACTION_GPS_DUTY_SAVE) {
+		s_mesh->prefs.gps_interval = (uint32_t)atomic_get(&pending_gps_duty_sec);
+		LOG_INF("gps_interval=%u (button)", s_mesh->prefs.gps_interval);
+		need_save = true;
+	}
+
+	if (need_save || (actions & UI_ACTION_SAVE_RESTART)) {
 		s_data_store->savePrefs(s_mesh->prefs);
 		LOG_INF("prefs saved (button action)");
+	}
+
+	if (actions & UI_ACTION_SAVE_RESTART) {
+		LOG_INF("rebooting (save+restart action)");
+		sys_reboot(SYS_REBOOT_COLD);
 	}
 }
 
@@ -231,26 +327,35 @@ extern "C" void mesh_housekeeping_ui_refresh(void)
 		return;
 	}
 
-	/* Battery voltage changes slowly — read every ~60s (12 × 5s housekeeping)
-	 * instead of every 5s. Saves power (regulator toggle + ADC) and log noise. */
-	static uint8_t batt_counter;
-	if (++batt_counter >= 12) {
-		batt_counter = 0;
-		ui_set_battery(s_board->getBattMilliVolts(), 0);
-	}
+	/* Battery is now refreshed lazily from ui_pages_render() with a 30 s
+	 * freshness guard — no periodic ADC fire here. */
 
 	/* Update top bar clock from RTC */
 	ui_set_clock(s_rtc_clock->getCurrentTime());
 
 	ui_set_radio_params(
-		(uint32_t)(s_mesh->prefs.freq * 1000000.0f + 0.5f),
-		s_mesh->prefs.sf,
-		(uint16_t)(s_mesh->prefs.bw * 10.0f + 0.5f),
-		s_mesh->prefs.cr,
-		s_mesh->prefs.tx_power_dbm,
+		s_lora_radio->getActiveFrequencyHz(),
+		s_lora_radio->getActiveSpreadingFactor(),
+		s_lora_radio->getActiveBandwidthKHzX10(),
+		s_lora_radio->getActiveCodingRate(),
+		s_lora_radio->getConfiguredTxPower(),
 		s_lora_radio->getNoiseFloor());
+	ui_set_radio_runtime(
+		s_lora_radio->getActiveSyncWord(),
+		s_lora_radio->getActivePreambleLength(),
+		s_lora_radio->isRxDutyCycleEnabled(),
+		s_lora_radio->isRadioReady(),
+		s_lora_radio->isInRecvMode(),
+		s_lora_radio->isTxActive());
+	ui_set_radio_stats(
+		s_lora_radio->getPacketsRecv(),
+		s_lora_radio->getPacketsSent(),
+		s_lora_radio->getPacketsRecvErrors());
 
-	/* Update GPS satellite count even without fix */
+	/* Update GPS satellite count even without fix. When GPS is disabled, push
+	 * a zeroed count — gps_enable(false) already zeros the internal count, but
+	 * this refresh is otherwise gated on gps_is_enabled() and would leave the
+	 * UI showing a stale value from before the toggle-off. */
 	if (gps_is_enabled()) {
 		struct gps_position gpos;
 
@@ -259,6 +364,8 @@ extern "C" void mesh_housekeeping_ui_refresh(void)
 			ui_set_gps_data(false, (uint8_t)gpos.satellites,
 					0, 0, 0);
 		}
+	} else {
+		ui_set_gps_data(false, 0, 0, 0, 0);
 	}
 
 	/* Update GPS state machine info (state, last fix age, next search) */
@@ -292,22 +399,6 @@ extern "C" void mesh_housekeeping_ui_refresh(void)
 		}
 	}
 
-	/* Read environment sensors if available */
-	if (env_sensors_available()) {
-		struct env_data edata;
-
-		if (env_sensors_read(&edata) == 0) {
-			ui_set_sensor_data(
-				edata.has_temperature ? (int16_t)(edata.temperature_c * 10) : 0,
-				edata.has_pressure ? (uint32_t)(edata.pressure_hpa * 100) : 0,
-				edata.has_humidity ? (uint16_t)(edata.humidity_pct * 10) : 0,
-				0);
-		}
-	}
-
 	/* Update offline queue message count */
 	ui_set_msg_count(s_mesh->getOfflineQueueCount());
-
-	/* Trigger display refresh */
-	ui_refresh_display();
 }

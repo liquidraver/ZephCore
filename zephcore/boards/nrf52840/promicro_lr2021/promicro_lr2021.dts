@@ -2,7 +2,7 @@
  * ProMicro LR2021 — nRF52840 SuperMini + LR2021
  * Copyright (c) 2025 ZephCore
  *
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  *
  * Hardware:
  * - nRF52840 (SuperMini/ProMicro form factor) with BLE 5
@@ -77,7 +77,7 @@
 	/* Battery ADC: P0.31 (AIN7), 150K+150K voltage divider (2:1) */
 	zephyr,user {
 		io-channels = <&adc 7>;
-		vbat-mv-multiplier = <7200>;
+		vbat-mv-multiplier = <7236>;  /* 2:1 divider, 3.6V ref; +0.5% for nRF SAADC gain error */
 	};
 };
 
@@ -139,8 +139,9 @@
 		busy-gpios  = <&gpio0 29 GPIO_ACTIVE_HIGH>;
 		dio1-gpios  = <&gpio0 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
-		/* NiceRF LoRa2021 module uses internal crystal (XTAL), no TCXO.
-		 * tcxo-voltage-mv defaults to 0 (disabled). */
+		/* TCXO: tried 1800mV on DIO3 (per Meshtastic diy_tcxo) — it WEDGED
+		 * the chip (HF-XOSC startup hangs, BUSY stuck, BLE never starts),
+		 * which means THIS module has no TCXO. Left disabled (XTAL). */
 		rx-boosted;
 
 		/* RF switch via NiceRF module internal DIOs (DIO5=bit0, DIO6=bit1).

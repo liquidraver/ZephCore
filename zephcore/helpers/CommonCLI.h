@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * CommonCLI - Common CLI command handlers for repeaters
  */
 
@@ -12,8 +12,16 @@
 #include <helpers/ClientACL.h>
 #include "NodePrefs.h"
 
+class MeshTimeSync;
+
 /* CLI reply buffer size — callers must provide at least this many bytes */
 #define CLI_REPLY_SIZE 256
+
+/* Remote-admin replies ride in the caller's LoRa packet buffer:
+ * RepeaterMesh/RoomServerMesh onPeerDataRecv declare temp[5 + this] with the
+ * reply text at offset 5. Handlers that can exceed this must self-limit
+ * whenever sender_timestamp != 0 (0 marks the local USB CLI). */
+#define CLI_REMOTE_REPLY_SIZE 161
 
 /* Deferred reboot types */
 #define REBOOT_NONE       0
@@ -35,13 +43,18 @@ public:
     virtual void eraseLogFile() = 0;
     virtual void dumpLogFile() = 0;
     virtual void setTxPower(int8_t power_dbm) = 0;
-    virtual void formatNeighborsReply(char* reply) = 0;
+    /* Apply RX boosted gain live; returns false when the radio has no
+     * RX boost feature (upstream PR #2844 semantics). */
+    virtual bool setRxBoostedGain(bool enable) { (void)enable; return false; }
+    /* Repeater-specific — default replies keep companion builds clean.
+     * Repeater overrides all four; companions get "not available". */
+    virtual void formatNeighborsReply(char* reply)      { strcpy(reply, "not available"); }
     virtual void removeNeighbor(const uint8_t* pubkey, int key_len) {
-        // no-op by default
+        (void)pubkey; (void)key_len;
     }
-    virtual void formatStatsReply(char* reply) = 0;
-    virtual void formatRadioStatsReply(char* reply) = 0;
-    virtual void formatPacketStatsReply(char* reply) = 0;
+    virtual void formatStatsReply(char* reply)           { strcpy(reply, "not available"); }
+    virtual void formatRadioStatsReply(char* reply)      { strcpy(reply, "not available"); }
+    virtual void formatPacketStatsReply(char* reply)     { strcpy(reply, "not available"); }
     virtual mesh::LocalIdentity& getSelfId() = 0;
     virtual void saveIdentity(const mesh::LocalIdentity& new_id) = 0;
     virtual void clearStats() = 0;
@@ -61,13 +74,13 @@ public:
     virtual uint32_t getDutyCycleTimeoutRestarts() const { return 0; }
     virtual void resetDutyCycleTimeoutRestarts() {}
 
-    // Adaptive Power Control
-    virtual int8_t getAPCReduction() const { return 0; }
-    virtual float getAPCMargin() const { return 0.0f; }
-    virtual bool isAPCEnabled() const { return false; }
-    virtual void setAPCEnabled(bool en) { (void)en; }
-    virtual uint8_t getAPCTargetMargin() const { return 16; }
-    virtual void setAPCTargetMargin(uint8_t margin_db) { (void)margin_db; }
+    // Adaptive CAD (LBT detPeak calibration)
+    virtual int formatCadStatus(char* buf, int cap) { (void)buf; (void)cap; return 0; }
+    virtual void applyCadPrefs() {}
+    virtual void resetCadStats() {}
+
+    // Mesh time sync (all roles wire one; nullptr = not compiled/available)
+    virtual MeshTimeSync* getMeshTimeSync() { return nullptr; }
 
     // Sensor manager interface (for GPS)
     virtual double getNodeLat() const { return 0.0; }
@@ -75,6 +88,9 @@ public:
     virtual bool setGpsEnabled(bool enabled) { return false; }
     virtual bool isGpsEnabled() const { return false; }
     virtual void formatGpsStatsReply(char* reply) { strcpy(reply, "off"); }
+    /* Role default for "set gps duty default". Companion default (300s); the
+     * repeater/room overrides return ZEPHCORE_REPEATER_GPS_INTERVAL_SEC. */
+    virtual uint32_t getDefaultGpsIntervalSec() const { return CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC; }
     virtual int getNumSensorSettings() const { return 0; }
     virtual const char* getSensorSettingName(int idx) const { return nullptr; }
     virtual const char* getSensorSettingValue(int idx) const { return nullptr; }

@@ -1,0 +1,11 @@
+/*
+ * Heltec T114 - screenless build overlay
+ *
+ * Restores long-press => KEY_POWER (deep sleep) for headless units.
+ * The display variant uses KEY_ENTER (action_page_enter)
+ * Without a display there are no pages to enter, so KEY_POWER is more useful.
+ */
+
+&user_btn_longpress {
+	long-codes = <INPUT_KEY_POWER>;
+};

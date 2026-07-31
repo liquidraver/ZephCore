@@ -51,6 +51,9 @@
 #define LR1110_BL_ERASE_FLASH_CMD_LENGTH        LR1110_BL_CMD_NO_PARAM_LENGTH
 #define LR1110_BL_WRITE_FLASH_ENCRYPTED_CMD_LENGTH (LR1110_BL_CMD_NO_PARAM_LENGTH + 4)
 #define LR1110_BL_REBOOT_CMD_LENGTH             (LR1110_BL_CMD_NO_PARAM_LENGTH + 1)
+#define LR1110_BL_GET_HASH_CMD_LENGTH           LR1110_BL_CMD_NO_PARAM_LENGTH
+#define LR1110_BL_SET_TCXO_MODE_CMD_LENGTH      (LR1110_BL_CMD_NO_PARAM_LENGTH + 4)
+#define LR1110_BL_CALIBRATE_CMD_LENGTH          (LR1110_BL_CMD_NO_PARAM_LENGTH + 1)
 #define LR1110_BL_GET_PIN_CMD_LENGTH            LR1110_BL_CMD_NO_PARAM_LENGTH
 #define LR1110_BL_READ_CHIP_EUI_CMD_LENGTH      LR1110_BL_CMD_NO_PARAM_LENGTH
 #define LR1110_BL_READ_JOIN_EUI_CMD_LENGTH      LR1110_BL_CMD_NO_PARAM_LENGTH
@@ -60,8 +63,14 @@
 enum {
 	LR1110_BL_GET_STATUS_OC            = 0x0100,
 	LR1110_BL_GET_VERSION_OC           = 0x0101,
+	/* System commands the bootloader also answers (same space as
+	 * GetStatus/GetVersion above) — used to bring up the TCXO before
+	 * flashing on boards whose 32 MHz reference is powered from DIO3. */
+	LR1110_BL_CALIBRATE_OC             = 0x010F,
+	LR1110_BL_SET_TCXO_MODE_OC         = 0x0117,
 	LR1110_BL_ERASE_FLASH_OC           = 0x8000,
 	LR1110_BL_WRITE_FLASH_ENCRYPTED_OC = 0x8003,
+	LR1110_BL_GET_HASH_OC              = 0x8004,
 	LR1110_BL_REBOOT_OC                = 0x8005,
 	LR1110_BL_GET_PIN_OC               = 0x800B,
 	LR1110_BL_READ_CHIP_EUI_OC         = 0x800C,
@@ -137,6 +146,47 @@ lr1110_status_t lr1110_bootloader_erase_flash(const void *context)
 
 	return (lr1110_status_t)
 		lr11xx_hal_write(context, cbuffer, LR1110_BL_ERASE_FLASH_CMD_LENGTH, 0, 0);
+}
+
+lr1110_status_t lr1110_bootloader_get_hash(const void *context,
+	lr1110_bootloader_hash_t hash)
+{
+	const uint8_t cbuffer[LR1110_BL_GET_HASH_CMD_LENGTH] = {
+		(uint8_t)(LR1110_BL_GET_HASH_OC >> 8),
+		(uint8_t)(LR1110_BL_GET_HASH_OC >> 0),
+	};
+
+	return (lr1110_status_t)
+		lr11xx_hal_read(context, cbuffer, LR1110_BL_GET_HASH_CMD_LENGTH,
+				hash, LR1110_BL_HASH_LENGTH);
+}
+
+lr1110_status_t lr1110_bootloader_set_tcxo_mode(const void *context,
+	uint8_t tune, uint32_t timeout)
+{
+	const uint8_t cbuffer[LR1110_BL_SET_TCXO_MODE_CMD_LENGTH] = {
+		(uint8_t)(LR1110_BL_SET_TCXO_MODE_OC >> 8),
+		(uint8_t)(LR1110_BL_SET_TCXO_MODE_OC >> 0),
+		tune,
+		(uint8_t)(timeout >> 16),
+		(uint8_t)(timeout >> 8),
+		(uint8_t)(timeout >> 0),
+	};
+
+	return (lr1110_status_t)
+		lr11xx_hal_write(context, cbuffer, LR1110_BL_SET_TCXO_MODE_CMD_LENGTH, 0, 0);
+}
+
+lr1110_status_t lr1110_bootloader_calibrate(const void *context, uint8_t calib_param)
+{
+	const uint8_t cbuffer[LR1110_BL_CALIBRATE_CMD_LENGTH] = {
+		(uint8_t)(LR1110_BL_CALIBRATE_OC >> 8),
+		(uint8_t)(LR1110_BL_CALIBRATE_OC >> 0),
+		calib_param,
+	};
+
+	return (lr1110_status_t)
+		lr11xx_hal_write(context, cbuffer, LR1110_BL_CALIBRATE_CMD_LENGTH, 0, 0);
 }
 
 lr1110_status_t lr1110_bootloader_write_flash_encrypted(const void *context,

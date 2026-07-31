@@ -1,0 +1,118 @@
+/*
+ * LilyGo T-Impulse Plus pin control definitions
+ * Copyright (c) 2026 ZephCore
+ *
+ * SPDX-License-Identifier: MIT
+ *
+ * Pin mappings (from LilyGo official pin_config.h, verified 2026-07-04):
+ *
+ * SPI2 (LoRa SX1262):   SCK=P0.03, MOSI=P0.28, MISO=P0.30, CS=P1.14
+ * I2C0 (SSD1315 OLED):  SDA=P0.20, SCL=P0.15
+ * UART0 (M10 GPS 38400):TX=P1.11 (->GPS RX), RX=P1.12 (<-GPS TX)
+ * PWM0 (haptic motor):  P0.22
+ * QSPI (ZD25WQ32C 4MB): SCK=P0.04, CS=P0.12, IO0=P0.06, IO1=P1.09,
+ *                       IO2=P0.08, IO3=P0.26
+ *
+ * NOTE on the GPS RX/TX: the LilyGo net names GPS_UART_RX/TX are labelled
+ * from the *GPS module's* pin side. The Arduino example calls
+ * Serial2.setPins(GPS_UART_TX, GPS_UART_RX) and Adafruit's
+ * Uart::setPins(pin_rx, pin_tx) takes RX first — so the MCU receive pin is
+ * GPS_UART_TX (P1.12) and the MCU transmit pin is GPS_UART_RX (P1.11).
+ */
+
+&pinctrl {
+	/* UART0 for u-blox MIA-M10Q GPS at 38400 baud */
+	uart0_default: uart0_default {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 1, 11)>;   /* P1.11 -> GPS RX */
+		};
+		group2 {
+			psels = <NRF_PSEL(UART_RX, 1, 12)>;   /* P1.12 <- GPS TX */
+			bias-pull-up;
+		};
+	};
+
+	uart0_sleep: uart0_sleep {
+		group1 {
+			psels = <NRF_PSEL(UART_TX, 1, 11)>,
+				<NRF_PSEL(UART_RX, 1, 12)>;
+			low-power-enable;
+		};
+	};
+
+	/* I2C0 for SSD1315 OLED (0x3C) */
+	i2c0_default: i2c0_default {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 20)>,   /* P0.20 */
+				<NRF_PSEL(TWIM_SCL, 0, 15)>;  /* P0.15 */
+		};
+	};
+
+	i2c0_sleep: i2c0_sleep {
+		group1 {
+			psels = <NRF_PSEL(TWIM_SDA, 0, 20)>,
+				<NRF_PSEL(TWIM_SCL, 0, 15)>;
+			low-power-enable;
+		};
+	};
+
+	/* SPI2 for LoRa SX1262 (dedicated bus, matches Arduino NRF_SPIM3) */
+	spi2_default: spi2_default {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,    /* P0.03 */
+				<NRF_PSEL(SPIM_MOSI, 0, 28)>,  /* P0.28 */
+				<NRF_PSEL(SPIM_MISO, 0, 30)>;  /* P0.30 */
+		};
+	};
+
+	spi2_sleep: spi2_sleep {
+		group1 {
+			psels = <NRF_PSEL(SPIM_SCK,  0, 3)>,
+				<NRF_PSEL(SPIM_MOSI, 0, 28)>,
+				<NRF_PSEL(SPIM_MISO, 0, 30)>;
+			low-power-enable;
+		};
+	};
+
+	/* PWM0 for the haptic vibration motor on P0.22 */
+	pwm0_default: pwm0_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 22)>;
+		};
+	};
+
+	pwm0_sleep: pwm0_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 22)>;
+			low-power-enable;
+		};
+	};
+
+	/* QSPI for ZD25WQ32C 32Mbit (4MB) external flash */
+	qspi_default: qspi_default {
+		group1 {
+			psels = <NRF_PSEL(QSPI_SCK, 0, 4)>,
+				<NRF_PSEL(QSPI_IO0, 0, 6)>,
+				<NRF_PSEL(QSPI_IO1, 1, 9)>,
+				<NRF_PSEL(QSPI_IO2, 0, 8)>,
+				<NRF_PSEL(QSPI_IO3, 0, 26)>,
+				<NRF_PSEL(QSPI_CSN, 0, 12)>;
+		};
+	};
+
+	qspi_sleep: qspi_sleep {
+		group1 {
+			psels = <NRF_PSEL(QSPI_SCK, 0, 4)>,
+				<NRF_PSEL(QSPI_IO0, 0, 6)>,
+				<NRF_PSEL(QSPI_IO1, 1, 9)>,
+				<NRF_PSEL(QSPI_IO2, 0, 8)>,
+				<NRF_PSEL(QSPI_IO3, 0, 26)>;
+			low-power-enable;
+		};
+		group2 {
+			psels = <NRF_PSEL(QSPI_CSN, 0, 12)>;
+			low-power-enable;
+			bias-pull-up;
+		};
+	};
+};

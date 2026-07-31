@@ -1,0 +1,40 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+description: |
+  ZephCore GPIO controller using Linux libgpiod v2.
+
+  Bridges Zephyr's GPIO subsystem to a Linux /dev/gpiochipX character
+  device via libgpiod v2 (gpiod_line_request_*). Used by native_sim
+  builds running on real Linux SBCs.
+
+  The host gpiochip path defaults to the DT property below, but can be
+  overridden at runtime with the --lora-gpio-chip=<path> command-line
+  argument.
+
+compatible: "zephcore,gpio-native-linux"
+
+include: [gpio-controller.yaml, base.yaml]
+
+properties:
+  gpio-chip:
+    type: string
+    required: true
+    description: |
+      Linux gpiochip character device path, e.g. "/dev/gpiochip0".
+      Overridable at runtime via --lora-gpio-chip=<path>.
+
+  ngpios:
+    type: int
+    required: true
+    description: |
+      Number of pins exposed by this controller. The actual number of
+      lines on the host gpiochip can be larger; we just cap our pin
+      space here. Should be at least 32 for typical SX126x setups.
+
+  "#gpio-cells":
+    const: 2
+
+gpio-cells:
+  - pin
+  - flags

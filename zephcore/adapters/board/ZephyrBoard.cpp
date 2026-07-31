@@ -1,8 +1,9 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  */
 
 #include "ZephyrBoard.h"
+#include "battery_curve.h"
 #include <zephyr/kernel.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/sensor.h>
@@ -10,13 +11,25 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
+#if defined(CONFIG_SOC_SERIES_NRF52)
 #include <hal/nrf_power.h>
 /* Adafruit bootloader GPREGRET magic values */
 #define BOOTLOADER_DFU_SERIAL_MAGIC 0x4e  /* Enter serial DFU mode (CDC only) */
 #define BOOTLOADER_DFU_UF2_MAGIC    0x57  /* Enter UF2 mass storage mode (CDC + MSC) */
 #define BOOTLOADER_DFU_OTA_MAGIC    0xA8  /* Enter BLE OTA DFU mode */
 #define NRF52_GPREGRET 1
+#endif
+
+/* ESP32 boards whose console is the native USB-Serial-JTAG: sys_reboot() does
+ * a digital soft reset but does not detach the USB PHY, so the D+ pull-up stays
+ * asserted and the host never sees a disconnect.  On macOS the serial port then
+ * wedges after a settings reboot (GH #43).  Drop the pad before rebooting so the
+ * host gets a clean disconnect/re-enumerate.  Gated to exactly the boards that
+ * both exhibit the defect and expose the PHY knob to fix it. */
+#if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) && \
+    DT_NODE_HAS_COMPAT(DT_CHOSEN(zephyr_console), espressif_esp32_usb_serial)
+#include <hal/usb_serial_jtag_ll.h>
+#define ESP32_USB_SERIAL_DETACH 1
 #endif
 
 /* LoRa TX activity LED (optional — defined per-board via DT alias) */
@@ -65,6 +78,18 @@ static const struct device *vbat_enable_dev = NULL;
 #define VBAT_ADC_SAMPLES   8
 #endif
 
+/* Battery fuel gauge (AXP2101 PMU etc.) — preferred over the ADC divider when
+ * present. Reports battery voltage and state-of-charge over I2C, so boards with
+ * a PMU and no battery ADC (e.g. LilyGo T-Beam) still get battery telemetry. */
+#if DT_HAS_COMPAT_STATUS_OKAY(x_powers_axp2101_fuel_gauge)
+#include <zephyr/drivers/fuel_gauge.h>
+#define HAS_FUEL_GAUGE 1
+static const struct device *const fuel_gauge_dev =
+	DEVICE_DT_GET(DT_COMPAT_GET_ANY_STATUS_OKAY(x_powers_axp2101_fuel_gauge));
+#else
+#define HAS_FUEL_GAUGE 0
+#endif
+
 /* Initialize TX LED GPIO at boot */
 #if HAS_TX_LED
 static int tx_led_init(void)
@@ -81,7 +106,17 @@ namespace mesh {
 
 uint16_t ZephyrBoard::getBattMilliVolts()
 {
-#if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
+#if HAS_FUEL_GAUGE
+	if (device_is_ready(fuel_gauge_dev)) {
+		union fuel_gauge_prop_val val;
+		int ret = fuel_gauge_get_prop(fuel_gauge_dev, FUEL_GAUGE_VOLTAGE, &val);
+		if (ret == 0) {
+			return (uint16_t)(val.voltage / 1000);  /* µV -> mV */
+		}
+		LOG_WRN("Fuel gauge voltage read failed: %d", ret);
+	}
+	return 0;
+#elif DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
     DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 	if (!adc_is_ready_dt(&vbat_adc)) {
 		LOG_ERR("ADC not ready");
@@ -146,6 +181,23 @@ uint16_t ZephyrBoard::getBattMilliVolts()
 #endif
 }
 
+uint8_t ZephyrBoard::getBattPercent()
+{
+#if HAS_FUEL_GAUGE
+	if (device_is_ready(fuel_gauge_dev)) {
+		union fuel_gauge_prop_val val;
+		int ret = fuel_gauge_get_prop(fuel_gauge_dev,
+					      FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE, &val);
+		if (ret == 0) {
+			return val.relative_state_of_charge;
+		}
+		LOG_WRN("Fuel gauge SoC read failed: %d", ret);
+	}
+	/* Fall through to the voltage-curve estimate if the gauge read fails. */
+#endif
+	return battery_curve_lookup(&battery_curve_default, getBattMilliVolts());
+}
+
 bool ZephyrBoard::setAdcMultiplier(float multiplier)
 {
 #if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
@@ -208,6 +260,12 @@ void ZephyrBoard::onAfterTransmit()
 void ZephyrBoard::reboot()
 {
 	k_msleep(50);  /* Let UART/USB flush */
+#ifdef ESP32_USB_SERIAL_DETACH
+	/* Drop the D+ pull-up so the host sees a clean USB disconnect before the
+	 * soft reset (GH #43 — wedged serial port on macOS). */
+	usb_serial_jtag_ll_phy_enable_pad(false);
+	k_msleep(100);  /* Hold SE0 long enough for host disconnect debounce */
+#endif
 	sys_reboot(SYS_REBOOT_COLD);
 }
 
@@ -240,7 +298,7 @@ bool ZephyrBoard::startOTAUpdate(const char *id, char reply[])
 
 bool ZephyrBoard::getBootloaderVersion(char *out, size_t max_len)
 {
-#if defined(CONFIG_SOC_SERIES_NRF52X) || defined(CONFIG_SOC_SERIES_NRF52)
+#if defined(CONFIG_SOC_SERIES_NRF52)
 	/* Scan flash for UF2 bootloader version string.
 	 * info.txt lives somewhere in the 0xFB000-0xFE000 range depending
 	 * on SoftDevice version and bootloader build. */
@@ -281,6 +339,20 @@ void ZephyrBoard::clearBootloaderMagic()
 uint8_t ZephyrBoard::getStartupReason() const
 {
 	return BD_STARTUP_NORMAL;
+}
+
+bool ZephyrBoard::isExternalPowered()
+{
+#if defined(CONFIG_SOC_SERIES_NRF52)
+	/* VBUS detect from the POWER peripheral — true when USB/charger is
+	 * attached. Read-only status register; safe alongside the BLE controller
+	 * (we already poke NRF_POWER->GPREGRET directly elsewhere). */
+	return nrf_power_usbregstatus_vbusdet_get(NRF_POWER);
+#else
+	/* Other platforms have no portable VBUS query — report battery (false)
+	 * so low-battery auto-shutdown is never inhibited. */
+	return false;
+#endif
 }
 
 } /* namespace mesh */

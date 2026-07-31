@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * WiFi OTA Firmware Update
  *
  * Starts a WiFi AP + HTTP server for browser-based firmware upload.
@@ -13,6 +13,7 @@
 
 #include "wifi_ota.h"
 #include "ota_page.h"
+#include "../../helpers/pm_sleep_guard.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/net/wifi_mgmt.h>
@@ -459,10 +460,18 @@ int wifi_ota_start(const char *node_name, const char *board_name)
 		 node_name ? node_name : "Unknown",
 		 board_name ? board_name : "Unknown");
 
+	/* Hold off light sleep for the whole session. The WiFi stack and the
+	 * HTTP upload have no PM coordination here, so a node that slept
+	 * mid-transfer would drop the client's connection. Released in
+	 * wifi_ota_stop(); the post-upload reboot path also passes through
+	 * there, and a reboot would clear the lock regardless. */
+	zc_pm_block_sleep();
+
 	/* Start WiFi AP */
 	int ret = wifi_ap_start();
 
 	if (ret) {
+		zc_pm_unblock_sleep();
 		return ret;
 	}
 
@@ -472,6 +481,7 @@ int wifi_ota_start(const char *node_name, const char *board_name)
 	if (ret) {
 		LOG_ERR("HTTP server start failed: %d", ret);
 		wifi_ap_stop();
+		zc_pm_unblock_sleep();
 		return ret;
 	}
 
@@ -504,6 +514,11 @@ int wifi_ota_stop(void)
 	ota_active = false;
 	flash_ctx_initialized = false;
 	total_bytes_received = 0;
+
+	/* Matches the lock taken in wifi_ota_start(). The early return above
+	 * (!ota_active) is why this sits after the flag check — an unbalanced
+	 * put would drop someone else's lock. */
+	zc_pm_unblock_sleep();
 
 	LOG_INF("OTA server stopped");
 	return 0;

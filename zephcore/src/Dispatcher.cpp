@@ -1,5 +1,5 @@
 /*
- * SPDX-License-Identifier: Apache-2.0
+ * SPDX-License-Identifier: MIT
  * ZephCore Dispatcher implementation
  */
 
@@ -21,27 +21,30 @@ LOG_MODULE_REGISTER(zephcore_dispatcher, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-#define MAX_RX_DELAY_MILLIS         32000  /* upper bound for score-based RX delay */
 #define MIN_TX_BUDGET_AIRTIME_DIV   2      /* require at least 1/N MTU airtime as budget before TX */
 
 Dispatcher::Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr)
 	: _radio(&radio), _ms(&ms), _mgr(&mgr)
 {
 	outbound = nullptr;
+	outbound_priority = 0;
 	total_air_time = rx_air_time = 0;
 	next_tx_time = 0;
 	cad_busy_start = 0;
 	tx_budget_ms = 0;
 	last_budget_update = 0;
 	duty_cycle_window_ms = 0;
-	next_agc_reset_time = 0;
 	_err_flags = 0;
 	radio_nonrx_start = 0;
 	prev_isrecv_mode = true;
+	cad_offset_shadow = 0;
+	cad_offset_shadow_valid = false;
 	n_sent_flood = n_sent_direct = 0;
 	n_recv_flood = n_recv_direct = 0;
 	_tx_queued_cb = nullptr;
 	_tx_queued_user_data = nullptr;
+	_wake_cb = nullptr;
+	_wake_user_data = nullptr;
 }
 
 void Dispatcher::begin()
@@ -104,22 +107,6 @@ bool Dispatcher::isAdminPacket(const Packet *pkt)
 	       t == PAYLOAD_TYPE_ANON_REQ || t == PAYLOAD_TYPE_CONTROL;
 }
 
-int Dispatcher::calcRxDelay(float score, uint32_t air_time) const
-{
-	/* LUT: 10^(0.85 - i*0.1) - 1, i=0..10; replaces powf() (~1.9KB saved) */
-	static const float lut[11] = {
-		6.0793f, 4.6236f, 3.4674f, 2.5489f, 1.8184f, 1.2389f,
-		0.7783f, 0.4125f, 0.1220f, -0.1089f, -0.2921f
-	};
-	if (score <= 0.0f) return (int)(lut[0] * (float)air_time);
-	if (score >= 1.0f) return (int)(lut[10] * (float)air_time);
-	float idx = score * 10.0f;
-	int i = (int)idx;
-	float frac = idx - (float)i;
-	float val = lut[i] + frac * (lut[i + 1] - lut[i]);
-	return (int)(val * (float)air_time);
-}
-
 uint32_t Dispatcher::getCADFailRetryDelay() const
 {
 	/* 100-200ms jittered retry: tighter than one SF8 flood airtime so we
@@ -162,15 +149,8 @@ void Dispatcher::loop()
 		} else {
 			return;
 		}
-		next_agc_reset_time = futureMillis(getAGCResetInterval());
 	}
 
-	{
-		Packet *pkt = _mgr->getNextInbound((uint32_t)_ms->getMillis());
-		if (pkt) {
-			processRecvPacket(pkt);
-		}
-	}
 	checkRecv();
 	checkSend();
 }
@@ -179,8 +159,12 @@ void Dispatcher::maintenanceLoop()
 {
 	_radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
 
-	/* RX mode watchdog: TX counts as "active" to avoid false triggers
-	 * when the 5s housekeeping timer misses brief RX windows. */
+	/* RX mode watchdog: TX counts as "active" to avoid false triggers when
+	 * a maintenance pass lands between brief RX windows.  Diagnostic only —
+	 * it raises a status bit and recovers nothing — but that bit is surfaced
+	 * on every role: the repeater/room-server "stats" CLI reply and binary
+	 * telemetry read _err_flags directly, the MQTT uplink publishes it, and
+	 * the companion returns it in its BLE device-status response. */
 	bool is_active = _radio->isInRecvMode() || !_radio->isSendComplete();
 	if (is_active != prev_isrecv_mode) {
 		prev_isrecv_mode = is_active;
@@ -188,15 +172,49 @@ void Dispatcher::maintenanceLoop()
 			radio_nonrx_start = (uint32_t)_ms->getMillis();
 		}
 	}
-	if (!is_active && (uint32_t)_ms->getMillis() - radio_nonrx_start > 8000) { /* 8s stall threshold */
+	if (!is_active &&
+	    (uint32_t)_ms->getMillis() - radio_nonrx_start > RADIO_STALL_THRESHOLD_MS) {
 		_err_flags |= ERR_EVENT_STARTRX_TIMEOUT;
 	}
 
-	/* Periodic AGC recalibration */
-	if (getAGCResetInterval() > 0 && millisHasNowPassed(next_agc_reset_time)) {
-		_radio->resetAGC();
-		next_agc_reset_time = futureMillis(getAGCResetInterval());
+	/* Adaptive CAD: probe scheduling + staircase live in the radio;
+	 * we only surface offset changes so the app layer can persist them. */
+	_radio->cadMaintenance();
+
+	int8_t cad_off = _radio->getCadOffset();
+
+	if (!cad_offset_shadow_valid) {
+		cad_offset_shadow = cad_off;
+		cad_offset_shadow_valid = true;
+	} else if (cad_off != cad_offset_shadow) {
+		cad_offset_shadow = cad_off;
+		onCadOffsetChanged(cad_off);
 	}
+}
+
+uint32_t Dispatcher::msUntilNextMaintenance()
+{
+	uint32_t now = (uint32_t)_ms->getMillis();
+	/* Noise floor sampling + CAD probing/decay both live in the radio and
+	 * carry their own deadlines. */
+	uint32_t next = _radio->msUntilNextMaintenance();
+
+	/* Radio stall watchdog.  Only pending while the radio is known to be
+	 * neither receiving nor transmitting as of the last pass — the
+	 * transition into that state is itself event-driven (TX start, RX done,
+	 * CAD), so there is nothing to poll for while the radio is active.
+	 *
+	 * The already-flagged check is load-bearing: the verdict is a latched
+	 * status bit, so once raised its deadline sits permanently in the past.
+	 * Without this the query would return 0 on every call and the event loop
+	 * would re-arm at its minimum interval forever. */
+	if (!prev_isrecv_mode && !(_err_flags & ERR_EVENT_STARTRX_TIMEOUT)) {
+		next = maintenanceSooner(
+			next, maintenanceUntil(now, radio_nonrx_start +
+						       RADIO_STALL_THRESHOLD_MS));
+	}
+
+	return next;
 }
 
 bool Dispatcher::tryParsePacket(Packet *pkt, const uint8_t *raw, int len)
@@ -302,11 +320,10 @@ void Dispatcher::checkRecv()
 		logRx(pkt, pkt->getRawLength(), score);
 		if (pkt->isRouteFlood()) {
 			n_recv_flood++;
-			processRecvPacket(pkt);
 		} else {
 			n_recv_direct++;
-			processRecvPacket(pkt);
 		}
+		processRecvPacket(pkt);
 	}
 }
 
@@ -376,8 +393,11 @@ void Dispatcher::checkSend()
 		}
 	}
 
-	if (_radio->isReceiving()) {
-		/* Channel busy — enforce retry timer so we don't hammer the check */
+	bool is_receiving = _radio->isReceiving();
+	bool is_radio_ready = _radio->isRadioReady();
+	if (is_receiving || !is_radio_ready) {
+		/* Channel busy or radio not command-ready — enforce retry timer
+		 * so we don't hammer checks during RX activity or BUSY windows. */
 		if (!millisHasNowPassed(next_tx_time)) {
 			if (_tx_queued_cb) {
 				uint32_t remaining = next_tx_time - now;
@@ -390,7 +410,24 @@ void Dispatcher::checkSend()
 		}
 		if (now - cad_busy_start > getCADFailMaxDuration()) {
 			_err_flags |= ERR_EVENT_CAD_TIMEOUT;
-			LOG_ERR("checkSend: CAD timeout exceeded");
+			LOG_ERR("checkSend: CAD timeout exceeded (isReceiving=%d, isRadioReady=%d, inRecvMode=%d, rssi=%.1f, snr=%.1f, noise=%d, rx_ok=%u, rx_err=%u)",
+				(int)is_receiving, (int)is_radio_ready, (int)_radio->isInRecvMode(),
+				(double)_radio->getLastRSSI(), (double)_radio->getLastSNR(),
+				_radio->getNoiseFloor(),
+				(unsigned)_radio->getPacketsRecv(),
+				(unsigned)_radio->getPacketsRecvErrors());
+			/* With the non-destructive sx126x_is_receiving() we lost
+			 * the accidental side-effect IRQ clear that used to break
+			 * us out of stuck preamble bits.  Walk the chip back
+			 * through REST → fresh RX, which bulk-clears IRQ status
+			 * and resets the rx_packet_active latch.  Then re-wake the
+			 * loop promptly so the next checkSend() retries TX. */
+			_radio->recoverRxState();
+			cad_busy_start = 0;
+			if (_tx_queued_cb) {
+				_tx_queued_cb(1, _tx_queued_user_data);
+			}
+			return;
 		} else {
 			uint32_t retry = getCADFailRetryDelay();
 			next_tx_time = futureMillis((int)retry);
@@ -402,6 +439,10 @@ void Dispatcher::checkSend()
 	}
 	cad_busy_start = 0;
 
+	/* Snapshot the priority of the packet we're about to dequeue so it
+	 * can be preserved if the send attempt fails and we need to re-queue.
+	 * Must be called before getNextOutbound() removes the entry. */
+	outbound_priority = _mgr->peekNextOutboundPriority(now);
 	outbound = _mgr->getNextOutbound(now);
 	if (outbound) {
 		uint8_t raw[MAX_TRANS_UNIT];
@@ -412,7 +453,8 @@ void Dispatcher::checkSend()
 			memcpy(&raw[len], &outbound->transport_codes[1], 2); len += 2;
 		}
 		raw[len++] = outbound->path_len;
-		len += Packet::writePath(&raw[len], outbound->path, outbound->path_len);
+		/* Trusted source: outbound->path is MAX_PATH_SIZE-sized. */
+		len += Packet::writePath(&raw[len], outbound->path, MAX_PATH_SIZE, outbound->path_len);
 
 		if (len + outbound->payload_len > MAX_TRANS_UNIT) {
 			LOG_ERR("checkSend: packet too large len=%d+%d > %d", len, outbound->payload_len, MAX_TRANS_UNIT);
@@ -423,6 +465,12 @@ void Dispatcher::checkSend()
 			len += outbound->payload_len;
 
 			uint32_t max_airtime = _radio->getEstAirtimeFor(len) * 3 / 2;
+			/* Short packets (ACKs) have est airtimes small enough that
+			 * IRQ/work-queue latency alone can blow the watchdog and clip
+			 * the TX mid-air (upstream 4f8cb8db: 200ms est floor, x1.5). */
+			if (max_airtime < 300) {
+				max_airtime = 300;
+			}
 			outbound_start = now;
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
@@ -443,12 +491,16 @@ void Dispatcher::checkSend()
 			}
 #endif
 
-			/* Final LBT check — close the gap between initial
-			 * isReceiving() and actual TX start (serialisation +
-			 * logging can take 1-5 ms). */
-			if (_radio->isReceiving()) {
+			/* Final gate — close the gap between initial checks and
+			 * actual TX start (serialisation + logging can take 1-5 ms). */
+			bool final_is_receiving = _radio->isReceiving();
+			bool final_is_radio_ready = _radio->isRadioReady();
+			if (final_is_receiving || !final_is_radio_ready) {
 				uint32_t retry = getCADFailRetryDelay();
-				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
+				LOG_DBG("checkSend: final gate blocked TX (isReceiving=%d, isRadioReady=%d, inRecvMode=%d)",
+					(int)final_is_receiving, (int)final_is_radio_ready,
+					(int)_radio->isInRecvMode());
+				_mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
 				outbound = nullptr;
 				if (_tx_queued_cb) {
 					_tx_queued_cb(retry, _tx_queued_user_data);
@@ -461,7 +513,7 @@ void Dispatcher::checkSend()
 				uint32_t retry = getCADFailRetryDelay();
 				LOG_ERR("checkSend: startSendRaw failed! re-queuing delay=%u", retry);
 				logTxFail(outbound, outbound->getRawLength());
-				_mgr->queueOutbound(outbound, 0, futureMillis((int)retry));
+				_mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
 				outbound = nullptr;
 				if (_tx_queued_cb) {
 					_tx_queued_cb(retry, _tx_queued_user_data);
@@ -498,7 +550,14 @@ void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_mil
 		_mgr->free(packet);
 	} else {
 		_mgr->queueOutbound(packet, priority, futureMillis((int)delay_millis));
-		if (_tx_queued_cb && delay_millis > 0) {
+		/* Fire the wake callback even for delay_millis == 0.  Companion
+		 * BLE/USB-driven direct & zero-hop sends enqueue with delay 0 from
+		 * sysworkq — off the main loop — and the per-frame RX wake was
+		 * removed in 57b971f, so without this they have no drain signal
+		 * (USB companion has no tx-idle backstop).  The callback reschedules
+		 * tx_drain_work with K_MSEC(0) → immediate drain; redundant but
+		 * harmless when sendPacket is already called from the main loop. */
+		if (_tx_queued_cb) {
 			_tx_queued_cb(delay_millis, _tx_queued_user_data);
 		}
 	}
