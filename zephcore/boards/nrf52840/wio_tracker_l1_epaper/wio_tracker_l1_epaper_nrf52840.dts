@@ -222,7 +222,7 @@
 	};
 };
 
-/* I2C0 disabled on E-Ink board — P0.05/P0.06 freed for EPD CS/DC use */
+/* I2C0 disabled — SPIM0/TWIM0 share the same peripheral instance on nRF52840 */
 &i2c0 {
 	status = "disabled";
 };
