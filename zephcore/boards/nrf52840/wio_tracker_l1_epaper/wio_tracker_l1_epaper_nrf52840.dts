@@ -126,27 +126,26 @@
 	};
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
-	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD on SPI1.
-	 * Pin assignments confirmed from Wio_Tracker_L1_Pro_SCH_PDF schematic:
-	 * SCK=P0.30 (B9), MOSI=P0.28 (B11), BUSY=P0.29 (A10) - shared SPI1 bus
-	 * CS=P0.14 (AC9), DC=P0.13 (AD8), RESET=P0.02 (A12), BUSY=P0.29 (A10).
+	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD on dedicated SPI2.
+	 * Hardware pin mapping from Seeed Wio Tracker L1 E-Ink variant:
+	 * SCK=P0.13, MOSI=P0.15, CS=P0.19, DC=P0.16, RESET=P0.14, BUSY=P0.17.
 	 */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
-		spi-dev = <&spi1>;
-		dc-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
-		reset-gpios = <&gpio0 2 GPIO_ACTIVE_LOW>;
+		spi-dev = <&spi2>;
+		dc-gpios = <&gpio0 16 GPIO_ACTIVE_HIGH>;
+		reset-gpios = <&gpio0 14 GPIO_ACTIVE_LOW>;
 		#address-cells = <1>;
 		#size-cells = <0>;
 
-		epd: ssd16xxfb@1 {
+		epd: ssd16xxfb@0 {
 			compatible = "solomon,ssd1680";
 			mipi-max-frequency = <4000000>;
-			reg = <1>;
+			reg = <0>;
 			width = <250>;
 			height = <122>;
 			rotation = <270>;
-			busy-gpios = <&gpio0 29 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+			busy-gpios = <&gpio0 17 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
 			full    { border-waveform = <0x05>; };
 			partial { border-waveform = <0x3c>; };
@@ -222,9 +221,11 @@
 	};
 };
 
-/* I2C0 disabled — SPIM0/TWIM0 share the same peripheral instance on nRF52840 */
 &i2c0 {
-	status = "disabled";
+	status = "okay";
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-1 = <&i2c0_sleep>;
+	pinctrl-names = "default", "sleep";
 };
 
 &i2c1 {
@@ -234,11 +235,11 @@
 	pinctrl-names = "default", "sleep";
 };
 
-/* SPI1 for LoRa SX1262 and EPD */
+/* SPI1 for LoRa SX1262 */
 &spi1 {
 	compatible = "nordic,nrf-spim";
 	status = "okay";
-	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>, <&gpio0 14 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>;
 	pinctrl-0 = <&spi1_default>;
 	pinctrl-1 = <&spi1_sleep>;
 	pinctrl-names = "default", "sleep";
@@ -256,6 +257,16 @@
 		spi-max-frequency = <8000000>;
 		rx-boosted;
 	};
+};
+
+/* SPI2 for SSD1680 ePaper display */
+&spi2 {
+	compatible = "nordic,nrf-spim";
+	status = "okay";
+	cs-gpios = <&gpio0 19 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi2_default>;
+	pinctrl-1 = <&spi2_sleep>;
+	pinctrl-names = "default", "sleep";
 };
 
 &qspi {
