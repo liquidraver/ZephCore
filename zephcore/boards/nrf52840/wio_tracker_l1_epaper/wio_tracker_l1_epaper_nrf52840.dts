@@ -127,9 +127,9 @@
 
 	/* ---- E-Paper display (MIPI DBI SPI) ----
 	 * Solomon Systech SSD1680 2.13" 250x122 monochrome EPD on SPI1.
-	 * These pin assignments match the Seeed Wio Tracker L1 24-pin FPC connector.
-	 * SCK=P0.30, MOSI=P0.28 (shared SPI1 bus with LoRa)
-	 * CS=P0.06, DC=P0.13, RESET=P0.02, BUSY=P0.29.
+	 * Pin assignments confirmed from Wio_Tracker_L1_Pro_SCH_PDF schematic:
+	 * SCK=P0.30 (B9), MOSI=P0.28 (B11), BUSY=P0.29 (A10) - shared SPI1 bus
+	 * CS=P0.14 (AC9), DC=P0.13 (AD8), RESET=P0.02 (A12), BUSY=P0.29 (A10).
 	 */
 	mipi_dbi {
 		compatible = "zephyr,mipi-dbi-spi";
@@ -238,7 +238,7 @@
 &spi1 {
 	compatible = "nordic,nrf-spim";
 	status = "okay";
-	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>, <&gpio0 6 GPIO_ACTIVE_LOW>;
+	cs-gpios = <&gpio1 14 GPIO_ACTIVE_LOW>, <&gpio0 14 GPIO_ACTIVE_LOW>;
 	pinctrl-0 = <&spi1_default>;
 	pinctrl-1 = <&spi1_sleep>;
 	pinctrl-names = "default", "sleep";
