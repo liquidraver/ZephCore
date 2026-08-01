@@ -60,25 +60,25 @@
 
 		joystick_up: button_1 {
 			gpios = <&gpio1 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			zephyr,code = <INPUT_KEY_UP>;
+			zephyr,code = <INPUT_KEY_RIGHT>;
 			label = "Joystick Up";
 		};
 
 		joystick_down: button_2 {
 			gpios = <&gpio0 12 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			zephyr,code = <INPUT_KEY_DOWN>;
+			zephyr,code = <INPUT_KEY_LEFT>;
 			label = "Joystick Down";
 		};
 
 		joystick_left: button_3 {
 			gpios = <&gpio0 11 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			zephyr,code = <INPUT_KEY_LEFT>;
+			zephyr,code = <INPUT_KEY_UP>;
 			label = "Joystick Left";
 		};
 
 		joystick_right: button_4 {
 			gpios = <&gpio1 3 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
-			zephyr,code = <INPUT_KEY_RIGHT>;
+			zephyr,code = <INPUT_KEY_DOWN>;
 			label = "Joystick Right";
 		};
 
