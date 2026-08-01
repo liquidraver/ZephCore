@@ -144,7 +144,8 @@
 			reg = <0>;
 			width = <250>;
 			height = <122>;
-			rotation = <270>;
+			rotation = <0>;
+			tssv = <0x80>;
 			busy-gpios = <&gpio0 17 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
 			full    { border-waveform = <0x05>; };
