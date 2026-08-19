@@ -70,6 +70,23 @@ bool RepeaterDataStore::loadIdentity(mesh::LocalIdentity& id) {
 
     if (n >= PRV_KEY_SIZE) {
         if (id.readFrom(buf, n)) {
+            /* The 96-byte layout carries a stored pub_key that readFrom()
+             * trusts blindly. Repair a mismatched pair (partial write, stale
+             * or foreign file content) in favour of the private key, exactly
+             * like ZephyrDataStore::loadMainIdentity does for the companion. */
+            if (!id.hasConsistentKeyPair()) {
+                /* Degenerate private key is corruption, not a repairable
+                 * pair — fail the load so the caller regenerates. */
+                if (!mesh::LocalIdentity::validatePrivateKey(buf)) {
+                    LOG_ERR("identity corrupt (invalid prv) - regenerating");
+                    return false;
+                }
+                LOG_WRN("identity pub/prv mismatch - re-deriving pub from prv");
+                id.rederivePubKey();
+                if (!saveIdentity(id)) {
+                    LOG_ERR("failed to persist re-derived identity");
+                }
+            }
             LOG_INF("Loaded identity from %s", path);
             return true;
         }

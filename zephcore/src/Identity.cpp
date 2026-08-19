@@ -199,6 +199,18 @@ size_t LocalIdentity::writeTo(uint8_t *dest, size_t max_len) const
 	return PRV_KEY_SIZE + PUB_KEY_SIZE;
 }
 
+bool LocalIdentity::hasConsistentKeyPair() const
+{
+	uint8_t derived[PUB_KEY_SIZE];
+	crypto_eddsa_scalarbase(derived, prv_key);
+	return memcmp(derived, pub_key, PUB_KEY_SIZE) == 0;
+}
+
+void LocalIdentity::rederivePubKey()
+{
+	crypto_eddsa_scalarbase(pub_key, prv_key);
+}
+
 void LocalIdentity::sign(uint8_t *sig, const uint8_t *message, int msg_len) const
 {
 	signExpanded(sig, prv_key, pub_key, message, (size_t)msg_len);

@@ -63,6 +63,17 @@ public:
 
 	bool readFrom(const uint8_t *src, size_t len);
 	size_t writeTo(uint8_t *dest, size_t max_len) const;
+
+	/* True when pub_key == prv_key·B, i.e. the halves belong to the same
+	 * identity. A pair loaded from storage can violate this (partial write,
+	 * foreign layout, bit rot) — nothing else in the pipeline re-checks it,
+	 * and an inconsistent pair silently breaks advert signatures, inbound
+	 * DM decryption and CMD_EXPORT_PRIVATE_KEY. */
+	bool hasConsistentKeyPair() const;
+
+	/* Repair an inconsistent pair in favour of the private key (the only
+	 * usable secret): pub_key = prv_key·B. */
+	void rederivePubKey();
 };
 
 } /* namespace mesh */

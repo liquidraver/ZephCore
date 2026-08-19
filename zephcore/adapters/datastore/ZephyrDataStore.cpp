@@ -535,7 +535,33 @@ bool ZephyrDataStore::loadMainIdentity(mesh::LocalIdentity &identity)
 	if (!openRead(MAIN_ID_FILE, buf, sizeof(buf), len) || len < PRV_KEY_SIZE + PUB_KEY_SIZE) {
 		return false;
 	}
-	return identity.readFrom(buf, len);
+	if (!identity.readFrom(buf, len)) {
+		return false;
+	}
+	/* The 96-byte layout stores prv and pub side by side and readFrom()
+	 * trusts both halves. A mismatched pair (partial write, stale or
+	 * foreign file content) otherwise survives every boot: the node then
+	 * advertises a pub_key whose private scalar it does not hold — its
+	 * adverts verify nowhere, inbound DMs can't decrypt, and
+	 * CMD_EXPORT_PRIVATE_KEY hands companion apps a key that contradicts
+	 * SELF_INFO (seen in the field on a ThinkNode M1: apps re-request the
+	 * export on every connect and warn the user in a loop). Self-heal in
+	 * favour of the private key — the only usable secret — and persist. */
+	if (!identity.hasConsistentKeyPair()) {
+		/* Degenerate private key (all-zero page, reserved-prefix pub,
+		 * broken ECDH) is corruption, not a repairable pair — report
+		 * load failure so the caller regenerates a fresh identity. */
+		if (!mesh::LocalIdentity::validatePrivateKey(buf)) {
+			LOG_ERR("main identity corrupt (invalid prv) - regenerating");
+			return false;
+		}
+		LOG_WRN("main identity pub/prv mismatch - re-deriving pub from prv");
+		identity.rederivePubKey();
+		if (!saveMainIdentity(identity)) {
+			LOG_ERR("failed to persist re-derived identity");
+		}
+	}
+	return true;
 }
 
 bool ZephyrDataStore::saveMainIdentity(const mesh::LocalIdentity &identity)
