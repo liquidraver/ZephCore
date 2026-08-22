@@ -61,6 +61,23 @@ static const struct device *vbat_enable_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL
 static const struct device *vbat_enable_dev = NULL;
 #endif
 
+/* External FEM/LNA enable, active-HIGH path (KCT8103L PA_CSD, SKY66122 CSD+CPS).
+ * Present on boards that expose a `lora_fem_en` regulator-fixed nodelabel. */
+#if DT_NODE_EXISTS(DT_NODELABEL(lora_fem_en))
+static const struct device *lora_fem_en_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(lora_fem_en));
+#else
+static const struct device *lora_fem_en_dev = NULL;
+#endif
+
+/* External FEM/LNA enable, active-LOW path (KCT8103L PA_CTX on boards where CTX
+ * doubles as the LNA bypass select: HIGH = TX/bypass, LOW = LNA active in RX).
+ * Present on boards that expose a `lora_fem_ctx` regulator-fixed nodelabel. */
+#if DT_NODE_EXISTS(DT_NODELABEL(lora_fem_ctx))
+static const struct device *lora_fem_ctx_dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(lora_fem_ctx));
+#else
+static const struct device *lora_fem_ctx_dev = NULL;
+#endif
+
 /*
  * Battery voltage multiplier - prefer devicetree, fallback to Kconfig
  * Formula: Battery_mV = (raw * VBAT_MV_MULTIPLIER) / 4096
@@ -255,6 +272,15 @@ void ZephyrBoard::onBeforeTransmit()
 		gpio_pin_set_dt(&tx_led, 1);
 	}
 #endif
+	/* TX always needs the PA path: CSD/CTX-as-enable boards go HIGH, CTX-as-LNA
+	 * -bypass boards (V4.3) also go HIGH here, which is what bypasses the LNA
+	 * for the transmit path. Independent of the fem_rxgain RX preference. */
+	if (lora_fem_en_dev) {
+		regulator_enable(lora_fem_en_dev);
+	}
+	if (lora_fem_ctx_dev) {
+		regulator_enable(lora_fem_ctx_dev);
+	}
 }
 
 void ZephyrBoard::onAfterTransmit()
@@ -262,6 +288,28 @@ void ZephyrBoard::onAfterTransmit()
 #if HAS_TX_LED
 	gpio_pin_set_dt(&tx_led, 0);
 #endif
+	/* Restore the RX-time FEM state now that TX is done. */
+	if (lora_fem_en_dev && !_fem_lna_enabled) {
+		regulator_disable(lora_fem_en_dev);
+	}
+	if (lora_fem_ctx_dev && _fem_lna_enabled) {
+		regulator_disable(lora_fem_ctx_dev);  /* CTX=LOW = LNA active */
+	}
+	/* fem_rxgain=0 on a CTX board: leave CTX HIGH (bypass), already set above. */
+}
+
+void ZephyrBoard::setFemLnaEnabled(bool enable)
+{
+	_fem_lna_enabled = enable;
+	if (lora_fem_en_dev) {
+		if (enable) regulator_enable(lora_fem_en_dev);
+		else        regulator_disable(lora_fem_en_dev);
+	}
+	if (lora_fem_ctx_dev) {
+		/* CTX is inverted relative to lora_fem_en: LOW = LNA active. */
+		if (enable) regulator_disable(lora_fem_ctx_dev);
+		else        regulator_enable(lora_fem_ctx_dev);
+	}
 }
 
 void ZephyrBoard::reboot()

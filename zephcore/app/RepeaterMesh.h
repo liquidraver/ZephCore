@@ -258,6 +258,7 @@ public:
     void dumpLogFile() override;
     void setTxPower(int8_t power_dbm) override;
     bool setRxBoostedGain(bool enable) override;
+    void setFemRxGain(bool enable) override;
     bool configSideDetectors(const uint8_t* sfs, uint8_t num) override;
     void formatNeighborsReply(char* reply) override;
     void removeNeighbor(const uint8_t* pubkey, int key_len) override;

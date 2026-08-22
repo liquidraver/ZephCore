@@ -46,6 +46,10 @@ public:
     /* Apply RX boosted gain live; returns false when the radio has no
      * RX boost feature (upstream PR #2844 semantics). */
     virtual bool setRxBoostedGain(bool enable) { (void)enable; return false; }
+    /* Toggle an external FEM/LNA (KCT8103L, SKY66122...) between an
+     * always-on TX path and RX-gated LNA. Boards without an external FEM
+     * simply ignore this. */
+    virtual void setFemRxGain(bool enable) { (void)enable; }
     /* Configure LR2021 side detectors (multi-SF receive); num = 0 disables.
      * Returns false when the radio has no side detectors, or when the set
      * violates a chip constraint — the driver is the validator. */

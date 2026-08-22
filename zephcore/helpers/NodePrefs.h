@@ -93,6 +93,7 @@ struct NodePrefs {
 	float adc_multiplier;
 	char owner_info[120];
 	uint8_t rx_boost;               // 1 = boosted RX gain (+3dB), 0 = power save
+	uint8_t fem_rxgain;             // 1 = external FEM LNA active during RX, 0 = off (power save)
 	uint8_t rx_duty_cycle;          // 1 = RX duty cycle, 0 = continuous RX
 	/* RESERVED — formerly apc_enabled / apc_margin (Adaptive Power Control,
 	 * removed in 1.16.6). These two bytes are still read and written at their
@@ -191,6 +192,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;
 	prefs->adc_multiplier = 0.0f;
 	prefs->rx_boost = 1;              // Default to boosted RX for better sensitivity
+	prefs->fem_rxgain = 0;            // Default OFF — external FEM LNA off, internal boost only
 	prefs->rx_duty_cycle = 0;         // Default OFF — continuous RX for best reliability
 	prefs->_reserved_apc_enabled = 0; // reserved (was APC), see NodePrefs
 	prefs->_reserved_apc_margin = 0;  // reserved (was APC), see NodePrefs

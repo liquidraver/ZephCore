@@ -745,6 +745,7 @@ int main(void)
 
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(prefs->rx_boost != 0);
+	zephyr_board.setFemLnaEnabled(prefs->fem_rxgain != 0);
 	lora_radio.enableRxDutyCycle(prefs->rx_duty_cycle != 0);
 	lora_radio.setCadParams(prefs->cad_auto != 0, prefs->cad_offset,
 				prefs->probe_interval, prefs->cad_busycap);

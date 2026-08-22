@@ -247,6 +247,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get path.hash.mode` | Path hashing algorithm: `0`, `1`, or `2` |
 | `get loop.detect` | Loop detection level: `off`, `minimal`, `moderate`, or `strict` |
 | `get radio.rxgain` | RX gain boost: `0` or `1` |
+| `get radio.fem.rxgain` | External FEM LNA RX gain (boards with a controllable FEM only): `on` or `off` |
 | `get rxduty` | RX duty cycle mode: `0` or `1` |
 | `get gps duty` | Now-effective GPS duty interval in seconds (`always on (0)` when continuous) |
 | `get gps diag` | What the last GPS module-configuration attempt did — which path ran, bytes sent, and tracked satellites per constellation. See **GPS configuration diagnostics** in the GPS section for the field reference |
@@ -296,6 +297,7 @@ Changes are persisted immediately unless noted. Some require a reboot.
 | `set path.hash.mode <mode>` | 0, 1, or 2 | Path hashing algorithm |
 | `set loop.detect <mode>` | `off`, `minimal`, `moderate`, `strict` | Loop detection sensitivity |
 | `set radio.rxgain <0\|1\|on\|off>` | | RX gain boost, applied live. Replies `Error: unsupported` on radios without RX boost (SX127x); the pref is still saved. |
+| `set radio.fem.rxgain <0\|1\|on\|off>` | | External FEM LNA RX gain, applied live. No-op on boards without a controllable FEM; the pref is still saved. |
 | `set rxduty <0\|1\|on\|off>` | | RX duty cycle mode *(reboot required)*. Window timing auto-sized per SF/BW/preamble from the SX126x datasheet constraints (boot log line `rxduty:` shows the result). Zero-loss guarantee assumes senders on preamble-32 firmware (current MeshCore at SF≤8); legacy preamble-16 senders are only caught ~50% worst-phase — keep off until the local mesh has converted. Presets with 16-symbol preambles (SF≥9) fall back to continuous RX automatically. |
 | `set adc.multiplier <mult>` | (0 = use board default) | Battery voltage ADC calibration multiplier |
 | `set meshtimesync <on\|off>` | default **off** | Mesh time sync: automatically correct this node's clock from the consensus of Ed25519-signed advert timestamps heard on the mesh. Steps at most ±1 h per step, one step per 6 h; abstains without a quorum (default 6) of tenured agreeing senders; never overrides a clock set in the last 7 days, whether from GPS (re-armed on every fix) or a manual set. See `MESHTIMESYNC.md`. |

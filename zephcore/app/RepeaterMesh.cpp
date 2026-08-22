@@ -4,6 +4,7 @@
  */
 
 #include "RepeaterMesh.h"
+#include <adapters/board/ZephyrBoard.h>
 #include <mesh/Utils.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/TxtDataHelpers.h>
@@ -1232,6 +1233,10 @@ void RepeaterMesh::setTxPower(int8_t power_dbm) {
 
 bool RepeaterMesh::setRxBoostedGain(bool enable) {
     return getRadioDriver(_radio).setRxBoost(enable);
+}
+
+void RepeaterMesh::setFemRxGain(bool enable) {
+    static_cast<mesh::ZephyrBoard&>(_board).setFemLnaEnabled(enable);
 }
 
 bool RepeaterMesh::configSideDetectors(const uint8_t* sfs, uint8_t num) {

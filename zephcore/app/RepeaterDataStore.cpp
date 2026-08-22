@@ -219,6 +219,9 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     /* LR2021 side-detector SFs, offsets 301-303.  Absent in <304-byte files;
      * the no-op EOF read leaves the zeroed default = feature off. */
     fs_read(&file, prefs.extra_sf, sizeof(prefs.extra_sf));
+    /* External FEM/LNA gain, offset 304. Absent in <305-byte files; the no-op
+     * EOF read keeps the constructor default fem_rxgain=0 (off). */
+    fs_read(&file, &prefs.fem_rxgain, sizeof(prefs.fem_rxgain));
 
     fs_close(&file);
 
@@ -250,6 +253,7 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
     if (prefs.path_hash_mode > 2) prefs.path_hash_mode = 0;
     if (prefs.loop_detect > LOOP_DETECT_STRICT) prefs.loop_detect = LOOP_DETECT_MINIMAL;
     if (prefs.rx_boost > 1) prefs.rx_boost = 0;
+    if (prefs.fem_rxgain > 1) prefs.fem_rxgain = 0;
     if (prefs.rx_duty_cycle > 1) prefs.rx_duty_cycle = 0;
     if (prefs.meshtimesync > 1) prefs.meshtimesync = 0;
     if (prefs.cad_auto > 1) prefs.cad_auto = 0;
@@ -368,6 +372,8 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     fs_write(&file, &prefs.cad_busycap, sizeof(prefs.cad_busycap));
     /* LR2021 side-detector SFs (offsets 301-303) */
     fs_write(&file, prefs.extra_sf, sizeof(prefs.extra_sf));
+    /* External FEM/LNA gain (offset 304) */
+    fs_write(&file, &prefs.fem_rxgain, sizeof(prefs.fem_rxgain));
 
     ret = fs_sync(&file);
     fs_close(&file);

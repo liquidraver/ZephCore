@@ -27,10 +27,19 @@ public:
 	uint8_t getStartupReason() const override;
 	bool isExternalPowered() override;  /* nRF52: VBUS present (USB/charger); else false */
 
+	/* External FEM/LNA control (KCT8103L, SKY66122...) — boards expose this via
+	 * a `lora_fem_en` or `lora_fem_ctx` devicetree nodelabel; boards without one
+	 * silently no-op. enable=true keeps the LNA path active during RX; the TX
+	 * path is always asserted in onBeforeTransmit() regardless of this setting. */
+	void setFemLnaEnabled(bool enable);
+
 private:
 	/* Runtime override for vbat-mv-multiplier. Units match DT `vbat-mv-multiplier`
 	 * (mV scale such that `mv = multiplier * raw / 4096`). 0 = use DT default. */
 	float _adc_multiplier_override = 0.0f;
+
+	/* FEM LNA state requested via radio.fem.rxgain; re-applied after every TX. */
+	bool _fem_lna_enabled = false;
 };
 
 } /* namespace mesh */

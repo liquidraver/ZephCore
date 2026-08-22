@@ -135,6 +135,7 @@ void CommonCLI::loadPrefs(const char* path) {
     ok = ok && prefs_read(&file, &_prefs->probe_interval, sizeof(_prefs->probe_interval)); // 299
     ok = ok && prefs_read(&file, &_prefs->cad_busycap, sizeof(_prefs->cad_busycap));            // 300
     ok = ok && prefs_read(&file, _prefs->extra_sf, sizeof(_prefs->extra_sf));                  // 301-303
+    ok = ok && prefs_read(&file, &_prefs->fem_rxgain, sizeof(_prefs->fem_rxgain));              // 304
 
     if (!ok) {
         LOG_WRN("Prefs file %s truncated, some fields use defaults", path);
@@ -179,6 +180,7 @@ void CommonCLI::loadPrefs(const char* path) {
     _prefs->gps_enabled = constrain(_prefs->gps_enabled, (uint8_t)0, (uint8_t)1);
     _prefs->advert_loc_policy = constrain(_prefs->advert_loc_policy, (uint8_t)0, (uint8_t)2);
     _prefs->rx_boost = constrain(_prefs->rx_boost, (uint8_t)0, (uint8_t)1);
+    _prefs->fem_rxgain = constrain(_prefs->fem_rxgain, (uint8_t)0, (uint8_t)1);
     _prefs->rx_duty_cycle = constrain(_prefs->rx_duty_cycle, (uint8_t)0, (uint8_t)1);
     _prefs->flood_max_unscoped = constrain(_prefs->flood_max_unscoped, (uint8_t)0, (uint8_t)64);
     _prefs->flood_max_advert = constrain(_prefs->flood_max_advert, (uint8_t)0, (uint8_t)64);
@@ -267,6 +269,7 @@ void CommonCLI::savePrefs(const char* path) {
     fs_write(&file, &_prefs->probe_interval, sizeof(_prefs->probe_interval));
     fs_write(&file, &_prefs->cad_busycap, sizeof(_prefs->cad_busycap));
     fs_write(&file, _prefs->extra_sf, sizeof(_prefs->extra_sf));
+    fs_write(&file, &_prefs->fem_rxgain, sizeof(_prefs->fem_rxgain));  // 304
 
     fs_close(&file);
     LOG_INF("Saved prefs to %s", path);
@@ -506,6 +509,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lat);
         } else if (memcmp(config, "lon", 3) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %.6f", _prefs->node_lon);
+        } else if (memcmp(config, "radio.fem.rxgain", 16) == 0) {
+            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->fem_rxgain ? "on" : "off");
         } else if (memcmp(config, "radio.rxgain", 12) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->rx_boost);
         } else if (memcmp(config, "radio", 5) == 0) {
@@ -1129,6 +1134,20 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 }
             } else {
                 strcpy(reply, "Error: unsupported by this board");
+            }
+        } else if (memcmp(config, "radio.fem.rxgain ", 17) == 0) {
+            const char* arg = &config[17];
+            int val = -1;
+            if (memcmp(arg, "on", 2) == 0) val = 1;
+            else if (memcmp(arg, "off", 3) == 0) val = 0;
+            else if (arg[0] == '0' || arg[0] == '1') val = atoi(arg);
+            if (val == 0 || val == 1) {
+                _prefs->fem_rxgain = (uint8_t)val;
+                savePrefs();
+                _callbacks->setFemRxGain(val == 1);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - radio.fem.rxgain=%s", _prefs->fem_rxgain ? "on" : "off");
+            } else {
+                strcpy(reply, "Error: must be 0, 1, on, or off");
             }
         } else if (memcmp(config, "radio.rxgain ", 13) == 0) {
             const char* arg = &config[13];
