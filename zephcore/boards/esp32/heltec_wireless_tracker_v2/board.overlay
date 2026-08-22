@@ -8,6 +8,7 @@
  */
 
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 
 / {
 	chosen {
@@ -43,6 +44,28 @@
 		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
 		tap-delay-ms = <400>;
 	};
+
+	/* KCT8103L PA_CSD (GPIO4): ENABLED=LNA active, DISABLED=LNA off in RX
+	 * (still forced on for TX by ZephyrBoard::onBeforeTransmit()).
+	 * ZephyrBoard controls PA_CSD via this nodelabel (radio.fem.rxgain),
+	 * same pattern already used by heltec_t096/rak3401_1watt for their own
+	 * CSD pin. antenna-enable-gpios removed from the SX1262 node below to
+	 * free GPIO4 from the native radio driver, which otherwise
+	 * force-enables it unconditionally on every RX/TX cycle.
+	 *
+	 * ESP32_GPIO_SLEEP_HOLD_EN kept from the property this replaces: light
+	 * sleep powers down RTC_PERIPH, and GPIO4 is an RTC-capable pad; without
+	 * the hold, the FEM would come out of sleep parked in an undefined state. */
+	lora_fem_en: lora-fem-en {
+		compatible = "regulator-fixed";
+		regulator-name = "lora-fem-en";
+		enable-gpios = <&gpio0 4 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;
+		regulator-boot-on;
+	};
+};
+
+&lora0 {
+	/delete-property/ antenna-enable-gpios;
 };
 
 /* I2C sensors — auto-detected at runtime. Header pins per MeshCore:
