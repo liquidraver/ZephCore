@@ -86,22 +86,15 @@
 		regulator-boot-on;
 	};
 
-	/* SKY66122 FEM enable — must be HIGH before SX1262 can transmit.
-	 * SX126X_POWER_EN = P0.21 (IO3 on WisBlock base). */
-	lora_pwr_enable: lora-pwr-enable {
+	/* SKY66122 FEM enable — controlled by ZephyrBoard for radio.fem.rxgain.
+	 * CSD+CPS are tied together on RAK13302 PCB, routed to IO3 (P0.21).
+	 * HIGH = FEM active (LNA during RX, PA path available for TX).
+	 * No regulator-boot-on: ZephyrBoard drives this via onBeforeTransmit/
+	 * onAfterTransmit/setFemLnaEnabled, same as heltec_t096's lora_fem_en. */
+	lora_fem_en: lora-fem-en {
 		compatible = "regulator-fixed";
-		regulator-name = "lora-pwr-enable";
+		regulator-name = "lora-fem-en";
 		enable-gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;
-		regulator-boot-on;
-		/* Documents the FEM's requirement, but do not rely on it:
-		 * regulator-boot-on sends regulator_common_init() down the
-		 * refcount-only branch, so regulator_delay() never runs and this
-		 * value is inert. The real settle time comes from the SX126x driver's
-		 * own reset (5 ms NRESET pulse + 5 ms wait + BUSY poll) before any
-		 * SPI traffic, at LORA_INIT_PRIORITY 90 against this rail's 75.
-		 * Anything put behind this rail that does NOT reset-then-wait needs
-		 * zephyr,deferred-init instead; see meshtracker_x1's i2c0. */
-		startup-delay-us = <10000>;
 	};
 
 	/* ---- Battery ADC ---- */
