@@ -70,11 +70,28 @@
 	status = "okay";
 };
 
-/* Patch LoRa radio: add pull-down on DIO1 and enable RX boosted mode.
- * DTS defines antenna-enable, tx-enable, dio2-tx-enable, and TCXO already. */
+/* KCT8103L CTX (GPIO5): ENABLED=HIGH=TX/LNA-bypass, DISABLED=LOW=LNA active.
+ * ZephyrBoard controls CTX via this nodelabel (radio.fem.rxgain), inverted
+ * relative to the CSD-style lora_fem_en used on heltec_t096/rak3401_1watt.
+ * tx-enable-gpios removed from the SX1262 node below to free GPIO5 from the
+ * native radio driver, which otherwise force-enables it on every RX/TX
+ * cycle regardless of the RX preference. */
+/ {
+	lora_fem_ctx: lora-fem-ctx {
+		compatible = "regulator-fixed";
+		regulator-name = "lora-fem-ctx";
+		enable-gpios = <&gpio0 5 GPIO_ACTIVE_HIGH>;
+		regulator-boot-on;
+	};
+};
+
+/* Patch LoRa radio: add pull-down on DIO1, enable RX boosted mode, and free
+ * CTX (GPIO5) for the lora_fem_ctx node above. DTS defines antenna-enable,
+ * tx-enable, dio2-tx-enable, and TCXO already. */
 &lora0 {
 	dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 	rx-boosted;
+	/delete-property/ tx-enable-gpios;
 };
 
 /* I2C sensors — auto-detected at runtime */
