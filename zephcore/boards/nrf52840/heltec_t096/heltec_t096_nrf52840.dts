@@ -121,6 +121,22 @@
 		startup-delay-us = <1000>;
 	};
 
+	/* KCT8103L PA_CSD (P0.12): active-HIGH FEM/LNA enable, controlled by
+	 * ZephyrBoard for radio.fem.rxgain (regulator-fixed, no regulator-boot-on
+	 * — the driver's own SX126x reset sequence covers the settle time, same
+	 * as this rail's vfem_enable above already documents). Separate from
+	 * vfem_enable (P0.30), which just powers the FEM rail and stays always
+	 * on; this is the gain-control pin. Distinct from antenna-enable-gpios
+	 * previously used here: that native SX126x driver property force-enables
+	 * the pin on every RX/TX cycle, giving no room for an RX-only preference.
+	 * PA_CTX (P1.09, tx-enable-gpios) and PA_CPS (dio2-tx-enable) on the lora0
+	 * node below are unrelated TX/RX switching, left untouched. */
+	lora_fem_en: lora-fem-en {
+		compatible = "regulator-fixed";
+		regulator-name = "lora-fem-en";
+		enable-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>;
+	};
+
 	/* Schematic net ADC_Ctrl: P1.15 enables the VBAT divider. */
 	vbat_enable: vbat-enable {
 		compatible = "regulator-fixed";
@@ -314,14 +330,16 @@
 
 		/*
 		 * KCT8103L PA/FEM control:
-		 * - PA_CSD P0.12 -> CSD, active-HIGH FEM enable.
+		 * - PA_CSD P0.12 -> CSD, active-HIGH FEM enable. Exposed as the
+		 *   lora_fem_en regulator node above (radio.fem.rxgain) instead of
+		 *   antenna-enable-gpios here, so ZephyrBoard can gate it in RX
+		 *   instead of the native driver forcing it on every RX/TX cycle.
 		 * - PA_CTX P1.09 -> CTX, HIGH for TX in the existing ZephCore
 		 *   SX1262 tx-enable model. MeshCore uses the same net for
 		 *   TX/LNA-bypass control.
 		 * - PA_CPS is not an MCU GPIO on T096; it is the SX1262 DIO2
 		 *   net into the KCT8103L CPS pin, so use dio2-tx-enable.
 		 */
-		antenna-enable-gpios = <&gpio0 12 GPIO_ACTIVE_HIGH>; /* PA_CSD */
 		tx-enable-gpios = <&gpio1 9 GPIO_ACTIVE_HIGH>;       /* PA_CTX */
 		dio2-tx-enable;                                      /* PA_CPS */
 
