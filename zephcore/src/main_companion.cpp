@@ -732,6 +732,10 @@ public:
 		return lora_radio.setRxBoost(enable);
 	}
 
+	void setFemRxGain(bool enable) override {
+		zephyr_board.setFemLnaEnabled(enable);
+	}
+
 	bool configSideDetectors(const uint8_t* sfs, uint8_t num) override {
 		return lora_radio.configSideDetectors(sfs, num);
 	}
@@ -1573,6 +1577,7 @@ int main(void)
 
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(companion_mesh.prefs.rx_boost != 0);
+	zephyr_board.setFemLnaEnabled(companion_mesh.prefs.fem_rxgain != 0);
 	lora_radio.enableRxDutyCycle(companion_mesh.prefs.rx_duty_cycle != 0);
 	lora_radio.setCadParams(companion_mesh.prefs.cad_auto != 0,
 				companion_mesh.prefs.cad_offset,
