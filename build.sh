@@ -280,7 +280,9 @@ if [[ $1 == "esp32" ]]; then
             # (Heltec V3/CP2102, Wireless Tracker V1, C3/C6, classic ESP32) are
             # unaffected — they use BLE or serial_companion instead.
             usb_conf=""
-            if [[ $board =~ esp32s3 && $board =~ (heltec_wifi_lora32_v4|heltec_wireless_tracker_v2|xiao_esp32s3|lilygo_t3s3|station_g2) ]]; then
+            board_stem="${board%%/*}"
+            overlay="zephcore/boards/esp32/${board_stem}/board.overlay"
+            if [[ $board =~ esp32s3 && -f "$overlay" ]] && grep -q 'esp32s3_usb_otg\.dtsi' "$overlay"; then
                 usb_conf="boards/common/esp32s3_usb.conf"
             fi
 
