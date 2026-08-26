@@ -22,6 +22,7 @@
 #include "led_gate.h"               /* shared with the LoRa TX LED */
 
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/kernel.h>
 #include <string.h>
@@ -95,21 +96,63 @@ void ui_play_startup_chime(void)
  * only when msg count > 0, giving a visual unread-message reminder.
  */
 
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+/* PWM path (brightness-capable, shared with the LoRa TX LED via the same
+ * DT_ALIAS(heartbeat_pwm_led)/DT_ALIAS(lora_tx_pwm_led) pair when a board's
+ * heartbeat and TX indicator are the same physical LED, e.g. T096) takes
+ * priority over the plain digital led0/led1 fallback. Brightness comes from
+ * helpers/led_gate.h — one dimmer for every event on this LED, not a
+ * heartbeat-only one. */
+#if DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led))
+static const struct pwm_dt_spec s_heartbeat_led_pwm =
+	PWM_DT_SPEC_GET(DT_ALIAS(heartbeat_pwm_led));
+#define HAS_HEARTBEAT_LED_PWM 1
+#define HAS_HEARTBEAT_LED 0
+#elif DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
 static const struct gpio_dt_spec s_heartbeat_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led0), gpios);
+#define HAS_HEARTBEAT_LED_PWM 0
 #define HAS_HEARTBEAT_LED 1
 #elif DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios)
 static const struct gpio_dt_spec s_heartbeat_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
+#define HAS_HEARTBEAT_LED_PWM 0
 #define HAS_HEARTBEAT_LED 1
 #else
+#define HAS_HEARTBEAT_LED_PWM 0
 #define HAS_HEARTBEAT_LED 0
+#endif
+
+/* "Some heartbeat LED exists, PWM or plain GPIO" — used where the on/off
+ * write differs but everything else (work queue plumbing, readiness check)
+ * is identical either way. */
+#define HAS_ANY_HEARTBEAT_LED (HAS_HEARTBEAT_LED_PWM || HAS_HEARTBEAT_LED)
+
+#if HAS_HEARTBEAT_LED_PWM
+static inline bool heartbeat_led_is_ready(void)
+{
+	return pwm_is_ready_dt(&s_heartbeat_led_pwm);
+}
+static inline void heartbeat_led_write(bool on)
+{
+	uint32_t pulse = on ? (uint32_t)((uint64_t)s_heartbeat_led_pwm.period *
+					  zephcore_led_brightness_pct() / 100)
+			     : 0;
+	pwm_set_pulse_dt(&s_heartbeat_led_pwm, pulse);
+}
+#elif HAS_HEARTBEAT_LED
+static inline bool heartbeat_led_is_ready(void)
+{
+	return gpio_is_ready_dt(&s_heartbeat_led);
+}
+static inline void heartbeat_led_write(bool on)
+{
+	gpio_pin_set_dt(&s_heartbeat_led, on ? 1 : 0);
+}
 #endif
 
 /* Second LED for unread-message indication. Repeaters use led1 for LoRa TX
  * (via lora-tx-led alias) — no offline queue, so this is companion-only. */
-#if HAS_HEARTBEAT_LED && DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && \
+#if HAS_ANY_HEARTBEAT_LED && DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && \
     DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios) && !defined(ZEPHCORE_REPEATER)
 static const struct gpio_dt_spec s_msg_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(led1), gpios);
@@ -122,7 +165,7 @@ static const struct gpio_dt_spec s_msg_led =
 #define LED_ON_MS         20   /* Normal pulse width */
 #define LED_ON_MSG_MS    200   /* Pulse width when unread messages */
 
-#if HAS_HEARTBEAT_LED
+#if HAS_ANY_HEARTBEAT_LED
 static struct k_work_delayable s_led_on_work;
 static struct k_work_delayable s_led_off_work;
 
@@ -167,9 +210,11 @@ static void led_off_work_handler(struct k_work *work)
 	ARG_UNUSED(work);
 	/* Yield the pin if radio activity is holding it (shared-pin boards only;
 	 * everywhere else this always reads false). Clearing here would blank the
-	 * LED in the middle of a transmit. */
+	 * LED in the middle of a transmit. Routed through heartbeat_led_write()
+	 * rather than a direct gpio_pin_set_dt(), since s_heartbeat_led doesn't
+	 * even exist on PWM-capable boards (see HAS_HEARTBEAT_LED_PWM above). */
 	if (!zephcore_led_radio_holds_pin()) {
-		gpio_pin_set_dt(&s_heartbeat_led, 0);
+		heartbeat_led_write(false);
 	}
 #if HAS_MSG_LED
 	gpio_pin_set_dt(&s_msg_led, 0);
@@ -187,7 +232,7 @@ static void led_on_work_handler(struct k_work *work)
 
 	if (!zephcore_leds_disabled()) {
 		if (hb_should_light(mc) && !zephcore_led_radio_holds_pin()) {
-			gpio_pin_set_dt(&s_heartbeat_led, 1);
+			heartbeat_led_write(true);
 		}
 #if HAS_MSG_LED
 		/* The unread LED is a separate pin, so it is governed by the mode
@@ -201,7 +246,7 @@ static void led_on_work_handler(struct k_work *work)
 	}
 	k_work_reschedule(&s_led_off_work, K_MSEC(on_ms));
 }
-#endif /* HAS_HEARTBEAT_LED */
+#endif /* HAS_ANY_HEARTBEAT_LED */
 
 /*
  * Weak: called after s_leds_disabled changes so each UI variant can sync its
@@ -212,9 +257,13 @@ __attribute__((weak)) void ui_led_on_disabled_changed(bool disabled) { ARG_UNUSE
 
 void ui_led_heartbeat_init(void)
 {
+#if HAS_ANY_HEARTBEAT_LED
+	if (heartbeat_led_is_ready()) {
 #if HAS_HEARTBEAT_LED
-	if (gpio_is_ready_dt(&s_heartbeat_led)) {
 		gpio_pin_configure_dt(&s_heartbeat_led, GPIO_OUTPUT_INACTIVE);
+#else
+		heartbeat_led_write(false);
+#endif
 		k_work_init_delayable(&s_led_on_work, led_on_work_handler);
 		k_work_init_delayable(&s_led_off_work, led_off_work_handler);
 		k_work_reschedule(&s_led_on_work, K_NO_WAIT);
@@ -231,15 +280,15 @@ void ui_led_heartbeat_init(void)
 
 void ui_set_heartbeat_led(bool enabled)
 {
-#if HAS_HEARTBEAT_LED
+#if HAS_ANY_HEARTBEAT_LED
 	if (enabled && !zephcore_leds_disabled()) {
-		if (gpio_is_ready_dt(&s_heartbeat_led)) {
+		if (heartbeat_led_is_ready()) {
 			k_work_reschedule(&s_led_on_work, K_NO_WAIT);
 		}
 	} else {
 		k_work_cancel_delayable(&s_led_on_work);
 		k_work_cancel_delayable(&s_led_off_work);
-		gpio_pin_set_dt(&s_heartbeat_led, 0);
+		heartbeat_led_write(false);
 #if HAS_MSG_LED
 		gpio_pin_set_dt(&s_msg_led, 0);
 #endif
@@ -257,18 +306,18 @@ void ui_set_heartbeat_led(bool enabled)
  */
 void zephcore_leds_ui_sync(bool disabled)
 {
-#if HAS_HEARTBEAT_LED
+#if HAS_ANY_HEARTBEAT_LED
 	if (disabled) {
 		k_work_cancel_delayable(&s_led_on_work);
 		k_work_cancel_delayable(&s_led_off_work);
-		gpio_pin_set_dt(&s_heartbeat_led, 0);
+		heartbeat_led_write(false);
 #if HAS_MSG_LED
 		gpio_pin_set_dt(&s_msg_led, 0);
 #endif
 	} else if (!k_work_delayable_is_pending(&s_led_on_work) &&
 		   !k_work_delayable_is_pending(&s_led_off_work)) {
 		/* Restart heartbeat only if it was stopped (avoids spurious pulse) */
-		if (gpio_is_ready_dt(&s_heartbeat_led)) {
+		if (heartbeat_led_is_ready()) {
 			k_work_reschedule(&s_led_on_work, K_NO_WAIT);
 		}
 	}
@@ -292,11 +341,11 @@ void ui_set_leds_disabled(bool disabled)
  * No-op when LEDs are disabled or hardware is absent. */
 void ui_led_flash_msg(void)
 {
-#if HAS_HEARTBEAT_LED
-	if (!zephcore_leds_disabled() && gpio_is_ready_dt(&s_heartbeat_led)) {
+#if HAS_ANY_HEARTBEAT_LED
+	if (!zephcore_leds_disabled() && heartbeat_led_is_ready()) {
 		k_work_cancel_delayable(&s_led_on_work);
 		k_work_cancel_delayable(&s_led_off_work);
-		gpio_pin_set_dt(&s_heartbeat_led, 1);
+		heartbeat_led_write(true);
 		k_work_reschedule(&s_led_off_work, K_MSEC(LED_ON_MSG_MS));
 	}
 #endif
@@ -308,12 +357,12 @@ void ui_led_flash_msg(void)
  * even at power-off. */
 void ui_led_flash_shutdown(void)
 {
-#if HAS_HEARTBEAT_LED
-	if (!zephcore_leds_disabled() && gpio_is_ready_dt(&s_heartbeat_led)) {
+#if HAS_ANY_HEARTBEAT_LED
+	if (!zephcore_leds_disabled() && heartbeat_led_is_ready()) {
 		for (int i = 0; i < 3; i++) {
-			gpio_pin_set_dt(&s_heartbeat_led, 1);
+			heartbeat_led_write(true);
 			k_sleep(K_MSEC(100));
-			gpio_pin_set_dt(&s_heartbeat_led, 0);
+			heartbeat_led_write(false);
 			if (i < 2) {
 				k_sleep(K_MSEC(100));
 			}

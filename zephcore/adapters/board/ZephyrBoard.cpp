@@ -10,6 +10,7 @@
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -97,14 +98,34 @@
 #endif
 #endif
 
-/* LoRa radio activity LED (optional — defined per-board via DT alias).  Still
- * called tx_led after "set leds.radio" gave it an RX mode, because the DT alias
- * it comes from is named lora-tx-led on every board that has one. */
-#if DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
+/* LoRa radio activity LED (optional — defined per-board via DT alias). Still
+ * called tx_led after "set leds.radio" gave it an RX mode, because the DT
+ * alias it comes from is named lora-tx-led on every board that has one.
+ *
+ * PWM path (DT_ALIAS(lora_tx_pwm_led)) takes priority when it exists — used
+ * on boards where the TX LED is the same physical LED as the heartbeat
+ * (e.g. T096, see helpers/ui/ui_common.c), so both share the one brightness
+ * in helpers/led_gate.h instead of the plain GPIO path fighting over the
+ * pin. */
+#if DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led))
+static const struct pwm_dt_spec tx_led_pwm = PWM_DT_SPEC_GET(DT_ALIAS(lora_tx_pwm_led));
+#define HAS_TX_LED_PWM 1
+#define HAS_TX_LED 0
+static int tx_led_init(void)
+{
+	if (device_is_ready(tx_led_pwm.dev)) {
+		pwm_set_pulse_dt(&tx_led_pwm, 0);  /* start dark, same as GPIO_OUTPUT_INACTIVE */
+	}
+	return 0;
+}
+SYS_INIT(tx_led_init, APPLICATION, 90);
+#elif DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
 static const struct gpio_dt_spec tx_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(lora_tx_led), gpios);
+#define HAS_TX_LED_PWM 0
 #define HAS_TX_LED 1
 #else
+#define HAS_TX_LED_PWM 0
 #define HAS_TX_LED 0
 #endif
 
@@ -359,12 +380,24 @@ const char *ZephyrBoard::getManufacturerName() const
 
 void ZephyrBoard::onBeforeTransmit()
 {
-#if HAS_TX_LED
 	/* Honour the LED master gate ("set leds off") and then the activity mode
 	 * ("set leds.radio"). On a headless repeater this is the only LED that ever
 	 * lights, so both have to be checked here and not just in the UI layer.
 	 * onAfterTransmit() still clears the pin unconditionally, so a gate or mode
 	 * flipped mid-transmit can't strand it lit. */
+#if HAS_TX_LED_PWM
+	/* PWM-shared boards (T096) don't yet have the RX-pulse/pin-hold interlock
+	 * below -- that machinery (s_tx_lit/s_rx_pulse_off) is declared only under
+	 * HAS_TX_LED. Mode-gated brightness write only for now; see the rebase
+	 * notes for why this is a deliberate gap, not an oversight. */
+	uint8_t mode = zephcore_leds_radio_mode();
+	if (!zephcore_leds_disabled() &&
+	    (mode == LEDS_RADIO_TX || mode == LEDS_RADIO_ALL)) {
+		uint32_t pulse = (uint32_t)((uint64_t)tx_led_pwm.period *
+					     zephcore_led_brightness_pct() / 100);
+		pwm_set_pulse_dt(&tx_led_pwm, pulse);
+	}
+#elif HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (!zephcore_leds_disabled() &&
 	    (mode == LEDS_RADIO_TX || mode == LEDS_RADIO_ALL)) {
@@ -382,7 +415,9 @@ void ZephyrBoard::onBeforeTransmit()
 
 void ZephyrBoard::onAfterTransmit()
 {
-#if HAS_TX_LED
+#if HAS_TX_LED_PWM
+	pwm_set_pulse_dt(&tx_led_pwm, 0);
+#elif HAS_TX_LED
 	atomic_set(&s_tx_lit, 0);
 	gpio_pin_set_dt(&tx_led, 0);
 #if ZEPHCORE_LED_PIN_SHARED

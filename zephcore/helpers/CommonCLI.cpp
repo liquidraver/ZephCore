@@ -434,6 +434,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                      CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
         } else if (memcmp(config, "leds", 4) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
+        } else if (memcmp(config, "led", 3) == 0) {
+            /* Shared heartbeat/TX brightness, RAM-only — see led_gate.h.
+             * Checked after "leds" above so "leds" itself never falls
+             * through to this shorter prefix. */
+            snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)zephcore_led_brightness_pct());
 #ifndef ZEPHCORE_REPEATER
         } else if (memcmp(config, "buzzer", 6) == 0) {
             uint8_t mode = zephcore_buzzer_mode_from_prefs(_prefs->buzzer_quiet);
@@ -753,6 +758,17 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 zephcore_leds_set_disabled(_prefs->leds_disabled != 0);
                 savePrefs();
                 strcpy(reply, "OK");
+            }
+        } else if (memcmp(config, "led ", 4) == 0) {
+            /* Brightness only, on/off stays on "set leds" above. RAM-only —
+             * no savePrefs() call here on purpose, see led_gate.h. Checked
+             * after "leds " so that command never falls through here. */
+            int pct = atoi(&config[4]);
+            if (pct < 0 || pct > 100) {
+                strcpy(reply, "Error: must be 0-100");
+            } else {
+                zephcore_led_set_brightness_pct((uint8_t)pct);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - led=%d%%", pct);
             }
 #ifndef ZEPHCORE_REPEATER
         } else if (memcmp(config, "buzzer ", 7) == 0) {
