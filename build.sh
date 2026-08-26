@@ -272,8 +272,25 @@ if [[ $1 == "esp32" ]]; then
 
         if [[ $2 == "companions" ]]; then
             # build ESP32 companions (production is the default)
+            #
+            # ESP32-S3 boards that include esp32s3_usb_otg.dtsi in their overlay
+            # get the USB CDC-ACM companion transport enabled via esp32s3_usb.conf.
+            # This gives the full companion protocol over native USB (Web Serial /
+            # app.meshcore.io) in addition to BLE.  Boards without the OTG DTSI
+            # (Heltec V3/CP2102, Wireless Tracker V1, C3/C6, classic ESP32) are
+            # unaffected — they use BLE or serial_companion instead.
+            usb_conf=""
+            if [[ $board =~ esp32s3 && $board =~ (heltec_wifi_lora32_v4|heltec_wireless_tracker_v2|xiao_esp32s3|lilygo_t3s3|station_g2) ]]; then
+                usb_conf="boards/common/esp32s3_usb.conf"
+            fi
+
             echo "Now building $board companion"
-            west build -b "$board" zephcore --pristine --sysbuild
+            if [[ -n "$usb_conf" ]]; then
+                echo "  USB CDC companion: enabled ($usb_conf)"
+                west build -b "$board" zephcore --pristine --sysbuild -- -DEXTRA_CONF_FILE="$usb_conf"
+            else
+                west build -b "$board" zephcore --pristine --sysbuild
+            fi
             FLASH_SIZE=$(
                 python3 -c '
 import re
