@@ -422,8 +422,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         } else if (memcmp(config, "int.thresh", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->interference_threshold);
         /* MUST stay above the "leds" branch: that one compares only the first
-         * four characters, so "leds.radio" and "leds.hb" both match it and
-         * would otherwise return the master switch instead. */
+         * four characters, so "leds.radio"/"leds.hb"/"leds.brightness" all
+         * match it and would otherwise return the master switch instead. */
         } else if (memcmp(config, "leds.radio", 10) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %s%s",
                      cliModeName(LEDS_RADIO_NAMES, 4, _prefs->leds_radio_mode),
@@ -432,17 +432,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
             snprintf(reply, CLI_REPLY_SIZE, "> %s%s",
                      cliModeName(LEDS_HB_NAMES, 4, _prefs->leds_hb_mode),
                      CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
+        } else if (memcmp(config, "leds.brightness", 15) == 0) {
+            /* Separate from "leds" on purpose: keeps the on/off switch a
+             * pure word command and the dimmer a pure number command,
+             * instead of one command parsing both — see led_gate.h. */
+            snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)zephcore_led_brightness_pct());
         } else if (memcmp(config, "leds", 4) == 0) {
-            /* Brightness (RAM-only, see led_gate.h) reported alongside the
-             * persisted on/off gate, same "state N%" convention as led.tx/
-             * led.hb on the RAK3401 branch. */
-            if (_prefs->leds_disabled) {
-                snprintf(reply, CLI_REPLY_SIZE, "> off (%u%%)",
-                         (unsigned)zephcore_led_brightness_pct());
-            } else {
-                snprintf(reply, CLI_REPLY_SIZE, "> on %u%%",
-                         (unsigned)zephcore_led_brightness_pct());
-            }
+            snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
 #ifndef ZEPHCORE_REPEATER
         } else if (memcmp(config, "buzzer", 6) == 0) {
             uint8_t mode = zephcore_buzzer_mode_from_prefs(_prefs->buzzer_quiet);
@@ -750,18 +746,33 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 snprintf(reply, CLI_REPLY_SIZE, "OK%s",
                          CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
             }
+        } else if (memcmp(config, "leds.brightness ", 16) == 0) {
+            /* Separate from "leds" on purpose: keeps the on/off switch a pure
+             * word command and the dimmer a pure number command, instead of
+             * one command parsing both. RAM-only, see led_gate.h — no
+             * savePrefs() call here. Checked before "leds " below so this
+             * longer, more specific prefix is never shadowed by it. */
+            const char *val = &config[16];
+            char *endptr = (char *)val;
+            long pct = strtol(val, &endptr, 10);
+            bool trailing_pct = (*endptr == '%' && *(endptr + 1) == '\0');
+            if (endptr == val || (*endptr != '\0' && !trailing_pct) ||
+                pct < 0 || pct > 100) {
+                strcpy(reply, "Error: must be 0-100");
+            } else {
+                zephcore_led_set_brightness_pct((uint8_t)pct);
+                snprintf(reply, CLI_REPLY_SIZE, "OK - leds.brightness=%ld%%", pct);
+            }
         } else if (memcmp(config, "leds ", 5) == 0) {
             /* Master switch (persisted) for every LED on the node: heartbeat,
              * unread-message and LoRa TX activity, plus the message and
              * shutdown flashes. Not the display backlight — that has its own
-             * UI brightness setting.
-             *
-             * Same value orthogonal to a shared brightness (RAM-only, see
-             * led_gate.h) as led.tx/led.hb on the RAK3401 branch: "on"/"off"
-             * words only, no "1"/"0" aliases (those would shadow the 1% and
-             * 0% brightness values — the exact ambiguity already found and
-             * removed from led.tx/led.hb on 2026-08-16). A bare 0-100 number
-             * sets the brightness alone and never touches the switch. */
+             * UI brightness setting. "on"/"off" words only, no "1"/"0"
+             * aliases (removed from led.tx/led.hb on 2026-08-16 for the same
+             * reason: they used to collide with the 1% and 0% brightness
+             * values on that branch — moot here since brightness now lives
+             * under "leds.brightness" instead, but kept out anyway for
+             * consistency and to reject typos cleanly). */
             const char* val = &config[5];
             if (memcmp(val, "on", 2) == 0 && val[2] == '\0') {
                 _prefs->leds_disabled = 0;
@@ -774,16 +785,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 savePrefs();
                 strcpy(reply, "OK");
             } else {
-                char *endptr = (char *)val;
-                long pct = strtol(val, &endptr, 10);
-                bool trailing_pct = (*endptr == '%' && *(endptr + 1) == '\0');
-                if (endptr == val || (*endptr != '\0' && !trailing_pct) ||
-                    pct < 0 || pct > 100) {
-                    strcpy(reply, "Error: must be on, off, or 0-100");
-                } else {
-                    zephcore_led_set_brightness_pct((uint8_t)pct);
-                    snprintf(reply, CLI_REPLY_SIZE, "OK - leds=%ld%%", pct);
-                }
+                strcpy(reply, "Error: must be on or off");
             }
 #ifndef ZEPHCORE_REPEATER
         } else if (memcmp(config, "buzzer ", 7) == 0) {
