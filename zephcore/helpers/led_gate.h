@@ -36,13 +36,13 @@ void zephcore_leds_set_disabled(bool disabled);
 
 /* Shared PWM brightness (0-100) for boards whose heartbeat/TX LED is
  * PWM-capable (DT_ALIAS(heartbeat_pwm_led) / DT_ALIAS(lora_tx_pwm_led)).
- * Deliberately RAM-only, not persisted: resets to
- * ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT on every reboot regardless of any
- * "set led <pct>" done during a previous session. Independent of the on/off
- * gate above: brightness only matters while the gate is open. No-op on
- * boards without a PWM-capable LED (the getter still returns the compiled
- * default, simply unused). */
-#define ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT 10
+ * Persisted via NodePrefs (prefs.led_brightness); ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT
+ * only seeds the RAM cache on a fresh node with no saved value yet (100%,
+ * matching the brightness every PWM LED ran at before this setting existed).
+ * Independent of the on/off gate above: brightness only matters while the
+ * gate is open. No-op on boards without a PWM-capable LED (the getter still
+ * returns the compiled default, simply unused). */
+#define ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT 100
 
 uint8_t zephcore_led_brightness_pct(void);
 void zephcore_led_set_brightness_pct(uint8_t pct);
