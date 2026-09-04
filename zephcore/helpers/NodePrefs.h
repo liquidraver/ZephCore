@@ -416,7 +416,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->leds_disabled = 0;         // LEDs on
 	prefs->leds_radio_mode = LEDS_RADIO_TX;  // activity LED on transmit, as before
 	prefs->leds_hb_mode = LEDS_HB_ALL;       // heartbeat + unread, as before
-	prefs->led_brightness = ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT;  // 10%, new node
+	prefs->led_brightness = ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT;  // 100%, new node
 	prefs->powersaving_enabled = POWERSAVING_DEFAULT;
 	prefs->powersaving_set = 1;
 	prefs->gps_enabled = 0;
