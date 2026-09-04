@@ -95,6 +95,7 @@ struct NodePrefs {
 	uint8_t leds_disabled;          // 1 = all LEDs off (heartbeat, unread, LoRa TX)
 	uint8_t leds_radio_mode;        // LEDS_RADIO_* — activity LED source (0 = TX, as before)
 	uint8_t leds_hb_mode;           // LEDS_HB_* — heartbeat LED behaviour (0 = all, as before)
+	uint8_t led_brightness;         // 0-100, PWM-capable boards only; ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT on a new node
 	// Power saving
 	uint8_t powersaving_enabled;
 	// GPS settings
@@ -284,6 +285,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
 	p->leds_radio_mode     = saneEnum(p->leds_radio_mode, LEDS_RADIO_MAX);
 	p->leds_hb_mode        = saneEnum(p->leds_hb_mode, LEDS_HB_MAX);
+	p->led_brightness      = clampPref<uint8_t>(p->led_brightness, 0, 100);
 	p->meshtimesync        = saneBool<uint8_t>(p->meshtimesync, 0);
 	/* Fallback must be the initNodePrefs() default (ON).  It was 0, so a byte
 	 * that was neither 0 nor 1 silently switched adaptive CAD off instead of
@@ -386,6 +388,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->leds_disabled = 0;         // LEDs on
 	prefs->leds_radio_mode = LEDS_RADIO_TX;  // activity LED on transmit, as before
 	prefs->leds_hb_mode = LEDS_HB_ALL;       // heartbeat + unread, as before
+	prefs->led_brightness = ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT;  // 10%, new node
 	prefs->powersaving_enabled = 0;
 	prefs->gps_enabled = 0;
 	prefs->gps_interval = 300;        // 5 minutes

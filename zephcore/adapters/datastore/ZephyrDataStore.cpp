@@ -907,6 +907,14 @@ void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 	if (off < len) {
 		prefs.leds_hb_mode = buf[off++];
 	}
+	/* Offset 174: led_brightness (ZephCore extension, since 1.17.4). Absent
+	 * in pre-existing files -> stays at the initNodePrefs() default of
+	 * ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%), same value a fresh node
+	 * already showed before this field was persisted. Range re-checked by
+	 * sanitizeNodePrefs() below. */
+	if (off < len) {
+		prefs.led_brightness = buf[off++];
+	}
 
 	sanitizeNodePrefs(&prefs);
 }
@@ -1022,7 +1030,9 @@ void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
 	/* Offset 172-173: leds_radio_mode / leds_hb_mode (ZephCore extension). */
 	buf[off++] = prefs.leds_radio_mode;
 	buf[off++] = prefs.leds_hb_mode;
-	/* Total: 174 bytes */
+	/* Offset 174: led_brightness (ZephCore extension, since 1.17.4). */
+	buf[off++] = prefs.led_brightness;
+	/* Total: 175 bytes */
 
 	bool ok = atomicReplaceFile(PREFS_FILE, buf, off);
 	LOG_DBG("savePrefs: wrote %s, ok=%d (%d bytes), name='%.16s'",

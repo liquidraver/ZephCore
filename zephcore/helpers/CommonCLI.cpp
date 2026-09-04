@@ -435,8 +435,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         } else if (memcmp(config, "leds.brightness", 15) == 0) {
             /* Separate from "leds" on purpose: keeps the on/off switch a
              * pure word command and the dimmer a pure number command,
-             * instead of one command parsing both — see led_gate.h. */
-            snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)zephcore_led_brightness_pct());
+             * instead of one command parsing both — see led_gate.h. Read
+             * from _prefs, same as leds.radio/leds.hb above, not from the
+             * RAM getter directly -- the two are always in sync, the "set"
+             * handler below writes both together. */
+            snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)_prefs->led_brightness);
         } else if (memcmp(config, "leds", 4) == 0) {
             snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
 #ifndef ZEPHCORE_REPEATER
@@ -749,8 +752,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
         } else if (memcmp(config, "leds.brightness ", 16) == 0) {
             /* Separate from "leds" on purpose: keeps the on/off switch a pure
              * word command and the dimmer a pure number command, instead of
-             * one command parsing both. RAM-only, see led_gate.h — no
-             * savePrefs() call here. Checked before "leds " below so this
+             * one command parsing both. Persisted (since 1.17.4): a fresh
+             * node still starts at ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (the
+             * append-only prefs format leaves this byte at the
+             * initNodePrefs() default on any file that predates this field),
+             * but once set it survives reboots and firmware updates like
+             * leds.radio/leds.hb above. Checked before "leds " below so this
              * longer, more specific prefix is never shadowed by it. */
             const char *val = &config[16];
             char *endptr = (char *)val;
@@ -760,7 +767,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
                 pct < 0 || pct > 100) {
                 strcpy(reply, "Error: must be 0-100");
             } else {
+                _prefs->led_brightness = (uint8_t)pct;
                 zephcore_led_set_brightness_pct((uint8_t)pct);
+                savePrefs();
                 snprintf(reply, CLI_REPLY_SIZE, "OK - leds.brightness=%ld%%", pct);
             }
         } else if (memcmp(config, "leds ", 5) == 0) {
