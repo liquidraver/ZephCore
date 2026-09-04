@@ -111,14 +111,8 @@
 static const struct pwm_dt_spec tx_led_pwm = PWM_DT_SPEC_GET(DT_ALIAS(lora_tx_pwm_led));
 #define HAS_TX_LED_PWM 1
 #define HAS_TX_LED 0
-static int tx_led_init(void)
-{
-	if (device_is_ready(tx_led_pwm.dev)) {
-		pwm_set_pulse_dt(&tx_led_pwm, 0);  /* start dark, same as GPIO_OUTPUT_INACTIVE */
-	}
-	return 0;
-}
-SYS_INIT(tx_led_init, APPLICATION, 90);
+/* Init deferred to the combined tx_led_init() below (with the GPIO path),
+ * since both now also need to arm s_rx_pulse_off -- see that block. */
 #elif DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
 static const struct gpio_dt_spec tx_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(lora_tx_led), gpios);
@@ -130,7 +124,8 @@ static const struct gpio_dt_spec tx_led =
 #endif
 
 /* True when this board wires the activity LED to the same pin as the heartbeat
- * (8 of the supported boards do).  Only those pay for the arbitration hold in
+ * (8 of the supported boards do, counting only the plain-GPIO ones -- see the
+ * PWM branch below for the rest).  Only those pay for the arbitration hold in
  * led_gate.c — everywhere else the two LEDs are independent and the calls
  * compile out.  led1 is checked as well because ui_common.c falls back to it
  * when a board has no led0. */
@@ -141,8 +136,34 @@ static const struct gpio_dt_spec tx_led =
       DT_NODE_EXISTS(DT_ALIAS(led1)) && \
       DT_SAME_NODE(DT_ALIAS(led1), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
+/* PWM equivalent: true when heartbeat and TX activity are aliased to the same
+ * PWM LED node (T096, Wireless Tracker V2). Not the case on every PWM board --
+ * RAK3401 has two independent PWM LEDs (green/blue), so this stays 0 there and
+ * the hold below is correctly never taken. */
+#elif HAS_TX_LED_PWM && DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led)) && \
+      DT_SAME_NODE(DT_ALIAS(heartbeat_pwm_led), DT_ALIAS(lora_tx_pwm_led))
+#define ZEPHCORE_LED_PIN_SHARED 1
 #else
 #define ZEPHCORE_LED_PIN_SHARED 0
+#endif
+
+/* PWM-or-GPIO write for the activity LED, mirroring heartbeat_led_write() in
+ * helpers/ui/ui_common.c -- same reasoning: the write itself must not care
+ * which path is compiled in, only the callers (onBeforeTransmit/
+ * onAfterTransmit/onPacketReceived/rx_pulse_off_handler below) do. */
+#if HAS_TX_LED_PWM
+static inline void tx_led_write(bool on)
+{
+	uint32_t pulse = on ? (uint32_t)((uint64_t)tx_led_pwm.period *
+					  zephcore_led_brightness_pct() / 100)
+			     : 0;
+	pwm_set_pulse_dt(&tx_led_pwm, pulse);
+}
+#elif HAS_TX_LED
+static inline void tx_led_write(bool on)
+{
+	gpio_pin_set_dt(&tx_led, on ? 1 : 0);
+}
 #endif
 
 #include <zephyr/logging/log.h>
@@ -194,8 +215,8 @@ static const struct device *const fuel_gauge_dev =
 #define HAS_FUEL_GAUGE 0
 #endif
 
-/* Initialize activity LED GPIO at boot */
-#if HAS_TX_LED
+/* Initialize activity LED (PWM or GPIO) at boot */
+#if HAS_TX_LED_PWM || HAS_TX_LED
 /* Width of the receive blink.  A transmit holds the LED for its whole airtime,
  * but a receive is a single edge — the packet is over by the time the driver
  * hands it up — so RX has to be a fixed one-shot.  30 ms is deliberately longer
@@ -208,7 +229,9 @@ static const struct device *const fuel_gauge_dev =
  * interlock that keeps an RX one-shot from clearing a pin that TX still owns:
  * the two are driven from different threads (radio TX path vs system work
  * queue), so without it a pulse landing mid-transmit would blank the LED for
- * the rest of the packet. */
+ * the rest of the packet. Applies equally to the PWM-shared boards (T096,
+ * Wireless Tracker V2): same race, same fix, just written through
+ * tx_led_write() instead of a bare gpio_pin_set_dt(). */
 static atomic_t s_tx_lit;
 static struct k_work_delayable s_rx_pulse_off;
 
@@ -220,7 +243,7 @@ static void rx_pulse_off_handler(struct k_work *work)
 	if (atomic_get(&s_tx_lit)) {
 		return;
 	}
-	gpio_pin_set_dt(&tx_led, 0);
+	tx_led_write(false);
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(false);
 #endif
@@ -228,9 +251,15 @@ static void rx_pulse_off_handler(struct k_work *work)
 
 static int tx_led_init(void)
 {
+#if HAS_TX_LED_PWM
+	if (device_is_ready(tx_led_pwm.dev)) {
+		pwm_set_pulse_dt(&tx_led_pwm, 0);  /* start dark, same as GPIO_OUTPUT_INACTIVE */
+	}
+#else
 	if (gpio_is_ready_dt(&tx_led)) {
 		gpio_pin_configure_dt(&tx_led, GPIO_OUTPUT_INACTIVE);
 	}
+#endif
 	k_work_init_delayable(&s_rx_pulse_off, rx_pulse_off_handler);
 	return 0;
 }
@@ -384,20 +413,10 @@ void ZephyrBoard::onBeforeTransmit()
 	 * ("set leds.radio"). On a headless repeater this is the only LED that ever
 	 * lights, so both have to be checked here and not just in the UI layer.
 	 * onAfterTransmit() still clears the pin unconditionally, so a gate or mode
-	 * flipped mid-transmit can't strand it lit. */
-#if HAS_TX_LED_PWM
-	/* PWM-shared boards (T096) don't yet have the RX-pulse/pin-hold interlock
-	 * below -- that machinery (s_tx_lit/s_rx_pulse_off) is declared only under
-	 * HAS_TX_LED. Mode-gated brightness write only for now; see the rebase
-	 * notes for why this is a deliberate gap, not an oversight. */
-	uint8_t mode = zephcore_leds_radio_mode();
-	if (!zephcore_leds_disabled() &&
-	    (mode == LEDS_RADIO_TX || mode == LEDS_RADIO_ALL)) {
-		uint32_t pulse = (uint32_t)((uint64_t)tx_led_pwm.period *
-					     zephcore_led_brightness_pct() / 100);
-		pwm_set_pulse_dt(&tx_led_pwm, pulse);
-	}
-#elif HAS_TX_LED
+	 * flipped mid-transmit can't strand it lit. Same interlock on PWM-shared
+	 * boards (T096, Wireless Tracker V2) as on plain-GPIO ones -- only the
+	 * final write (tx_led_write()) differs. */
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (!zephcore_leds_disabled() &&
 	    (mode == LEDS_RADIO_TX || mode == LEDS_RADIO_ALL)) {
@@ -408,18 +427,16 @@ void ZephyrBoard::onBeforeTransmit()
 #if ZEPHCORE_LED_PIN_SHARED
 		zephcore_led_radio_hold_pin(true);
 #endif
-		gpio_pin_set_dt(&tx_led, 1);
+		tx_led_write(true);
 	}
 #endif
 }
 
 void ZephyrBoard::onAfterTransmit()
 {
-#if HAS_TX_LED_PWM
-	pwm_set_pulse_dt(&tx_led_pwm, 0);
-#elif HAS_TX_LED
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	atomic_set(&s_tx_lit, 0);
-	gpio_pin_set_dt(&tx_led, 0);
+	tx_led_write(false);
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(false);
 #endif
@@ -428,7 +445,7 @@ void ZephyrBoard::onAfterTransmit()
 
 void ZephyrBoard::onPacketReceived()
 {
-#if HAS_TX_LED
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (zephcore_leds_disabled() ||
 	    (mode != LEDS_RADIO_RX && mode != LEDS_RADIO_ALL)) {
@@ -444,7 +461,7 @@ void ZephyrBoard::onPacketReceived()
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(true);
 #endif
-	gpio_pin_set_dt(&tx_led, 1);
+	tx_led_write(true);
 	/* Reschedule rather than schedule: back-to-back packets should extend the
 	 * blink, not have the first one's handler cut the second one short. */
 	k_work_reschedule(&s_rx_pulse_off, K_MSEC(RX_PULSE_MS));
