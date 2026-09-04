@@ -187,6 +187,11 @@ bool companionPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.take(&p.tz_offset, 1);
 	r.take(&p.leds_radio_mode, 1);
 	r.take(&p.leds_hb_mode, 1);
+	/* led_brightness (ZephCore extension, since 1.17.4). Absent in files
+	 * written before this field existed; the no-op EOF read leaves the
+	 * initNodePrefs() default ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%),
+	 * same value a fresh node already showed before this was persisted. */
+	r.take(&p.led_brightness, 1);
 	r.take(&p.wifi_enabled, 1);
 	r.take(p.wifi_ssid, sizeof(p.wifi_ssid));
 	r.take(p.wifi_pwd, sizeof(p.wifi_pwd));
@@ -355,6 +360,11 @@ void serverPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.get(&prefs.tz_offset, sizeof(prefs.tz_offset));
 	r.get(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	r.get(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+	/* led_brightness (ZephCore extension, since 1.17.4). Absent in files
+	 * written before this field existed; the no-op EOF read leaves the
+	 * initNodePrefs() default ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%),
+	 * same value a fresh node already showed before this was persisted. */
+	r.get(&prefs.led_brightness, sizeof(prefs.led_brightness));
 
 	/* Only the explicit "off" magic disables LEDs; a legacy AGC interval or an
 	 * unwritten byte both mean "on". */
