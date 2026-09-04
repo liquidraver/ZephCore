@@ -1,0 +1,2830 @@
+{
+  "description": "ZephCore is an independent, ground-up implementation of the MeshCore protocol on the Zephyr RTOS. It is wire-compatible with stock MeshCore and adds features such as an adaptive contention window, LoRa RX duty-cycling, and support for additional boards. Companion (BLE + USB), Repeater, and native-Linux builds are provided.",
+  "maker": {
+    "Ikoka": {
+      "name": "Ikoka"
+    },
+    "elecrow": {
+      "name": "Elecrow"
+    },
+    "femtofox": {
+      "name": "Femtofox"
+    },
+    "gat-iot": {
+      "name": "GAT-IoT"
+    },
+    "heltec": {
+      "name": "Heltec"
+    },
+    "lilygo": {
+      "name": "LilyGo"
+    },
+    "meshnology": {
+      "name": "Meshnology"
+    },
+    "minewsemi": {
+      "name": "MinewSemi"
+    },
+    "muziworks": {
+      "name": "muzi works"
+    },
+    "promicro": {
+      "name": "ProMicro"
+    },
+    "rak": {
+      "name": "RAK Wireless"
+    },
+    "seeed": {
+      "name": "Seeed Studio"
+    },
+    "uniteng": {
+      "name": "UnitEng"
+    }
+  },
+  "device": [
+    {
+      "maker": "rak",
+      "class": "zephcore",
+      "name": "RAK WisBlock / WisMesh (RAK 4631)",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak4631-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak4631-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak4631-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak4631-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak4631-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak4631-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak4631-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "rak",
+      "class": "zephcore",
+      "name": "RAK WisMesh 1W Booster (3401 + 13302)",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak3401_1watt-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak3401_1watt-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak3401_1watt-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak3401_1watt-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak3401_1watt-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak3401_1watt-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak3401_1watt-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Wio Tracker L1 Pro",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "wio_tracker_l1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "wio_tracker_l1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "wio_tracker_l1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "wio_tracker_l1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "wio_tracker_l1-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "wio_tracker_l1-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/wio_tracker_l1-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio SenseCAP T1000-E",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "t1000_e-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "t1000_e-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "t1000_e-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "t1000_e-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "t1000_e-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "t1000_e-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/t1000_e-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "elecrow",
+      "class": "zephcore",
+      "name": "Elecrow ThinkNode M1",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m1-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m1-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m1-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "elecrow",
+      "class": "zephcore",
+      "name": "Elecrow ThinkNode M3",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m3-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m3-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m3-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m3-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m3-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m3-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m3-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "elecrow",
+      "class": "zephcore",
+      "name": "Elecrow ThinkNode M6",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m6-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m6-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m6-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m6-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "thinknode_m6-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "thinknode_m6-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/thinknode_m6-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "rak",
+      "class": "zephcore",
+      "name": "RAK WisMesh Tag",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak_wismesh_tag-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak_wismesh_tag-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak_wismesh_tag-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak_wismesh_tag-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "rak_wismesh_tag-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "rak_wismesh_tag-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/rak_wismesh_tag-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "Ikoka",
+      "class": "zephcore",
+      "name": "Ikoka Nano",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "ikoka_nano_30dbm-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "ikoka_nano_30dbm-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "30 dBm",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "ikoka_nano_30dbm-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "ikoka_nano_30dbm-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "30 dBm",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "ikoka_nano_30dbm-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "ikoka_nano_30dbm-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ikoka_nano_30dbm-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "30 dBm",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio SenseCAP Solar",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "sensecap_solar-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "sensecap_solar-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "sensecap_solar-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "sensecap_solar-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "sensecap_solar-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "sensecap_solar-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/sensecap_solar-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao nRF52 WIO",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "xiao_nrf52840-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "xiao_nrf52840-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "xiao_nrf52840-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "xiao_nrf52840-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "xiao_nrf52840-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "xiao_nrf52840-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf52840-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "lilygo",
+      "class": "zephcore",
+      "name": "LilyGo T-Echo",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_techo-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_techo-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_techo-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_techo-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_techo-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_techo-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_techo-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "promicro",
+      "class": "zephcore",
+      "name": "ProMicro nrf52 (faketec)",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "promicro_sx1262-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "promicro_sx1262-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "promicro_sx1262-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "promicro_sx1262-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "promicro_sx1262-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "promicro_sx1262-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/promicro_sx1262-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec T114",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-companion-noscreen-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-noscreen-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-companion-noscreen-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-noscreen-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "No screen",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-companion-noscreen-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-noscreen-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-companion-noscreen-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-companion-noscreen-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "No screen",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t114-repeater-noscreen-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-repeater-noscreen-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t114-repeater-noscreen-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t114-repeater-noscreen-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "subTitle": "No screen",
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "gat-iot",
+      "class": "zephcore",
+      "name": "GAT-IoT GAT562 30s",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "gat562_30s-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "gat562_30s-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "gat562_30s-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "gat562_30s-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "gat562_30s-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "gat562_30s-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/gat562_30s-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "muziworks",
+      "class": "zephcore",
+      "name": "muzi works R1 Neo",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "muziworks_r1neo-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "muziworks_r1neo-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "muziworks_r1neo-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "muziworks_r1neo-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "muziworks_r1neo-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "muziworks_r1neo-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/muziworks_r1neo-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ]
+    },
+    {
+      "maker": "lilygo",
+      "class": "zephcore",
+      "name": "LilyGo T-Impulse Plus",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_timpulse_plus-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_timpulse_plus-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_timpulse_plus-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_timpulse_plus-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "lilygo_timpulse_plus-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "lilygo_timpulse_plus-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_timpulse_plus-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec Mesh Node T096",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t096-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t096-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t096-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t096-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "heltec_t096-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "heltec_t096-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_t096-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v6_formatter.zip"
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio SenseCAP MeshTracker X1",
+      "type": "nrf52",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "meshtracker_x1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "meshtracker_x1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "meshtracker_x1-companion-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-companion-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "meshtracker_x1-companion-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-companion-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash",
+                  "name": "meshtracker_x1-repeater-eef6a48.zip",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-repeater-eef6a48.zip",
+                  "title": "DFU package (install or update over USB)"
+                },
+                {
+                  "type": "download",
+                  "name": "meshtracker_x1-repeater-eef6a48.uf2",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1-repeater-eef6a48.uf2",
+                  "title": "UF2 -- drag-and-drop onto the bootloader drive"
+                }
+              ]
+            }
+          },
+          "erase": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/SoftDevice_v7_formatter.zip"
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshtracker_x1.jpg'>"
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao C3",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c3-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c3-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c3-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c3-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c3-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c3-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c3-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao S3 WIO",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32s3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32s3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32s3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "uniteng",
+      "class": "zephcore",
+      "name": "UnitEng Station G2",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "station_g2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "station_g2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "station_g2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "station_g2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "station_g2-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "station_g2-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/station_g2-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec v3",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec v4",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v4-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v4-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec Wireless Tracker",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec Wireless Tracker v2",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wireless_tracker_v2-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wireless_tracker_v2-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "lilygo",
+      "class": "zephcore",
+      "name": "LilyGo T3 S3 (SX126x)",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_t3s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_t3s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_t3s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_t3s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_t3s3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_t3s3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_t3s3-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "lilygo",
+      "class": "zephcore",
+      "name": "LilyGo T-Beam (SX1262)",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "ttgo_tbeam-esp32-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ttgo_tbeam-esp32-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "ttgo_tbeam-esp32-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ttgo_tbeam-esp32-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "ttgo_tbeam-esp32-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/ttgo_tbeam-esp32-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao ESP32-C6",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "xiao_esp32c6-esp32c6-hpcore-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_esp32c6-esp32c6-hpcore-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/xiao_esp32c6.svg'>"
+    },
+    {
+      "maker": "lilygo",
+      "class": "zephcore",
+      "name": "LilyGo T-Lora C6",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "lilygo_tlora_c6-esp32c6-hpcore-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lilygo_tlora_c6-esp32c6-hpcore-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lilygo_tlora_c6.svg'>"
+    },
+    {
+      "maker": "heltec",
+      "class": "zephcore",
+      "name": "Heltec v4.3",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "heltec_wifi_lora32_v43-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/heltec_wifi_lora32_v43-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/heltec_v4.svg'>"
+    },
+    {
+      "maker": "meshnology",
+      "class": "zephcore",
+      "name": "Meshnology W12",
+      "type": "esp32",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "meshnology_w12-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "meshnology_w12-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "meshnology_w12-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-companion-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "meshnology_w12-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-companion-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "flash-wipe",
+                  "name": "meshnology_w12-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-repeater-eef6a48-merged.bin",
+                  "title": "Full install (bootloader + firmware)"
+                },
+                {
+                  "type": "flash-update",
+                  "name": "meshnology_w12-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/meshnology_w12-esp32s3-procpu-repeater-eef6a48-update.bin",
+                  "title": "Update (app only; keeps settings)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "minewsemi",
+      "class": "zephcore",
+      "name": "MinewSemi ME25LS02",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "me25ls02-nrf54l15-cpuapp-companion-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/me25ls02-nrf54l15-cpuapp-companion-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no USB bootloader on this SoC)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "me25ls02-nrf54l15-cpuapp-repeater-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/me25ls02-nrf54l15-cpuapp-repeater-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no USB bootloader on this SoC)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao nRF54L15",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "xiao_nrf54l15-nrf54l15-cpuapp-companion-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf54l15-nrf54l15-cpuapp-companion-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no USB bootloader on this SoC)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "xiao_nrf54l15-nrf54l15-cpuapp-repeater-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_nrf54l15-nrf54l15-cpuapp-repeater-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no USB bootloader on this SoC)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio Xiao MG24",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionBle",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "xiao_mg24-companion-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_mg24-companion-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no bootloader on this board)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "xiao_mg24-repeater-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/xiao_mg24-repeater-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no bootloader on this board)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "seeed",
+      "class": "zephcore",
+      "name": "Seeed Studio LoRa-E5 mini",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionUsb",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "lora_e5_mini-companion-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lora_e5_mini-companion-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no bootloader on this board)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "lora_e5_mini-repeater-eef6a48.hex",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/lora_e5_mini-repeater-eef6a48.hex",
+                  "title": "Firmware image -- flash over SWD (no bootloader on this board)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "femtofox",
+      "class": "zephcore",
+      "name": "Femtofox (Luckfox Pico Mini)",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionTcp",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_femtofox-companion-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_femtofox-companion-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_femtofox-repeater-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_femtofox-repeater-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/lora.svg'>"
+    },
+    {
+      "maker": "rak",
+      "class": "zephcore",
+      "name": "RAK6421 WisMesh (Raspberry Pi)",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionTcp",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_rak6421-companion-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_rak6421-companion-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_rak6421-repeater-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_rak6421-repeater-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/rpi.svg'>"
+    },
+    {
+      "maker": "rak",
+      "class": "zephcore",
+      "name": "RAK6421 WisMesh (Raspberry Pi 5)",
+      "type": "noflash",
+      "firmware": [
+        {
+          "role": "companionTcp",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_rak6421_pi5-companion-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_rak6421_pi5-companion-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "role": "repeater",
+          "version": {
+            "1.17.4-zephcore": {
+              "notes": "",
+              "files": [
+                {
+                  "type": "download",
+                  "name": "zephcore_linux_rak6421_pi5-repeater-eef6a48",
+                  "url": "https://cdn.jsdelivr.net/gh/liquidraver/ZephCore@firmware-dist/zephcore_linux_rak6421_pi5-repeater-eef6a48",
+                  "title": "Linux executable (download and run)"
+                }
+              ]
+            }
+          }
+        }
+      ],
+      "tooltip": "<img class='device' src='https://cdn.jsdelivr.net/gh/meshcore-dev/flasher.meshcore.io@main/img/rpi.svg'>"
+    }
+  ],
+  "role": {
+    "companionTcp": {
+      "icon": "lan",
+      "title": "Companion",
+      "subTitle": "TCP",
+      "tooltip": "Native-Linux companion radio -- connect over TCP."
+    }
+  }
+}
