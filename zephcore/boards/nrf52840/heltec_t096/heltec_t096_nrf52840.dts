@@ -15,6 +15,7 @@
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/adc/nrf-saadc.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 #include "heltec_t096_nrf52840-pinctrl.dtsi"
 
 / {
@@ -34,6 +35,16 @@
 	aliases {
 		led0 = &led_white;
 		lora-tx-led = &led_white;
+		/* Same physical LED (P0.28) as led0/lora-tx-led above, reached
+		 * through the PWM peripheral instead of a raw GPIO write. Both
+		 * ui_common.c (heartbeat/message/shutdown) and ZephyrBoard.cpp
+		 * (LoRa TX flash) prefer this alias over the plain GPIO one when
+		 * it exists, so every event that used to hit led_white now goes
+		 * through the shared brightness in helpers/led_gate.h instead —
+		 * deliberately one dimmer for the whole LED, not a separate
+		 * heartbeat-only control (see helpers/led_gate.h). */
+		heartbeat-pwm-led = &pwm_led_white;
+		lora-tx-pwm-led = &pwm_led_white;
 		sw0 = &user_button;
 		lora0 = &lora;
 		watchdog0 = &wdt0;
@@ -48,6 +59,20 @@
 		led_white: led_0 {
 			gpios = <&gpio0 28 GPIO_ACTIVE_HIGH>;
 			label = "White LED";
+		};
+	};
+
+	pwmleds {
+		compatible = "pwm-leds";
+
+		/* Same P0.28 net as led_white above, driven by PWM0 channel 0
+		 * instead. Declaring both DT nodes for one pin is an established
+		 * pattern in this project (Heltec V4.3 does the same for its own
+		 * LED) — only one of the two code paths is ever compiled in for a
+		 * given purpose, selected by which alias exists. */
+		pwm_led_white: pwm_led_gpio28 {
+			label = "White PWM LED";
+			pwms = <&pwm0 0 PWM_MSEC(10) PWM_POLARITY_NORMAL>;
 		};
 	};
 
@@ -277,6 +302,14 @@
 
 &gpio1 {
 	status = "okay";
+};
+
+/* Drives the shared heartbeat/TX LED (P0.28) via pwm_led_white above. */
+&pwm0 {
+	status = "okay";
+	pinctrl-0 = <&pwm0_default>;
+	pinctrl-1 = <&pwm0_sleep>;
+	pinctrl-names = "default", "sleep";
 };
 
 &i2c0 {

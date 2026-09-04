@@ -301,6 +301,11 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
      * (activity LED on transmit, heartbeat with unread indication). */
     fs_read(&file, &prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
     fs_read(&file, &prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+    /* LED brightness, offset 311 (ZephCore extension, since 1.17.4). Absent
+     * in <312-byte files; leaves the initNodePrefs() default of
+     * ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%), same value a fresh node
+     * already showed before this field was persisted. */
+    fs_read(&file, &prefs.led_brightness, sizeof(prefs.led_brightness));
 
     fs_close(&file);
 
@@ -467,6 +472,8 @@ bool RepeaterDataStore::savePrefs(const NodePrefs& prefs) {
     /* LED activity/heartbeat modes (offsets 309-310) */
     fs_write(&file, &prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
     fs_write(&file, &prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+    /* LED brightness (offset 311, since 1.17.4) */
+    fs_write(&file, &prefs.led_brightness, sizeof(prefs.led_brightness));
 
     ret = fs_sync(&file);
     fs_close(&file);
