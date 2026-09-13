@@ -660,6 +660,7 @@ int main(void)
 		zephcore_leds_set_disabled(leds_off);
 		zephcore_leds_set_radio_mode(lp->leds_radio_mode);
 		zephcore_leds_set_hb_mode(lp->leds_hb_mode);
+		zephcore_led_set_brightness_pct(lp->led_brightness);
 		LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
 	}
 

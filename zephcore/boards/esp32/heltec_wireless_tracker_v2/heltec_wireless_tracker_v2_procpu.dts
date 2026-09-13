@@ -30,6 +30,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
+#include <zephyr/dt-bindings/pwm/pwm.h>
 #include "heltec_wireless_tracker_v2-pinctrl.dtsi"
 
 / {
@@ -39,6 +40,8 @@
 	aliases {
 		led0 = &status_led;
 		lora-tx-led = &status_led;
+		heartbeat-pwm-led = &pwm_status_led;
+		lora-tx-pwm-led = &pwm_status_led;
 		uart-0 = &uart0;
 		uart-2 = &uart2;
 		i2c-0 = &i2c0;
@@ -66,6 +69,22 @@
 		status_led: led_0 {
 			gpios = <&gpio0 18 GPIO_ACTIVE_HIGH>;
 			label = "Status LED";
+		};
+	};
+
+	/* Same GPIO18 net as status_led above, driven through the LEDC PWM
+	 * peripheral instead of a raw GPIO write. Single LED doubling as
+	 * heartbeat, message/shutdown flash and LoRa TX indicator (same
+	 * "Option 1" shared-brightness pattern as T096, see helpers/ui/ui_common.c
+	 * and adapters/board/ZephyrBoard.cpp: heartbeat-pwm-led/lora-tx-pwm-led
+	 * aliases give every one of those events a single 0-100 brightness knob,
+	 * RAM-only, on top of the existing persisted on/off gate. */
+	pwm_leds {
+		compatible = "pwm-leds";
+
+		pwm_status_led: pwm_led_gpio18 {
+			label = "Status PWM LED";
+			pwms = <&ledc0 0 PWM_MSEC(10) PWM_POLARITY_NORMAL>;
 		};
 	};
 
@@ -229,6 +248,19 @@
 
 &gpio1 {
 	status = "okay";
+};
+
+&ledc0 {
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	status = "okay";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
+	};
 };
 
 &i2c0 {
