@@ -47,6 +47,13 @@
 		led0 = &led0;
 		pwm-0 = &ledc0;
 		pwm-led0 = &pwm_led_white;
+		/* Single physical LED, shared between the heartbeat and LoRa TX
+		 * activity roles (same node aliased twice), same pattern as T096 and
+		 * Wireless Tracker V2 -- see helpers/ui/ui_common.c and
+		 * adapters/board/ZephyrBoard.cpp (ZEPHCORE_LED_PIN_SHARED covers the
+		 * arbitration between the two roles automatically). */
+		heartbeat-pwm-led = &pwm_led_white;
+		lora-tx-pwm-led = &pwm_led_white;
 		uart-0 = &uart0;
 		i2c-0 = &i2c0;
 		lora0 = &lora0;

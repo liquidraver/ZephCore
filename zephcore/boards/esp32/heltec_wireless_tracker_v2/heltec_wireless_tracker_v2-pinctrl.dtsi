@@ -72,4 +72,11 @@
 			output-low;
 		};
 	};
+
+	ledc0_default: ledc0_default {
+		group1 {
+			pinmux = <LEDC_CH0_GPIO18>;
+			output-enable;
+		};
+	};
 };
