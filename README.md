@@ -38,6 +38,8 @@ Prerequisites: [Zephyr SDK >=1.0.1 (!)](https://docs.zephyrproject.org/latest/de
 
 Optional: [adafruit-nrfutil](https://github.com/adafruit/Adafruit_nRF52_nrfutil) to allow DFU zip generation for OTA updates on nRF52.
 
+Or skip the prerequisites entirely and use the [dev container](.devcontainer/README.md) -- SDK, toolchains, west and the vendor blobs, preconfigured to match CI. Open the repo in VS Code and run **Dev Containers: Reopen in Container**.
+
 ```bash
 # Initialize workspace (first time only)
 cd <cloned folder>

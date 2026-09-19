@@ -1,0 +1,77 @@
+{
+  "name": "ZephCore (Zephyr SDK 1.0.1)",
+
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      // Keep in sync with `zephyr_sdk` / `toolchains` in .github/workflows/build.yml.
+      // arm-zephyr-eabi          -> nRF52/nRF54L, MG24, STM32WL
+      // xtensa-espressif_esp32*  -> classic ESP32 and ESP32-S3
+      // riscv64-zephyr-elf       -> ESP32-C3 / C6
+      "ZSDK_VERSION": "1.0.1",
+      "ZSDK_TOOLCHAINS": "arm-zephyr-eabi xtensa-espressif_esp32s3_zephyr-elf xtensa-espressif_esp32_zephyr-elf riscv64-zephyr-elf"
+    }
+  },
+
+  "remoteUser": "vscode",
+
+  // The west topdir is the folder containing zephcore/, i.e. the workspace root
+  // itself -- that is what `west init -l zephcore` and build.sh both assume.
+  // west then clones into zephyr/, modules/, bootloader/ and tools/ here, all of
+  // which .gitignore already excludes.
+  //
+  // Those four live in named volumes rather than on the host bind mount: they are
+  // ~50k files that no one edits from the host, and container-native storage is
+  // several times faster for them on Windows and macOS. build/ and firmware/ are
+  // deliberately left on the bind mount so the host can flash what you build.
+  "mounts": [
+    "source=zephcore-zephyr-${devcontainerId},target=${containerWorkspaceFolder}/zephyr,type=volume",
+    "source=zephcore-modules-${devcontainerId},target=${containerWorkspaceFolder}/modules,type=volume",
+    "source=zephcore-bootloader-${devcontainerId},target=${containerWorkspaceFolder}/bootloader,type=volume",
+    "source=zephcore-tools-${devcontainerId},target=${containerWorkspaceFolder}/tools,type=volume",
+    "source=zephcore-ccache-${devcontainerId},target=/home/vscode/.cache/ccache,type=volume"
+  ],
+
+  // Flashing over USB from inside the container only works on a Linux host --
+  // Docker Desktop on Windows/macOS cannot pass through USB devices. On Linux,
+  // uncomment to expose probes and USB serial:
+  // "runArgs": ["--device=/dev/bus/usb", "--volume=/dev/serial:/dev/serial"],
+
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+  "waitFor": "postCreateCommand",
+
+  "hostRequirements": {
+    "cpus": 4,
+    "storage": "64gb"
+  },
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-vscode.cpptools",
+        "ms-vscode.cmake-tools",
+        "twxs.cmake",
+        "ms-python.python",
+        "marus25.cortex-debug",
+        "trond-snekvik.devicetree",
+        "trond-snekvik.kconfig-lang"
+      ],
+      "settings": {
+        // Zephyr apps are configured by west, not by CMake Tools. Letting the
+        // extension auto-configure zephcore/ on open just produces a failed
+        // configure and a misleading error.
+        "cmake.configureOnOpen": false,
+        "cmake.sourceDirectory": "${workspaceFolder}/zephcore",
+        "C_Cpp.default.compileCommands": "${workspaceFolder}/build/compile_commands.json",
+        "devicetree.zephyr": "${workspaceFolder}/zephyr",
+        "python.defaultInterpreterPath": "/opt/zephyr-venv/bin/python",
+        "files.associations": {
+          "*.overlay": "dts",
+          "*.dtsi": "dts",
+          "*.conf": "kconfig",
+          "Kconfig*": "kconfig"
+        }
+      }
+    }
+  }
+}
