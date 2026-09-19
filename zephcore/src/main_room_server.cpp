@@ -581,14 +581,11 @@ int main(void)
 		}
 	}
 
-	/* Set GPS to repeater mode: power off now, wake every 48h for time sync only.
-	 * This prevents GPS from draining power on boards that have it (e.g., Wio Tracker). */
+	/* GPS callbacks only.  The duty interval and the mode switch that starts
+	 * acquisition are applied after loadPrefs() below — see the block there. */
 	if (gps_is_available()) {
 		gps_set_fix_callback(gps_fix_callback);
 		gps_set_event_callback(gps_event_callback);
-		/* Apply persisted GPS duty interval (repeater default 48h; 0 = always on) */
-		gps_set_poll_interval_sec(room_mesh.getNodePrefs()->gps_interval);
-		gps_set_repeater_mode(true);
 	}
 
 	/* Initialize UI (display + buttons).  Shows splash screen, then auto-
@@ -642,6 +639,29 @@ int main(void)
 	 * Mirrors the temp_prefs pattern in main_companion.cpp. */
 	data_store.loadPrefs(*room_mesh.getNodePrefs());
 	lora_radio.setPrefs(room_mesh.getNodePrefs());
+
+	/* Set GPS to repeater mode: power off now, wake every duty interval for
+	 * time sync only.  This prevents GPS from draining power on boards that
+	 * have it (e.g., Wio Tracker).
+	 *
+	 * MUST come after loadPrefs(), for the same reason as the LED switch
+	 * below -- but note loadPrefs() is not a pure read here.  It is also the
+	 * only place this role's GPS default is established: initNodePrefs()
+	 * sets gps_interval=300 (the companion value), and the 48 h default is
+	 * applied and PERSISTED by loadPrefs()'s first-boot path.
+	 *
+	 * This block used to sit ~55 lines earlier, where getNodePrefs() still
+	 * held that 300.  So the GPS manager was armed from the companion default
+	 * on every boot and nothing re-applied the real value afterwards:
+	 *   - a stock repeater woke its GPS every 5 min instead of every 48 h;
+	 *   - any operator value, notably "set gps duty 0" (always-on), was
+	 *     stored and read back correctly but never reached the hardware.
+	 * Same failure shape as the radio-frequency and LED ordering bugs in this
+	 * file.  main_companion.cpp has always had this order right. */
+	if (gps_is_available()) {
+		gps_set_poll_interval_sec(room_mesh.getNodePrefs()->gps_interval);
+		gps_set_repeater_mode(true);
+	}
 
 	/* Apply the persisted LED master switch ("set leds on|off").  MUST come
 	 * after loadPrefs(): this used to sit just after ui_init(), ~45 lines
