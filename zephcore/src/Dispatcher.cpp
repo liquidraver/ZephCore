@@ -130,6 +130,13 @@ uint32_t Dispatcher::getTxStarvationDuration() const
 void Dispatcher::loop()
 {
 	if (outbound) {
+		/* Read BEFORE isSendComplete(): the radio publishes its
+		 * completion before it drops isTxActive(), so a "not active"
+		 * seen here guarantees a successful transmit is already latched
+		 * and collected by the call below.  The other order can see the
+		 * latch still empty, then the flag already clear, and abandon a
+		 * transmit that finished in between. */
+		bool tx_active = _radio->isTxActive();
 		if (_radio->isSendComplete()) {
 			/* Airtime is the modulation time of the packet that just
 			 * went out, not the wall-clock width of the send.
@@ -170,7 +177,18 @@ void Dispatcher::loop()
 			}
 			releasePacket(outbound);
 			outbound = nullptr;
-		} else if (millisHasNowPassed(outbound_expiry)) {
+		} else if (!tx_active && millisHasNowPassed(outbound_expiry)) {
+			/* Give up only once the radio itself has concluded.  Upstream
+			 * abandons at outbound_expiry alone because RadioLib has no
+			 * watchdog of its own; ours does — the TX wait thread always
+			 * ends with isTxActive() false, on a timeout of
+			 * max(TX_TIMEOUT_MS, 2 x airtime + 1 s).  Abandoning while it
+			 * still runs raced that thread: a completion published after
+			 * the expiry was then wiped by the next startSendRaw(), so a
+			 * packet that went out on air was counted nowhere — neither
+			 * sent_flood/direct nor the radio's total.  Radios that do not
+			 * implement isTxActive() report false and keep the upstream
+			 * behaviour exactly. */
 			_radio->onSendFinished();
 			logTxFail(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
 			releasePacket(outbound);

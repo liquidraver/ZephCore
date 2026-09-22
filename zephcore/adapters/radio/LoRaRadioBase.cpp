@@ -5,6 +5,7 @@
 
 #include "LoRaRadioBase.h"
 #include "radio_common.h"
+#include "pm_sleep_guard.h"
 #include <mesh/LoRaConfig.h>
 #include <mesh/MeshCore.h>   /* MAX_TRANS_UNIT */
 #include <zephyr/kernel.h>
@@ -138,6 +139,13 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 
 	for (;;) {
 		k_sem_take(&self->_tx_start_sem, K_FOREVER);
+
+		/* startSendRaw() took one sleep lock for the transmit it just
+		 * handed over; it is released when this iteration ends, on
+		 * whichever of the paths below it takes. */
+		struct TxSleepRelease {
+			~TxSleepRelease() { zc_pm_unblock_sleep(); }
+		} tx_sleep_release;
 
 		if (!atomic_get(&self->_tx_active)) {
 			continue;
@@ -806,6 +814,17 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	 * out, never to this one -- upstream's STATE_IDLE reset in the same
 	 * place. */
 	atomic_set(&_tx_complete, 0);
+
+	/* No SoC light sleep from here until the wait thread has concluded this
+	 * transmit (it releases the lock), or until the failure path below.
+	 * Covers the blocking LBT CAD inside hwSendAsync() as well as the
+	 * airtime.  With nothing else runnable during a transmit, an ESP32
+	 * repeater otherwise sleeps through it and meets TX_DONE as a wake
+	 * event rather than an interrupt, and the completion lands late or not
+	 * at all (see the EXT1 note in the sx126x HAL).  Costs nothing worth
+	 * counting: the PA dominates the current draw while keyed.  A no-op
+	 * without CONFIG_PM. */
+	zc_pm_block_sleep();
 	_board->onBeforeTransmit();
 	_last_tx_start_ms = k_uptime_get_32();
 
@@ -848,6 +867,7 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 		}
 		_board->onAfterTransmit();
 		atomic_set(&_tx_active, 0);
+		zc_pm_unblock_sleep();
 		/* startReceive() is safe to call here regardless of failure
 		 * cause: on SX126x, recv_async early-returns if the driver
 		 * already restored RX on CAD-busy (Phase 2 idempotent fast
