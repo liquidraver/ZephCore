@@ -15,7 +15,7 @@
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/MeshcoreJson.h>
-#include <adapters/radio/LoRaRadioBase.h>
+#include <adapters/radio/LoRaRadio.h>
 #include <adapters/sensors/SimpleLPP.h>
 #include <adapters/sensors/ZephyrEnvSensors.h>
 #include <adapters/gps/ZephyrGPSManager.h>
@@ -30,9 +30,9 @@
 #include <time.h>
 #include <helpers/PacketLog.h>
 
-/* Helper to get radio driver for stats — uses LoRaRadioBase (works for SX126x and LR1110) */
-static inline mesh::LoRaRadioBase& getRadioDriver(mesh::Radio* radio) {
-	return *static_cast<mesh::LoRaRadioBase*>(radio);
+/* Helper to get radio driver for stats — uses LoRaRadio (works for SX126x and LR1110) */
+static inline mesh::LoRaRadio& getRadioDriver(mesh::Radio* radio) {
+	return *static_cast<mesh::LoRaRadio*>(radio);
 }
 
 LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);

@@ -283,7 +283,7 @@
 
 		reset-gpios = <&gpio0 12 GPIO_ACTIVE_LOW>;                    /* GPIO12 */
 		busy-gpios  = <&gpio0 13 GPIO_ACTIVE_HIGH>;                   /* GPIO13 */
-		dio1-gpios  = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;/* GPIO14 */
+		irq-gpios  = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;/* GPIO14 */
 
 		/* Chip DIO8 -> GPIO14 (schematic net IO14_LORA_INT2). DIO7 goes to
 		 * GPIO7 as a second IRQ line (IO7_LORA_INT1) that ZephCore does not
@@ -292,7 +292,7 @@
 		 * be wrong. */
 		irq-dio = <8>;
 
-		/* No tcxo-voltage-mv: schematic sheet 3 shows a plain crystal on
+		/* No tcxo-voltage: schematic sheet 3 shows a plain crystal on
 		 * XTA/XTB (pins 4/5) and pin 6 wired to the VNTC net, not a TCXO
 		 * supply. Setting a TCXO voltage on a board without one wedges the
 		 * chip at HF-XOSC startup — that is what happened on the
@@ -320,12 +320,12 @@
 		 * RFX2402E instead. ZephCore only ever uses the sub-GHz side; the HF
 		 * masks are here so the table is a faithful description of the
 		 * hardware rather than a half-truth. */
-		rfswitch-enable  = <0x73>;  /* DIO5,6,9,10,11 */
-		rfswitch-standby = <0x00>;  /* everything off */
-		rfswitch-rx-lf   = <0x40>;  /* DIO11: GC1109 out of shutdown, LNA */
-		rfswitch-rx-hf   = <0x02>;  /* DIO6:  2.4 GHz LNA, GC1109 shut down */
-		rfswitch-tx      = <0x70>;  /* DIO9|10|11: GC1109 full PA */
-		rfswitch-tx-hp   = <0x01>;  /* DIO5:  2.4 GHz PA */
+		rfsw-enable  = <0x73>;  /* DIO5,6,9,10,11 */
+		rfsw-standby = <0x00>;  /* everything off */
+		rfsw-rx-lf   = <0x40>;  /* DIO11: GC1109 out of shutdown, LNA */
+		rfsw-rx-hf   = <0x02>;  /* DIO6:  2.4 GHz LNA, GC1109 shut down */
+		rfsw-tx      = <0x70>;  /* DIO9|10|11: GC1109 full PA */
+		rfsw-tx-hp   = <0x01>;  /* DIO5:  2.4 GHz PA */
 	};
 };
 

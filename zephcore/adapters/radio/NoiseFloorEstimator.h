@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Noise-floor estimator: an EMA over idle-channel RSSI samples.
  *
- * Pure algorithm. LoRaRadioBase owns the sampler (when to read, the
+ * Pure algorithm. LoRaRadio owns the sampler (when to read, the
  * idle-RX guards, the median-of-N burst) and feeds each median in here.
  */
 

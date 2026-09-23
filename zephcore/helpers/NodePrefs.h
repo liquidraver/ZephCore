@@ -208,7 +208,7 @@ struct NodePrefs {
 	 * involves, but the offset itself is persisted and survives — so after a
 	 * table change a converged node quietly starts operating somewhere it
 	 * never measured.  Recording the base turns that into something the
-	 * firmware can correct at boot (see LoRaRadioBase::setCadParams), instead
+	 * firmware can correct at boot (see LoRaRadio::setCadParams), instead
 	 * of a "run set cad.reset after upgrading" line in the release notes that
 	 * most users will not read. */
 	uint8_t cad_base;

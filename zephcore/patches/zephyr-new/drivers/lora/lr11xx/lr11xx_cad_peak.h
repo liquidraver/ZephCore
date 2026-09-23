@@ -88,7 +88,7 @@ static inline uint8_t lr11xx_cad_detect_peak(uint8_t sf, uint16_t bw_khz, uint8_
 	/* More symbols means more looks at the same correlation, so the same
 	 * detection quality is reached at a lower threshold.  Semtech applies
 	 * this correction after the table lookup; we run 4 symbols everywhere
-	 * (LORA_CAD_SYMB_4 in LoRaRadioBase::buildModemConfig), so it always
+	 * (LORA_CAD_SYMB_4 in LoRaRadio::buildModemConfig), so it always
 	 * bites, and omitting it was one further count of the SF7 error. */
 	if (symb_nb >= 8) {
 		peak -= 2;
@@ -104,7 +104,7 @@ static inline uint8_t lr11xx_cad_detect_peak(uint8_t sf, uint16_t bw_khz, uint8_
  * offset window to match: where base+offset falls outside this, several offsets
  * collapse onto one peak and the staircase reads sampling noise between
  * identical configurations as curvature.  That is not hypothetical — it is the
- * documented failure mode on the LR2021 (see LR2021Radio::hwCadPeakMin), and
+ * documented failure mode on the LR2021 (see LLD 03 §13, level window), and
  * the old 48 floor here reproduced it on the LR1110 at SF7.
  *
  * 40 is DELIBERATELY left where it was when the sub-125 row was measured down

@@ -3,7 +3,7 @@
  * LoRa radio base class — shared algorithms for all radio adapters.
  */
 
-#include "LoRaRadioBase.h"
+#include "LoRaRadio.h"
 #include "radio_common.h"
 #include "pm_sleep_guard.h"
 #include <mesh/MeshCore.h>   /* MAX_TRANS_UNIT */
@@ -40,8 +40,8 @@ static uint16_t rxDutyDetectSymbols(uint8_t sf)
 
 /* ── Constructor ─────────────────────────────────────────────── */
 
-LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board)
-	: _loramac_node(false),
+LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
+	: _ops(kLoRaRadioOps),
 	  _dev(lora_dev), _prefs(nullptr), _board(&board),
 	  _in_recv_mode(0), _tx_active(0), _tx_complete(0),
 	  _last_rssi(0), _last_snr(0),
@@ -54,7 +54,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board)
 	  _rssi_bursts(0), _rssi_spread_sum(0), _rssi_degenerate(0),
 	  _cad(*this), _probe_interval_s(0), _cad_last_decay_ms(0),
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
-	  _rx_boost_enabled(true),
+	  _rx_boost_enabled(kLoRaRadioOps.set_rx_boost != nullptr),
 	  _dc_last_rx_us(0), _dc_last_sleep_us(0),
 	  _agc_rx_count_shadow(0), _agc_last_activity_ms(0),
 	  _agc_rssi_last(0), _agc_rssi_frozen(0),
@@ -84,7 +84,7 @@ LoRaRadioBase::LoRaRadioBase(const struct device *lora_dev, MainBoard &board)
 /* How long to wait for TX_DONE: 2 x airtime + 1 s, never below TX_TIMEOUT_MS.
  * A flat 5 s is shorter than a long packet on slow presets (255 B at
  * SF12/BW62.5 is 28.6 s). lora_airtime() is pure math on the cached config. */
-uint32_t LoRaRadioBase::txWaitBudgetMs() const
+uint32_t LoRaRadio::txWaitBudgetMs() const
 {
 	/* _tx_len is set by startSendRaw() before the handoff; 0 is defensive. */
 	uint32_t air = lora_airtime(_dev, _tx_len ? _tx_len : MAX_TRANS_UNIT);
@@ -101,9 +101,9 @@ uint32_t LoRaRadioBase::txWaitBudgetMs() const
 	return MAX(TX_TIMEOUT_MS, 2U * air + 1000U);
 }
 
-void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
+void LoRaRadio::txWaitThreadFn(void *p1, void *p2, void *p3)
 {
-	LoRaRadioBase *self = static_cast<LoRaRadioBase *>(p1);
+	LoRaRadio *self = static_cast<LoRaRadio *>(p1);
 	ARG_UNUSED(p2);
 	ARG_UNUSED(p3);
 
@@ -217,7 +217,7 @@ void LoRaRadioBase::txWaitThreadFn(void *p1, void *p2, void *p3)
 /* One radio per build, so one stack. */
 K_THREAD_STACK_DEFINE(lora_tx_wait_stack, TX_WAIT_THREAD_STACK_SIZE);
 
-void LoRaRadioBase::startTxThread()
+void LoRaRadio::startTxThread()
 {
 	if (_tx_thread_running) {
 		return;
@@ -232,11 +232,11 @@ void LoRaRadioBase::startTxThread()
 
 /* ── RX callback (static, ISR-safe) ──────────────────────────────────── */
 
-void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
+void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 				     uint16_t size, int16_t rssi, int8_t snr,
 				     void *user_data)
 {
-	LoRaRadioBase *self = static_cast<LoRaRadioBase *>(user_data);
+	LoRaRadio *self = static_cast<LoRaRadio *>(user_data);
 
 	/* NULL data = RX error (CRC/header error) */
 	if (data == NULL && size == 0) {
@@ -284,7 +284,7 @@ void LoRaRadioBase::rxCallbackStatic(const struct device *dev, uint8_t *data,
 
 /* ── Config helpers ───────────────────────────────────────────────────── */
 
-void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
+void LoRaRadio::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 {
 	memset(&cfg, 0, sizeof(cfg));
 	/* Override wins for freq/bw/sf/cr (tempradio).  Power, preamble, and
@@ -327,43 +327,43 @@ void LoRaRadioBase::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	cfg.cad.symbol_num = LORA_CAD_SYMB_4;
 }
 
-uint32_t LoRaRadioBase::getActiveFrequencyHz() const
+uint32_t LoRaRadio::getActiveFrequencyHz() const
 {
 	float freq_mhz = _has_radio_override ? _override_freq : _prefs->freq;
 
 	return (uint32_t)(freq_mhz * 1000000.0f + 0.5f);
 }
 
-uint16_t LoRaRadioBase::getActiveBandwidthKHzX10() const
+uint16_t LoRaRadio::getActiveBandwidthKHzX10() const
 {
 	float bw_khz = _has_radio_override ? _override_bw : _prefs->bw;
 
 	return (uint16_t)(bw_khz * 10.0f + 0.5f);
 }
 
-uint8_t LoRaRadioBase::getActiveSpreadingFactor() const
+uint8_t LoRaRadio::getActiveSpreadingFactor() const
 {
 	return _has_radio_override ? _override_sf : _prefs->sf;
 }
 
-uint8_t LoRaRadioBase::getActiveCodingRate() const
+uint8_t LoRaRadio::getActiveCodingRate() const
 {
 	return _has_radio_override ? _override_cr : _prefs->cr;
 }
 
-uint16_t LoRaRadioBase::getActivePreambleLength() const
+uint16_t LoRaRadio::getActivePreambleLength() const
 {
 	return preambleLengthForSF(getActiveSpreadingFactor());
 }
 
-uint8_t LoRaRadioBase::getActiveSyncWord() const
+uint8_t LoRaRadio::getActiveSyncWord() const
 {
 	/* buildModemConfig() currently sets public_network=false, which maps
 	 * Zephyr's LoRa API to the Semtech private sync word. */
 	return 0x12;
 }
 
-int8_t LoRaRadioBase::getConfiguredTxPower() const
+int8_t LoRaRadio::getConfiguredTxPower() const
 {
 	int power = _prefs->tx_power_dbm;
 
@@ -421,7 +421,7 @@ static bool onlyDirectionDiffers(const struct lora_modem_config &a,
 	       a.tx != b.tx;
 }
 
-void LoRaRadioBase::configure(bool tx)
+void LoRaRadio::configure(bool tx)
 {
 	struct lora_modem_config cfg;
 	buildModemConfig(cfg, tx);
@@ -444,7 +444,7 @@ void LoRaRadioBase::configure(bool tx)
 	 * Not used for loramac-node: Radio.SetTxConfig() and Radio.SetRxConfig()
 	 * configure completely disjoint internal state (including TxTimeout).
 	 * Skipping either on a direction change leaves that state uninitialized. */
-	if (!_loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
+	if (!_ops.loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
 		LOG_DBG("%s: direction-only change, skip hwConfigure", who);
 		_last_cfg = cfg;
 		return;
@@ -464,12 +464,23 @@ void LoRaRadioBase::configure(bool tx)
 	}
 }
 
-void LoRaRadioBase::configureRx() { configure(false); }
-void LoRaRadioBase::configureTx() { configure(true); }
+bool LoRaRadio::hwConfigure(const struct lora_modem_config &cfg)
+{
+	int ret = lora_config(_dev, &cfg);
+
+	if (ret < 0) {
+		LOG_ERR("lora_config failed: %d", ret);
+		return false;
+	}
+	return true;
+}
+
+void LoRaRadio::configureRx() { configure(false); }
+void LoRaRadio::configureTx() { configure(true); }
 
 /* ── Lifecycle ────────────────────────────────────────────────────────── */
 
-void LoRaRadioBase::begin()
+void LoRaRadio::begin()
 {
 	if (_prefs == nullptr) {
 		LOG_ERR("radio begin() without setPrefs()");
@@ -498,9 +509,13 @@ void LoRaRadioBase::begin()
 
 	LOG_INF("radio started: freq=%u bw=%u sf=%u cr=%u pwr=%d",
 		freq, bw_khz, sf, cr, tx_pwr);
+
+	if (_ops.post_begin) {
+		_ops.post_begin(_dev);
+	}
 }
 
-void LoRaRadioBase::reconfigure()
+void LoRaRadio::reconfigure()
 {
 	hwCancelReceive();
 	atomic_set(&_in_recv_mode, 0);
@@ -519,7 +534,7 @@ void LoRaRadioBase::reconfigure()
 		freq, bw_khz, sf, cr, tx_pwr);
 }
 
-void LoRaRadioBase::setRadioOverride(float freq, float bw, uint8_t sf, uint8_t cr,
+void LoRaRadio::setRadioOverride(float freq, float bw, uint8_t sf, uint8_t cr,
 				     bool visiting_new_preset)
 {
 	_override_freq = freq;
@@ -534,7 +549,7 @@ void LoRaRadioBase::setRadioOverride(float freq, float bw, uint8_t sf, uint8_t c
 	_cad.beginVisit(visiting_new_preset);
 }
 
-void LoRaRadioBase::clearRadioOverride()
+void LoRaRadio::clearRadioOverride()
 {
 	if (!_has_radio_override) {
 		return;
@@ -544,7 +559,7 @@ void LoRaRadioBase::clearRadioOverride()
 	_cad.endVisit();
 }
 
-void LoRaRadioBase::startReceive()
+void LoRaRadio::startReceive()
 {
 	configureRx();
 
@@ -642,7 +657,7 @@ void LoRaRadioBase::startReceive()
 
 /* ── RX/TX ────────────────────────────────────────────────────────────── */
 
-int LoRaRadioBase::recvRaw(uint8_t *bytes, int sz)
+int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 {
 	uint8_t tail = (uint8_t)atomic_get(&_rx_tail);
 	if (atomic_get(&_rx_head) == tail) {
@@ -662,7 +677,7 @@ int LoRaRadioBase::recvRaw(uint8_t *bytes, int sz)
 	return (int)len;
 }
 
-bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
+bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 {
 	if (len > (int)sizeof(_tx_buf)) {
 		return false;
@@ -731,7 +746,7 @@ bool LoRaRadioBase::startSendRaw(const uint8_t *bytes, int len)
 	return true;
 }
 
-bool LoRaRadioBase::isSendComplete()
+bool LoRaRadio::isSendComplete()
 {
 	/* One-shot, and it owns _packets_sent, like upstream's
 	 * RadioLibWrapper::isSendComplete(): the radio and dispatcher tallies
@@ -743,28 +758,31 @@ bool LoRaRadioBase::isSendComplete()
 	return false;
 }
 
-void LoRaRadioBase::onSendFinished()
+void LoRaRadio::onSendFinished()
 {
 	/* Nothing needed — TX state tracked via _tx_active */
 }
 
-bool LoRaRadioBase::isInRecvMode() const
+bool LoRaRadio::isInRecvMode() const
 {
 	return atomic_get(&_in_recv_mode) != 0;
 }
 
-float LoRaRadioBase::getLastRSSI() const
+float LoRaRadio::getLastRSSI() const
 {
 	return _last_rssi;
 }
 
-float LoRaRadioBase::getLastSNR() const
+float LoRaRadio::getLastSNR() const
 {
 	return _last_snr;
 }
 
-int LoRaRadioBase::hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us)
+int LoRaRadio::hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us)
 {
+	if (_ops.rssi_burst) {
+		return _ops.rssi_burst(_dev, out, n, spacing_us);
+	}
 	for (int i = 0; i < n; i++) {
 		if (i) {
 			k_busy_wait(spacing_us);
@@ -777,7 +795,7 @@ int LoRaRadioBase::hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us)
 	return n;
 }
 
-bool LoRaRadioBase::isRadioReady()
+bool LoRaRadio::isRadioReady()
 {
 	/* BUSY high means the radio cannot accept SPI commands now
 	 * (e.g. duty-cycle sleep phase on SX126x/LR11xx). */
@@ -786,7 +804,7 @@ bool LoRaRadioBase::isRadioReady()
 
 /* ── Airtime + scoring ────────────────────────────────────────────────── */
 
-uint32_t LoRaRadioBase::getEstAirtimeFor(int len_bytes)
+uint32_t LoRaRadio::getEstAirtimeFor(int len_bytes)
 {
 	/* The params the radio is actually running (a tempradio override
 	 * included), resolved through the same BW enum as buildModemConfig(). */
@@ -794,7 +812,7 @@ uint32_t LoRaRadioBase::getEstAirtimeFor(int len_bytes)
 	float bw = _has_radio_override ? _override_bw : _prefs->bw;
 	uint8_t cr_val = getActiveCodingRate();
 
-	uint8_t min_sf = _loramac_node ? 6 : 5;
+	uint8_t min_sf = _ops.loramac_node ? 6 : 5;
 	if (sf < min_sf) sf = min_sf;
 	if (sf > 12) sf = 12;
 	if (bw < 7.0f) bw = 125.0f;
@@ -808,7 +826,7 @@ uint32_t LoRaRadioBase::getEstAirtimeFor(int len_bytes)
 	 * format.  See Semtech's lr11xx_radio_get_lora_time_on_air_numerator.
 	 * Treating SF5 as SF6 charged 397 ms for a 126-byte SF5/BW62.5 CR4/8
 	 * packet whose Semtech airtime is 237 ms (confirmed by TX timing). */
-	float fine_sync = (!_loramac_node && sf <= 6) ? 1.0f : 0.0f;
+	float fine_sync = (!_ops.loramac_node && sf <= 6) ? 1.0f : 0.0f;
 	float t_preamble = (preambleLengthForSF(sf) + 4.25f + 2.0f * fine_sync) * t_sym;
 
 	/* LDRO threshold must track the SX126x driver's should_enable_ldro()
@@ -825,7 +843,7 @@ uint32_t LoRaRadioBase::getEstAirtimeFor(int len_bytes)
 	return (uint32_t)((t_preamble + t_payload) * 1000.0f);
 }
 
-float LoRaRadioBase::packetScore(float snr, int packet_len)
+float LoRaRadio::packetScore(float snr, int packet_len)
 {
 	int sf = _prefs->sf;
 	if (sf < 7 || sf > 12) return 0.0f;
@@ -841,12 +859,12 @@ float LoRaRadioBase::packetScore(float snr, int packet_len)
 
 /* ── Advanced radio features ──────────────────────────────────────────── */
 
-int LoRaRadioBase::getNoiseFloor() const
+int LoRaRadio::getNoiseFloor() const
 {
 	return _floor_est.floor();
 }
 
-void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
+void LoRaRadio::triggerNoiseFloorCalibrate(int threshold)
 {
 	_calibration_threshold = threshold;
 
@@ -983,7 +1001,7 @@ void LoRaRadioBase::triggerNoiseFloorCalibrate(int threshold)
 	}
 }
 
-bool LoRaRadioBase::isReceiving()
+bool LoRaRadio::isReceiving()
 {
 	if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active)) {
 		return false;
@@ -1030,7 +1048,7 @@ bool LoRaRadioBase::isReceiving()
 
 /* Two unrelated jobs that share one precondition (chip idle) and one
  * cadence; kept in separate functions. */
-void LoRaRadioBase::radioMaintenance()
+void LoRaRadio::radioMaintenance()
 {
 	/* Never mid-TX or mid-RX: both jobs warm-sleep the chip. The RX counters
 	 * cannot see a packet landing now; isReceiving() can. */
@@ -1070,7 +1088,7 @@ void LoRaRadioBase::radioMaintenance()
 }
 
 /* Receiver watchdog: a stuck AGC shows up as total silence. */
-void LoRaRadioBase::agcIdleMaintenance(uint32_t now)
+void LoRaRadio::agcIdleMaintenance(uint32_t now)
 {
 	if (!hwNeedsAgcReset()) {
 		return;
@@ -1098,7 +1116,7 @@ void LoRaRadioBase::agcIdleMaintenance(uint32_t now)
 }
 
 /* Front-end image calibration against temperature drift. */
-void LoRaRadioBase::imageCalMaintenance(uint32_t now)
+void LoRaRadio::imageCalMaintenance(uint32_t now)
 {
 	if (!hwHasDriftRecal()) {
 		return;
@@ -1163,7 +1181,7 @@ void LoRaRadioBase::imageCalMaintenance(uint32_t now)
 	_image_cal_last_temp_c = temp_c;
 }
 
-void LoRaRadioBase::recoverRxState()
+void LoRaRadio::recoverRxState()
 {
 	/* Dispatcher CAD-timeout recovery (isReceiving() pinned > 4 s). Walk
 	 * the chip through REST: a bare startReceive() fails the driver's
@@ -1174,7 +1192,7 @@ void LoRaRadioBase::recoverRxState()
 	startReceive();
 }
 
-bool LoRaRadioBase::isChannelActive(int threshold)
+bool LoRaRadio::isChannelActive(int threshold)
 {
 	if (threshold == 0) {
 		threshold = _calibration_threshold;
@@ -1188,7 +1206,7 @@ bool LoRaRadioBase::isChannelActive(int threshold)
 
 /* ── Adaptive CAD (LBT detPeak calibration) ───────────────────────────── */
 
-void LoRaRadioBase::setCadParams(bool auto_enabled, int8_t offset,
+void LoRaRadio::setCadParams(bool auto_enabled, int8_t offset,
 				 uint16_t probe_interval_s, uint8_t busycap_pct,
 				 uint8_t stored_base)
 {
@@ -1206,12 +1224,12 @@ void LoRaRadioBase::setCadParams(bool auto_enabled, int8_t offset,
 		(unsigned)_measure_interval_ms, (unsigned)busycap_pct);
 }
 
-uint8_t LoRaRadioBase::cadBasePeak()
+uint8_t LoRaRadio::cadBasePeak()
 {
 	return hwCadBasePeak();
 }
 
-void LoRaRadioBase::cadMaintenance()
+void LoRaRadio::cadMaintenance()
 {
 	if (_probe_interval_s == 0) {
 		return;
@@ -1257,8 +1275,8 @@ void LoRaRadioBase::cadMaintenance()
 	}
 
 	/* No CAD_RX ground truth, no probing: an unresolvable busy reads as
-	 * FP 0 everywhere and walks the staircase to the sensitive rail. Today
-	 * that is the LR2021, whose 524 ms cad_timeout would truncate packets. */
+	 * FP 0 everywhere and walks the staircase to the sensitive rail. Only
+	 * radios without hardware CAD (SX127x) report 0 here. */
 	if (hwCadRxTimeoutMs() == 0) {
 		return;
 	}
@@ -1324,7 +1342,7 @@ static uint32_t clampDeadline(int64_t remaining_ms)
  * probing is enabled).  Both hold absolute uptime deadlines, so this is a pure
  * read — it must not touch the chip, since the event loop calls it on every
  * wake to decide how long it may sleep. */
-uint32_t LoRaRadioBase::msUntilNextMaintenance()
+uint32_t LoRaRadio::msUntilNextMaintenance()
 {
 	int64_t now = k_uptime_get();
 	uint32_t next = mesh::MAINTENANCE_IDLE;
@@ -1355,7 +1373,7 @@ uint32_t LoRaRadioBase::msUntilNextMaintenance()
 		next, clampDeadline(_cad_last_decay_ms + (int64_t)CAD_STATS_DECAY_MS - now));
 }
 
-int LoRaRadioBase::formatCadStatus(char *buf, int cap)
+int LoRaRadio::formatCadStatus(char *buf, int cap)
 {
 	uint8_t base = hwCadBasePeak();
 	int n = 0;
@@ -1438,7 +1456,7 @@ int LoRaRadioBase::formatCadStatus(char *buf, int cap)
 
 /* ── Power saving ─────────────────────────────────────────────────────── */
 
-void LoRaRadioBase::enableRxDutyCycle(bool enable)
+void LoRaRadio::enableRxDutyCycle(bool enable)
 {
 	_rx_duty_cycle_enabled = enable;
 	LOG_INF("RX duty cycle %s", enable ? "enabled" : "disabled");
@@ -1451,13 +1469,42 @@ void LoRaRadioBase::enableRxDutyCycle(bool enable)
 	}
 }
 
-bool LoRaRadioBase::setRxBoost(bool enable)
+bool LoRaRadio::setRxBoost(bool enable)
 {
+	if (!_ops.set_rx_boost) {
+		return false;
+	}
 	_rx_boost_enabled = enable;
 	LOG_INF("RX boost %s (+3dB sensitivity, +2mA)",
 		enable ? "enabled" : "disabled");
 	if (atomic_get(&_in_recv_mode)) {
 		hwSetRxBoost(enable);
+	}
+	return true;
+}
+
+bool LoRaRadio::setFemRxEnable(bool enable)
+{
+	if (!_ops.set_fem_rx || !_ops.set_fem_rx(_dev, enable)) {
+		return false;
+	}
+	LOG_INF("FEM RX gain %s", enable ? "enabled" : "disabled");
+	return true;
+}
+
+bool LoRaRadio::configSideDetectors(const uint8_t *sfs, uint8_t num)
+{
+	if (!_ops.side_detectors) {
+		return false;
+	}
+
+	/* The driver validates against the configured SF/BW; the CLI only
+	 * reaches here on a live radio. */
+	int ret = _ops.side_detectors(_dev, sfs, num);
+
+	if (ret < 0) {
+		LOG_WRN("side detector config rejected: %d", ret);
+		return false;
 	}
 	return true;
 }

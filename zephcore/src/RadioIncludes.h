@@ -19,15 +19,7 @@
 #include <mesh/SimpleMeshTables.h>
 #include <mesh/StaticPoolPacketManager.h>
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
-#include <adapters/radio/LR1110Radio.h>
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR2021)
-#include <adapters/radio/LR2021Radio.h>
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
-#include <adapters/radio/SX127xRadio.h>
-#else
-#include <adapters/radio/SX126xRadio.h>
-#endif
+#include <adapters/radio/LoRaRadio.h>
 
 #define ZEPHCORE_LORA 1
 

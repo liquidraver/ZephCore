@@ -14,12 +14,13 @@
 #include "radio_common.h"
 #include "CadController.h"
 #include "NoiseFloorEstimator.h"
+#include "LoRaRadioOps.h"
 
 namespace mesh {
 
-class LoRaRadioBase : public Radio, private CadHw {
+class LoRaRadio final : public Radio, private CadHw {
 public:
-	LoRaRadioBase(const struct device *lora_dev, MainBoard &board);
+	LoRaRadio(const struct device *lora_dev, MainBoard &board);
 
 	/* Mandatory, before begin(): the radio reads freq/bw/sf/cr/power
 	 * through this pointer from then on (LoRaConfig only seeds prefs). */
@@ -62,12 +63,14 @@ public:
 	uint32_t getPacketsRecv() const override { return (uint32_t)atomic_get(&_packets_recv); }
 	uint32_t getPacketsSent() const override { return (uint32_t)atomic_get(&_packets_sent); }
 	uint32_t getPacketsRecvErrors() const override { return (uint32_t)atomic_get(&_packets_recv_errors); }
-	/* Virtual: reached through LoRaRadioBase& (RepeaterMesh::clearStats()),
-	 * so radios with extra accumulators clear them on the same `clear stats`. */
-	virtual void resetStats() {
+	/* `clear stats`, including a family's own accumulators (LR2021). */
+	void resetStats() {
 		atomic_set(&_packets_recv, 0);
 		atomic_set(&_packets_sent, 0);
 		atomic_set(&_packets_recv_errors, 0);
+		if (_ops.reset_stats) {
+			_ops.reset_stats(_dev);
+		}
 	}
 
 	/* Advanced radio features */
@@ -83,19 +86,19 @@ public:
 	void enableRxDutyCycle(bool enable);
 	bool isRxDutyCycleEnabled() const { return _rx_duty_cycle_enabled; }
 	/* Returns false when the chip has no RX boost feature (SX127x). */
-	virtual bool setRxBoost(bool enable);
+	bool setRxBoost(bool enable);
 	bool isRxBoostEnabled() const { return _rx_boost_enabled; }
 
 	/* External FEM LNA in RX (lna-bypass-gpios): false routes RX around the
 	 * LNA, trading its gain for its current. Returns false where the radio
 	 * or the board has no such select line. */
-	virtual bool setFemRxEnable(bool enable) { (void)enable; return false; }
+	bool setFemRxEnable(bool enable);
 
 	/* Multi-SF receive via side detectors (LR2021 only). num = 0 disables.
 	 * False when unsupported or the set violates a chip constraint. */
-	virtual bool configSideDetectors(const uint8_t *sfs, uint8_t num) {
-		(void)sfs; (void)num;
-		return false;
+	bool configSideDetectors(const uint8_t *sfs, uint8_t num);
+	int formatFreqErrorStatus(char *buf, int cap) override {
+		return _ops.format_freq_error ? _ops.format_freq_error(_dev, buf, cap) : 0;
 	}
 
 	/* Read-only view of the modem config currently used by buildModemConfig().
@@ -112,8 +115,14 @@ public:
 
 	/* Duty-cycle false-preamble re-arms, counted by the driver (each one
 	 * stretches RX time past the nominal cycle). 0 where unsupported. */
-	virtual uint32_t getDutyCycleTimeoutRestarts() const { return 0; }
-	virtual void resetDutyCycleTimeoutRestarts() {}
+	uint32_t getDutyCycleTimeoutRestarts() const {
+		return _ops.dc_restarts ? _ops.dc_restarts(_dev) : 0;
+	}
+	void resetDutyCycleTimeoutRestarts() {
+		if (_ops.reset_dc_restarts) {
+			_ops.reset_dc_restarts(_dev);
+		}
+	}
 
 	/* Adaptive CAD (LBT detPeak calibration) */
 	void setCadParams(bool auto_enabled, int8_t offset,
@@ -136,91 +145,84 @@ public:
 	bool cadRelaxOnTxStarvation() override { return _cad.relaxOnTxStarvation(); }
 	int formatCadStatus(char *buf, int cap) override;
 
-protected:
-	/* ── Hardware primitives — subclass MUST implement ─────────── */
+private:
+	/* ── The radio family (LoRaRadioOps.h): the Zephyr LoRa API plus the
+	 * driver's extension table. A NULL entry is the documented default. ── */
+	const LoRaRadioOps &_ops;
 
-	virtual bool hwConfigure(const struct lora_modem_config &cfg) = 0;
-	virtual void hwCancelReceive() = 0;
-	virtual int hwSendAsync(uint8_t *buf, uint32_t len,
-				struct k_poll_signal *sig) = 0;
-	virtual int16_t hwGetCurrentRSSI() = 0;
+	bool hwConfigure(const struct lora_modem_config &cfg);
+	void hwCancelReceive() { lora_recv_async(_dev, NULL, NULL); }
+	int hwSendAsync(uint8_t *buf, uint32_t len, struct k_poll_signal *sig)
+	{
+		return lora_send_async(_dev, buf, len, sig);
+	}
+	int16_t hwGetCurrentRSSI() { return _ops.rssi_inst ? _ops.rssi_inst(_dev) : -80; }
 	/* Read `n` RSSI samples `spacing_us` apart, bracketed once (on the LR
 	 * families each single read tears the duty cycle down and back up).
 	 * Returns samples written (< n: refused partway, abandon), or -EAGAIN
 	 * when a preamble/header landed in the window (a busy channel, not a
-	 * failing bus). The default per-sample loop suits SX126x and SX127x. */
-	virtual int hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us);
+	 * failing bus). Without a family burst: one read per sample. */
+	int hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us);
 	/* The radio's "currently receiving" signal: latch + raw IRQ bits. Clears
-	 * sticky bits only to release an expired grace or payload deadline.
-	 * Backs LoRaRadioBase::isReceiving(). */
-	virtual bool hwIsReceiving() = 0;
-	virtual void hwSetRxBoost(bool enable) = 0;
+	 * sticky bits only to release an expired grace or payload deadline. */
+	bool hwIsReceiving() { return _ops.is_receiving && _ops.is_receiving(_dev); }
+	void hwSetRxBoost(bool enable)
+	{
+		if (_ops.set_rx_boost) {
+			_ops.set_rx_boost(_dev, enable);
+		}
+	}
+	/* GPIO-only BUSY check (no SPI). */
+	bool hwIsChipBusy() { return _ops.is_chip_busy && _ops.is_chip_busy(_dev); }
 
-	/** GPIO-only BUSY check (no SPI). Default false for chips without duty-cycle sleep. */
-	virtual bool hwIsChipBusy() { return false; }
-
-	/* ── Adaptive-CAD primitives — defaults suit chips without hardware
-	 * CAD (SX127x): probing unsupported, offset ignored. ───────────── */
-
-	/** Blocking calibration CAD at (family base detPeak + level).
-	 *  Returns 0 = free (chip in STANDBY, caller restarts RX),
-	 *          1 = busy, chip in STANDBY, caller restarts RX,
-	 *          2 = busy, chip left in RX on the detected signal (CAD_RX
-	 *              exit mode) -- caller must NOT restart RX, and reads the
-	 *              outcome later via hwCadRxOutcome(),
-	 *          <0 = error / unsupported. */
-	virtual int hwCadProbe(int8_t level) { (void)level; return -ENOSYS; }
-
-	/** Outcome of the RX a hwCadProbe() == 2 left the chip in.
-	 *  1 = a packet completed, so the detection was real;
-	 *  2 = the chip's own CAD timeout expired with nothing decoded;
-	 *  0 = not armed, or the terminal interrupt has not arrived yet.
-	 *  Reads driver state only -- no chip access, no polling loop. */
-	virtual int hwCadRxOutcome() { return 0; }
-
-	/** How long the chip may stay in a CAD_RX-entered RX before it raises
-	 *  its own timeout.  Bounds the wait before hwCadRxOutcome() is read. */
-	virtual uint32_t hwCadRxTimeoutMs() { return 0; }
+	/* Blocking calibration CAD at (family base detPeak + level).
+	 * Returns 0 = free (chip in STANDBY, caller restarts RX),
+	 *         1 = busy, chip in STANDBY, caller restarts RX,
+	 *         2 = busy, chip left in RX on the detected signal -- caller must
+	 *             NOT restart RX, and reads the outcome later,
+	 *         <0 = error / unsupported. */
+	int hwCadProbe(int8_t level)
+	{
+		return _ops.cad_probe ? _ops.cad_probe(_dev, level) : -ENOSYS;
+	}
+	/* Outcome of the RX a probe == 2 left the chip in: 1 = a packet
+	 * completed, 2 = the Rx timed out with nothing decoded, 0 = not armed or
+	 * not resolved yet. Driver state only, no chip access. */
+	int hwCadRxOutcome() { return _ops.cad_rx_outcome ? _ops.cad_rx_outcome(_dev) : 0; }
+	/* The Rx bound a detecting probe programs; 0 = no probing. */
+	uint32_t hwCadRxTimeoutMs()
+	{
+		return _ops.cad_rx_timeout_ms ? _ops.cad_rx_timeout_ms(_dev) : 0;
+	}
 	/* CadHw (see CadController.h): offset, base detPeak (0 = unsupported)
-	 * and the driver's detPeak clamp (0/0 = none). Report the clamp: past it
-	 * several offsets program one peak and the staircase random-walks. */
-	void hwCadSetPeakOffset(int8_t offset) override { (void)offset; }
-	uint8_t hwCadBasePeak() override { return 0; }
-	uint8_t hwCadPeakMin() override { return 0; }
-	uint8_t hwCadPeakMax() override { return 0; }
+	 * and the driver's detPeak clamp (0/0 = none). */
+	void hwCadSetPeakOffset(int8_t offset) override
+	{
+		if (_ops.cad_set_peak_offset) {
+			_ops.cad_set_peak_offset(_dev, offset);
+		}
+	}
+	uint8_t hwCadBasePeak() override { return _ops.cad_base_peak ? _ops.cad_base_peak(_dev) : 0; }
+	uint8_t hwCadPeakMin() override { return _ops.cad_peak_min ? _ops.cad_peak_min() : 0; }
+	uint8_t hwCadPeakMax() override { return _ops.cad_peak_max ? _ops.cad_peak_max() : 0; }
 
-	/* ── Receiver hygiene — see LoRaRadioBase::radioMaintenance() ─── */
+	/* Receiver hygiene (radioMaintenance()). Both leave the driver out of RX,
+	 * so the caller's startReceive() is a real re-entry. Only the SX126x has
+	 * the jammed-AGC fault; only the LR families specify drift recalibration. */
+	bool hwNeedsAgcReset() const { return _ops.reset_agc != nullptr; }
+	void hwResetAgc() { if (_ops.reset_agc) { _ops.reset_agc(_dev); } }
+	bool hwHasDriftRecal() const { return _ops.recalibrate != nullptr; }
+	void hwRecalibrate() { if (_ops.recalibrate) { _ops.recalibrate(_dev); } }
 
-	/* Unstick a jammed AGC: warm sleep + recalibrate (Semtech's remedy, not in
-	 * the datasheets). Must leave the driver out of RX so the caller's
-	 * startReceive() is a real re-entry. Default: no-op. */
-	virtual void hwResetAgc() {}
+	/* Deaf time per duty-cycle wake (context restore + PLL + TCXO start), in
+	 * us, counted against the catch budget (DS §13.1.7). 1500 suits XTAL
+	 * parts only. */
+	uint32_t hwWakeupTimeUs()
+	{
+		return _ops.wakeup_time_us ? _ops.wakeup_time_us(_dev) : 1500;
+	}
 
-	/** Redo the frequency-dependent calibrations (image / front end, and
-	 *  PLL+AAF where the part separates them) at the current operating
-	 *  frequency.  Called on temperature drift, never on the packet path.
-	 *  Same RX-state contract as hwResetAgc(). Default: unsupported. */
-	virtual void hwRecalibrate() {}
-
-	/* Only the SX126x has the jammed-AGC fault. Elsewhere the reset is pure
-	 * cost (7.4% packet miss in the following minute on a T1000-E, LLD 03 §13). */
-	virtual bool hwNeedsAgcReset() { return false; }
-
-	/* Does this family specify a temperature threshold for image/front-end
-	 * recalibration?  LR11xx and LR2021 do; the SX126x datasheet does not,
-	 * and drift recalibration stays inactive there exactly as before. */
-	virtual bool hwHasDriftRecal() { return false; }
-
-	/* Deaf time per duty-cycle wake (context restore + PLL + TCXO start), in us,
-	 * counted against the catch budget (DS §13.1.7). The default suits XTAL
-	 * parts only: a TCXO board must override it or window-edge preambles drop. */
-	virtual uint32_t hwWakeupTimeUs() { return 1500; }
-
-	/* loramac-node backend: its TX and RX configs are disjoint state, so the
-	 * direction-only fast path in configure() must stay off. */
-	bool _loramac_node;
-
-	/* ── Shared helpers available to subclasses ────────────────── */
+	/* ── Shared helpers ─────────────────────────────────────────── */
 
 	void buildModemConfig(struct lora_modem_config &cfg, bool tx);
 	/* Shared body for configureRx()/configureTx(): builds the modem config for

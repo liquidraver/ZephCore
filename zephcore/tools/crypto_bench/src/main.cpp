@@ -20,7 +20,7 @@
  * crypto bill in the tens of microseconds is noise, and the whole hardware
  * exploration closes with a documented "no". The final table does that
  * division for you, per LoRa preset, using the SAME airtime formula the node
- * uses (LoRaRadioBase::getAirtimeMillis) so the comparison is apples to
+ * uses (LoRaRadio::getAirtimeMillis) so the comparison is apples to
  * apples.
  *
  * It measures the SHIPPING code: src/Utils.cpp, src/Identity.cpp and
@@ -141,7 +141,7 @@ static void print_header(const char *section)
 
 /* --------------------------------------------------------------- airtime */
 
-/* Integer port of LoRaRadioBase::getAirtimeMillis(), in microseconds.
+/* Integer port of LoRaRadio::getAirtimeMillis(), in microseconds.
  * Deliberately mirrors that function line for line — including the
  * preamble-length rule and the LDRO threshold tied to symbol time (not to
  * SF), because a divergence here would silently distort the only comparison

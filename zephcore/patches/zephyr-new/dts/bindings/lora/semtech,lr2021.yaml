@@ -21,12 +21,12 @@ properties:
     required: true
     description: GPIO connected to BUSY (high = busy).
 
-  dio1-gpios:
+  irq-gpios:
     type: phandle-array
     required: true
     description: GPIO connected to DIO5/IRQ line (active-high, pull-down).
 
-  tcxo-voltage-mv:
+  tcxo-voltage:
     type: int
     default: 0
     description: |
@@ -36,7 +36,7 @@ properties:
       0 = no TCXO (use XTAL). Allowed: 1600, 1700, 1800, 2200, 2400, 2700,
       3000, 3300.
 
-  tcxo-startup-delay-ms:
+  tcxo-power-startup-delay-ms:
     type: int
     default: 10
     description: |
@@ -54,9 +54,9 @@ properties:
     default: 9
     description: |
       Chip-side DIO wired to the MCU interrupt line, 5..11. This is the DIO
-      number on the LR2021 itself, not the SoC pin — the SoC side is dio1-gpios.
+      number on the LR2021 itself, not the SoC pin — the SoC side is irq-gpios.
 
-  rfswitch-enable:
+  rfsw-enable:
     type: int
     default: 0
     description: |
@@ -65,52 +65,52 @@ properties:
       bit 7 is unused. Set a bit to include that DIO in RF switch control.
       The DIO named by irq-dio is skipped even if its bit is set here.
 
-  rfswitch-standby:
+  rfsw-standby:
     type: int
     default: 0
     description: |
       Bitmask of RF switch DIOs that are HIGH in standby mode.
-      Bit mapping matches rfswitch-enable.
+      Bit mapping matches rfsw-enable.
 
-  rfswitch-rx:
+  rfsw-rx:
     type: int
     default: 0
     description: |
       Bitmask of RF switch DIOs that are HIGH in RX mode, in BOTH bands.
-      Bit mapping matches rfswitch-enable. This is the convenient form for
-      the common single-band board; set rfswitch-rx-lf / rfswitch-rx-hf
+      Bit mapping matches rfsw-enable. This is the convenient form for
+      the common single-band board; set rfsw-rx-lf / rfsw-rx-hf
       instead when the two bands need different masks.
 
-  rfswitch-rx-lf:
+  rfsw-rx-lf:
     type: int
     description: |
       Bitmask of RF switch DIOs that are HIGH in sub-GHz RX only.
-      Defaults to rfswitch-rx when omitted. Bit mapping matches
-      rfswitch-enable.
+      Defaults to rfsw-rx when omitted. Bit mapping matches
+      rfsw-enable.
 
-  rfswitch-rx-hf:
+  rfsw-rx-hf:
     type: int
     description: |
       Bitmask of RF switch DIOs that are HIGH in 2.4 GHz RX only.
-      Defaults to rfswitch-rx when omitted. Bit mapping matches
-      rfswitch-enable.
+      Defaults to rfsw-rx when omitted. Bit mapping matches
+      rfsw-enable.
 
-      Split from rfswitch-rx for front ends whose two bands are mutually
+      Split from rfsw-rx for front ends whose two bands are mutually
       exclusive: the Meshnology W12 must hold the GC1109 sub-GHz FEM in
       shutdown (DIO11 low) during 2.4 GHz RX, which a single shared mask
       cannot express. Do NOT give these two a `default:` here — the driver
-      falls back to rfswitch-rx by testing for the property's absence.
+      falls back to rfsw-rx by testing for the property's absence.
 
-  rfswitch-tx:
+  rfsw-tx:
     type: int
     default: 0
     description: |
       Bitmask of RF switch DIOs that are HIGH in sub-GHz TX mode (LF PA).
-      Bit mapping matches rfswitch-enable.
+      Bit mapping matches rfsw-enable.
 
-  rfswitch-tx-hp:
+  rfsw-tx-hp:
     type: int
     default: 0
     description: |
       Bitmask of RF switch DIOs that are HIGH in 2.4 GHz / high-power TX mode (HF PA).
-      Bit mapping matches rfswitch-enable.
+      Bit mapping matches rfsw-enable.

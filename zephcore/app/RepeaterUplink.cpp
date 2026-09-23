@@ -15,7 +15,7 @@
 #include <mesh/Utils.h>
 #include <helpers/MeshcoreJson.h>
 #include <helpers/TxtDataHelpers.h>
-#include <adapters/radio/LoRaRadioBase.h>
+#include <adapters/radio/LoRaRadio.h>
 #include "observer_creds.h"
 #include <ZephyrWiFiStation.h>
 #include <ZephyrMQTTPublisher.h>
@@ -166,7 +166,7 @@ void RepeaterMesh::publishUplinkStatus(const char *status)
 	if (!isUplinkEnabled() || !mqtt_publisher_is_connected()) return;
 	if (_uplink_status_topic[0] == '\0') return;
 
-	auto& radio_driver = *static_cast<mesh::LoRaRadioBase *>(_radio);
+	auto& radio_driver = *static_cast<mesh::LoRaRadio *>(_radio);
 	uint32_t now_epoch = getRTCClock()->getCurrentTime();
 
 	char radio_buf[48];

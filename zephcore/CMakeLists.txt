@@ -341,7 +341,7 @@ target_sources(app PRIVATE
   src/StaticPoolPacketManager.cpp
   src/Utils.cpp
   adapters/board/ZephyrBoard.cpp
-  adapters/radio/LoRaRadioBase.cpp
+  adapters/radio/LoRaRadio.cpp
   adapters/radio/CadController.cpp
   adapters/clock/ZephyrMillisecondClock.cpp
   adapters/clock/ZephyrRTCClock.cpp
@@ -464,26 +464,23 @@ if(CONFIG_ZEPHCORE_RADIO_LR1110)
   # (patches/zephyr/ auto-applied at configure time — see patch block above)
   # Only the ZephCore adapter is compiled here.
   target_sources(app PRIVATE
-    adapters/radio/LR1110Radio.cpp
+    adapters/radio/radio_ops_lr1110.cpp
   )
 elseif(CONFIG_ZEPHCORE_RADIO_LR2021)
   message(STATUS "ZephCore Radio: LR2021 (Zephyr LoRa driver)")
   target_sources(app PRIVATE
-    adapters/radio/LR2021Radio.cpp
-  )
-  target_include_directories(app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/radio/lr20xx
+    adapters/radio/radio_ops_lr2021.cpp
   )
 elseif(CONFIG_ZEPHCORE_RADIO_SX127X)
   message(STATUS "ZephCore Radio: SX127x (Zephyr loramac-node driver)")
   target_sources(app PRIVATE
-    adapters/radio/SX127xRadio.cpp
+    adapters/radio/radio_ops_sx127x.cpp
   )
 else()
   # Default: SX126x via native Zephyr LoRa driver
   message(STATUS "ZephCore Radio: SX126x (native Zephyr driver)")
   target_sources(app PRIVATE
-    adapters/radio/SX126xRadio.cpp
+    adapters/radio/radio_ops_sx126x.cpp
   )
 endif()
 

@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Adaptive CAD controller: learns the LBT detPeak offset from probe verdicts.
  *
- * Pure algorithm over a four-call hardware interface. LoRaRadioBase decides
+ * Pure algorithm over a four-call hardware interface. LoRaRadio decides
  * when to probe, runs the probe and feeds the verdicts in; this class keeps
  * the per-level statistics and moves the operating offset. Design notes:
  * devdocs/lld/03-radio-contract.md §13 and docs/ADAPTIVE_CAD.md.

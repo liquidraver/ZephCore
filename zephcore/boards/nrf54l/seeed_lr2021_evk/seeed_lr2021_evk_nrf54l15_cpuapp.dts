@@ -380,14 +380,14 @@
 
 		reset-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;			/* D2 = P1.06 */
 		busy-gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>;			/* D1 = P1.05 */
-		dio1-gpios = <&gpio1 4 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;	/* D0 = P1.04 */
+		irq-gpios = <&gpio1 4 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;	/* D0 = P1.04 */
 		irq-dio = <8>;	/* chip DIO8 -> module pin 1 -> D0 */
 
 		/*
 		 * NO TCXO. The module schematic shows crystal Q1, 32 MHz, across
 		 * XTA/XTB, and the chip's dual-function VTCXO/VNTC pin is wired
 		 * as the NTC thermistor input (R3 + ERT-JZER104F), not as a TCXO
-		 * supply. So tcxo-voltage-mv stays at its default of 0.
+		 * supply. So tcxo-voltage stays at its default of 0.
 		 *
 		 * Semtech's own shield overlay declares a 1.8 V TCXO here, which
 		 * contradicts their schematic. The schematic wins. This is worth
@@ -402,7 +402,7 @@
 		 * Switchless dual-band front end: RFO_LF and RFO_HF each drive
 		 * their own fixed matching network straight to their own U.FL.
 		 * There is no antenna switch and no DIO driving one, so every
-		 * rfswitch-* mask stays at its default of 0 — same as
+		 * rfsw-* mask stays at its default of 0 — same as
 		 * meshtracker_x1. ANT_LF is the sub-GHz SMA; the HF/2.4 GHz path
 		 * is simply unused by MeshCore.
 		 */

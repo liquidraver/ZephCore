@@ -68,14 +68,12 @@ zephcore/
 │
 ├── adapters/               # Zephyr HAL implementations
 │   ├── radio/              # LoRa radio drivers
-│   │   ├── LoRaRadioBase.cpp/h    # Shared TX/RX state machine, noise floor, AGC
-│   │   ├── SX126xRadio.cpp/h      # SX126x adapter (native Zephyr driver, patched)
-│   │   ├── SX127xRadio.cpp/h      # SX127x adapter (loramac-node backend)
-│   │   ├── LR1110Radio.cpp/h      # LR1110 adapter (custom Zephyr driver)
-│   │   ├── LR2021Radio.cpp/h      # LR2021 adapter (custom driver)
-│   │   ├── radio_common.h         # Shared radio types and constants
-│   │   ├── lr11xx/                # LR11xx low-level HAL (SPI, GPIO, Semtech SDK)
-│   │   └── lr20xx/                # LR20xx low-level HAL (Semtech SDK)
+│   │   ├── LoRaRadio.cpp/h        # The one radio adapter: TX/RX state machine, noise floor, CAD, hygiene
+│   │   ├── LoRaRadioOps.h         # Per-family ops table (driver extension functions)
+│   │   ├── radio_ops_<family>.cpp # sx126x / sx127x / lr1110 / lr2021 tables (one linked per build)
+│   │   ├── CadController.*        # Adaptive CAD controller (host-tested)
+│   │   ├── NoiseFloorEstimator.h  # Noise-floor EMA (host-tested)
+│   │   └── radio_common.h, radio_tuning.h  # Shared constants
 │   ├── ble/ZephyrBLE.cpp/h        # BLE NUS service, pairing, TX congestion
 │   ├── board/ZephyrBoard.cpp/h    # Battery ADC, LEDs, reboot, bootloader
 │   ├── clock/                     # Millisecond uptime + software RTC + I2C RTC discovery
@@ -167,11 +165,11 @@ zephcore/
 │    ├── RX delay (score-based prioritization)    │
 │    └── Maintenance (noise floor, image cal)     │
 ├─────────────────────────────────────────────────┤
-│  LoRaRadioBase                                  │  Radio HAL
-│    ├── SX126xRadio  ──► Zephyr SX126x driver   │
-│    ├── SX127xRadio  ──► loramac-node backend    │
-│    ├── LR1110Radio  ──► Custom LR11xx driver    │
-│    └── LR2021Radio  ──► Custom LR20xx driver    │
+│  LoRaRadio + kLoRaRadioOps (one per build)      │  Radio HAL
+│    ├── sx126x ──► Zephyr SX126x driver (0003)   │
+│    ├── sx127x ──► loramac-node backend          │
+│    ├── lr1110 ──► our LR11xx driver + LBM SDK   │
+│    └── lr2021 ──► our LR20xx driver + SDK       │
 ├─────────────────────────────────────────────────┤
 │  Zephyr RTOS (kernel, drivers, BLE, FS, USB)    │  Platform
 └─────────────────────────────────────────────────┘
@@ -356,16 +354,18 @@ All policy timers (6 h rate limit, 7-day suppression, tenure, sample age) anchor
 
 ```
 mesh::Radio (abstract interface)
-  └── LoRaRadioBase (shared state machine, ring buffer, noise floor)
-        ├── SX126xRadio → Zephyr native SX126x driver + sx126x_ext.h
-        ├── SX127xRadio → Zephyr loramac-node backend (SX1272/76/78)
-        ├── LR1110Radio → Custom lr11xx_lora.c driver + Semtech HAL
-        └── LR2021Radio → Custom lr20xx_lora.c driver + Semtech HAL
+  └── LoRaRadio (final: state machine, ring buffer, noise floor, CAD, hygiene)
+        uses kLoRaRadioOps, the family's const table of driver extension
+        functions (LoRaRadioOps.h), one linked per build:
+          radio_ops_sx126x.cpp → Zephyr native SX126x driver + sx126x_ext.h
+          radio_ops_sx127x.cpp → Zephyr loramac-node backend (all entries NULL)
+          radio_ops_lr1110.cpp → our lr11xx_lora.c driver + lr11xx_lora.h
+          radio_ops_lr2021.cpp → our lr20xx_lora.c driver + lr20xx_lora.h
 ```
 
 Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR2021` / `_SX127X` Kconfig options, resolved in `RadioIncludes.h`. The native SX126x path is the default and covers SX1261/62/68, LLCC68, and the STM32WL integrated sub-GHz radio.
 
-### 5.2 LoRaRadioBase State Machine
+### 5.2 LoRaRadio State Machine
 
 **TX Flow** (LBT — current default; `cad.mode == LORA_CAD_MODE_LBT` is set unconditionally in `buildModemConfig`):
 1. `startSendRaw()` → `isReceiving()` final gate → `_tx_active = 1` → **skip** `hwCancelReceive()` and leave `_in_recv_mode = 1` so the driver sees state == RX → `configureTx()` → async send.
@@ -382,7 +382,7 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 
 ### 5.2.1 RX-Busy Gate (TX-during-RX prevention)
 
-`LoRaRadioBase::isReceiving()` is the single software source of truth for "currently receiving" and is consulted at three sites: dispatcher initial gate, dispatcher final gate, and `startSendRaw`'s last-moment gate. Logic:
+`LoRaRadio::isReceiving()` is the single software source of truth for "currently receiving" and is consulted at three sites: dispatcher initial gate, dispatcher final gate, and `startSendRaw`'s last-moment gate. Logic:
 
 ```
 isReceiving()
@@ -401,7 +401,7 @@ The poll path is otherwise non-destructive — IRQ bits are cleared only by the 
 
 ### 5.2.2 CAD-Timeout Recovery
 
-`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadioBase::recoverRxState()` does:
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadio::recoverRxState()` does:
 
 ```cpp
 hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
@@ -426,7 +426,7 @@ Algorithm in `triggerNoiseFloorCalibrate()`:
 dBm): it gates on signal *strength* ≈ link budget, blind to distance, so
 raising it means "react to strong signals only, ignore faint/echo". The right
 LBT sensitivity is site-dependent and cannot be derived from the RSSI floor.
-`LoRaRadioBase::cadMaintenance()` (housekeeping tick) runs one calibration CAD
+`LoRaRadio::cadMaintenance()` (housekeeping tick) runs one calibration CAD
 probe per `probe.interval` (default **15 s**) at a signed **level** relative
 to the family's per-SF base detPeak, restarts RX, and classifies busy verdicts
 with a ground-truth filter. **Key property:** the probe is *skipped* when RSSI >
@@ -705,7 +705,7 @@ Autonomous operation features:
 - **Region filtering**: `RegionMap` with transport key matching per flood packet
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s
 - **Neighbor tracking**: RSSI/SNR/name/timestamp table (`CONFIG_ZEPHCORE_MAX_NEIGHBOURS`, default 50 slots)
-- **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadioBase::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
+- **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadio::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
 - **WiFi+MQTT uplink** (ESP32, `CONFIG_ZEPHCORE_REPEATER_UPLINK`): `RepeaterUplink.cpp` reports packets observer-style while still repeating; configured via `set uplink.*` CLI
 
 ### 6.4 RoomServerMesh
@@ -1167,7 +1167,7 @@ upgrade block migrates them.
 
 ```
 DIO1 interrupt → Zephyr lora driver → async RX callback
-  → LoRaRadioBase::rxCallbackStatic() → SPSC ring buffer write → _rx_cb()
+  → LoRaRadio::rxCallbackStatic() → SPSC ring buffer write → _rx_cb()
     → k_event_post(MESH_EVENT_LORA_RX) → main thread wakes
       → Dispatcher::loop() → checkRecv() → drain ring buffer
         → tryParsePacket() → score + airtime calc

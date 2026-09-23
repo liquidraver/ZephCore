@@ -421,11 +421,11 @@
 
 		reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
 		busy-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
-		dio1-gpios = <&gpio1 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+		irq-gpios = <&gpio1 1 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 		irq-dio = <8>;
 
-		tcxo-voltage-mv = <1600>;
-		tcxo-startup-delay-ms = <5>;
+		tcxo-voltage = <1600>;
+		tcxo-power-startup-delay-ms = <5>;
 		rx-boosted;
 
 		/* Single antenna path, no DIO-driven RF switch on this board */

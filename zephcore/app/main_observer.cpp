@@ -277,15 +277,7 @@ static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
 /* Radio is constructed with no prefs pointer; main() binds it to the mesh's
  * NodePrefs via setPrefs() before observer_mesh.begin(). */
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
-static mesh::LR1110Radio lora_radio(lora_dev, s_board);
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR2021)
-static mesh::LR2021Radio lora_radio(lora_dev, s_board);
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
-static mesh::SX127xRadio lora_radio(lora_dev, s_board);
-#else
-static mesh::SX126xRadio lora_radio(lora_dev, s_board);
-#endif
+static mesh::LoRaRadio lora_radio(lora_dev, s_board);
 
 static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rtc_clock);
 static RepeaterDataStore  data_store;

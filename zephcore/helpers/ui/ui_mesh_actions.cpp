@@ -6,7 +6,7 @@
  * Extracted from main_companion.cpp.
  *
  * This is a .cpp file because it accesses C++ mesh objects (CompanionMesh,
- * ZephyrDataStore, LoRaRadioBase, ZephyrBoard, ZephyrRTCClock).
+ * ZephyrDataStore, LoRaRadio, ZephyrBoard, ZephyrRTCClock).
  * The extern "C" wrappers are called from ui_task.c (C code).
  */
 
@@ -23,7 +23,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 
 #include <app/CompanionMesh.h>
 #include <ZephyrDataStore.h>
-#include <adapters/radio/LoRaRadioBase.h>
+#include <adapters/radio/LoRaRadio.h>
 #include <adapters/board/ZephyrBoard.h>
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <ZephyrBLE.h>
@@ -52,7 +52,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 /* Module-local pointers, set by init */
 static CompanionMesh *s_mesh;
 static ZephyrDataStore *s_data_store;
-static mesh::LoRaRadioBase *s_lora_radio;
+static mesh::LoRaRadio *s_lora_radio;
 static mesh::ZephyrBoard *s_board;
 static mesh::ZephyrRTCClock *s_rtc_clock;
 static struct k_event *s_mesh_events;
@@ -87,7 +87,7 @@ extern "C" void ui_mesh_actions_init(struct k_event *mesh_events,
 	s_mesh_event_ui_action = mesh_event_ui_action;
 	s_mesh = static_cast<CompanionMesh *>(companion_mesh);
 	s_data_store = static_cast<ZephyrDataStore *>(data_store);
-	s_lora_radio = static_cast<mesh::LoRaRadioBase *>(lora_radio);
+	s_lora_radio = static_cast<mesh::LoRaRadio *>(lora_radio);
 	s_board = static_cast<mesh::ZephyrBoard *>(zephyr_board);
 	s_rtc_clock = static_cast<mesh::ZephyrRTCClock *>(rtc_clock);
 }

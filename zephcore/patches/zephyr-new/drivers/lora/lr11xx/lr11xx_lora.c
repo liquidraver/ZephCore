@@ -107,7 +107,7 @@ struct lr11xx_data {
 
 	/* Stored duty-cycle timing from recv_duty_cycle() — the re-arm paths
 	 * (start_rx / restart_rx) reuse these exact values, never recompute:
-	 * window sizing is owned by the adapter layer (LoRaRadioBase). */
+	 * window sizing is owned by the adapter layer (LoRaRadio). */
 	uint32_t dc_rx_ms;
 	uint32_t dc_sleep_ms;
 
@@ -1140,7 +1140,7 @@ static int lr11xx_lora_recv_duty_cycle(const struct device *dev,
 		return -EINVAL;
 	}
 
-	/* Explicit timing only — the adapter (LoRaRadioBase) owns the window
+	/* Explicit timing only — the adapter (LoRaRadio) owns the window
 	 * sizing.  No driver-side auto-compute. */
 	if (K_TIMEOUT_EQ(rx_period, K_FOREVER) ||
 	    K_TIMEOUT_EQ(sleep_period, K_FOREVER)) {
@@ -1294,7 +1294,7 @@ int16_t lr11xx_get_rssi_inst(const struct device *dev)
 	int16_t out = -128;
 
 	/* Non-blocking: a contended bus means the sampler simply retries.  -128
-	 * is the sentinel LoRaRadioBase::triggerNoiseFloorCalibrate expects. */
+	 * is the sentinel LoRaRadio::triggerNoiseFloorCalibrate expects. */
 	if (k_mutex_lock(&data->spi_mutex, K_NO_WAIT) != 0) {
 		return -128;
 	}

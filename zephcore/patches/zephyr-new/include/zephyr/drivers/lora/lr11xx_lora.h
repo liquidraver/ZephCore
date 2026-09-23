@@ -1,7 +1,7 @@
 /*
  * SPDX-License-Identifier: MIT
  * LR11xx Zephyr LoRa driver — extension API used by the ZephCore adapter
- * (LR1110Radio). Everything here takes the driver's SPI mutex; calls that
+ * (radio_ops_lr1110.cpp). Everything here takes the driver's SPI mutex; calls that
  * touch the chip bracket a running duty cycle (see lr11xx_lora.c).
  */
 

@@ -443,23 +443,8 @@ static uint16_t get_battery_mv(void)
 /* Radio is constructed with no prefs pointer; main() binds it to
  * repeater_mesh._prefs via setPrefs() before repeater_mesh.begin(). */
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
-/* LR1110 via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::LR1110Radio lora_radio(lora_dev, zephyr_board);
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR2021)
-/* LR2021 via Zephyr LoRa driver */
-static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::LR2021Radio lora_radio(lora_dev, zephyr_board);
-#elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
-/* SX127x via Zephyr loramac-node driver */
-static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX127xRadio lora_radio(lora_dev, zephyr_board);
-#else
-/* SX126x via Zephyr LoRa driver */
-static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board);
-#endif
+static mesh::LoRaRadio lora_radio(lora_dev, zephyr_board);
 
 static mesh::ZephyrMillisecondClock ms_clock;
 static mesh::ZephyrRNG zephyr_rng;

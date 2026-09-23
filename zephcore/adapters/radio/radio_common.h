@@ -2,7 +2,7 @@
  * SPDX-License-Identifier: MIT
  * Shared constants and utilities for all LoRa radio adapters.
  *
- * Anything duplicated between SX126xRadio and LR1110Radio belongs here.
+ * Radio-family-independent pieces used by LoRaRadio.
  * Radio-specific constants (e.g. SX126x duty cycle math) stay in
  * their respective headers.
  */
