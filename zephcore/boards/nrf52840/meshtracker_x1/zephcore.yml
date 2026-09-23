@@ -1,0 +1,14 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: meshtracker_x1
+release:
+  roles: [companion, repeater]
+# Catalog: name pre-matched to MeshCore's flasher convention ("Seeed Studio" +
+# full product name), so this folds into their tile automatically the moment
+# they add one -- the merge is by exact name. Their flasher config has no X1 entry
+# yet even though MeshCore firmware supports it, hence new + our own photo.
+# WHEN IT APPEARS: drop `new` and `own_img` so their art and tile win.
+catalog:
+  device: "Seeed Studio SenseCAP MeshTracker X1"
+  maker: seeed
+  new: true
+  own_img: meshtracker_x1.jpg

@@ -174,7 +174,12 @@ function(zephcore_apply_patches PATCH_DIR TARGET_DIR LABEL)
                 list(APPEND PATCH_PATHS "${_path}")
             endforeach()
             if(PATCH_PATHS)
-                message(STATUS "  [${LABEL}] Resetting stale files for: ${PATCH_NAME}")
+                # This discards any uncommitted edits in these files of the
+                # target tree (e.g. an in-progress driver change not yet
+                # regenerated into the patch) -- say so loudly.
+                message(WARNING "  [${LABEL}] ${PATCH_NAME} does not apply; "
+                    "resetting these files in ${TARGET_DIR} to HEAD, discarding "
+                    "any local edits in them: ${PATCH_PATHS}")
                 execute_process(
                     COMMAND git checkout -- ${PATCH_PATHS}
                     WORKING_DIRECTORY "${TARGET_DIR}"
@@ -231,15 +236,5 @@ if(EXISTS ${ZEPHCORE_SOURCE_DIR}/patches/modules/loramac-node)
         "${ZEPHCORE_SOURCE_DIR}/patches/modules/loramac-node"
         "${ZEPHCORE_MODULES_DIR}/lib/loramac-node"
         "loramac-node"
-    )
-endif()
-
-# Apply patches to hal_espressif module (ESP32 BLE controller glue)
-if(EXISTS ${ZEPHCORE_SOURCE_DIR}/patches/modules/hal-espressif)
-    message(STATUS "Applying ZephCore patches to hal_espressif...")
-    zephcore_apply_patches(
-        "${ZEPHCORE_SOURCE_DIR}/patches/modules/hal-espressif"
-        "${ZEPHCORE_MODULES_DIR}/hal/espressif"
-        "hal-espressif"
     )
 endif()

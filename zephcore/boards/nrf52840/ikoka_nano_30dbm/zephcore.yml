@@ -1,0 +1,8 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: ikoka_nano_30dbm
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Ikoka Nano"
+  maker: Ikoka
+  subtitle: "30 dBm"

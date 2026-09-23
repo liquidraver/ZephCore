@@ -526,6 +526,9 @@ jobs:
       with:
         python-version: '${{ env.python_version }}'
 
+    # gen_provider_catalog.py reads the board manifests (PyYAML).
+    - run: pip install -r requirements.txt
+
     # Pull every board's firmware back into a single firmware/ directory. This
     # branch is force-pushed, so an incomplete set here silently DELETES boards
     # from the live configurator feed — which is exactly why this handoff must

@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: rak_wismesh_tag
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "RAK WisMesh Tag"
+  maker: rak

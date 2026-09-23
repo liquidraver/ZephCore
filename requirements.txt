@@ -1,1 +1,4 @@
 adafruit-nrfutil==0.5.3.post16
+# Board manifests (zephcore/scripts/board_manifest.py), read by build.sh and
+# gen_provider_catalog.py.
+PyYAML>=6.0

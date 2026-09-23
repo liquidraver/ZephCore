@@ -1,0 +1,12 @@
+# ZephCore native-Linux preset manifest — schema in zephcore/scripts/board_manifest.py
+target: native_sim/native/64
+linux:
+  host: aarch64
+  cross_compile: /usr/bin/aarch64-linux-gnu-
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "RAK6421 WisMesh (Raspberry Pi)"
+  maker: rak
+  new: true
+  img: rpi.svg

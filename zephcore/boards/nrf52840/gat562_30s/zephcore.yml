@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: gat562_30s
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "GAT-IoT GAT562 30s"
+  maker: gat-iot

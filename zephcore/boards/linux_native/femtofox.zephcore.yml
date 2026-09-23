@@ -1,0 +1,12 @@
+# ZephCore native-Linux preset manifest — schema in zephcore/scripts/board_manifest.py
+target: native_sim
+linux:
+  host: arm
+  cross_compile: /usr/bin/arm-linux-gnueabihf-
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Femtofox (Luckfox Pico Mini)"
+  maker: femtofox
+  new: true
+  img: lora.svg

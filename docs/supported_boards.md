@@ -1,33 +1,37 @@
 # Supported Boards
 
-Board strings for use with `west build -b <board> zephcore`.
+Board strings for use with `west build -b <board> zephcore`. The lists are generated from the board
+manifests (`zephcore/boards/**/zephcore.yml`) by `python zephcore/scripts/board_manifest.py docs`;
+edit the manifests, not the lists.
 
 ## nRF52840
 
+<!-- boards:nrf52 -->
 ```
-rak4631
-rak3401_1watt
-wio_tracker_l1
-wio_tracker_l1_1w
-t1000_e
+gat562_30s
+heltec_t096
+heltec_t1
+heltec_t114
+ikoka_nano_30dbm
+lilygo_techo
+lilygo_timpulse_plus
 meshtracker_x1
+muziworks_r1neo
+promicro_lr2021        # source-only, no published firmware
+promicro_sx1262
+rak3401_1watt
+rak4631
+rak_wismesh_tag
+sensecap_solar
+t1000_e
 thinknode_m1
 thinknode_m3
 thinknode_m6
-rak_wismesh_tag
-ikoka_nano_30dbm
-sensecap_solar
+wio_tracker_l1
+wio_tracker_l1_1w
 xiao_nrf52840
-lilygo_techo
-promicro_sx1262
-promicro_lr2021
-heltec_t114
-heltec_t096
-heltec_t1
-gat562_30s
-muziworks_r1neo
-lilygo_timpulse_plus
 ```
+<!-- /boards -->
 
 > **RAK WisMesh Pocket** (WisBlock pocket): use `-b rak4631` — same board string and firmware as **RAK4631**.
 >
@@ -45,23 +49,26 @@ lilygo_timpulse_plus
 
 ## ESP32
 
+<!-- boards:esp32 -->
 ```
-xiao_esp32c3
-xiao_esp32c6/esp32c6/hpcore
-xiao_esp32s3/esp32s3/procpu
-lilygo_tlora_c6/esp32c6/hpcore
-lilygo_t3s3/esp32s3/procpu
-station_g2/esp32s3/procpu
 heltec_wifi_lora32_v3/esp32s3/procpu
 heltec_wifi_lora32_v4/esp32s3/procpu
 heltec_wifi_lora32_v43/esp32s3/procpu
 heltec_wifi_lora32_v4_r8/esp32s3/procpu
 heltec_wireless_tracker/esp32s3/procpu
 heltec_wireless_tracker_v2/esp32s3/procpu
-thinknode_m9/esp32s3/procpu
+lilygo_t3s3/esp32s3/procpu
+lilygo_tlora_c6/esp32c6/hpcore
+meshnology_w12/esp32s3/procpu
+station_g2/esp32s3/procpu
+thinknode_m9/esp32s3/procpu                 # source-only, no published firmware
+ttgo_lora32/esp32/procpu                    # source-only, no published firmware
 ttgo_tbeam/esp32/procpu
-ttgo_lora32/esp32/procpu   # source-only, no published firmware
+xiao_esp32c3
+xiao_esp32c6/esp32c6/hpcore
+xiao_esp32s3/esp32s3/procpu
 ```
+<!-- /boards -->
 
 > ESP32 boards require `west blobs fetch hal_espressif` before first build.
 >
@@ -124,9 +131,11 @@ ttgo_lora32/esp32/procpu   # source-only, no published firmware
 
 ## STM32WL
 
+<!-- boards:stm32wl -->
 ```
 lora_e5_mini
 ```
+<!-- /boards -->
 
 > **Seeed LoRa-E5 mini** (`lora_e5_mini`): STM32WLE5JC with the integrated
 > SX1262-class sub-GHz radio. No BLE and no USB device — the companion
@@ -135,18 +144,23 @@ lora_e5_mini
 
 ## MG24 (Silicon Labs)
 
+<!-- boards:mg24 -->
 ```
 xiao_mg24
 ```
+<!-- /boards -->
 
 > Requires `west blobs fetch hal_silabs` and pyocd.
 
 ## nRF54L
 
+<!-- boards:nrf54l -->
 ```
-xiao_nrf54l15/nrf54l15/cpuapp
 me25ls02/nrf54l15/cpuapp
+seeed_lr2021_evk/nrf54l15/cpuapp
+xiao_nrf54l15/nrf54l15/cpuapp
 ```
+<!-- /boards -->
 
 > Requires `--no-sysbuild` flag: `west build -b xiao_nrf54l15/nrf54l15/cpuapp zephcore --no-sysbuild`
 >

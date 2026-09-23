@@ -1,0 +1,14 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: seeed_lr2021_evk/nrf54l15/cpuapp
+release:
+  roles: [companion, repeater]
+# Catalog: same XIAO nRF54L15 host and CMSIS-DAP story as xiao_nrf54l15, but a
+# different kit (Semtech LoRa Plus expansion board + Wio-LR2021 module), so a
+# separate tile: the radio and the whole D0..D10 wiring differ. Maker is seeed:
+# there is no Semtech entry in MAKERS, and before the manifests this device had no
+# maker at all, which made the catalog generator fail once its firmware was built.
+catalog:
+  device: "Semtech LR2021 LoRa Plus EVK"
+  maker: seeed
+  new: true
+  img: lora.svg

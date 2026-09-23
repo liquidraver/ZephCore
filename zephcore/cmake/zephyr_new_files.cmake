@@ -34,4 +34,31 @@ if(EXISTS ${ZEPHCORE_SOURCE_DIR}/patches/zephyr-new)
                        ${ZEPHCORE_ZEPHYR_DIR}/${REL_PATH} COPYONLY)
         message(STATUS "  [zephyr-new] ${REL_PATH}")
     endforeach()
+
+    # Remove copies whose source was deleted from patches/zephyr-new. The list
+    # of what we copied last time lives next to the patch stamps. A file is only
+    # removed while git reports it untracked in the Zephyr tree: once upstream
+    # ships a file at the same path (LR11xx is heading that way), it is theirs
+    # and must be left alone.
+    set(_zn_manifest "${ZEPHCORE_ZEPHYR_DIR}/.zephcore_new_files.list")
+    if(EXISTS "${_zn_manifest}")
+        file(STRINGS "${_zn_manifest}" _zn_previous)
+        foreach(REL_PATH IN LISTS _zn_previous)
+            if(REL_PATH IN_LIST ZEPHCORE_NEW_FILES
+               OR NOT EXISTS "${ZEPHCORE_ZEPHYR_DIR}/${REL_PATH}")
+                continue()
+            endif()
+            execute_process(
+                COMMAND git ls-files --error-unmatch -- "${REL_PATH}"
+                WORKING_DIRECTORY "${ZEPHCORE_ZEPHYR_DIR}"
+                RESULT_VARIABLE _zn_tracked
+                OUTPUT_QUIET ERROR_QUIET)
+            if(NOT _zn_tracked EQUAL 0)
+                file(REMOVE "${ZEPHCORE_ZEPHYR_DIR}/${REL_PATH}")
+                message(STATUS "  [zephyr-new] removed stale ${REL_PATH}")
+            endif()
+        endforeach()
+    endif()
+    string(REPLACE ";" "\n" _zn_list "${ZEPHCORE_NEW_FILES}")
+    file(WRITE "${_zn_manifest}" "${_zn_list}\n")
 endif()

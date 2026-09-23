@@ -31,18 +31,12 @@ include("${APP_DIR}/cmake/zephyr_new_files.cmake")
 #
 # Static conf files (mcuboot_flashsize_*.conf) are used instead of generating
 # a temp file to avoid Windows line-ending issues with cmake file(WRITE).
-string(REPLACE "/" ";" _board_parts "${BOARD}")
-list(GET _board_parts 0 _board_base)
-
-file(GLOB_RECURSE _board_conf_candidates
-    "${APP_DIR}/boards/*/${_board_base}/board.conf")
-if(NOT _board_conf_candidates AND
-   EXISTS "${APP_DIR}/boards/${_board_base}/board.conf")
-    set(_board_conf_candidates "${APP_DIR}/boards/${_board_base}/board.conf")
-endif()
-
-if(_board_conf_candidates)
-    list(GET _board_conf_candidates 0 _board_conf)
+#
+# The board directory comes from the same resolver the app uses, so both images
+# always read the same board.
+include("${APP_DIR}/cmake/zephcore_board.cmake")
+zephcore_board_file(_board_conf board.conf)
+if(_board_conf)
     file(READ "${_board_conf}" _board_conf_content)
 
     set(_flashsize_fragment "")
@@ -72,14 +66,8 @@ endif()
 # uploads report success and then silently boot the old image on reset.
 #
 # Feeding the same partitions.overlay to MCUboot keeps both flash maps identical.
-file(GLOB_RECURSE _board_partitions
-    "${APP_DIR}/boards/*/${_board_base}/partitions.overlay")
-if(NOT _board_partitions AND
-   EXISTS "${APP_DIR}/boards/${_board_base}/partitions.overlay")
-    set(_board_partitions "${APP_DIR}/boards/${_board_base}/partitions.overlay")
-endif()
-if(_board_partitions)
-    list(GET _board_partitions 0 _board_partitions_file)
+zephcore_board_file(_board_partitions_file partitions.overlay)
+if(_board_partitions_file)
     set(mcuboot_EXTRA_DTC_OVERLAY_FILE "${_board_partitions_file}"
         CACHE INTERNAL "MCUboot partitions overlay: shared with the app image")
 endif()

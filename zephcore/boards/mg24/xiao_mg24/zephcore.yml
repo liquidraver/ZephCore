@@ -1,0 +1,12 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: xiao_mg24
+release:
+  roles: [companion, repeater]
+# Catalog: no USB device peripheral, so no bootloader and no browser-flashable
+# path; the .hex is flashed with an external probe (the XIAO's USB-C is a debug
+# bridge). MeshCore has no MG24 support, hence a ZephCore-only tile.
+catalog:
+  device: "Seeed Studio Xiao MG24"
+  maker: seeed
+  new: true
+  img: lora.svg

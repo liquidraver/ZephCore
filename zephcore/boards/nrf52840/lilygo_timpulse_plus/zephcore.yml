@@ -1,0 +1,9 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: lilygo_timpulse_plus
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "LilyGo T-Impulse Plus"
+  maker: lilygo
+  new: true
+  img: lora.svg

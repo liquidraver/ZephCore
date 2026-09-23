@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: wio_tracker_l1
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Seeed Studio Wio Tracker L1 Pro"
+  maker: seeed

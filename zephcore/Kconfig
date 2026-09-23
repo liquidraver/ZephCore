@@ -1120,7 +1120,10 @@ config ZEPHCORE_DISPLAY_MONO_TFT
 
 config ZEPHCORE_EASTER_EGG_DOOM
 	bool "Enable Doom raycaster easter egg"
-	default n
+	# Shipped on the Wio Tracker L1 companion. A Kconfig default rather than a
+	# build.sh flag, so a local build is the same firmware as the release; not
+	# in board.conf, which would also enable it in that board's repeater build.
+	default y if BOARD_WIO_TRACKER_L1 && ZEPHCORE_ROLE_COMPANION
 	depends on ZEPHCORE_UI_DISPLAY && ZEPHCORE_UI_BUTTONS
 	help
 	  Hidden easter egg: Wolf3D-style raycaster on the OLED.

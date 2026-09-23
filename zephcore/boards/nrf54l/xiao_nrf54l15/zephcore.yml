@@ -1,0 +1,12 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: xiao_nrf54l15/nrf54l15/cpuapp
+release:
+  roles: [companion, repeater]
+# Catalog: no USB bootloader (nRF54L15); the XIAO carries a SAMD11 CMSIS-DAP
+# bridge, so its own USB cable is enough (openocd/pyocd) -- still not a browser
+# flash flow. Download-only tile.
+catalog:
+  device: "Seeed Studio Xiao nRF54L15"
+  maker: seeed
+  new: true
+  img: lora.svg

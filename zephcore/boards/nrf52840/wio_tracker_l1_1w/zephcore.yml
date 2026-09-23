@@ -1,0 +1,4 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: wio_tracker_l1_1w
+release:
+  roles: [companion, repeater]

@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: rak3401_1watt
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "RAK WisMesh 1W Booster (3401 + 13302)"
+  maker: rak

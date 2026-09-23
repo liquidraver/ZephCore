@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: lilygo_techo
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "LilyGo T-Echo"
+  maker: lilygo

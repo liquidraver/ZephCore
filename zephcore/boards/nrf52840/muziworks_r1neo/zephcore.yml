@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: muziworks_r1neo
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "muzi works R1 Neo"
+  maker: muziworks

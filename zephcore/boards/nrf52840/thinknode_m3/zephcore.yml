@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: thinknode_m3
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Elecrow ThinkNode M3"
+  maker: elecrow

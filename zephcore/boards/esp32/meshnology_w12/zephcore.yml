@@ -1,0 +1,13 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: meshnology_w12/esp32s3/procpu
+release:
+  roles: [companion, repeater]
+# Catalog: MeshCore firmware has a meshnology_w12 variant but their flasher config
+# has no W12 device and no meshnology maker, so there is nothing to fold into yet.
+# The name follows their maker-plus-product convention, so it folds by itself if
+# they add one. WHEN IT APPEARS: drop `new` (and `own_img`, if one is set).
+catalog:
+  device: "Meshnology W12"
+  maker: meshnology
+  new: true
+  img: lora.svg

@@ -1,0 +1,9 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: heltec_wireless_tracker_v2/esp32s3/procpu
+capabilities:
+  light_sleep: true
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Heltec Wireless Tracker v2"
+  maker: heltec

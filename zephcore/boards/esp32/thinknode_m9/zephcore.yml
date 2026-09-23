@@ -1,0 +1,6 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+# Pulled from the release matrix 2026-07-22: bring-up still in progress (keypad,
+# GPS, battery unverified on hardware). To publish, add:
+#   release: {roles: [companion, repeater]}
+#   catalog: {device: "Elecrow ThinkNode M9", maker: elecrow}
+target: thinknode_m9/esp32s3/procpu

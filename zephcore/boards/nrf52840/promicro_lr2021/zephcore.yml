@@ -1,0 +1,3 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+# Not in the release matrix (bring-up / unvalidated).
+target: promicro_lr2021

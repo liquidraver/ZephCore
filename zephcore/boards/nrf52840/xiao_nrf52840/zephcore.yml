@@ -1,0 +1,7 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: xiao_nrf52840
+release:
+  roles: [companion, repeater]
+catalog:
+  device: "Seeed Studio Xiao nRF52 WIO"
+  maker: seeed

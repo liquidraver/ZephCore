@@ -1,0 +1,12 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: me25ls02/nrf54l15/cpuapp
+release:
+  roles: [companion, repeater]
+# Catalog: the nRF54L15 has no USB peripheral, so there is no bootloader and no
+# WebUSB/DFU path -- the Type-C port on the carrier is a CH340x UART bridge. The
+# tile publishes the .hex as a plain download, flashed over SWD.
+catalog:
+  device: "MinewSemi ME25LS02"
+  maker: minewsemi
+  new: true
+  img: lora.svg

@@ -1,0 +1,11 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: heltec_t114
+release:
+  roles: [companion, repeater]
+  variants:
+    - id: noscreen
+      conf: no_display.conf
+      subtitle: "No screen"
+catalog:
+  device: "Heltec T114"
+  maker: heltec

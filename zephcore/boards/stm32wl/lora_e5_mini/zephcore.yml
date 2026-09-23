@@ -1,0 +1,12 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: lora_e5_mini
+release:
+  roles: [companion, repeater]
+# Catalog: no Bluetooth on this SoC -- the companion speaks MeshCore serial
+# framing over USART1, bridged to USB-C by the onboard USB-UART chip, so it is
+# offered as companionUsb rather than companionBle. SWD-flashed, download-only.
+catalog:
+  device: "Seeed Studio LoRa-E5 mini"
+  maker: seeed
+  new: true
+  img: lora.svg
