@@ -63,10 +63,8 @@ int16_t SX126xRadio::hwGetCurrentRSSI()
 
 bool SX126xRadio::hwIsReceiving()
 {
-	/* MUST be non-destructive: never clear IRQ bits from this path.
-	 * Foreign-preamble release is hardware-driven (SymbNumTimeout in
-	 * non-DC, chip-internal in DC). The driver's sx126x_is_receiving()
-	 * reads rx_packet_active latch + raw IRQ bits; never clears. */
+	/* rx_packet_active latch + IRQ read. The driver clears sticky bits only
+	 * to release an expired preamble grace or payload deadline. */
 	return sx126x_is_receiving(_dev);
 }
 

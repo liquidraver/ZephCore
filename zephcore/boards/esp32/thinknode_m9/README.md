@@ -61,7 +61,7 @@ in high flash are untouched by the updater flash.
   the 2:1 divider assumption (`vbat-mv-multiplier = 8800`) matches Arduino.
 - **Upstream quirk not copied**: `ThinkNodeM9Board::getIRQGpio()` returns
   `LORA_DIO0`=41, which is the **BUSY** pin; the RadioLib `Module(...)` ctor
-  uses DIO1=42 as IRQ. We follow the working wiring (dio1-gpios = 42) —
+  uses DIO1=42 as IRQ. We follow the working wiring (irq-gpios = 42) —
   the second implementation names them correctly (IRQ = DIO1 = 42).
 
 ## Verified against a second independent firmware (second desk check)

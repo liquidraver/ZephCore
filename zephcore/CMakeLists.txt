@@ -466,9 +466,6 @@ if(CONFIG_ZEPHCORE_RADIO_LR1110)
   target_sources(app PRIVATE
     adapters/radio/LR1110Radio.cpp
   )
-  target_include_directories(app PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/adapters/radio/lr11xx
-  )
 elseif(CONFIG_ZEPHCORE_RADIO_LR2021)
   message(STATUS "ZephCore Radio: LR2021 (Zephyr LoRa driver)")
   target_sources(app PRIVATE

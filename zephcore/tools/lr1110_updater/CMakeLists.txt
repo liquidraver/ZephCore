@@ -128,5 +128,5 @@ endif()
 target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
     ${CMAKE_CURRENT_SOURCE_DIR}/lib
-    ${CMAKE_CURRENT_SOURCE_DIR}/../../adapters/radio/lr11xx
+    ${ZEPHYR_LORA_BASICS_MODEM_MODULE_DIR}/lbm_lib/smtc_modem_core/radio_drivers/lr11xx_driver/src
 )

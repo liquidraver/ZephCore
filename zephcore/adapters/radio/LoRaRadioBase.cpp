@@ -988,9 +988,9 @@ bool LoRaRadioBase::isReceiving()
 	if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active)) {
 		return false;
 	}
-	/* Driver latch + non-destructive IRQ read over the whole payload;
-	 * hwIsReceiving() never clears IRQ bits. Foreign preambles are released
-	 * by the driver's SF-aware grace and header deadline. */
+	/* Driver latch + IRQ read over the whole payload. Foreign preambles are
+	 * released by the driver's SF-aware grace and header deadline, the only
+	 * cases in which the poll clears bits. */
 	if (hwIsReceiving()) {
 		return true;
 	}

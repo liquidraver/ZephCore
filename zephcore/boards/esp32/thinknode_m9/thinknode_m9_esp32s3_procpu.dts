@@ -117,11 +117,11 @@
 
 		reset-gpios = <&gpio1 13 GPIO_ACTIVE_LOW>;               /* GPIO45 */
 		busy-gpios  = <&gpio1 9 GPIO_ACTIVE_HIGH>;               /* GPIO41 */
-		dio1-gpios  = <&gpio1 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* GPIO42 */
+		irq-gpios   = <&gpio1 10 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* GPIO42 */
 
 		/* TCXO 3.3V via DIO3 (Arduino LR11X0_DIO3_TCXO_VOLTAGE=3.3) */
-		tcxo-voltage-mv = <3300>;
-		tcxo-startup-delay-ms = <5>;
+		tcxo-voltage = <3300>;
+		tcxo-power-startup-delay-ms = <5>;
 
 		/* +3dB RX sensitivity for +2mA — deliberate divergence from the
 		 * Arduino variant, which leaves boosted gain off (looks like an
@@ -133,12 +133,12 @@
 		 *   STBY: DIO5=L DIO6=L   RX:    DIO5=H DIO6=L
 		 *   TX:   DIO5=H DIO6=H   TX_HP: DIO5=L DIO6=H
 		 * (MODE_TX = low-power PA path, MODE_TX_HP = high-power PA path) */
-		rfswitch-enable = <0x03>;
-		rfswitch-standby = <0x00>;
-		rfswitch-rx = <0x01>;
-		rfswitch-tx = <0x03>;
-		rfswitch-tx-hp = <0x02>;
-		rfswitch-gnss = <0x00>;
+		rfsw-enable = <0x03>;
+		rfsw-standby = <0x00>;
+		rfsw-rx = <0x01>;
+		rfsw-tx = <0x03>;
+		rfsw-tx-hp = <0x02>;
+		rfsw-gnss = <0x00>;
 	};
 };
 

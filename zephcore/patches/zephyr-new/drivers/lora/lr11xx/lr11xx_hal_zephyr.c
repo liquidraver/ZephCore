@@ -388,3 +388,24 @@ lr11xx_hal_status_t lr11xx_hal_wakeup(const void *context)
 	struct lr11xx_hal_context *ctx = (struct lr11xx_hal_context *)context;
 	return check_device_ready(ctx);
 }
+
+/* Abort a blocking command (SWDR001): four NOP bytes under NSS, then wait for
+ * BUSY. Same sequence as Semtech's reference HALs. */
+lr11xx_hal_status_t lr11xx_hal_abort_blocking_cmd(const void *context)
+{
+	struct lr11xx_hal_context *ctx = (struct lr11xx_hal_context *)context;
+	uint8_t nop[4] = { 0 };
+	const struct spi_buf tx_buf = { .buf = nop, .len = sizeof(nop) };
+	const struct spi_buf_set tx = { .buffers = &tx_buf, .count = 1 };
+	int ret;
+
+	gpio_pin_set_dt(&ctx->nss, 1);
+	ret = spi_write(ctx->spi_dev, &ctx->spi_cfg, &tx);
+	gpio_pin_set_dt(&ctx->nss, 0);
+
+	if (ret < 0) {
+		LOG_ERR("SPI abort failed: %d", ret);
+		return LR11XX_HAL_STATUS_ERROR;
+	}
+	return wait_on_busy(ctx);
+}

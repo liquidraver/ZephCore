@@ -66,10 +66,9 @@ int LR1110Radio::hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us)
 
 bool LR1110Radio::hwIsReceiving()
 {
-	/* MUST be non-destructive: never clear IRQ bits from this path.
-	 * Foreign-preamble release is hardware-driven (chip-internal release
-	 * on HEADER_ERROR / sync timeout). The driver's lr11xx_is_receiving()
-	 * reads IRQ status without clearing. */
+	/* Latch + IRQ read. The driver clears sticky bits only to release an
+	 * expired preamble grace or payload deadline (continuous RX has no
+	 * timeout to release them). */
 	return lr11xx_is_receiving(_dev);
 }
 
@@ -85,9 +84,8 @@ void LR1110Radio::hwRecalibrate()
 }
 
 /* This family's UM gives an explicit temperature threshold for image
- * calibration, so drift recalibration is active here.  The temperature itself
- * comes from the board, not from lr11xx_get_chip_temp_c() — see
- * LoRaRadioBase::imageCalMaintenance() for why the radio is not asked. */
+ * calibration, so drift recalibration is active here. The temperature comes
+ * from the board, not the radio (LoRaRadioBase::imageCalMaintenance()). */
 bool LR1110Radio::hwHasDriftRecal()
 {
 	return true;

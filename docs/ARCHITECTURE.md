@@ -387,7 +387,7 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 ```
 isReceiving()
   ├─ false if !_in_recv_mode || _tx_active
-  ├─ true  if hwIsReceiving()         ← per-adapter; never clears IRQ
+  ├─ true  if hwIsReceiving()         ← per-adapter; clears only on grace/deadline release
   └─ isChannelActive() RSSI fallback  ← sub-preamble-threshold energy
 ```
 

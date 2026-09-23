@@ -228,9 +228,9 @@
 		reg = <0>;
 		reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
 		busy-gpios = <&gpio1 11 GPIO_ACTIVE_HIGH>;
-		dio1-gpios = <&gpio1 8 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
-		tcxo-voltage-mv = <1800>;
-		tcxo-startup-delay-ms = <5>;
+		irq-gpios = <&gpio1 8 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+		tcxo-voltage = <1800>;
+		tcxo-power-startup-delay-ms = <5>;
 		rx-boosted;
 		spi-max-frequency = <8000000>;
 		/* RF switch: DIO5=bit0, DIO6=bit1
@@ -240,12 +240,12 @@
 		 *   TX:    DIO5=H, DIO6=H → 0x03
 		 *   TX_HP: DIO5=L, DIO6=H → 0x02
 		 *   GNSS:  DIO5=L, DIO6=L → 0x00 */
-		rfswitch-enable = <0x03>;
-		rfswitch-standby = <0x00>;
-		rfswitch-rx = <0x01>;
-		rfswitch-tx = <0x03>;
-		rfswitch-tx-hp = <0x02>;
-		rfswitch-gnss = <0x00>;
+		rfsw-enable = <0x03>;
+		rfsw-standby = <0x00>;
+		rfsw-rx = <0x01>;
+		rfsw-tx = <0x03>;
+		rfsw-tx-hp = <0x02>;
+		rfsw-gnss = <0x00>;
 	};
 };
 

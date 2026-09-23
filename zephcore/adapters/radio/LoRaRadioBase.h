@@ -150,8 +150,9 @@ protected:
 	 * when a preamble/header landed in the window (a busy channel, not a
 	 * failing bus). The default per-sample loop suits SX126x and SX127x. */
 	virtual int hwGetRssiBurst(int16_t *out, int n, uint32_t spacing_us);
-	/* Non-destructive read of the radio's "currently receiving" signal —
-	 * latch + raw IRQ bits, never clears.  Backs LoRaRadioBase::isReceiving(). */
+	/* The radio's "currently receiving" signal: latch + raw IRQ bits. Clears
+	 * sticky bits only to release an expired grace or payload deadline.
+	 * Backs LoRaRadioBase::isReceiving(). */
 	virtual bool hwIsReceiving() = 0;
 	virtual void hwSetRxBoost(bool enable) = 0;
 
