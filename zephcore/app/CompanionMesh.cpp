@@ -23,6 +23,7 @@
 #define ZEPHCORE_HAS_UI_TASK 1
 #endif
 #include <joystick_ui_hooks.h>
+#include <helpers/PacketLog.h>
 LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 /* Protocol commands (matches Arduino companion_radio) - sorted by opcode */
@@ -1927,8 +1928,14 @@ uint8_t CompanionMesh::onContactRequest(const ContactInfo &contact, uint32_t sen
 	return 0;  // Unknown request or denied
 }
 
-void CompanionMesh::logTx(mesh::Packet *, int)
+void CompanionMesh::logRx(mesh::Packet *pkt, int len, float score)
 {
+	packet_log_rx(getLogDateTime(), pkt, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
+}
+
+void CompanionMesh::logTx(mesh::Packet *pkt, int)
+{
+	packet_log_tx(getLogDateTime(), pkt);
 #if ZEPHCORE_HAS_UI_TASK
 	ui_notify_packet_sent();
 #endif

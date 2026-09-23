@@ -6,8 +6,8 @@
 
 #pragma once
 
-#include <mesh/Radio.h>
-#include <mesh/Board.h>
+#include <mesh/Dispatcher.h>
+#include <mesh/MeshCore.h>
 #include <NodePrefs.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>

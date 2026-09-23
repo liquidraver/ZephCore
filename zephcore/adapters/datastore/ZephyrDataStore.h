@@ -9,7 +9,7 @@
 #pragma once
 
 #include <mesh/Identity.h>
-#include <mesh/RTC.h>
+#include <mesh/MeshCore.h>
 #include <NodePrefs.h>
 #include <ContactInfo.h>
 #include <ChannelDetails.h>

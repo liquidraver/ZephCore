@@ -344,7 +344,6 @@ target_sources(app PRIVATE
   adapters/radio/LoRaRadioBase.cpp
   adapters/clock/ZephyrMillisecondClock.cpp
   adapters/clock/ZephyrRTCClock.cpp
-  adapters/rng/RNG.cpp
   adapters/rng/ZephyrRNG.cpp
   adapters/gps/ZephyrGPSManager.cpp
   adapters/sensors/ZephyrEnvSensors.cpp

@@ -1,32 +1,135 @@
-/*
- * SPDX-License-Identifier: MIT
- * ZephCore constants and base types
- */
-
 #pragma once
 
 #include <stdint.h>
+#include <stddef.h>
 #include <math.h>
 
-/* Neutralize STM32 CMSIS peripheral-instance macros (RNG, AES, ...) that
- * collide with portable mesh identifiers. No-op off STM32. */
+// ZEPHCORE: neutralize STM32 CMSIS peripheral-instance macros (RNG, AES, ...)
+// that collide with portable mesh identifiers. No-op off STM32.
 #include <mesh/stm32_cmsis_fixup.h>
 
-#define MAX_HASH_SIZE        8   /* SHA256 truncated to 8 bytes for dedup */
-#define PUB_KEY_SIZE        32   /* Ed25519 public key */
-#define PRV_KEY_SIZE        64   /* Ed25519 expanded private key */
-#define SEED_SIZE           32   /* Ed25519 seed */
-#define SIGNATURE_SIZE      64   /* Ed25519 signature */
+#define MAX_HASH_SIZE        8
+#define PUB_KEY_SIZE        32
+#define PRV_KEY_SIZE        64
+#define SEED_SIZE           32
+#define SIGNATURE_SIZE      64
 #define MAX_ADVERT_DATA_SIZE  32
-#define CIPHER_KEY_SIZE     16   /* AES-128 */
-#define CIPHER_BLOCK_SIZE   16   /* AES block size */
-#define CIPHER_MAC_SIZE      2   /* truncated MAC for bandwidth savings */
-#define PATH_HASH_SIZE       1   /* 1-byte per-hop hash in path field */
+#define CIPHER_KEY_SIZE     16
+#define CIPHER_BLOCK_SIZE   16
 
-#define MAX_PACKET_PAYLOAD  184  /* fits in SX126x 255-byte FIFO with headers */
-#define MAX_PATH_SIZE        64  /* max hops * max hash size */
-#define MAX_TRANS_UNIT      255  /* SX126x FIFO limit */
-#define MAX_GROUP_DATA_LENGTH (MAX_PACKET_PAYLOAD - CIPHER_BLOCK_SIZE - 3)
+// V1
+#define CIPHER_MAC_SIZE      2
+#define PATH_HASH_SIZE       1
 
-#define MESH_DEBUG_PRINT(...)
-#define MESH_DEBUG_PRINTLN(...)
+#define MAX_PACKET_PAYLOAD  184
+#define MAX_GROUP_DATA_LENGTH  (MAX_PACKET_PAYLOAD - CIPHER_BLOCK_SIZE - 3)
+#define MAX_PATH_SIZE        64
+#define MAX_TRANS_UNIT      255
+
+#if MESH_DEBUG && ARDUINO
+  #include <Arduino.h>
+  #define MESH_DEBUG_PRINT(F, ...) Serial.printf("DEBUG: " F, ##__VA_ARGS__)
+  #define MESH_DEBUG_PRINTLN(F, ...) Serial.printf("DEBUG: " F "\n", ##__VA_ARGS__)
+#elif defined(__ZEPHYR__)
+  // ZEPHCORE: upstream's debug prints become Zephyr debug logs, compiled out
+  // unless the file's log module is at DBG. The using file must register a
+  // log module (LOG_MODULE_REGISTER / LOG_MODULE_DECLARE).
+  #include <zephyr/logging/log.h>
+  #define MESH_DEBUG_PRINT(F, ...) LOG_DBG(F, ##__VA_ARGS__)
+  #define MESH_DEBUG_PRINTLN(F, ...) LOG_DBG(F, ##__VA_ARGS__)
+#else
+  #define MESH_DEBUG_PRINT(...) {}
+  #define MESH_DEBUG_PRINTLN(...) {}
+#endif
+
+#if BRIDGE_DEBUG && ARDUINO
+#define BRIDGE_DEBUG_PRINTLN(F, ...) Serial.printf("%s BRIDGE: " F, getLogDateTime(), ##__VA_ARGS__)
+#else
+#define BRIDGE_DEBUG_PRINTLN(...) {}
+#endif
+
+namespace mesh {
+
+#define  BD_STARTUP_NORMAL     0  // getStartupReason() codes
+#define  BD_STARTUP_RX_PACKET  1
+
+class MainBoard {
+public:
+  virtual uint16_t getBattMilliVolts() = 0;
+  // ZEPHCORE: battery percentage from the board's discharge curve.
+  virtual uint8_t getBattPercent() { return 0; }
+  virtual float getMCUTemperature() { return NAN; }
+  virtual bool setAdcMultiplier(float multiplier) { return false; };
+  virtual float getAdcMultiplier() const { return 0.0f; }
+  virtual const char* getManufacturerName() const = 0;
+  virtual void onBeforeTransmit() { }
+  virtual void onAfterTransmit() { }
+  // ZEPHCORE: a valid packet has just been received. Unlike the transmit pair
+  // this is a single edge, not a window: the packet is already over by the time
+  // the radio reports it, so an LED implementation fires a one-shot.
+  virtual void onPacketReceived() { }
+  virtual void reboot() = 0;
+  virtual void powerOff() { /* no op */ }
+  // Called by example setup() functions to signal that boot is complete.
+  // Boards may override to stop a boot-indicator LED sequence or similar.
+  // Default no-op: boards that don't care need not implement anything.
+  virtual void onBootComplete() { /* no op */ }
+  virtual uint32_t getIRQGpio() { return -1; } // not supported. Returns DIO1 (SX1262) and DIO0 (SX127x)
+  virtual void sleep(uint32_t secs)  { /* no op */ }
+  virtual uint32_t getGpio() { return 0; }
+  virtual void setGpio(uint32_t values) {}
+  virtual uint8_t getStartupReason() const = 0;
+  virtual bool getBootloaderVersion(char* version, size_t max_len) { return false; }
+  virtual bool startOTAUpdate(const char* id, char reply[]) { return false; }   // not supported
+
+  // Power management interface (boards with power management override these)
+  virtual bool isPwrMgtInitialised() const { return false; }
+  virtual bool isExternalPowered() { return false; }
+  virtual uint16_t getBootVoltage() { return 0; }
+  virtual bool getWakeLpcompSupported() const { return false; }
+  virtual uint32_t getResetReason() const { return 0; }
+  virtual const char* getResetReasonString(uint32_t reason) { return "Not available"; }
+  virtual uint8_t getShutdownReason() const { return 0; }
+  virtual const char* getShutdownReasonString(uint8_t reason) { return "Not available"; }
+
+  virtual bool handleCommand(const char* command, uint32_t sender_timestamp, char* reply) { return false; }
+
+  // Called from the example main loops. Lets a board feed its watchdog and
+  // run periodic housekeeping. Default no-op.
+  virtual void loop() { /* no op */ }
+};
+
+/**
+ * An abstraction of the device's Realtime Clock.
+*/
+class RTCClock {
+  uint32_t last_unique;
+protected:
+  RTCClock() { last_unique = 0; }
+
+public:
+  /**
+   * \returns  the current time. in UNIX epoch seconds.
+  */
+  virtual uint32_t getCurrentTime() = 0;
+
+  /**
+   * \param time  current time in UNIX epoch seconds.
+  */
+  virtual void setCurrentTime(uint32_t time) = 0;
+
+  /**
+   * override in classes that need to periodically update internal state
+   */
+  virtual void tick() { /* no op */}
+
+  uint32_t getCurrentTimeUnique() {
+    uint32_t t = getCurrentTime();
+    if (t <= last_unique) {
+      return ++last_unique;
+    }
+    return last_unique = t;
+  }
+};
+
+}

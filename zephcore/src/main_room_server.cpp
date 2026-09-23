@@ -60,7 +60,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include "ui_task.h"
 
 /* Radio + mesh includes (shared header selects LR1110 or SX126x) */
-#include <mesh/RadioIncludes.h>
+#include <src/RadioIncludes.h>
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
 #include "wifi_ota.h"
@@ -394,7 +394,7 @@ static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board);
 
 static mesh::ZephyrMillisecondClock ms_clock;
 static mesh::ZephyrRNG zephyr_rng;
-static mesh::SimpleMeshTables mesh_tables;
+static SimpleMeshTables mesh_tables;
 
 /* RoomServerMesh requires: board, radio, ms_clock, rng, rtc, tables */
 static RoomServerMesh room_mesh(zephyr_board, lora_radio, ms_clock, zephyr_rng, rtc_clock, mesh_tables);

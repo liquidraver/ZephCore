@@ -14,6 +14,16 @@ LOG_MODULE_REGISTER(zephcore_utils, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 namespace mesh {
 
+uint32_t RNG::nextInt(uint32_t _min, uint32_t _max)
+{
+	uint32_t num;
+	random((uint8_t *)&num, sizeof(num));
+	if (_max <= _min) {	/* ZEPHCORE: no modulo by zero */
+		return _min;
+	}
+	return (num % (_max - _min)) + _min;
+}
+
 static uint8_t hexVal(char c)
 {
 	if (c >= 'A' && c <= 'F') return c - 'A' + 10;
@@ -254,6 +264,16 @@ bool Utils::fromHex(uint8_t *dest, int dest_size, const char *src_hex)
 		char ch = *src_hex++;
 		char cl = *src_hex++;
 		*dp++ = (uint8_t)((hexVal(ch) << 4) | hexVal(cl));
+	}
+	return true;
+}
+
+bool Utils::isZeroes(const uint8_t *buf, size_t len)
+{
+	while (len > 0) {
+		if (*buf != 0) return false;
+		buf++;
+		len--;
 	}
 	return true;
 }

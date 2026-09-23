@@ -5,7 +5,7 @@
 
 #pragma once
 
-#include <mesh/Board.h>
+#include <mesh/MeshCore.h>
 
 namespace mesh {
 

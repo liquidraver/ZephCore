@@ -20,7 +20,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
-#include <mesh/RTC.h>
+#include <mesh/MeshCore.h>
 
 #ifdef CONFIG_ZEPHCORE_TIMESYNC_TABLE_SIZE
 	#define MESHTIMESYNC_TABLE_SIZE  CONFIG_ZEPHCORE_TIMESYNC_TABLE_SIZE

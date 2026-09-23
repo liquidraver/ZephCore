@@ -63,8 +63,6 @@ zephcore/
 │   ├── Radio.h             # Abstract radio interface
 │   ├── Board.h, Clock.h, RNG.h, RTC.h  # HAL interfaces
 │   ├── ContentionTracker.h # Adaptive contention window state
-│   ├── LoRaConfig.h        # Default radio parameters
-│   ├── RadioIncludes.h     # Compile-time radio driver selection
 │   ├── SimpleMeshTables.h  # Hash-based packet deduplication
 │   └── StaticPoolPacketManager.h  # Fixed pool allocator
 │
@@ -240,11 +238,10 @@ The Dispatcher runs a tight loop:
 ```
 loop():
   1. Check if current TX is complete → release packet, record airtime
-  2. Process next inbound packet from queue (if scheduled time has passed)
-  3. checkRecv(): Drain radio RX ring buffer
+  2. checkRecv(): Drain radio RX ring buffer
      - Parse raw bytes into Packet
-     - Flood packets: compute RX delay based on score → defer or process immediately
-     - Direct packets: process immediately
+     - Process immediately (no inbound queue / score-based RX delay: the
+       adaptive contention window replaces upstream's rxdelay)
   4. checkSend(): Check outbound queue
      - CAD: if channel busy (`isReceiving()` returns true or radio not ready),
             retry every 100-200ms (jittered) up to 4s total. On 4s timeout,
@@ -255,8 +252,6 @@ loop():
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
 ```
-
-**RX Delay**: Flood packets are delayed based on signal quality. High-quality signals (high SNR, short packets) get shorter delays, allowing closer/better relays to retransmit first. Uses a lookup table approximation of `10^(0.85 - score*0.1) - 1` multiplied by airtime.
 
 **Duty Cycle**: Fixed 1-hour sliding window. Default 10%. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt.
 

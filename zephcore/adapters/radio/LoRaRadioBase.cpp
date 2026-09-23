@@ -6,7 +6,7 @@
 #include "LoRaRadioBase.h"
 #include "radio_common.h"
 #include "pm_sleep_guard.h"
-#include <mesh/LoRaConfig.h>
+#include <helpers/LoRaConfig.h>
 #include <mesh/MeshCore.h>   /* MAX_TRANS_UNIT */
 #include <zephyr/kernel.h>
 #include <zephyr/random/random.h>

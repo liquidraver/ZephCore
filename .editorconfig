@@ -43,6 +43,17 @@ indent_size = 4
 indent_style = space
 indent_size = unset
 
+# Files ported from Arduino MeshCore ("Shared" class, devdocs/HLD.md §9) keep
+# upstream's text verbatim, so a diff against upstream shows only our intentional
+# changes, each fenced `// ZEPHCORE:`. Upstream mixes 2-space and tab indentation
+# and has trailing whitespace, so none of it is enforced here. Add a file to this
+# list when it is converted to upstream shape.
+[{zephcore/src/Mesh.cpp,zephcore/src/Dispatcher.cpp,zephcore/src/Packet.cpp,zephcore/src/StaticPoolPacketManager.cpp,zephcore/include/mesh/MeshCore.h,zephcore/include/mesh/Dispatcher.h,zephcore/include/mesh/Mesh.h,zephcore/include/mesh/Packet.h,zephcore/include/mesh/Identity.h,zephcore/include/mesh/Utils.h,zephcore/include/mesh/SimpleMeshTables.h,zephcore/include/mesh/StaticPoolPacketManager.h}]
+indent_style = unset
+indent_size = unset
+tab_width = unset
+trim_trailing_whitespace = false
+
 # Third-party license texts are kept verbatim.
 [{LICENSE,*LICENSE*.txt,*_license.txt}]
 indent_style = unset

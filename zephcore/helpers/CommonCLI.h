@@ -7,7 +7,7 @@
 
 #include <zephyr/kernel.h>
 #include <mesh/Mesh.h>
-#include <mesh/Board.h>
+#include <mesh/MeshCore.h>
 #include <helpers/IdentityStore.h>
 #include <helpers/ClientACL.h>
 #include "NodePrefs.h"

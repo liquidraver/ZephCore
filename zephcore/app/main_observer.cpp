@@ -35,7 +35,7 @@ LOG_MODULE_REGISTER(zephcore_observer_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include "../adapters/datastore/ZephyrFsFormat.h"
 #include <app/ObserverMesh.h>
 #include <adapters/clock/ZephyrRTCClock.h>
-#include <mesh/RadioIncludes.h>
+#include <src/RadioIncludes.h>
 #include <ZephyrWiFiStation.h>
 #include <ZephyrMQTTPublisher.h>
 #include "observer_creds.h"

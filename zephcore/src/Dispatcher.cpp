@@ -1,767 +1,512 @@
-/*
- * SPDX-License-Identifier: MIT
- * ZephCore Dispatcher implementation
- */
-
 #include <mesh/Dispatcher.h>
-#include <mesh/MeshCore.h>
-#include <mesh/Utils.h>
-#include <string.h>
 
+// ZEPHCORE: packet logging (MESH_PACKET_LOGGING) lives in the roles' logRx/logTx
+// hooks, see helpers/PacketLog.h.
+
+#include <math.h>
+
+// ZEPHCORE: log module backing MESH_DEBUG_PRINTLN (see MeshCore.h).
 #include <zephyr/logging/log.h>
-#include <zephyr/random/random.h>
 LOG_MODULE_REGISTER(zephcore_dispatcher, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
-#define PAYLOAD_TYPE_REQ         0x00
-#define PAYLOAD_TYPE_RESPONSE    0x01
-#define PAYLOAD_TYPE_TXT_MSG     0x02
-#define PAYLOAD_TYPE_PATH        0x08
-#endif
 
 namespace mesh {
 
-#define MIN_TX_BUDGET_AIRTIME_DIV   2      /* require at least 1/N MTU airtime as budget before TX */
+#define MIN_TX_BUDGET_AIRTIME_DIV  2      // require at least 1/N of estimated airtime as budget before TX
 
-Dispatcher::Dispatcher(Radio &radio, MillisecondClock &ms, PacketManager &mgr)
-	: _radio(&radio), _ms(&ms), _mgr(&mgr)
+// ZEPHCORE: no MAX_RX_DELAY_MILLIS (no score-based RX delay: the adaptive
+// contention window replaces it), no MIN_TX_BUDGET_RESERVE_MS (the budget gate
+// lives in checkSend() only), no NOISE_FLOOR_CALIB_INTERVAL (the radio schedules
+// its own sampling, see maintenanceLoop()).
+
+// ZEPHCORE: out-of-line constructor (upstream's is inline in the header).
+Dispatcher::Dispatcher(Radio& radio, MillisecondClock& ms, PacketManager& mgr)
+  : _radio(&radio), _ms(&ms), _mgr(&mgr)
 {
-	outbound = nullptr;
-	outbound_priority = 0;
-	total_air_time = rx_air_time = 0;
-	next_tx_time = 0;
-	cad_busy_start = 0;
-	lbt_busy_start = 0;
-	lbt_next_warn = 0;
-	tx_budget_ms = 0;
-	last_budget_update = 0;
-	duty_cycle_window_ms = 0;
-	_err_flags = 0;
-	radio_nonrx_start = 0;
-	prev_isrecv_mode = true;
-	cad_offset_shadow = 0;
-	cad_offset_shadow_valid = false;
-	n_sent_flood = n_sent_direct = 0;
-	n_recv_flood = n_recv_direct = 0;
-	_tx_queued_cb = nullptr;
-	_tx_queued_user_data = nullptr;
-	_wake_cb = nullptr;
-	_wake_user_data = nullptr;
+  outbound = NULL;
+  outbound_priority = 0;
+  total_air_time = rx_air_time = 0;
+  next_tx_time = 0;
+  cad_busy_start = 0;
+  lbt_busy_start = 0;
+  lbt_next_warn = 0;
+  tx_budget_ms = 0;
+  last_budget_update = 0;
+  duty_cycle_window_ms = 0;
+  _err_flags = 0;
+  radio_nonrx_start = 0;
+  prev_isrecv_mode = true;
+  cad_offset_shadow = 0;
+  cad_offset_shadow_valid = false;
+  n_sent_flood = n_sent_direct = 0;
+  n_recv_flood = n_recv_direct = 0;
+  _tx_queued_cb = NULL;
+  _tx_queued_user_data = NULL;
+  _wake_cb = NULL;
+  _wake_user_data = NULL;
 }
 
-void Dispatcher::begin()
-{
-	n_sent_flood = n_sent_direct = 0;
-	n_recv_flood = n_recv_direct = 0;
-	_err_flags = 0;
-	uint32_t now = (uint32_t)_ms->getMillis();
-	radio_nonrx_start = now;
-	duty_cycle_window_ms = getDutyCycleWindowMs();
-	tx_budget_ms = getMaxTxBudgetMs();
-	last_budget_update = now;
-	next_tx_time = now;
-	_radio->begin();
-	prev_isrecv_mode = _radio->isInRecvMode();
+void Dispatcher::begin() {
+  n_sent_flood = n_sent_direct = 0;
+  n_recv_flood = n_recv_direct = 0;
+  _err_flags = 0;
+  uint32_t now = (uint32_t)_ms->getMillis();
+  radio_nonrx_start = now;
+
+  duty_cycle_window_ms = getDutyCycleWindowMs();
+  tx_budget_ms = getMaxTxBudgetMs();
+  last_budget_update = now;
+  next_tx_time = now;
+
+  _radio->begin();
+  prev_isrecv_mode = _radio->isInRecvMode();
 }
 
-uint8_t Dispatcher::getDutyCyclePercent() const
-{
-	return 10; /* EU 868 default: 10% duty cycle */
+// ZEPHCORE: duty cycle as a percentage (upstream: getAirtimeBudgetFactor()).
+uint8_t Dispatcher::getDutyCyclePercent() const {
+  return 10;   // EU 868 default
 }
 
-uint32_t Dispatcher::getMaxTxBudgetMs() const
-{
-	uint8_t duty_pct = getDutyCyclePercent();
-	if (duty_pct == 0 || duty_cycle_window_ms == 0) {
-		return 0;
-	}
-	return (duty_cycle_window_ms * (uint32_t)duty_pct) / 100U;
+uint32_t Dispatcher::getMaxTxBudgetMs() const {
+  uint8_t duty_pct = getDutyCyclePercent();
+  if (duty_pct == 0 || duty_cycle_window_ms == 0) {
+    return 0;
+  }
+  return (duty_cycle_window_ms * (uint32_t)duty_pct) / 100U;
 }
 
-void Dispatcher::updateTxBudget()
-{
-	uint8_t duty_pct = getDutyCyclePercent();
-	if (duty_pct == 0 || duty_cycle_window_ms == 0) {
-		return;
-	}
+void Dispatcher::updateTxBudget() {
+  uint8_t duty_pct = getDutyCyclePercent();
+  if (duty_pct == 0 || duty_cycle_window_ms == 0) {
+    return;
+  }
 
-	uint32_t now = (uint32_t)_ms->getMillis();
-	uint32_t elapsed = now - last_budget_update;
-	if (elapsed == 0) {
-		return;
-	}
+  uint32_t now = (uint32_t)_ms->getMillis();
+  uint32_t elapsed = now - last_budget_update;
+  if (elapsed == 0) {
+    return;
+  }
 
-	uint32_t refill = (elapsed * (uint32_t)duty_pct) / 100U;
-	if (refill > 0) {
-		uint32_t max_budget = getMaxTxBudgetMs();
-		tx_budget_ms += refill;
-		if (tx_budget_ms > max_budget) {
-			tx_budget_ms = max_budget;
-		}
-		last_budget_update = now;
-	}
+  uint32_t refill = (elapsed * (uint32_t)duty_pct) / 100U;
+  if (refill > 0) {
+    uint32_t max_budget = getMaxTxBudgetMs();
+    tx_budget_ms += refill;
+    if (tx_budget_ms > max_budget) {
+      tx_budget_ms = max_budget;
+    }
+    last_budget_update = now;
+  }
 }
 
-bool Dispatcher::isAdminPacket(const Packet *pkt)
-{
-	uint8_t t = pkt->getPayloadType();
-	return t == PAYLOAD_TYPE_REQ || t == PAYLOAD_TYPE_RESPONSE ||
-	       t == PAYLOAD_TYPE_ANON_REQ || t == PAYLOAD_TYPE_CONTROL;
+// ZEPHCORE: no calcRxDelay() (see top of file).
+
+uint32_t Dispatcher::getCADFailRetryDelay() const {
+  return 200;
+}
+uint32_t Dispatcher::getCADFailMaxDuration() const {
+  return 4000;   // 4 seconds
 }
 
-uint32_t Dispatcher::getCADFailRetryDelay() const
-{
-	/* 100-200ms jittered retry: tighter than one SF8 flood airtime so we
-	 * sample multiple RX duty-cycle windows, and randomized so two nodes
-	 * contending on the same channel don't retry in lockstep. */
-	return 100 + (sys_rand32_get() % 101);
+// ZEPHCORE: LBT starvation window (see onLbtRefused()) and the admin exemption
+// from the duty-cycle gate (see txBudgetAllowsSend()).
+uint32_t Dispatcher::getTxStarvationDuration() const {
+  return 60000;
 }
 
-uint32_t Dispatcher::getCADFailMaxDuration() const
-{
-	return 4000; /* ms; ~20 retry attempts before giving up */
+bool Dispatcher::isAdminPacket(const Packet* pkt) {
+  uint8_t t = pkt->getPayloadType();
+  return t == PAYLOAD_TYPE_REQ || t == PAYLOAD_TYPE_RESPONSE ||
+         t == PAYLOAD_TYPE_ANON_REQ || t == PAYLOAD_TYPE_CONTROL;
 }
 
-uint32_t Dispatcher::getTxStarvationDuration() const
-{
-	return 60000; /* ms; 15 warning periods of not transmitting at all */
+void Dispatcher::loop() {
+  // ZEPHCORE: noise-floor sampling, the radio stall watchdog and AGC hygiene run
+  // from maintenanceLoop() on their own deadlines, not on every loop() pass.
+
+  if (outbound) {  // waiting for outbound send to be completed
+    // ZEPHCORE: read isTxActive() BEFORE isSendComplete(): the radio publishes
+    // completion before it drops isTxActive(), so "not active" here guarantees a
+    // finished transmit is already latched and collected below.
+    bool tx_active = _radio->isTxActive();
+    if (_radio->isSendComplete()) {
+      // ZEPHCORE: charge the COMPUTED airtime, not the wall-clock send time,
+      // which includes blocking LBT and event latency (up to 8x in the field).
+      uint32_t t = _radio->getEstAirtimeFor(outbound->getRawLength());
+      MESH_DEBUG_PRINTLN("TX complete: air=%ums wall=%ums", t, (uint32_t)_ms->getMillis() - outbound_start);
+      total_air_time += t;
+
+      updateTxBudget();
+
+      if (t >= tx_budget_ms) {
+        tx_budget_ms = 0;
+      } else {
+        tx_budget_ms -= t;
+      }
+
+      _radio->onSendFinished();
+      logTx(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
+      if (outbound->isRouteFlood()) {
+        n_sent_flood++;
+      } else {
+        n_sent_direct++;
+      }
+      releasePacket(outbound);  // return to pool
+      outbound = NULL;
+    } else if (!tx_active && millisHasNowPassed(outbound_expiry)) {  // ZEPHCORE: only once the radio has concluded
+      MESH_DEBUG_PRINTLN("%s Dispatcher::loop(): WARNING: outbound packed send timed out!", getLogDateTime());
+
+      _radio->onSendFinished();
+      logTxFail(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
+
+      releasePacket(outbound);  // return to pool
+      outbound = NULL;
+    } else {
+      return;  // can't do any more radio activity until send is complete or timed out
+    }
+  }
+
+  // ZEPHCORE: no inbound (delayed) queue.
+  checkRecv();
+  checkSend();
 }
 
-void Dispatcher::loop()
-{
-	if (outbound) {
-		/* Read BEFORE isSendComplete(): the radio publishes its
-		 * completion before it drops isTxActive(), so a "not active"
-		 * seen here guarantees a successful transmit is already latched
-		 * and collected by the call below.  The other order can see the
-		 * latch still empty, then the flag already clear, and abandon a
-		 * transmit that finished in between. */
-		bool tx_active = _radio->isTxActive();
-		if (_radio->isSendComplete()) {
-			/* Airtime is the modulation time of the packet that just
-			 * went out, not the wall-clock width of the send.
-			 *
-			 * Upstream measures the wall clock here and gets away with
-			 * it: on Arduino the CAD runs before outbound_start is
-			 * stamped, loop() polls continuously, and isSendComplete()
-			 * has no timeout, so almost nothing sits between the stamp
-			 * and the TX_DONE interrupt.  Our send has all three —
-			 * blocking LBT inside startSendRaw(), a wait-thread
-			 * watchdog, and event-driven completion — so the same
-			 * expression measured up to 8x the real airtime in the
-			 * field, and charged every millisecond of it to the
-			 * duty-cycle budget below.
-			 *
-			 * LoRa airtime is exact given SF/BW/CR/preamble/length, so
-			 * compute it rather than time it: same value the RX side
-			 * already accumulates, which makes the two figures on the
-			 * stats screen comparable for the first time, and the right
-			 * unit for tx_budget_ms, which is a transmitter-on-time
-			 * allowance (CAD is receiving, not transmitting). */
-			uint32_t t = _radio->getEstAirtimeFor(outbound->getRawLength());
-			LOG_DBG("TX complete: air=%ums wall=%ums", t,
-				(uint32_t)_ms->getMillis() - outbound_start);
-			total_air_time += t;
-			updateTxBudget();
-			if (t >= tx_budget_ms) {
-				tx_budget_ms = 0;
-			} else {
-				tx_budget_ms -= t;
-			}
-			_radio->onSendFinished();
-			logTx(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
-			if (outbound->isRouteFlood()) {
-				n_sent_flood++;
-			} else {
-				n_sent_direct++;
-			}
-			releasePacket(outbound);
-			outbound = nullptr;
-		} else if (!tx_active && millisHasNowPassed(outbound_expiry)) {
-			/* Give up only once the radio itself has concluded.  Upstream
-			 * abandons at outbound_expiry alone because RadioLib has no
-			 * watchdog of its own; ours does — the TX wait thread always
-			 * ends with isTxActive() false, on a timeout of
-			 * max(TX_TIMEOUT_MS, 2 x airtime + 1 s).  Abandoning while it
-			 * still runs raced that thread: a completion published after
-			 * the expiry was then wiped by the next startSendRaw(), so a
-			 * packet that went out on air was counted nowhere — neither
-			 * sent_flood/direct nor the radio's total.  Radios that do not
-			 * implement isTxActive() report false and keep the upstream
-			 * behaviour exactly. */
-			_radio->onSendFinished();
-			logTxFail(outbound, 2 + outbound->getPathByteLen() + outbound->payload_len);
-			releasePacket(outbound);
-			outbound = nullptr;
-		} else {
-			return;
-		}
-	}
+// ZEPHCORE: deadline-driven maintenance. The event loop calls
+// msUntilNextMaintenance() after every pass and sleeps until the soonest deadline.
+void Dispatcher::maintenanceLoop() {
+  _radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
 
-	checkRecv();
-	checkSend();
+  // Radio stall watchdog (diagnostic only: raises ERR_EVENT_STARTRX_TIMEOUT,
+  // surfaced in stats, telemetry, MQTT and the companion status frame). TX
+  // counts as active; isTxActive(), never the consuming isSendComplete().
+  bool is_active = _radio->isInRecvMode() || _radio->isTxActive();
+  if (is_active != prev_isrecv_mode) {
+    prev_isrecv_mode = is_active;
+    if (!is_active) {
+      radio_nonrx_start = (uint32_t)_ms->getMillis();
+    }
+  }
+  if (!is_active && (uint32_t)_ms->getMillis() - radio_nonrx_start > RADIO_STALL_THRESHOLD_MS) {
+    _err_flags |= ERR_EVENT_STARTRX_TIMEOUT;
+  }
+
+  _radio->cadMaintenance();    // adaptive CAD probing + staircase
+  _radio->radioMaintenance();  // AGC unstick + temperature-drift recal (sleeps the chip)
+
+  // Surface CAD offset changes so the role persists them.
+  int8_t cad_off = _radio->getCadOffset();
+  if (!cad_offset_shadow_valid) {
+    cad_offset_shadow = cad_off;
+    cad_offset_shadow_valid = true;
+  } else if (cad_off != cad_offset_shadow) {
+    cad_offset_shadow = cad_off;
+    onCadOffsetChanged(cad_off);
+  }
 }
 
-void Dispatcher::maintenanceLoop()
-{
-	_radio->triggerNoiseFloorCalibrate(getInterferenceThreshold());
+uint32_t Dispatcher::msUntilNextMaintenance() {
+  uint32_t now = (uint32_t)_ms->getMillis();
+  uint32_t next = _radio->msUntilNextMaintenance();
 
-	/* RX mode watchdog: TX counts as "active" to avoid false triggers when
-	 * a maintenance pass lands between brief RX windows.  Diagnostic only —
-	 * it raises a status bit and recovers nothing — but that bit is surfaced
-	 * on every role: the repeater/room-server "stats" CLI reply and binary
-	 * telemetry read _err_flags directly, the MQTT uplink publishes it, and
-	 * the companion returns it in its BLE device-status response. */
-	/* isTxActive(), not !isSendComplete(): the latter is now a one-shot that
-	 * consumes the completion, so asking it here would swallow the event the
-	 * dispatcher's own loop() is waiting to collect.  The value is identical
-	 * in every state — it is the same _tx_active read this line always
-	 * performed — so the spurious-STARTRX_TIMEOUT fix this term was added
-	 * for (rapid consecutive relays leaving radio_nonrx_start stale) is
-	 * unchanged. */
-	bool is_active = _radio->isInRecvMode() || _radio->isTxActive();
-	if (is_active != prev_isrecv_mode) {
-		prev_isrecv_mode = is_active;
-		if (!is_active) {
-			radio_nonrx_start = (uint32_t)_ms->getMillis();
-		}
-	}
-	if (!is_active &&
-	    (uint32_t)_ms->getMillis() - radio_nonrx_start > RADIO_STALL_THRESHOLD_MS) {
-		_err_flags |= ERR_EVENT_STARTRX_TIMEOUT;
-	}
-
-	/* Adaptive CAD: probe scheduling + staircase live in the radio;
-	 * we only surface offset changes so the app layer can persist them. */
-	_radio->cadMaintenance();
-
-	/* Receiver hygiene: deaf-aware AGC unstick + temperature-drift
-	 * recalibration.  Both sleep the chip, so they live here rather than on
-	 * any packet path. */
-	_radio->radioMaintenance();
-
-	int8_t cad_off = _radio->getCadOffset();
-
-	if (!cad_offset_shadow_valid) {
-		cad_offset_shadow = cad_off;
-		cad_offset_shadow_valid = true;
-	} else if (cad_off != cad_offset_shadow) {
-		cad_offset_shadow = cad_off;
-		onCadOffsetChanged(cad_off);
-	}
+  // The stall verdict is a latched bit; once raised its deadline is permanently
+  // in the past, so stop reporting it or the loop would spin at its minimum.
+  if (!prev_isrecv_mode && !(_err_flags & ERR_EVENT_STARTRX_TIMEOUT)) {
+    next = maintenanceSooner(next, maintenanceUntil(now, radio_nonrx_start + RADIO_STALL_THRESHOLD_MS));
+  }
+  return next;
 }
 
-uint32_t Dispatcher::msUntilNextMaintenance()
-{
-	uint32_t now = (uint32_t)_ms->getMillis();
-	/* Noise floor sampling + CAD probing/decay both live in the radio and
-	 * carry their own deadlines. */
-	uint32_t next = _radio->msUntilNextMaintenance();
+bool Dispatcher::tryParsePacket(Packet* pkt, const uint8_t* raw, int len) {
+  if (len < 2 || len > MAX_TRANS_UNIT) return false;  // ZEPHCORE: bound the extent before reading
+  int i = 0;
 
-	/* Radio stall watchdog.  Only pending while the radio is known to be
-	 * neither receiving nor transmitting as of the last pass — the
-	 * transition into that state is itself event-driven (TX start, RX done,
-	 * CAD), so there is nothing to poll for while the radio is active.
-	 *
-	 * The already-flagged check is load-bearing: the verdict is a latched
-	 * status bit, so once raised its deadline sits permanently in the past.
-	 * Without this the query would return 0 on every call and the event loop
-	 * would re-arm at its minimum interval forever. */
-	if (!prev_isrecv_mode && !(_err_flags & ERR_EVENT_STARTRX_TIMEOUT)) {
-		next = maintenanceSooner(
-			next, maintenanceUntil(now, radio_nonrx_start +
-						       RADIO_STALL_THRESHOLD_MS));
-	}
+  pkt->header = raw[i++];
+  if (pkt->getPayloadVer() > PAYLOAD_VER_1) {
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): unsupported packet version", getLogDateTime());
+    return false;
+  }
 
-	return next;
+  if (pkt->hasTransportCodes()) {
+    if (len < 6) return false;  // ZEPHCORE: header + two codes + path length
+    memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
+    memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
+  } else {
+    pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
+  }
+
+  pkt->path_len = raw[i++];
+  uint8_t path_mode = pkt->path_len >> 6;  // upper 2 bits (legacy firmware: 00)
+  if (path_mode == 3) {   // Reserved for future
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): unsupported path mode: 3", getLogDateTime());
+    return false;
+  }
+
+  uint8_t path_byte_len = (pkt->path_len & 63) * pkt->getPathHashSize();
+  if (path_byte_len > MAX_PATH_SIZE || i + path_byte_len > len) {
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): partial or corrupt packet received, len=%d", getLogDateTime(), len);
+    return false;
+  }
+
+  memcpy(pkt->path, &raw[i], path_byte_len); i += path_byte_len;
+
+  pkt->payload_len = len - i;  // payload is remainder
+  if (pkt->payload_len > sizeof(pkt->payload)) {
+    MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): packet payload too big, payload_len=%d", getLogDateTime(), (uint32_t)pkt->payload_len);
+    return false;
+  }
+
+  memcpy(pkt->payload, &raw[i], pkt->payload_len);
+
+  return true;  // success
 }
 
-bool Dispatcher::tryParsePacket(Packet *pkt, const uint8_t *raw, int len)
-{
-	/* Check the received extent before reading header/path fields.  The radio
-	 * buffer may be larger than len, but bytes outside len are not packet data. */
-	if (len < 2 || len > MAX_TRANS_UNIT) return false;
-	int i = 0;
+void Dispatcher::checkRecv() {
+  // ZEPHCORE: drain the whole RX ring per call. The mesh thread wakes on a
+  // k_event bit, and several arrivals coalesce into one wake.
+  for (;;) {
+    Packet* pkt;
+    float score;
+    uint32_t air_time;
+    {
+      uint8_t raw[MAX_TRANS_UNIT+1];
+      int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
+      if (len <= 0) {
+        break;  // ring empty
+      }
+      logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
 
-	pkt->header = raw[i++];
-	if (pkt->getPayloadVer() > PAYLOAD_VER_1) {
-		LOG_WRN("tryParsePacket: unsupported packet version");
-		return false;
-	}
+      pkt = _mgr->allocNew();
+      if (pkt == NULL) {
+        MESH_DEBUG_PRINTLN("%s Dispatcher::checkRecv(): WARNING: received data, no unused packets available!", getLogDateTime());
+        break;
+      }
+      if (tryParsePacket(pkt, raw, len)) {
+        pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f);
+        score = _radio->packetScore(_radio->getLastSNR(), len);
+        air_time = _radio->getEstAirtimeFor(len);
+        rx_air_time += air_time;
+      } else {
+        _mgr->free(pkt);  // put back into pool
+        continue;
+      }
+    }
+    logRx(pkt, pkt->getRawLength(), score);   // hook for custom logging
 
-	if (pkt->hasTransportCodes()) {
-		if (len < 6) return false; /* header + two codes + path length */
-		memcpy(&pkt->transport_codes[0], &raw[i], 2); i += 2;
-		memcpy(&pkt->transport_codes[1], &raw[i], 2); i += 2;
-	} else {
-		pkt->transport_codes[0] = pkt->transport_codes[1] = 0;
-	}
-
-	pkt->path_len = raw[i++];
-	uint8_t path_mode = pkt->path_len >> 6;
-	if (path_mode == 3) {   /* reserved path mode */
-		LOG_WRN("tryParsePacket: unsupported path mode: 3");
-		return false;
-	}
-
-	uint8_t path_byte_len = (pkt->path_len & 63) * pkt->getPathHashSize();
-	if (path_byte_len > MAX_PATH_SIZE || i + path_byte_len > len) {
-		LOG_WRN("tryParsePacket: partial or corrupt packet, len=%d", len);
-		return false;
-	}
-
-	memcpy(pkt->path, &raw[i], path_byte_len); i += path_byte_len;
-
-	pkt->payload_len = len - i;
-	if (pkt->payload_len > (int)sizeof(pkt->payload)) {
-		LOG_WRN("tryParsePacket: payload too big, payload_len=%d", (uint32_t)pkt->payload_len);
-		return false;
-	}
-
-	memcpy(pkt->payload, &raw[i], pkt->payload_len);
-	return true;
+    if (pkt->isRouteFlood()) {
+      n_recv_flood++;
+    } else {
+      n_recv_direct++;
+    }
+    processRecvPacket(pkt);  // ZEPHCORE: always immediately (no score-based RX delay)
+  }
 }
 
-void Dispatcher::checkRecv()
-{
-	/* k_event is a bitfield — multiple ISR arrivals coalesce into one
-	 * wake, so drain the entire ring each time. */
-	for (;;) {
-		uint8_t raw[MAX_TRANS_UNIT + 1];
-		int len = _radio->recvRaw(raw, MAX_TRANS_UNIT);
-		if (len <= 0) {
-			break;
-		}
+void Dispatcher::processRecvPacket(Packet* pkt) {
+  DispatcherAction action = onRecvPacket(pkt);
+  if (action == ACTION_RELEASE) {
+    _mgr->free(pkt);
+  } else if (action == ACTION_MANUAL_HOLD) {
+    // sub-class is wanting to manually hold Packet instance, and call releasePacket() at appropriate time
+  } else {   // ACTION_RETRANSMIT*
+    uint8_t priority = (action >> 24) - 1;
+    uint32_t _delay = action & 0xFFFFFF;
 
-		logRxRaw(_radio->getLastSNR(), _radio->getLastRSSI(), raw, len);
-
-		Packet *pkt = _mgr->allocNew();
-		if (pkt == nullptr) {
-			LOG_ERR("checkRecv: packet alloc failed");
-			break;
-		}
-
-		float score = 0.0f;
-		uint32_t air_time = 0;
-
-		if (tryParsePacket(pkt, raw, len)) {
-			pkt->_snr = (int8_t)(_radio->getLastSNR() * 4.0f); /* x4 fixed-point SNR */
-			score = _radio->packetScore(_radio->getLastSNR(), len);
-			air_time = _radio->getEstAirtimeFor(len);
-			rx_air_time += air_time;
-		} else {
-			_mgr->free(pkt);
-			continue;
-		}
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
-		/* Arduino-compatible packet logging - use printk to bypass log level filtering */
-		{
-			static uint8_t packet_hash[MAX_HASH_SIZE];
-			static char hash_hex[MAX_HASH_SIZE * 2 + 1];
-			pkt->calculatePacketHash(packet_hash);
-			Utils::toHex(hash_hex, packet_hash, MAX_HASH_SIZE);
-
-			uint8_t ptype = pkt->getPayloadType();
-			if (ptype == PAYLOAD_TYPE_PATH || ptype == PAYLOAD_TYPE_REQ ||
-			    ptype == PAYLOAD_TYPE_RESPONSE || ptype == PAYLOAD_TYPE_TXT_MSG) {
-				printk("%s: RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%u hash=%s [%02X -> %02X]\n",
-					getLogDateTime(), pkt->getRawLength(), ptype,
-					pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
-					(int)pkt->getSNR(), (int)_radio->getLastRSSI(),
-					(int)(score * 1000), air_time, hash_hex,
-					(uint32_t)pkt->payload[1], (uint32_t)pkt->payload[0]);
-			} else {
-				printk("%s: RX, len=%d (type=%d, route=%s, payload_len=%d) SNR=%d RSSI=%d score=%d time=%u hash=%s\n",
-					getLogDateTime(), pkt->getRawLength(), ptype,
-					pkt->isRouteDirect() ? "D" : "F", pkt->payload_len,
-					(int)pkt->getSNR(), (int)_radio->getLastRSSI(),
-					(int)(score * 1000), air_time, hash_hex);
-			}
-		}
-#endif
-		logRx(pkt, pkt->getRawLength(), score);
-		if (pkt->isRouteFlood()) {
-			n_recv_flood++;
-		} else {
-			n_recv_direct++;
-		}
-		processRecvPacket(pkt);
-	}
+    _mgr->queueOutbound(pkt, priority, futureMillis(_delay));
+    if (_delay > 0) notifyTxQueued(_delay);  // ZEPHCORE: wake for the deferred TX
+  }
 }
 
-void Dispatcher::processRecvPacket(Packet *pkt)
-{
-	DispatcherAction action = onRecvPacket(pkt);
-	if (action == ACTION_RELEASE) {
-		_mgr->free(pkt);
-	} else if (action == ACTION_MANUAL_HOLD) {
-		/* subclass holds packet */
-	} else {
-		uint8_t priority = (uint8_t)((action >> 24) - 1);
-		uint32_t delay = action & 0xFFFFFF;
-		_mgr->queueOutbound(pkt, priority, futureMillis((int)delay));
-		if (_tx_queued_cb && delay > 0) {
-			_tx_queued_cb(delay, _tx_queued_user_data);
-		}
-	}
+// ZEPHCORE: duty-cycle budget gate. Defers while the remaining budget is under
+// half an MTU's airtime (as upstream) and schedules the wake for when it will be
+// enough. Due admin packets (REQ/RESPONSE/ANON_REQ/CONTROL) are exempt so a node
+// that burned its budget stays reachable for management — strictly outside
+// EN 300 220, accepted: an unreachable managed node is worse.
+bool Dispatcher::txBudgetAllowsSend(uint32_t now) {
+  uint8_t duty_pct = getDutyCyclePercent();
+  if (duty_pct == 0) return true;
+
+  int total = _mgr->getOutboundTotal();
+  for (int i = 0; i < total; i++) {
+    Packet* pkt = _mgr->getOutboundByIdx(i);
+    if (pkt && (int32_t)(_mgr->getOutboundSchedule(i) - now) <= 0 && isAdminPacket(pkt)) {
+      return true;
+    }
+  }
+
+  uint32_t est_airtime = _radio->getEstAirtimeFor(MAX_TRANS_UNIT);
+  uint32_t threshold = est_airtime / MIN_TX_BUDGET_AIRTIME_DIV;
+  if (tx_budget_ms >= threshold) return true;
+
+  uint32_t needed = threshold - tx_budget_ms;
+  uint32_t delay_ms = (needed * 100U + (uint32_t)duty_pct - 1U) / (uint32_t)duty_pct;
+  notifyTxQueued(delay_ms + 1U);
+  return false;
 }
 
-void Dispatcher::checkSend()
-{
-	uint32_t now = (uint32_t)_ms->getMillis();
-	int count = _mgr->getOutboundCount(now);
-	if (count == 0) {
-		cad_busy_start = 0;
-		/* Only a genuinely EMPTY queue ends an LBT starvation streak, not
-		 * one that merely has nothing due this instant.  getOutboundCount()
-		 * excludes packets scheduled in the future, and an LBT refusal
-		 * re-queues its packet 100-200 ms ahead — so every checkSend() that
-		 * lands in that retry gap (any RX wake will do) used to reset the
-		 * streak here, and a node refusing every transmit could keep
-		 * restarting the clock instead of ever reaching the escalation. */
-		if (_mgr->getOutboundTotal() == 0) {
-			lbt_busy_start = 0;
-		}
-		return;
-	}
+// ZEPHCORE: the driver's LBT refused the transmit (a TRUE reading of a busy
+// channel: re-queue, never force). Warn every getCADFailMaxDuration(); after
+// getTxStarvationDuration() of nothing but refusals the detector is judged too
+// sensitive and relaxed one step, regardless of cad.auto (persisted via
+// onCadOffsetChanged()). Any successful transmit ends the streak.
+void Dispatcher::onLbtRefused(uint32_t now, int len) {
+  uint32_t retry = getCADFailRetryDelay();
+  LOG_INF("checkSend: startSendRaw refused (LBT busy), re-queuing delay=%u", retry);
 
-	/* Duty-cycle budget gate. Matches Arduino MeshCore: defer when remaining
-	 * budget < est_airtime / MIN_TX_BUDGET_AIRTIME_DIV (i.e. half an MTU's airtime).
-	 *
-	 * Divergence from upstream: we exempt admin packets from the gate so that
-	 * remote management (admin requests, login, etc.) keeps working when a node
-	 * has burned its budget. Strictly out-of-spec for EN 300 220 — admin floods
-	 * still consume airtime — but a managed node that can't be reached to be
-	 * disabled is worse than the marginal extra airtime. Scan is O(N) over
-	 * the small (24-32) packet pool so the cost is negligible. */
-	updateTxBudget();
-	uint8_t duty_pct = getDutyCyclePercent();
-	if (duty_pct > 0) {
-		bool due_admin_queued = false;
-		int total = _mgr->getOutboundTotal();
-		for (int i = 0; i < total; i++) {
-			Packet *pkt = _mgr->getOutboundByIdx(i);
-			if (!pkt) {
-				continue;
-			}
-			if ((int32_t)(_mgr->getOutboundSchedule(i) - now) > 0) {
-				continue;
-			}
-			if (isAdminPacket(pkt)) {
-				due_admin_queued = true;
-				break;
-			}
-		}
+  if (lbt_busy_start == 0) {
+    lbt_busy_start = now;
+    lbt_next_warn = now + getCADFailMaxDuration();
+  } else {
+    uint32_t streak = now - lbt_busy_start;
 
-		uint32_t est_airtime = _radio->getEstAirtimeFor(MAX_TRANS_UNIT);
-		uint32_t threshold = est_airtime / MIN_TX_BUDGET_AIRTIME_DIV;
-		if (!due_admin_queued && tx_budget_ms < threshold) {
-			uint32_t needed = threshold - tx_budget_ms;
-			uint32_t delay_ms = (needed * 100U + (uint32_t)duty_pct - 1U) / (uint32_t)duty_pct;
-			if (_tx_queued_cb) {
-				_tx_queued_cb(delay_ms + 1U, _tx_queued_user_data);
-			}
-			return;
-		}
-	}
-
-	bool is_receiving = _radio->isReceiving();
-	bool is_radio_ready = _radio->isRadioReady();
-	if (is_receiving || !is_radio_ready) {
-		/* Channel busy or radio not command-ready — enforce retry timer
-		 * so we don't hammer checks during RX activity or BUSY windows. */
-		if (!millisHasNowPassed(next_tx_time)) {
-			if (_tx_queued_cb) {
-				uint32_t remaining = next_tx_time - now;
-				_tx_queued_cb(remaining + 1, _tx_queued_user_data);
-			}
-			return;
-		}
-		if (cad_busy_start == 0) {
-			cad_busy_start = now;
-		}
-		if (now - cad_busy_start > getCADFailMaxDuration()) {
-			_err_flags |= ERR_EVENT_CAD_TIMEOUT;
-			LOG_ERR("checkSend: CAD timeout exceeded (isReceiving=%d, isRadioReady=%d, inRecvMode=%d, rssi=%.1f, snr=%.1f, noise=%d, rx_ok=%u, rx_err=%u)",
-				(int)is_receiving, (int)is_radio_ready, (int)_radio->isInRecvMode(),
-				(double)_radio->getLastRSSI(), (double)_radio->getLastSNR(),
-				_radio->getNoiseFloor(),
-				(unsigned)_radio->getPacketsRecv(),
-				(unsigned)_radio->getPacketsRecvErrors());
-			/* Channel activity has gone on too long -- the radio may be
-			 * in a bad state.  FORCE the pending transmit by falling
-			 * through, exactly as Arduino MeshCore does
-			 * (Dispatcher.cpp: "force the pending transmit below...").
-			 *
-			 * This bounded give-up was ZephCore's behaviour too until
-			 * 3441caf "new rx busy latch" added a `return` here, turning a
-			 * 4 s hard limit into an unbounded defer: on a channel that
-			 * reads busy forever the node never transmits again, silently
-			 * filling the 32-entry outbound queue until queueOutbound()
-			 * starts evicting and dropping.
-			 *
-			 * recoverRxState() is kept and runs first: the non-destructive
-			 * sx126x_is_receiving() has no side-effect IRQ clear, so a stuck
-			 * preamble bit needs the chip walked REST -> fresh RX.  Doing it
-			 * before the forced TX leaves the receiver healthy afterwards;
-			 * send_async accepts the RX -> TX entry CAS. */
-			_radio->recoverRxState();
-			/* fall through -- force the pending transmit */
-		} else {
-			uint32_t retry = getCADFailRetryDelay();
-			next_tx_time = futureMillis((int)retry);
-			if (_tx_queued_cb) {
-				_tx_queued_cb(retry + 1, _tx_queued_user_data);
-			}
-			return;
-		}
-	}
-	cad_busy_start = 0;
-
-	/* Snapshot the priority of the packet we're about to dequeue so it
-	 * can be preserved if the send attempt fails and we need to re-queue.
-	 * Must be called before getNextOutbound() removes the entry. */
-	outbound_priority = _mgr->peekNextOutboundPriority(now);
-	outbound = _mgr->getNextOutbound(now);
-	if (outbound) {
-		uint8_t raw[MAX_TRANS_UNIT];
-		int len = 0;
-		raw[len++] = outbound->header;
-		if (outbound->hasTransportCodes()) {
-			memcpy(&raw[len], &outbound->transport_codes[0], 2); len += 2;
-			memcpy(&raw[len], &outbound->transport_codes[1], 2); len += 2;
-		}
-		raw[len++] = outbound->path_len;
-		/* Trusted source: outbound->path is MAX_PATH_SIZE-sized. */
-		len += Packet::writePath(&raw[len], outbound->path, MAX_PATH_SIZE, outbound->path_len);
-
-		if (len + outbound->payload_len > MAX_TRANS_UNIT) {
-			LOG_ERR("checkSend: packet too large len=%d+%d > %d", len, outbound->payload_len, MAX_TRANS_UNIT);
-			_mgr->free(outbound);
-			outbound = nullptr;
-		} else {
-			memcpy(&raw[len], outbound->payload, outbound->payload_len);
-			len += outbound->payload_len;
-
-			uint32_t max_airtime = _radio->getEstAirtimeFor(len) * 3 / 2;
-			/* Short packets (ACKs) have est airtimes small enough that
-			 * IRQ/work-queue latency alone can blow the watchdog and clip
-			 * the TX mid-air (upstream 4f8cb8db: 200ms est floor, x1.5). */
-			if (max_airtime < 300) {
-				max_airtime = 300;
-			}
-			outbound_start = now;
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
-			/* Arduino-compatible packet logging - use printk to bypass log level filtering */
-			{
-				uint8_t ptype = outbound->getPayloadType();
-				if (ptype == PAYLOAD_TYPE_PATH || ptype == PAYLOAD_TYPE_REQ ||
-				    ptype == PAYLOAD_TYPE_RESPONSE || ptype == PAYLOAD_TYPE_TXT_MSG) {
-					printk("%s: TX, len=%d (type=%d, route=%s, payload_len=%d) [%02X -> %02X]\n",
-						getLogDateTime(), len, ptype,
-						outbound->isRouteDirect() ? "D" : "F", outbound->payload_len,
-						(uint32_t)outbound->payload[1], (uint32_t)outbound->payload[0]);
-				} else {
-					printk("%s: TX, len=%d (type=%d, route=%s, payload_len=%d)\n",
-						getLogDateTime(), len, ptype,
-						outbound->isRouteDirect() ? "D" : "F", outbound->payload_len);
-				}
-			}
-#endif
-
-			/* Final gate — close the gap between initial checks and
-			 * actual TX start (serialisation + logging can take 1-5 ms). */
-			bool final_is_receiving = _radio->isReceiving();
-			bool final_is_radio_ready = _radio->isRadioReady();
-			/* isTxActive() covers the window the radio opened by
-			 * publishing its completion before it finishes re-arming
-			 * RX: we may have collected that completion and come
-			 * straight back here.  startSendRaw()'s CAS would refuse
-			 * anyway, but that refusal is reported as an LBT-busy
-			 * verdict and feeds the cad_busy_start escalation, which
-			 * this is not — "radio not ready yet" belongs here. */
-			if (final_is_receiving || !final_is_radio_ready ||
-			    _radio->isTxActive()) {
-				uint32_t retry = getCADFailRetryDelay();
-				LOG_DBG("checkSend: final gate blocked TX (isReceiving=%d, isRadioReady=%d, inRecvMode=%d, txActive=%d)",
-					(int)final_is_receiving, (int)final_is_radio_ready,
-					(int)_radio->isInRecvMode(),
-					(int)_radio->isTxActive());
-				_mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
-				outbound = nullptr;
-				if (_tx_queued_cb) {
-					_tx_queued_cb(retry, _tx_queued_user_data);
-				}
-				return;
-			}
-
-			bool success = _radio->startSendRaw(raw, len);
-			if (!success) {
-				uint32_t retry = getCADFailRetryDelay();
-				/* Almost always LBT refusing a busy channel, which is the
-				 * designed outcome — the packet is re-queued below and
-				 * retried, and we deliberately do NOT force a transmit
-				 * here: unlike the isReceiving() gate above, where a long
-				 * refusal suggests a stuck radio, a busy LBT verdict is a
-				 * TRUE reading of the channel.  Forcing through it would
-				 * transmit into traffic the radio can hear — exactly the
-				 * collision CAD exists to prevent, at the moment the
-				 * channel is most contended.
-				 *
-				 * INF, not DBG: this used to be ERR, which buried real
-				 * faults on a busy site, and was then dropped to DBG —
-				 * which made a node refusing every transmit completely
-				 * invisible at default log level.  A node that is not
-				 * transmitting should say so; INF reports the refusals
-				 * themselves rather than inferring a stall from them. */
-				LOG_INF("checkSend: startSendRaw refused (LBT busy), re-queuing delay=%u", retry);
-
-				/* Escalate a refusal that will not end.  This branch
-				 * used to leave cad_busy_start alone, so a packet the
-				 * driver's own LBT kept rejecting — the pre-TX gate
-				 * having passed — looped indefinitely with no counter,
-				 * no error flag and nothing above DBG.  At default log
-				 * level a node in that state looks completely idle
-				 * while it never transmits, which is exactly how a
-				 * chip-side CAD (LR20xx CAD_LBT) fails.
-				 *
-				 * Deliberately no recoverRxState() here, unlike the
-				 * isReceiving() branch above: that one recovers a chip
-				 * suspected of being stuck in RX, whereas a busy
-				 * channel is a true reading and walking the radio
-				 * through REST would only add deaf time. Report and
-				 * keep retrying. */
-				if (lbt_busy_start == 0) {
-					lbt_busy_start = now;
-					lbt_next_warn = now + getCADFailMaxDuration();
-				} else {
-					uint32_t streak = now - lbt_busy_start;
-
-					if ((int32_t)(now - lbt_next_warn) >= 0) {
-						_err_flags |= ERR_EVENT_CAD_TIMEOUT;
-						LOG_WRN("checkSend: LBT has refused TX for %ums "
-							"(len=%d, noise=%d) — channel busy or CAD too sensitive",
-							(unsigned)streak, len,
-							_radio->getNoiseFloor());
-						lbt_next_warn = now + getCADFailMaxDuration();
-					}
-
-					/* Self-unmute.  A node whose LBT has refused EVERY
-					 * transmit for this long is not looking at a busy
-					 * channel — a busy channel still yields gaps, and any
-					 * success resets this streak.  It is looking at a
-					 * detector tuned too sensitive to ever clear, which
-					 * `set cad.offset -8` on a quiet site produces
-					 * outright.
-					 *
-					 * The adaptive staircase cannot be relied on to undo
-					 * that: it runs only when `cad.auto` is on, only when
-					 * `cad.busycap` is non-zero, and only once the
-					 * operating level has 120 probes behind it — half an
-					 * hour at best.  All three are settings a hand-tuning
-					 * operator turns off, and the CLI help for
-					 * `set cad.auto` recommends exactly that workflow.  A
-					 * repeater on a mast that stops transmitting cannot
-					 * be talked back down either: it still receives and
-					 * still applies an admin `set`, but the reply never
-					 * gets out, so no ordinary app completes the login it
-					 * is waiting on.
-					 *
-					 * So this deliberately overrides `cad.auto` and runs
-					 * regardless of the operator's settings.  The radio
-					 * clamps to its own least-sensitive step and reports
-					 * when it can go no further.
-					 *
-					 * The new offset PERSISTS, like a staircase step:
-					 * maintenanceLoop() notices getCadOffset() moved and
-					 * calls onCadOffsetChanged(), which writes prefs.
-					 * That is the behaviour we want on a mast — a node
-					 * that healed itself must not go mute again on the
-					 * next reboot — and it is what `cad.auto` already
-					 * does to a hand-set offset.  Writes are bounded: each
-					 * step needs another full starvation period, and they
-					 * stop the moment a transmit succeeds. */
-					if (streak > getTxStarvationDuration()) {
-						if (_radio->cadRelaxOnTxStarvation()) {
-							LOG_ERR("checkSend: TX starved %ums — relaxed CAD one step",
-								(unsigned)streak);
-						} else {
-							LOG_ERR("checkSend: TX starved %ums — CAD already at its "
-								"least sensitive step, channel may be genuinely busy",
-								(unsigned)streak);
-						}
-						lbt_busy_start = now;
-						lbt_next_warn = now + getCADFailMaxDuration();
-					}
-				}
-				logTxFail(outbound, outbound->getRawLength());
-				_mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
-				outbound = nullptr;
-				if (_tx_queued_cb) {
-					_tx_queued_cb(retry, _tx_queued_user_data);
-				}
-			} else {
-				outbound_expiry = futureMillis((int)max_airtime);
-				/* A transmit got out, so the refusal streak above is
-				 * over.  Without this the timer keeps running across
-				 * successful sends and the next isolated refusal
-				 * inherits a stale start, reporting a stall that
-				 * already ended. */
-				cad_busy_start = 0;
-				lbt_busy_start = 0;
-			}
-		}
-	}
+    if ((int32_t)(now - lbt_next_warn) >= 0) {
+      _err_flags |= ERR_EVENT_CAD_TIMEOUT;
+      LOG_WRN("checkSend: LBT has refused TX for %ums (len=%d, noise=%d) — channel busy or CAD too sensitive",
+              (unsigned)streak, len, _radio->getNoiseFloor());
+      lbt_next_warn = now + getCADFailMaxDuration();
+    }
+    if (streak > getTxStarvationDuration()) {
+      if (_radio->cadRelaxOnTxStarvation()) {
+        LOG_ERR("checkSend: TX starved %ums — relaxed CAD one step", (unsigned)streak);
+      } else {
+        LOG_ERR("checkSend: TX starved %ums — CAD already at its least sensitive step, channel may be genuinely busy",
+                (unsigned)streak);
+      }
+      lbt_busy_start = now;
+      lbt_next_warn = now + getCADFailMaxDuration();
+    }
+  }
+  logTxFail(outbound, outbound->getRawLength());
+  _mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
+  outbound = NULL;
+  notifyTxQueued(retry);
 }
 
-Packet *Dispatcher::obtainNewPacket()
-{
-	Packet *pkt = _mgr->allocNew();
-	if (pkt == nullptr) {
-		_err_flags |= ERR_EVENT_FULL;
-	} else {
-		pkt->payload_len = pkt->path_len = 0;
-		pkt->_snr = 0;
-	}
-	return pkt;
+void Dispatcher::checkSend() {
+  uint32_t now = (uint32_t)_ms->getMillis();
+  if (_mgr->getOutboundCount(now) == 0) {
+    cad_busy_start = 0;
+    // ZEPHCORE: only a genuinely EMPTY queue ends an LBT streak — a refusal
+    // re-queues 100-200 ms ahead, so "nothing due now" is not "nothing pending".
+    if (_mgr->getOutboundTotal() == 0) lbt_busy_start = 0;
+    return;
+  }
+
+  updateTxBudget();
+
+  if (!txBudgetAllowsSend(now)) return;  // ZEPHCORE: percentage budget, admin exempt
+
+  // ZEPHCORE: also defer while the radio is not command-ready, and apply the
+  // retry timer only to a busy channel (upstream checks it first).
+  bool is_receiving = _radio->isReceiving();
+  bool is_radio_ready = _radio->isRadioReady();
+  if (is_receiving || !is_radio_ready) {
+    if (!millisHasNowPassed(next_tx_time)) {
+      notifyTxQueued(next_tx_time - now + 1);
+      return;
+    }
+    if (cad_busy_start == 0) {
+      cad_busy_start = now;   // record when CAD busy state started
+    }
+
+    if (now - cad_busy_start > getCADFailMaxDuration()) {
+      _err_flags |= ERR_EVENT_CAD_TIMEOUT;
+
+      LOG_ERR("checkSend: CAD timeout exceeded (isReceiving=%d, isRadioReady=%d, inRecvMode=%d, rssi=%.1f, snr=%.1f, noise=%d, rx_ok=%u, rx_err=%u)",
+              (int)is_receiving, (int)is_radio_ready, (int)_radio->isInRecvMode(),
+              (double)_radio->getLastRSSI(), (double)_radio->getLastSNR(), _radio->getNoiseFloor(),
+              (unsigned)_radio->getPacketsRecv(), (unsigned)_radio->getPacketsRecvErrors());
+      // channel activity has gone on too long... (Radio might be in a bad state)
+      // force the pending transmit below...
+      _radio->recoverRxState();  // ZEPHCORE: walk the chip REST -> fresh RX first
+    } else {
+      uint32_t retry = getCADFailRetryDelay();
+      next_tx_time = futureMillis(retry);
+      notifyTxQueued(retry + 1);  // ZEPHCORE: schedule the wake
+      return;
+    }
+  }
+  cad_busy_start = 0;  // reset busy state
+
+  outbound_priority = _mgr->peekNextOutboundPriority(now);  // ZEPHCORE: kept for a re-queue
+  outbound = _mgr->getNextOutbound(now);
+  if (outbound) {
+    int len = 0;
+    uint8_t raw[MAX_TRANS_UNIT];
+
+    raw[len++] = outbound->header;
+    if (outbound->hasTransportCodes()) {
+      memcpy(&raw[len], &outbound->transport_codes[0], 2); len += 2;
+      memcpy(&raw[len], &outbound->transport_codes[1], 2); len += 2;
+    }
+    raw[len++] = outbound->path_len;
+    len += Packet::writePath(&raw[len], outbound->path, outbound->path_len);
+
+    if (len + outbound->payload_len > MAX_TRANS_UNIT) {
+      MESH_DEBUG_PRINTLN("%s Dispatcher::checkSend(): FATAL: Invalid packet queued... too long, len=%d", getLogDateTime(), len + outbound->payload_len);
+      _mgr->free(outbound);
+      outbound = NULL;
+    } else {
+      memcpy(&raw[len], outbound->payload, outbound->payload_len); len += outbound->payload_len;
+
+      uint32_t max_airtime = _radio->getEstAirtimeFor(len)*3/2;
+      if (max_airtime < 300) max_airtime = 300;  // ZEPHCORE: IRQ/work-queue latency must not clip short packets
+      outbound_start = now;
+
+      // ZEPHCORE: final gate, closing the gap since the checks above. Also
+      // covers a radio that published its completion but is still re-arming RX.
+      if (_radio->isReceiving() || !_radio->isRadioReady() || _radio->isTxActive()) {
+        uint32_t retry = getCADFailRetryDelay();
+        _mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
+        outbound = NULL;
+        notifyTxQueued(retry);
+        return;
+      }
+
+      bool success = _radio->startSendRaw(raw, len);
+      if (!success) {
+        onLbtRefused(now, len);  // ZEPHCORE: re-queue (upstream drops the packet)
+        return;
+      }
+      outbound_expiry = futureMillis(max_airtime);
+      cad_busy_start = 0;  // ZEPHCORE: a transmit got out, so any refusal streak is over
+      lbt_busy_start = 0;
+    }
+  }
 }
 
-void Dispatcher::releasePacket(Packet *packet)
-{
-	_mgr->free(packet);
+Packet* Dispatcher::obtainNewPacket() {
+  auto pkt = _mgr->allocNew();  // TODO: zero out all fields
+  if (pkt == NULL) {
+    _err_flags |= ERR_EVENT_FULL;
+  } else {
+    pkt->payload_len = pkt->path_len = 0;
+    pkt->_snr = 0;
+  }
+  return pkt;
 }
 
-void Dispatcher::sendPacket(Packet *packet, uint8_t priority, uint32_t delay_millis)
-{
-	if (!Packet::isValidPathLen(packet->path_len) || packet->payload_len > MAX_PACKET_PAYLOAD) {
-		LOG_ERR("sendPacket: rejected - path_len=%d or payload_len=%d invalid",
-			packet->path_len, packet->payload_len);
-		_mgr->free(packet);
-	} else {
-		_mgr->queueOutbound(packet, priority, futureMillis((int)delay_millis));
-		/* Fire the wake callback even for delay_millis == 0.  Companion
-		 * BLE/USB-driven direct & zero-hop sends enqueue with delay 0 from
-		 * sysworkq — off the main loop — and the per-frame RX wake was
-		 * removed in 57b971f, so without this they have no drain signal
-		 * (USB companion has no tx-idle backstop).  The callback reschedules
-		 * tx_drain_work with K_MSEC(0) → immediate drain; redundant but
-		 * harmless when sendPacket is already called from the main loop. */
-		if (_tx_queued_cb) {
-			_tx_queued_cb(delay_millis, _tx_queued_user_data);
-		}
-	}
+void Dispatcher::releasePacket(Packet* packet) {
+  _mgr->free(packet);
 }
 
-bool Dispatcher::millisHasNowPassed(uint32_t timestamp) const
-{
-	return (int32_t)((uint32_t)_ms->getMillis() - timestamp) > 0;
+void Dispatcher::sendPacket(Packet* packet, uint8_t priority, uint32_t delay_millis) {
+  if (!Packet::isValidPathLen(packet->path_len) || packet->payload_len > MAX_PACKET_PAYLOAD) {
+    MESH_DEBUG_PRINTLN("%s Dispatcher::sendPacket(): ERROR: invalid packet... path_len=%d, payload_len=%d", getLogDateTime(), (uint32_t) packet->path_len, (uint32_t) packet->payload_len);
+    _mgr->free(packet);
+  } else {
+    _mgr->queueOutbound(packet, priority, futureMillis(delay_millis));
+    // ZEPHCORE: wake the loop even for delay 0 — companion sends enqueue from the
+    // system work queue, off the mesh thread, and need the drain signal.
+    notifyTxQueued(delay_millis);
+  }
 }
 
-uint32_t Dispatcher::futureMillis(int millis_from_now) const
-{
-	return (uint32_t)_ms->getMillis() + millis_from_now;
+// Utility function -- handles the case where millis() wraps around back to zero
+//   2's complement arithmetic will handle any unsigned subtraction up to HALF the word size (32-bits in this case)
+bool Dispatcher::millisHasNowPassed(uint32_t timestamp) const {
+  return (int32_t)((uint32_t)_ms->getMillis() - timestamp) > 0;
 }
 
-} /* namespace mesh */
+uint32_t Dispatcher::futureMillis(int millis_from_now) const {
+  return (uint32_t)_ms->getMillis() + millis_from_now;
+}
+
+}

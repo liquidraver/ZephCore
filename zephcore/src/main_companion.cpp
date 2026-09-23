@@ -63,7 +63,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #endif
 
 /* Radio + mesh includes (shared header selects LR1110 or SX126x) */
-#include <mesh/RadioIncludes.h>
+#include <src/RadioIncludes.h>
 #ifdef ZEPHCORE_LORA
 #include <app/CompanionMesh.h>
 #include <helpers/CommonCLI.h>
@@ -759,8 +759,8 @@ static uint16_t get_battery_mv(void)
 
 static mesh::ZephyrMillisecondClock ms_clock;
 static mesh::ZephyrRNG zephyr_rng;
-static mesh::SimpleMeshTables mesh_tables;
-static mesh::StaticPoolPacketManager packet_mgr;
+static SimpleMeshTables mesh_tables;
+static StaticPoolPacketManager packet_mgr;
 static CompanionMesh companion_mesh(lora_radio, ms_clock, zephyr_rng, rtc_clock,
 	packet_mgr, mesh_tables, data_store);
 

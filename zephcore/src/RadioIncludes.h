@@ -12,7 +12,7 @@
 #if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110) || DT_NODE_HAS_STATUS(DT_ALIAS(lora0), okay)
 
 #include <zephyr/drivers/lora.h>
-#include <mesh/LoRaConfig.h>
+#include <helpers/LoRaConfig.h>
 #include <adapters/board/ZephyrBoard.h>
 #include <adapters/clock/ZephyrMillisecondClock.h>
 #include <adapters/rng/ZephyrRNG.h>

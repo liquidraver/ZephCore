@@ -7,7 +7,7 @@
 #include "observer_creds.h"
 
 #include <mesh/Utils.h>
-#include <mesh/LoRaConfig.h>
+#include <helpers/LoRaConfig.h>
 #include <adapters/radio/LoRaRadioBase.h>
 #include <adapters/rng/ZephyrRNG.h>   /* generateFirstBootIdentity (hardened keygen) */
 #include <helpers/MeshcoreJson.h>
@@ -22,6 +22,7 @@ LOG_MODULE_REGISTER(zephcore_observer, CONFIG_ZEPHCORE_OBSERVER_LOG_LEVEL);
 #include <time.h>
 
 #include <ZephyrMQTTPublisher.h>
+#include <helpers/PacketLog.h>
 
 /* Forward declaration — implemented in ZephyrWiFiStation.c */
 extern "C" {
@@ -193,8 +194,14 @@ void ObserverMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len)
 
 void ObserverMesh::logRx(Packet *packet, int len, float score)
 {
-	(void)packet; (void)len;
+	packet_log_rx(getLogDateTime(), packet, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
 	_last_score = score;
+}
+
+void ObserverMesh::logTx(Packet *packet, int len)
+{
+	(void)len;
+	packet_log_tx(getLogDateTime(), packet);
 }
 
 void ObserverMesh::enqueuePacket(Packet *pkt)

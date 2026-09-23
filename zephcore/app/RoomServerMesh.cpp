@@ -28,6 +28,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <helpers/PacketLog.h>
 
 /* Helper to get radio driver for stats — uses LoRaRadioBase (works for SX126x and LR1110) */
 static inline mesh::LoRaRadioBase& getRadioDriver(mesh::Radio* radio) {
@@ -119,8 +120,8 @@ int RoomServerMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp,
 		stats.n_recv_direct = getNumRecvDirect();
 		stats.err_events = _err_flags;
 		stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
-		stats.n_direct_dups = ((mesh::SimpleMeshTables *)getTables())->getNumDirectDups();
-		stats.n_flood_dups = ((mesh::SimpleMeshTables *)getTables())->getNumFloodDups();
+		stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
+		stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
 		stats.n_posted = _num_posted;
 		stats.n_post_push = _num_post_pushes;
 		memcpy(&reply_data[4], &stats, sizeof(stats));
@@ -407,6 +408,7 @@ void RoomServerMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int le
 }
 
 void RoomServerMesh::logRx(mesh::Packet* pkt, int len, float score) {
+	packet_log_rx(getLogDateTime(), pkt, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
 	if (_logging) {
 		LOG_INF("RX len=%d type=%d route=%s payload_len=%d SNR=%d RSSI=%d",
 			len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
@@ -416,6 +418,7 @@ void RoomServerMesh::logRx(mesh::Packet* pkt, int len, float score) {
 }
 
 void RoomServerMesh::logTx(mesh::Packet* pkt, int len) {
+	packet_log_tx(getLogDateTime(), pkt);
 	if (_logging) {
 		LOG_INF("TX len=%d type=%d route=%s payload_len=%d",
 			len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
@@ -757,7 +760,7 @@ bool RoomServerMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const 
 
 RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms,
 			   mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables)
-	: mesh::Mesh(radio, ms, rng, rtc, *new mesh::StaticPoolPacketManager(), tables),
+	: mesh::Mesh(radio, ms, rng, rtc, *new StaticPoolPacketManager(), tables),
 	  _board(board),
 	  _cli(board, rtc, acl, &_prefs, this),
 	  region_map(key_store), temp_map(key_store),
@@ -1003,7 +1006,7 @@ void RoomServerMesh::clearStats() {
 	radio_driver.resetStats();
 	radio_driver.resetDutyCycleTimeoutRestarts();
 	resetStats();
-	((mesh::SimpleMeshTables *)getTables())->resetStats();
+	((SimpleMeshTables *)getTables())->resetStats();
 }
 
 uint32_t RoomServerMesh::getDutyCycleTimeoutRestarts() const {
