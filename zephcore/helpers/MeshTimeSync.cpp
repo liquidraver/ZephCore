@@ -417,6 +417,10 @@ const char *MeshTimeSync::reasonStr(Reason r)
 int MeshTimeSync::formatStatus(char *out, size_t cap, uint32_t local_time,
 			       uint32_t uptime_secs, bool enabled) const
 {
+	if (cap == 0) {
+		return 0;
+	}
+
 	Verdict v = evaluateNow(local_time, uptime_secs);
 	const Consensus &c = v.consensus;
 
