@@ -11,14 +11,7 @@
 
 #include <zephyr/drivers/lora.h>
 
-/* --- Noise floor calibration (EMA) ---
- * Median-of-N RSSI reads → EMA.  alpha = 1/8, converges in ~8 ticks.
- * Samples above floor + SAMPLING_THRESHOLD rejected as interference. */
-#define NOISE_FLOOR_EMA_SHIFT            3   /* alpha = 1/(1<<3) = 1/8 */
-#define NOISE_FLOOR_SAMPLES_PER_TICK     8   /* median of 8 reads per tick */
-#define NOISE_FLOOR_UNGUARDED_INTERVAL   16  /* ticks between unfiltered samples (power of 2) */
-#define NOISE_FLOOR_SAMPLING_THRESHOLD   14  /* dB above floor to reject as interference */
-#define DEFAULT_NOISE_FLOOR              0   /* sentinel: seed from first sample */
+#include "radio_tuning.h"
 
 /* --- RSSI read timing (SX1261/2 DS rev 2.2 Table 13-82) ---
  *
@@ -91,94 +84,6 @@ static inline uint32_t rssi_settle_delay_us(uint16_t bw_khz)
 #define NOISE_FLOOR_RETRY_MS             5000
 /* Blocked attempts allowed before standing down to the next full interval. */
 #define NOISE_FLOOR_MAX_RETRIES          2
-
-/* --- Adaptive CAD (LBT detPeak calibration) ---
- * Housekeeping-tick CAD probes accumulate per-level busy/free statistics;
- * a one-sided staircase converges on the lowest detPeak offset whose
- * false-positive rate stays under target.  Levels are signed offsets from
- * the chip family's per-SF base detPeak, so the C++ layer stays
- * scale-independent.  Those bases are per-SF AND per-bandwidth tables taken
- * from Semtech's own reference stack (LoRa Basics Modem v4.9.0,
- * ral_{sx126x,lr11xx}.c) plus the LR2021 datasheet's symbol-indexed Table 6-19;
- * the flat "SX126x: SF+13 / LR: 56-68" this comment used to quote has not been
- * the whole story since 2026-08-29. */
-/* Operating-offset range (levels from the per-SF family base detPeak).  Wide
- * on purpose — a dense hilltop may need a much higher detPeak than a quiet
- * valley node; the per-family absolute clamp in the driver (SX126x 12-48,
- * LR11xx 40-100, LR20xx 48-90) is a firmware guardrail against "CAD
- * never/always fires", NOT a chip limit (cadDetPeak is a full uint8_t).  The
- * clamps are exported via hwCadPeakMin/Max so cadLevelMinEff/MaxEff can narrow
- * this window honestly where a base sits close to one of them.
- * MUST match CAD_OFFSET_MIN/MAX in helpers/NodePrefs.h. */
-#define CAD_LEVEL_MIN            (-8)  /* most sensitive probe level */
-#define CAD_LEVEL_MAX            12    /* least sensitive probe level */
-#define CAD_NUM_LEVELS           (CAD_LEVEL_MAX - CAD_LEVEL_MIN + 1)
-#define CAD_SWEEP_MIN            (-4)  /* dry-run sweep window (get cad with auto off) */
-#define CAD_SWEEP_MAX            4
-/* Knee-seeking staircase (replaces the earlier absolute-FP-target band).  The
- * FP-vs-detPeak curve falls as detPeak rises (less sensitive → fewer false
- * detects) and flattens past a knee; the sweet spot is the knee — the most
- * sensitive detPeak whose FP has already bottomed out.  The controller reads
- * the local curve SLOPE from three rungs (frontier op-1, operating op, op+1)
- * rather than an absolute FP level, so it converges the same way regardless of
- * a site's FP floor (which varies with traffic and classifier residual).
- *  - KNEE_SLOPE: the per-level FP change (permille) that counts as "steep".
- *    Below the knee the curve drops fast (step up toward the knee); at/above it
- *    the curve is flat (slope < KNEE_SLOPE).
- *  - PLATEAU_CLEAN: on a flat plateau, only reclaim sensitivity (step down) if
- *    FP is already this low — the guard that stops a flat-but-noisy curve from
- *    walking to the sensitive rail (there, holding is the least-bad move; a
- *    genuinely quiet flat-low site descends to the floor, which is correct). */
-#define CAD_KNEE_SLOPE_PERMILLE     50    /* >=5%/level FP change = steep */
-#define CAD_PLATEAU_CLEAN_PERMILLE  50    /* <=5% FP = clean enough to descend */
-#define CAD_STEP_MIN_PROBES         120   /* per-level samples before a step call */
-/* Airtime-protection cap on the TOTAL busy (defer) rate — false positives AND
- * real traffic.  The knee controller only minimises *false* busy, but on a
- * congested hilltop most busy verdicts are real distant traffic we'd never
- * actually collide with (capture effect), and deferring for all of it starves
- * the node's own airtime.  When the operating level's busy rate exceeds the
- * cap, step UP (less sensitive) regardless of FP — self-targeting, since a
- * quiet node's busy rate never reaches it.  HYST keeps a descend from bouncing
- * straight back into the cap.  The cap itself is a per-node pref
- * (`cad_busycap`, percent, `set cad.busycap`; default 15, 0 = off) since it is
- * a policy call (airtime vs. collision/capture), not a physical constant. */
-/* Descend hysteresis, as a PERCENTAGE OF THE CAP rather than a fixed permille
- * subtrahend.  It used to be a flat 100‰, which works at the old default cap of
- * 25% (threshold 15%, hysteresis 40% of the cap) and degenerates as the cap
- * falls: at cap 15% the threshold is 5%, and at cap 10% — the value
- * docs/ADAPTIVE_CAD.md recommends for saturated hilltops, and also the CLI's
- * minimum non-zero setting — it reaches ZERO. There, descent requires exactly
- * zero busy probes at the frontier, so the staircase becomes a one-way upward
- * ratchet at precisely the setting the documentation recommends.
- *
- * 40% reproduces the old behaviour exactly at cap 25 and holds that same share
- * at every other setting. */
-#define CAD_BUSY_DEFER_HYST_PCT      40   /* descend only if frontier busy <= 60% of cap */
-/* Safety rung thresholds — see LoRaRadioBase::cadSafetyStep().
- *
- * The airtime cap above is a SAFETY, not an optimisation, so it runs whether or
- * not `cad.auto` is on.  A detPeak so sensitive that CAD never clears leaves the
- * node unable to transmit at all, and the three settings that used to gate the
- * whole staircase (`cad.auto off`, `cad.busycap 0`, and a level not yet warm to
- * CAD_STEP_MIN_PROBES) are exactly what a hand-tuning operator turns off — the
- * CLI help for `set cad.auto` recommends that workflow by name.
- *
- * PATHOLOGICAL is the fast path for the unambiguous case.  Proving a MARGINAL
- * busy rate against the cap needs the full 120 samples, but a level that trips
- * on essentially every probe needs far fewer to be certain, and it is precisely
- * the case where waiting half an hour is unacceptable.  It also ignores
- * `cad.busycap` entirely: a cap of 0 means "do not trade airtime for
- * sensitivity", which is a policy about a working detector, not permission to
- * sit mute. */
-#define CAD_SAFETY_MIN_PROBES          20   /* samples before the fast path may act */
-#define CAD_SAFETY_PATHOLOGICAL_PERMILLE 900 /* >=90% busy = detector, not channel */
-#define CAD_PROBE_RSSI_GUARD     7     /* dB above floor = channel visibly busy, skip probe */
-#define CAD_STATS_DECAY_MS       (6UL * 3600UL * 1000UL)  /* halve counters every 6 h */
-/* NOTE: the probe has no retry deadline and no wake of its own.  It runs off
- * the noise-floor sampler's measurement (LoRaRadioBase::cadMaintenance), which
- * already applies the idle-RX guards and yields a median-of-8.  Consequently
- * the effective probe rate is quantised to NOISE_FLOOR_INTERVAL_MS: setting
- * probe_interval below that just gets one probe per floor sample. */
 
 /* --- RX ring buffer --- */
 #define RX_RING_SIZE 8  /* ~2 KB; buffers burst arrivals at SF7/BW500 */

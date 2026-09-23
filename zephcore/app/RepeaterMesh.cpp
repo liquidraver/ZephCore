@@ -1075,12 +1075,6 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
 		}
 	}
 
-	/* NOTE: Radio configuration is handled by SX126xRadio adapter using
-	 * LoRaConfig defaults. The repeater uses the same radio params as companion.
-	 * Dynamic radio reconfiguration (via CLI) is not yet supported - radio
-	 * uses compile-time defaults from LoRaConfig. This avoids EBUSY errors
-	 * from trying to reconfigure while radio is in async RX mode. */
-
 	updateAdvertTimer();
 	updateFloodAdvertTimer();
 

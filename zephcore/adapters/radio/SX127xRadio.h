@@ -16,10 +16,7 @@ namespace mesh {
 
 class SX127xRadio : public LoRaRadioBase {
 public:
-	SX127xRadio(const struct device *lora_dev, MainBoard &board,
-		    NodePrefs *prefs = nullptr);
-
-	void begin() override;
+	SX127xRadio(const struct device *lora_dev, MainBoard &board);
 
 	/* SX127x has no RX boost feature — report unsupported so the
 	 * radio.rxgain CLI can reply "Error: unsupported". */

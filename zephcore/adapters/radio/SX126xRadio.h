@@ -11,8 +11,7 @@ namespace mesh {
 
 class SX126xRadio : public LoRaRadioBase {
 public:
-	SX126xRadio(const struct device *lora_dev, MainBoard &board,
-		    NodePrefs *prefs = nullptr);
+	SX126xRadio(const struct device *lora_dev, MainBoard &board);
 
 	void begin() override;
 

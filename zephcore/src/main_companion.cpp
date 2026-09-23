@@ -731,25 +731,25 @@ static ZephyrDataStore data_store(rtc_clock);
 #ifdef ZEPHCORE_LORA
 static mesh::ZephyrBoard zephyr_board;
 
-/* NodePrefs placeholder - will be set from CompanionMesh */
-static NodePrefs temp_prefs;
+/* Radio is constructed with no prefs pointer; main() binds it to
+ * companion_mesh.prefs via setPrefs() before companion_mesh.begin(). */
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
 /* LR1110 via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::LR1110Radio lora_radio(lora_dev, zephyr_board, &temp_prefs);
+static mesh::LR1110Radio lora_radio(lora_dev, zephyr_board);
 #elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR2021)
 /* LR2021 via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::LR2021Radio lora_radio(lora_dev, zephyr_board, &temp_prefs);
+static mesh::LR2021Radio lora_radio(lora_dev, zephyr_board);
 #elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
 /* SX127x via Zephyr loramac-node driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX127xRadio lora_radio(lora_dev, zephyr_board, &temp_prefs);
+static mesh::SX127xRadio lora_radio(lora_dev, zephyr_board);
 #else
 /* SX126x via Zephyr LoRa driver */
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
-static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board, &temp_prefs);
+static mesh::SX126xRadio lora_radio(lora_dev, zephyr_board);
 #endif
 
 static uint16_t get_battery_mv(void)
@@ -1554,8 +1554,9 @@ int main(void)
 		LOG_INF("BLE passkey loaded from prefs: %06u", companion_mesh.prefs.ble_pin);
 	}
 
-	/* Copy prefs to temp_prefs for radio (radio was initialized before companion_mesh) */
-	temp_prefs = companion_mesh.prefs;
+	/* Bind the radio to the live prefs before begin(): the radio reads
+	 * freq/bw/sf/cr/power through this pointer from Radio::begin() on. */
+	lora_radio.setPrefs(&companion_mesh.prefs);
 
 	/* Load contacts and channels */
 	data_store.loadContacts(&companion_mesh);
@@ -1615,12 +1616,6 @@ int main(void)
 
 	/* Start mesh */
 	companion_mesh.begin();
-
-	/* Redirect radio prefs pointer to the live companion_mesh.prefs.
-	 * The radio was constructed with &temp_prefs (a one-time copy needed
-	 * for static init).  After begin(), point at the real prefs so that
-	 * CMD_SET_RADIO_PARAMS changes are visible to lora_radio.reconfigure(). */
-	lora_radio.setPrefs(&companion_mesh.prefs);
 
 	/* Queue the restart-reason notice from the v-contact. Deferred to here so
 	 * begin() has derived the v-contact key, prefs (enable flag) are loaded,

@@ -5,6 +5,7 @@
 
 #include "RepeaterDataStore.h"
 #include "../adapters/datastore/ZephyrFsFormat.h"
+#include <helpers/LoRaConfig.h>
 #include <zephyr/fs/fs.h>
 #include <zephyr/sys/util.h>
 #include <zephyr/logging/log.h>
@@ -325,11 +326,11 @@ bool RepeaterDataStore::loadPrefs(NodePrefs& prefs) {
 	    prefs.bw < ZC_RADIO_BW_MIN_KHZ || prefs.bw > ZC_RADIO_BW_MAX_KHZ) {
 		LOG_WRN("Invalid radio params in prefs, using defaults: freq=%.3f sf=%u bw=%.1f",
 			(double)prefs.freq, prefs.sf, (double)prefs.bw);
-		prefs.freq = 869.618f;
-		prefs.bw = 62.5f;
-		prefs.sf = 7;
-		prefs.cr = 5;
-		prefs.tx_power_dbm = 22;
+		prefs.freq = mesh::LoRaConfig::FREQ_MHZ;
+		prefs.bw = mesh::LoRaConfig::BANDWIDTH_KHZ;
+		prefs.sf = mesh::LoRaConfig::SPREADING_FACTOR;
+		prefs.cr = mesh::LoRaConfig::CODING_RATE;
+		prefs.tx_power_dbm = mesh::LoRaConfig::TX_POWER_DBM;
 	}
 	/* Everything else that came off flash — bounds, NaNs, and the char fields,
 	 * which the file format stores without terminators. */

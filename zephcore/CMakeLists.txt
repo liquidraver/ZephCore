@@ -342,6 +342,7 @@ target_sources(app PRIVATE
   src/Utils.cpp
   adapters/board/ZephyrBoard.cpp
   adapters/radio/LoRaRadioBase.cpp
+  adapters/radio/CadController.cpp
   adapters/clock/ZephyrMillisecondClock.cpp
   adapters/clock/ZephyrRTCClock.cpp
   adapters/rng/ZephyrRNG.cpp
@@ -468,10 +469,6 @@ if(CONFIG_ZEPHCORE_RADIO_LR1110)
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/radio/lr11xx
   )
-  # Driver header (lr11xx_lora.h) is in the Zephyr tree after patching
-  target_include_directories(app PRIVATE
-    ${ZEPHYR_DIR}/drivers/lora/lr11xx
-  )
 elseif(CONFIG_ZEPHCORE_RADIO_LR2021)
   message(STATUS "ZephCore Radio: LR2021 (Zephyr LoRa driver)")
   target_sources(app PRIVATE
@@ -479,9 +476,6 @@ elseif(CONFIG_ZEPHCORE_RADIO_LR2021)
   )
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/radio/lr20xx
-  )
-  target_include_directories(app PRIVATE
-    ${ZEPHYR_DIR}/drivers/lora/lr20xx
   )
 elseif(CONFIG_ZEPHCORE_RADIO_SX127X)
   message(STATUS "ZephCore Radio: SX127x (Zephyr loramac-node driver)")
@@ -493,10 +487,6 @@ else()
   message(STATUS "ZephCore Radio: SX126x (native Zephyr driver)")
   target_sources(app PRIVATE
     adapters/radio/SX126xRadio.cpp
-  )
-  # Extension API header (sx126x_ext.h) is in the Zephyr driver tree
-  target_include_directories(app PRIVATE
-    ${ZEPHYR_DIR}/drivers/lora/native/sx126x
   )
 endif()
 

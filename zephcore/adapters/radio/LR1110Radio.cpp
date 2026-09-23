@@ -8,7 +8,7 @@
 
 /* LR11xx driver extension API */
 extern "C" {
-#include "lr11xx_lora.h"
+#include <zephyr/drivers/lora/lr11xx_lora.h>
 }
 
 #include <zephyr/logging/log.h>
@@ -16,19 +16,9 @@ LOG_MODULE_REGISTER(lr1110_radio, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-K_THREAD_STACK_DEFINE(lr11xx_tx_wait_stack, TX_WAIT_THREAD_STACK_SIZE);
-
-LR1110Radio::LR1110Radio(const struct device *lora_dev, MainBoard &board,
-			 NodePrefs *prefs)
-	: LoRaRadioBase(lora_dev, board, prefs)
+LR1110Radio::LR1110Radio(const struct device *lora_dev, MainBoard &board)
+	: LoRaRadioBase(lora_dev, board)
 {
-}
-
-void LR1110Radio::begin()
-{
-	startTxThread(lr11xx_tx_wait_stack,
-		      K_THREAD_STACK_SIZEOF(lr11xx_tx_wait_stack));
-	LoRaRadioBase::begin();
 }
 
 uint32_t LR1110Radio::getDutyCycleTimeoutRestarts() const

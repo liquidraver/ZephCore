@@ -63,18 +63,16 @@ public:
   */
   virtual void onSendFinished() = 0;
 
-  /**
-   * \brief  do any processing needed on each loop cycle
-   */
-  virtual void loop() { }
+  // ZEPHCORE: no loop() -- the Dispatcher never polls the radio; periodic radio
+  // work is deadline-driven through msUntilNextMaintenance()/radioMaintenance().
 
   virtual int getNoiseFloor() const { return 0; }
 
   virtual void triggerNoiseFloorCalibrate(int threshold) { }
 
-  virtual void setCADEnabled(bool enable) { }
-
-  virtual void resetAGC() { }
+  // ZEPHCORE: no setCADEnabled() (CAD is always LBT inside the driver) and no
+  // resetAGC() (the AGC unstick is part of radioMaintenance()). Left out so a
+  // port calling them fails to compile instead of silently doing nothing.
 
   virtual bool isInRecvMode() const = 0;
 
@@ -86,9 +84,7 @@ public:
   virtual float getLastRSSI() const { return 0; }
   virtual float getLastSNR() const { return 0; }
 
-  // ZEPHCORE: radio extensions used by the Dispatcher and the roles. CAD is
-  // always LBT inside the driver (setCADEnabled unused) and the AGC unstick is
-  // part of radioMaintenance() (resetAGC unused).
+  // ZEPHCORE: radio extensions used by the Dispatcher and the roles.
 
   // Radio not command-ready (e.g. BUSY high); the Dispatcher defers TX.
   virtual bool isRadioReady() { return true; }

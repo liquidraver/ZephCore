@@ -756,7 +756,7 @@ int main(void)
 	 * Dispatcher::begin() → Radio::begin().  Without this, the radio would
 	 * configure on NodePrefs defaults (869.618 MHz) regardless of saved
 	 * settings: CLI readback looked correct but the hardware stayed on EU.
-	 * Mirrors the temp_prefs pattern in main_companion.cpp. */
+	 * Every role binds this way; begin() refuses to start without it. */
 	data_store.loadPrefs(*repeater_mesh.getNodePrefs());
 	lora_radio.setPrefs(repeater_mesh.getNodePrefs());
 

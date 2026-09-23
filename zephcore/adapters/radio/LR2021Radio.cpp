@@ -8,7 +8,7 @@
 
 /* LR20xx driver extension API */
 extern "C" {
-#include "lr20xx_lora.h"
+#include <zephyr/drivers/lora/lr20xx_lora.h>
 }
 
 #include <zephyr/logging/log.h>
@@ -16,19 +16,9 @@ LOG_MODULE_REGISTER(lr2021_radio, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-K_THREAD_STACK_DEFINE(lr20xx_tx_wait_stack, TX_WAIT_THREAD_STACK_SIZE);
-
-LR2021Radio::LR2021Radio(const struct device *lora_dev, MainBoard &board,
-			 NodePrefs *prefs)
-	: LoRaRadioBase(lora_dev, board, prefs)
+LR2021Radio::LR2021Radio(const struct device *lora_dev, MainBoard &board)
+	: LoRaRadioBase(lora_dev, board)
 {
-}
-
-void LR2021Radio::begin()
-{
-	startTxThread(lr20xx_tx_wait_stack,
-		      K_THREAD_STACK_SIZEOF(lr20xx_tx_wait_stack));
-	LoRaRadioBase::begin();
 }
 
 bool LR2021Radio::configSideDetectors(const uint8_t *sfs, uint8_t num)

@@ -17,7 +17,7 @@
 #include <string.h>
 #include <math.h>
 
-#include "lr11xx_lora.h"
+#include <zephyr/drivers/lora/lr11xx_lora.h>
 #include "lr11xx_hal_zephyr.h"
 #include "lr11xx_radio.h"
 #include "lr11xx_radio_types.h"
@@ -2191,7 +2191,7 @@ static uint8_t lr11xx_cad_detect_peak(uint8_t sf, uint16_t bw_khz, uint8_t symb_
  *
  * 40 is DELIBERATELY left where it was when the sub-125 row was measured down
  * to 45 (base 44 after the 4-symbol correction), which means it now binds:
- * 44 + CAD_LEVEL_MIN(-8) = 36 is below it, so cadLevelMinEff() narrows the
+ * 44 + CAD_LEVEL_MIN(-8) = 36 is below it, so CadController::levelMinEff() narrows the
  * offset window to -4..+12 at SF6 and SF7 below BW125.  That narrowing is
  * intended, and it must not be "fixed" by lowering this constant.
  *

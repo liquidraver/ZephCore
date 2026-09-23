@@ -453,7 +453,7 @@ via `Dispatcher::onCadOffsetChanged()`. The narrowing is not cosmetic: where
 `base + offset` falls outside the hardware clamp, several offsets program the
 **same** peak, and the staircase then compares rungs that are physically
 identical and reads sampling noise as curvature. `hwCadPeakMin/Max()` report the
-driver clamp and `cadLevelMinEff()/MaxEff()` derive the usable window, so every
+driver clamp and `CadController::levelMinEff()/levelMaxEff()` derive the usable window, so every
 level the controller can reach is a distinct configuration and the `pk` shown by
 `get cad.stats` is what the chip was actually given. It binds on the LR2021, whose
 4-symbol base is 51 at SF5–7 (effective −3…+12) and 54 at SF8 (−6…+12); the

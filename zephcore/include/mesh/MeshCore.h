@@ -70,11 +70,8 @@ public:
   virtual void onPacketReceived() { }
   virtual void reboot() = 0;
   virtual void powerOff() { /* no op */ }
-  // Called by example setup() functions to signal that boot is complete.
-  // Boards may override to stop a boot-indicator LED sequence or similar.
-  // Default no-op: boards that don't care need not implement anything.
-  virtual void onBootComplete() { /* no op */ }
-  virtual uint32_t getIRQGpio() { return -1; } // not supported. Returns DIO1 (SX1262) and DIO0 (SX127x)
+  // ZEPHCORE: no onBootComplete() (Arduino setup() hook) and no getIRQGpio()
+  // (Arduino sleep-wake pin) -- nothing on Zephyr would call them.
   virtual void sleep(uint32_t secs)  { /* no op */ }
   virtual uint32_t getGpio() { return 0; }
   virtual void setGpio(uint32_t values) {}
@@ -83,10 +80,10 @@ public:
   virtual bool startOTAUpdate(const char* id, char reply[]) { return false; }   // not supported
 
   // Power management interface (boards with power management override these)
-  virtual bool isPwrMgtInitialised() const { return false; }
+  // ZEPHCORE: no isPwrMgtInitialised() / getWakeLpcompSupported() -- upstream's
+  // nRF52 Arduino power manager; Zephyr PM covers this.
   virtual bool isExternalPowered() { return false; }
   virtual uint16_t getBootVoltage() { return 0; }
-  virtual bool getWakeLpcompSupported() const { return false; }
   virtual uint32_t getResetReason() const { return 0; }
   virtual const char* getResetReasonString(uint32_t reason) { return "Not available"; }
   virtual uint8_t getShutdownReason() const { return 0; }
@@ -94,9 +91,10 @@ public:
 
   virtual bool handleCommand(const char* command, uint32_t sender_timestamp, char* reply) { return false; }
 
-  // Called from the example main loops. Lets a board feed its watchdog and
-  // run periodic housekeeping. Default no-op.
-  virtual void loop() { /* no op */ }
+  // ZEPHCORE: no loop() -- upstream polls it from the Arduino main loop. The mesh
+  // thread here is event-driven and never polls; a board with periodic work owns
+  // a timer or work item. Left out so a port calling board.loop() fails to
+  // compile instead of silently doing nothing.
 };
 
 /**

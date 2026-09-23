@@ -17,7 +17,7 @@
 #include <string.h>
 #include <math.h>
 
-#include "lr20xx_lora.h"
+#include <zephyr/drivers/lora/lr20xx_lora.h>
 #include "lr20xx_hal_zephyr.h"
 #include "lr20xx_radio_common.h"
 #include "lr20xx_radio_common_types.h"

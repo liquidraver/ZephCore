@@ -6,8 +6,8 @@ sx126x_hal_stm32wl.c and sx126x_regs.h -- plus the driver's devicetree binding
 dts/bindings/lora/semtech,sx126x-base.yaml, which it extends with
 lna-bypass-gpios (see "FEM receive-path select" below).  No other patch in this
 directory touches those files; see "Why this is one patch" at the end.  The
-extension-API header sx126x_ext.h is not patched in, it is copied from
-patches/zephyr-new/.
+extension-API header is not patched in: it is copied from patches/zephyr-new/
+to the public include/zephyr/drivers/lora/sx126x_ext.h.
 
 == Base driver ==
 
@@ -696,7 +696,7 @@ index c8e682ee8..b5ab10c4e 100644
  #include <zephyr/sys/byteorder.h>
  
  #include "sx126x.h"
-+#include "sx126x_ext.h"
++#include <zephyr/drivers/lora/sx126x_ext.h>
  
  #include <zephyr/logging/log.h>
  LOG_MODULE_REGISTER(sx126x, CONFIG_LORA_LOG_LEVEL);

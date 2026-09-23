@@ -13,10 +13,7 @@ namespace mesh {
 
 class LR1110Radio : public LoRaRadioBase {
 public:
-	LR1110Radio(const struct device *lora_dev, MainBoard &board,
-		    NodePrefs *prefs = nullptr);
-
-	void begin() override;
+	LR1110Radio(const struct device *lora_dev, MainBoard &board);
 
 	/* Duty-cycle false-preamble re-arm count, behind `get dc.restarts`.
 	 * Without these the base class's stub answers 0 forever, and the one

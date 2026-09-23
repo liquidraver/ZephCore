@@ -10,6 +10,7 @@
 
 #include <stdint.h>
 #include <string.h>
+#include "LoRaConfig.h"
 
 /* LEDS_RADIO_* / LEDS_HB_* mode values for the leds_radio_mode and leds_hb_mode
  * fields below.  They live in led_gate.h because the heartbeat consumers are C
@@ -241,7 +242,6 @@ struct NodePrefs {
 	uint8_t v_contact_flags;
 };
 
-/* Default prefs -- must match LoRaConfig.h defaults for radio interop. */
 /* Range guards for prefs that came off flash.
  *
  * The atomic replace in every savePrefs() plus littlefs's own CRCs make a torn
@@ -391,16 +391,12 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 #ifdef CONFIG_ZEPHCORE_GUEST_PASSWORD
 	strncpy(prefs->guest_password, CONFIG_ZEPHCORE_GUEST_PASSWORD, sizeof(prefs->guest_password) - 1);
 #endif
-	/* Radio params - MUST match LoRaConfig.h for interop with companion nodes */
-	prefs->freq = 869.618f;           // LoRaConfig::FREQ_HZ / 1000000.0
-	prefs->bw = 62.5f;                // LoRaConfig::BANDWIDTH
-	prefs->sf = 7;                    // LoRaConfig::SPREADING_FACTOR
-	prefs->cr = 5;                    // CR 4/5 (MeshCore uses 5-8 for CR 4/5 through 4/8)
-#ifdef CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM
-	prefs->tx_power_dbm = CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM;
-#else
-	prefs->tx_power_dbm = 22;         // LoRaConfig::TX_POWER_DBM
-#endif
+	/* Radio params */
+	prefs->freq = mesh::LoRaConfig::FREQ_MHZ;
+	prefs->bw = mesh::LoRaConfig::BANDWIDTH_KHZ;
+	prefs->sf = mesh::LoRaConfig::SPREADING_FACTOR;
+	prefs->cr = mesh::LoRaConfig::CODING_RATE;   /* 5-8 = CR 4/5 through 4/8 */
+	prefs->tx_power_dbm = mesh::LoRaConfig::TX_POWER_DBM;
 	prefs->disable_fwd = 0;
 	prefs->advert_interval = 0;       // 0 = periodic local advert off; else minutes = value * 2
 	prefs->flood_advert_interval = 47;  // hours

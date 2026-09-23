@@ -23,11 +23,8 @@ LOG_MODULE_REGISTER(sx127x_radio, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-K_THREAD_STACK_DEFINE(sx127x_tx_wait_stack, TX_WAIT_THREAD_STACK_SIZE);
-
-SX127xRadio::SX127xRadio(const struct device *lora_dev, MainBoard &board,
-			  NodePrefs *prefs)
-	: LoRaRadioBase(lora_dev, board, prefs)
+SX127xRadio::SX127xRadio(const struct device *lora_dev, MainBoard &board)
+	: LoRaRadioBase(lora_dev, board)
 {
 	/* SX127x has no RX boost feature — start with boost disabled */
 	_rx_boost_enabled = false;
@@ -35,13 +32,6 @@ SX127xRadio::SX127xRadio(const struct device *lora_dev, MainBoard &board,
 	 * change — Radio.SetTxConfig() and Radio.SetRxConfig() configure
 	 * completely disjoint internal state in the loramac-node library. */
 	_loramac_node = true;
-}
-
-void SX127xRadio::begin()
-{
-	startTxThread(sx127x_tx_wait_stack,
-		      K_THREAD_STACK_SIZEOF(sx127x_tx_wait_stack));
-	LoRaRadioBase::begin();
 }
 
 /* ── Hardware primitives ──────────────────────────────────────────────── */

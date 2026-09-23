@@ -252,8 +252,8 @@ void CommonCLI::savePrefs() {
  * base costs an hour or two; carrying a stale offset across can leave the node
  * either transmitting over live receptions or unable to transmit at all.
  *
- * The operating offset lives in two places — _prefs->cad_offset, and _cad_offset
- * inside the radio, which applyCadPrefs() reloads through setCadParams().
+ * The operating offset lives in two places — _prefs->cad_offset, and the radio's
+ * CadController, which applyCadPrefs() reloads through setCadParams().
  *
  * preset_pending = the caller has already written the NEW freq/bw/sf/cr to
  * _prefs but the radio is still running the OLD preset (frozen by

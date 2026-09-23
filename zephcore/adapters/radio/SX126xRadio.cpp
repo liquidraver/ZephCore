@@ -8,7 +8,7 @@
 
 /* Native SX126x driver extension API */
 extern "C" {
-#include "sx126x_ext.h"
+#include <zephyr/drivers/lora/sx126x_ext.h>
 }
 
 #include <zephyr/logging/log.h>
@@ -16,18 +16,13 @@ LOG_MODULE_REGISTER(sx126x_radio, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
 namespace mesh {
 
-K_THREAD_STACK_DEFINE(sx126x_tx_wait_stack, TX_WAIT_THREAD_STACK_SIZE);
-
-SX126xRadio::SX126xRadio(const struct device *lora_dev, MainBoard &board,
-			  NodePrefs *prefs)
-	: LoRaRadioBase(lora_dev, board, prefs)
+SX126xRadio::SX126xRadio(const struct device *lora_dev, MainBoard &board)
+	: LoRaRadioBase(lora_dev, board)
 {
 }
 
 void SX126xRadio::begin()
 {
-	startTxThread(sx126x_tx_wait_stack,
-		      K_THREAD_STACK_SIZEOF(sx126x_tx_wait_stack));
 	LoRaRadioBase::begin();
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)

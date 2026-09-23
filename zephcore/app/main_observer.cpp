@@ -274,19 +274,17 @@ static mesh::ZephyrMillisecondClock s_ms_clock;
 
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
 
-/* Static-init placeholder only.  The radio is rebound to the mesh's own
- * NodePrefs via setPrefs() in main() before observer_mesh.begin() — this object
- * is not the live radio configuration and is never loaded from flash. */
-static NodePrefs s_radio_prefs;
+/* Radio is constructed with no prefs pointer; main() binds it to the mesh's
+ * NodePrefs via setPrefs() before observer_mesh.begin(). */
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR1110)
-static mesh::LR1110Radio lora_radio(lora_dev, s_board, &s_radio_prefs);
+static mesh::LR1110Radio lora_radio(lora_dev, s_board);
 #elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_LR2021)
-static mesh::LR2021Radio lora_radio(lora_dev, s_board, &s_radio_prefs);
+static mesh::LR2021Radio lora_radio(lora_dev, s_board);
 #elif IS_ENABLED(CONFIG_ZEPHCORE_RADIO_SX127X)
-static mesh::SX127xRadio lora_radio(lora_dev, s_board, &s_radio_prefs);
+static mesh::SX127xRadio lora_radio(lora_dev, s_board);
 #else
-static mesh::SX126xRadio lora_radio(lora_dev, s_board, &s_radio_prefs);
+static mesh::SX126xRadio lora_radio(lora_dev, s_board);
 #endif
 
 static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rtc_clock);
@@ -296,13 +294,6 @@ static RepeaterDataStore  data_store;
 
 int main(void)
 {
-	/* Initialize radio prefs with observer-specific defaults */
-	initNodePrefs(&s_radio_prefs);
-	s_radio_prefs.cr           = 5;   /* CR 4/5 (same as initNodePrefs; kept explicit) */
-	s_radio_prefs.tx_power_dbm = 0;   /* observer never TXes */
-	strncpy(s_radio_prefs.node_name, "Observer",
-		sizeof(s_radio_prefs.node_name) - 1);
-
 	/* Brief boot delay — lets USB enumerate before first log */
 	k_sleep(K_MSEC(1500));
 	LOG_INF("=== ZephCore Observer starting ===");
@@ -352,10 +343,8 @@ int main(void)
 	 *
 	 * The radio reads freq/bw/sf/cr through this pointer, both during
 	 * begin() → Dispatcher::begin() → Radio::begin() and on every later
-	 * reconfigure() (LoRaRadioBase::reconfigureWithParams() ignores its
-	 * arguments and re-reads the pointer).  Constructed against
-	 * s_radio_prefs, which is never loaded from flash, the radio stayed on
-	 * the compiled-in defaults forever: `set freq/sf/bw/cr` wrote flash and
+	 * reconfigure().  Bound to a placeholder that was never loaded from
+	 * flash, the radio stayed on the compiled-in defaults forever: `set freq/sf/bw/cr` wrote flash and
 	 * updated the CLI/MQTT readback but never reached the hardware, so the
 	 * setting looked accepted and then "reverted" on reboot.
 	 *

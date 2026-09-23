@@ -7,7 +7,6 @@
 #include "observer_creds.h"
 
 #include <mesh/Utils.h>
-#include <helpers/LoRaConfig.h>
 #include <adapters/radio/LoRaRadioBase.h>
 #include <adapters/rng/ZephyrRNG.h>   /* generateFirstBootIdentity (hardened keygen) */
 #include <helpers/MeshcoreJson.h>
@@ -447,8 +446,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (f >= 300.0f && f <= 1000.0f) {
 				_prefs.freq = f;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadioBase *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "freq=%.3f MHz", (double)_prefs.freq);
 			} else {
 				snprintf(reply, reply_size, "ERR freq must be 300-1000 MHz");
@@ -459,8 +457,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (sf >= 7 && sf <= 12) {
 				_prefs.sf = (uint8_t)sf;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadioBase *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "sf=%u", _prefs.sf);
 			} else {
 				snprintf(reply, reply_size, "ERR sf must be 7-12");
@@ -484,8 +481,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (bw >= ZC_RADIO_BW_MIN_KHZ && bw <= ZC_RADIO_BW_MAX_KHZ) {
 				_prefs.bw = bw;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadioBase *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "bw=%.2f kHz", (double)_prefs.bw);
 			} else {
 				snprintf(reply, reply_size, "ERR bw must be 7-500 kHz (or index 0-5)");
@@ -496,8 +492,7 @@ bool ObserverMesh::handleCLI(const char *command, char *reply, int reply_size)
 			if (cr >= 5 && cr <= 8) {
 				_prefs.cr = (uint8_t)cr;
 				_store->savePrefs(_prefs);
-				((LoRaRadioBase *)_radio)->reconfigureWithParams(
-					_prefs.freq, _prefs.bw, _prefs.sf, _prefs.cr);
+				((LoRaRadioBase *)_radio)->reconfigure();
 				snprintf(reply, reply_size, "cr=%u", _prefs.cr);
 			} else {
 				snprintf(reply, reply_size, "ERR cr must be 5-8");
