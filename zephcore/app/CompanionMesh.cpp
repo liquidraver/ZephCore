@@ -26,117 +26,7 @@
 #include <helpers/PacketLog.h>
 LOG_MODULE_REGISTER(zephcore_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
-/* Protocol commands (matches Arduino companion_radio) - sorted by opcode */
-#define CMD_APP_START            0x01
-#define CMD_SEND_TXT_MSG         0x02
-#define CMD_SEND_CHANNEL_TXT_MSG 0x03
-#define CMD_GET_CONTACTS         0x04
-#define CMD_GET_DEVICE_TIME      0x05
-#define CMD_SET_DEVICE_TIME      0x06
-#define CMD_SEND_SELF_ADVERT     0x07
-#define CMD_SET_ADVERT_NAME      0x08
-#define CMD_ADD_UPDATE_CONTACT   0x09
-#define CMD_SYNC_NEXT_MESSAGE    0x0A
-#define CMD_SET_RADIO_PARAMS     0x0B
-#define CMD_SET_RADIO_TX_POWER   0x0C
-#define CMD_RESET_PATH           0x0D
-#define CMD_SET_ADVERT_LATLON    0x0E
-#define CMD_REMOVE_CONTACT       0x0F
-#define CMD_SHARE_CONTACT        0x10
-#define CMD_EXPORT_CONTACT       0x11
-#define CMD_IMPORT_CONTACT       0x12
-#define CMD_REBOOT               0x13
-#define CMD_GET_BATT_AND_STORAGE 0x14
-#define CMD_SET_TUNING_PARAMS    0x15
-#define CMD_DEVICE_QUERY         0x16
-#define CMD_EXPORT_PRIVATE_KEY   0x17
-#define CMD_IMPORT_PRIVATE_KEY   0x18
-#define CMD_SEND_RAW_DATA        0x19
-#define CMD_SEND_LOGIN           0x1A
-#define CMD_SEND_STATUS_REQ      0x1B
-#define CMD_HAS_CONNECTION       0x1C
-#define CMD_LOGOUT               0x1D
-#define CMD_GET_CONTACT_BY_KEY   0x1E
-#define CMD_GET_CHANNEL          0x1F
-#define CMD_SET_CHANNEL          0x20
-#define CMD_SIGN_START           0x21
-#define CMD_SIGN_DATA            0x22
-#define CMD_SIGN_FINISH          0x23
-#define CMD_SEND_TRACE_PATH      0x24
-#define CMD_SET_DEVICE_PIN       0x25
-#define CMD_SET_OTHER_PARAMS     0x26
-#define CMD_SEND_TELEMETRY_REQ   0x27
-#define CMD_GET_CUSTOM_VARS      0x28
-#define CMD_SET_CUSTOM_VAR       0x29
-#define CMD_GET_ADVERT_PATH      0x2A
-#define CMD_GET_TUNING_PARAMS    0x2B
-#define CMD_SEND_BINARY_REQ      0x32
-#define CMD_FACTORY_RESET        0x33
-#define CMD_SEND_PATH_DISCOVERY  0x34
-#define CMD_SET_FLOOD_SCOPE_KEY  0x36  /* v8+ (renamed from CMD_SET_FLOOD_SCOPE) */
-#define CMD_SEND_CONTROL_DATA    0x37
-#define CMD_GET_STATS            0x38
-#define CMD_SEND_ANON_REQ        0x39
-#define CMD_SET_AUTOADD_CONFIG   0x3A
-#define CMD_GET_AUTOADD_CONFIG   0x3B
-#define CMD_GET_ALLOWED_REPEAT_FREQ 0x3C
-#define CMD_SET_PATH_HASH_MODE      0x3D
-#define CMD_SEND_CHANNEL_DATA       0x3E
-#define CMD_SET_DEFAULT_FLOOD_SCOPE 0x3F  /* v11+ */
-#define CMD_GET_DEFAULT_FLOOD_SCOPE 0x40  /* v11+ */
-#define CMD_SEND_RAW_PACKET         0x41  /* v12+ */
-#define CMD_RUN_CLI_COMMAND         0x42  /* v14+ */
-
-/* Response packet types */
-#define PACKET_OK               0x00
-#define PACKET_ERROR            0x01
-#define PACKET_CONTACT_START    0x02
-#define PACKET_CONTACT          0x03
-#define PACKET_CONTACT_END      0x04
-#define PACKET_SELF_INFO        0x05
-#define PACKET_SENT             0x06
-#define PACKET_CONTACT_MSG_RECV 0x07  /* Legacy - ver < 3 */
-#define PACKET_CHANNEL_MSG_RECV 0x08  /* Legacy - ver < 3 */
-#define PACKET_CURR_TIME        0x09
-#define PACKET_NO_MORE_MSGS     0x0A
-#define PACKET_EXPORT_CONTACT   0x0B
-#define PACKET_BATTERY          0x0C
-#define PACKET_DEVICE_INFO      0x0D
-#define PACKET_PRIVATE_KEY      0x0E
-#define PACKET_DISABLED         0x0F
-#define PACKET_CONTACT_MSG_V3   0x10  /* Contact message for app ver >= 3 */
-#define PACKET_CHANNEL_MSG_V3   0x11  /* Channel message for app ver >= 3 */
-#define PACKET_CHANNEL_INFO     0x12
-#define PACKET_SIGN_START       0x13
-#define PACKET_SIGNATURE        0x14
-#define PACKET_CUSTOM_VARS      0x15
-#define PACKET_ADVERT_PATH      0x16
-#define PACKET_TUNING_PARAMS    0x17
-#define PACKET_STATS            0x18
-#define PACKET_AUTOADD_CONFIG   0x19
-#define PACKET_ALLOWED_REPEAT_FREQ 0x1A
-#define PACKET_CHANNEL_DATA_RECV   0x1B
-#define PACKET_DEFAULT_FLOOD_SCOPE 0x1C
-#define PACKET_CLI_REPLY           0x1D  /* v14+, reply to CMD_RUN_CLI_COMMAND */
-
-#define MAX_CHANNEL_DATA_LENGTH    (MAX_FRAME_SIZE - 9)
-
-#define MAX_SIGN_DATA_LEN       (8 * 1024)
-
-/* Error codes */
-#define ERR_UNSUPPORTED         0x01
-#define ERR_NOT_FOUND           0x02
-#define ERR_TABLE_FULL          0x03
-#define ERR_BAD_STATE           0x04
-#define ERR_ILLEGAL_ARG         0x06
-
-/* Max LoRa TX power (dBm) for SX1262 */
-#define MAX_LORA_TX_POWER       22
-
-/* Helper to put little-endian values */
-static inline void put_le16(uint8_t *p, uint16_t v) { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; }
-static inline void put_le32(uint8_t *p, uint32_t v) { p[0] = v & 0xFF; p[1] = (v >> 8) & 0xFF; p[2] = (v >> 16) & 0xFF; p[3] = (v >> 24) & 0xFF; }
-static inline uint32_t get_le32(const uint8_t *p) { return p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24); }
+#include "CompanionProtocol.h"
 
 /* UI notification helper => path_len extraction + uniform call through ui_task.h */
 #if ZEPHCORE_HAS_UI_TASK
@@ -383,16 +273,6 @@ void CompanionMesh::timeSyncTick()
 	_timesync.runTick(*getRTCClock());
 }
 
-void CompanionMesh::onLoginSent(const ContactInfo &contact)
-{
-	memcpy(&_pending_login, contact.id.pub_key, 4);
-}
-
-void CompanionMesh::onChannelAdded(ChannelDetails *)
-{
-	markChannelsDirty();
-}
-
 void CompanionMesh::markContactsDirty(bool substantive)
 {
 	int64_t deadline = _ms->getMillis() +
@@ -448,13 +328,13 @@ bool CompanionMesh::writeFrame(const uint8_t *data, size_t len)
 	return false;
 }
 
-void CompanionMesh::sendPacketOk()
+void CompanionMesh::writeOKFrame()
 {
 	uint8_t rsp[] = { PACKET_OK };
 	writeFrame(rsp, sizeof(rsp));
 }
 
-void CompanionMesh::sendPacketError(uint8_t code)
+void CompanionMesh::writeErrFrame(uint8_t code)
 {
 	uint8_t rsp[] = { PACKET_ERROR, code };
 	writeFrame(rsp, sizeof(rsp));
@@ -545,9 +425,9 @@ void CompanionMesh::drainPendingChannelInfos()
 	}
 }
 
-void CompanionMesh::queueOfflineMessage(const uint8_t *data, size_t len)
+void CompanionMesh::addToOfflineQueue(const uint8_t *data, size_t len)
 {
-	LOG_DBG("queueOfflineMessage: len=%u type=0x%02x count_before=%d", (unsigned)len, data[0], _offline_queue_count);
+	LOG_DBG("addToOfflineQueue: len=%u type=0x%02x count_before=%d", (unsigned)len, data[0], _offline_queue_count);
 	if (_offline_queue_count >= OFFLINE_QUEUE_SIZE) {
 		// Queue full - try to drop oldest channel message first
 		int pos = _offline_queue_head;
@@ -576,18 +456,7 @@ void CompanionMesh::queueOfflineMessage(const uint8_t *data, size_t len)
 	memcpy(f->buf, data, f->len);
 	_offline_queue_tail = (_offline_queue_tail + 1) % OFFLINE_QUEUE_SIZE;
 	_offline_queue_count++;
-	LOG_DBG("queueOfflineMessage: count_after=%d", _offline_queue_count);
-}
-
-bool CompanionMesh::dequeueOfflineMessage(uint8_t *dest, size_t &len)
-{
-	if (_offline_queue_count == 0) return false;
-	QueuedFrame *f = &_offline_queue[_offline_queue_head];
-	len = f->len;
-	memcpy(dest, f->buf, len);
-	_offline_queue_head = (_offline_queue_head + 1) % OFFLINE_QUEUE_SIZE;
-	_offline_queue_count--;
-	return true;
+	LOG_DBG("addToOfflineQueue: count_after=%d", _offline_queue_count);
 }
 
 bool CompanionMesh::peekOfflineMessage(uint8_t *dest, size_t &len)
@@ -927,15 +796,15 @@ void CompanionMesh::onMessageRecv(const ContactInfo &contact, mesh::Packet *pkt,
 		contact.name, sender_timestamp, text);
 
 	markConnectionActive(contact);
-	queueContactMessage(contact, pkt, TXT_TYPE_PLAIN, sender_timestamp, nullptr, 0, text);
+	queueMessage(contact, TXT_TYPE_PLAIN, pkt, sender_timestamp, nullptr, 0, text);
 	pushMsgWaiting();
 #if ZEPHCORE_HAS_UI_TASK
 	notify_contact_msg_ui(contact, pkt, text, _offline_queue_count);
 #endif
 }
 
-void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet *pkt,
-	uint8_t txt_type, uint32_t sender_timestamp, const uint8_t *extra, int extra_len, const char *text)
+void CompanionMesh::queueMessage(const ContactInfo &contact, uint8_t txt_type, mesh::Packet *pkt,
+	 uint32_t sender_timestamp, const uint8_t *extra, int extra_len, const char *text)
 {
 	// Build incoming message frame for offline queue
 	uint8_t frame[MAX_FRAME_SIZE];
@@ -979,518 +848,8 @@ void CompanionMesh::queueContactMessage(const ContactInfo &contact, mesh::Packet
 	memcpy(&frame[i], text, text_len);
 	i += text_len;
 
-	LOG_DBG("queueContactMessage: frame_len=%d type=0x%02x", i, frame[0]);
-	queueOfflineMessage(frame, i);
-}
-
-/* ========== V-contact: loopback admin contact ==========
- * A synthesized CHAT contact ("v<node_name>") that exists only toward the
- * connected BLE/USB app. Chat messages to it run the text CLI; replies and
- * unsolicited notices (battery alert, restart reason) come back as normal
- * contact messages via the offline queue. Invariants:
- *   - never enters the real contacts table (and thus never the RF RX
- *     matching path) — CMD_ADD_UPDATE_CONTACT is intercepted to a no-op OK;
- *   - no packet object is ever created for it — interception happens before
- *     any sendMessage/sendRequest path, so nothing can reach the radio;
- *   - its pubkey is SHA256-derived with no private key, so even hand-crafted
- *     over-the-air traffic addressed to it is undecryptable and dropped. */
-
-void CompanionMesh::buildVContact(ContactInfo &c) const
-{
-	memcpy(c.id.pub_key, _vcontact_pubkey, PUB_KEY_SIZE);
-	c.type = ADV_TYPE_CHAT;
-	/* App-owned flags (bit 0 = favourite, upper bits = telemetry permissions).
-	 * The v-contact has no contacts-table record to hold them, so they live in
-	 * prefs — see the CMD_ADD_UPDATE_CONTACT interception below. Echoing a
-	 * hardcoded 0 here is what used to clear the favourite star on every
-	 * contact sync. */
-	c.flags = prefs.v_contact_flags;
-	c.out_path_len = 0;  /* zero-hop direct — renders as "0 hops" in the app */
-	c.shared_secret_valid = false;
-	memset(c.out_path, 0, sizeof(c.out_path));
-	c.name[0] = 'v';
-	StrHelper::strzcpy(&c.name[1], prefs.node_name, sizeof(c.name) - 1);
-	c.last_advert_timestamp = _vcontact_lastmod;
-	c.lastmod = _vcontact_lastmod;
-	c.gps_lat = 0;
-	c.gps_lon = 0;
-	c.sync_since = 0;
-}
-
-bool CompanionMesh::isVContactKey(const uint8_t *key, int prefix_len) const
-{
-	if (!isVContactEnabled()) return false;
-	if (prefix_len > PUB_KEY_SIZE) prefix_len = PUB_KEY_SIZE;
-	return memcmp(key, _vcontact_pubkey, prefix_len) == 0;
-}
-
-bool CompanionMesh::vcontactClockValid()
-{
-	/* Anything before the firmware build epoch is a never-synced clock. */
-	return (uint32_t)getRTCClock()->getCurrentTime() >= (uint32_t)FIRMWARE_BUILD_EPOCH;
-}
-
-void CompanionMesh::vcontactClockSynced()
-{
-	if (!isVContactEnabled() || !vcontactClockValid()) {
-		return;
-	}
-	if (_vcontact_lastmod == 0) {
-		/* Deferred activation: first valid time source — stamp and announce.
-		 * From here the contact also appears in CMD_GET_CONTACTS syncs. */
-		vcontactPushAdvert();
-	}
-	/* Flush notices buffered while the clock was invalid; queueing them now
-	 * gives them real timestamps instead of 1970. */
-	for (uint8_t i = 0; i < _vcontact_pending_count; i++) {
-		vcontactQueueText(_vcontact_pending[i]);
-	}
-	_vcontact_pending_count = 0;
-}
-
-void CompanionMesh::vcontactQueueText(const char *text)
-{
-	/* Offline-queue frames cap at 172 bytes and the V3 header takes 16, so
-	 * split long CLI replies into <=150-char chunks, preferring line breaks.
-	 * Each chunk becomes its own chat message; getCurrentTimeUnique() keeps
-	 * their timestamps strictly increasing so the app orders them. */
-	static const size_t CHUNK_MAX = 150;
-	ContactInfo vc;
-	buildVContact(vc);
-
-	const char *p = text;
-	size_t remaining = strlen(text);
-	while (remaining > 0) {
-		size_t take = remaining;
-		if (take > CHUNK_MAX) {
-			take = CHUNK_MAX;
-			for (size_t i = take; i > CHUNK_MAX / 2; i--) {
-				if (p[i - 1] == '\n') { take = i; break; }
-			}
-		}
-		char chunk[CHUNK_MAX + 1];
-		memcpy(chunk, p, take);
-		chunk[take] = '\0';
-		size_t adv = take;
-		for (size_t i = 0; i < take; i++) {
-			if (chunk[i] == '\r') chunk[i] = ' ';  /* CRLF CLI output → LF */
-		}
-		while (take > 0 && (chunk[take - 1] == '\n' || chunk[take - 1] == ' ')) {
-			chunk[--take] = '\0';  /* trim trailing break of this bubble */
-		}
-		if (take > 0) {
-			queueContactMessage(vc, nullptr, TXT_TYPE_PLAIN,
-				getRTCClock()->getCurrentTimeUnique(), nullptr, 0, chunk);
-		}
-		p += adv;
-		remaining -= adv;
-	}
-	/* Suppress the "you have messages" prompt during the app's initial sync
-	 * (CMD_APP_START until the first PACKET_NO_MORE_MSGS). Sent mid-sync it
-	 * makes the app interleave message-sync into the contact stream and
-	 * truncate it. The message is already safe in the offline queue and the
-	 * app's own initial message-sync drains it — so no prompt is needed inside
-	 * the window. Outside it, the prompt goes out immediately.
-	 *
-	 * Also suppressed while the app has deleted the v-contact this session:
-	 * prompting for messages from a contact the app just dropped is noise. The
-	 * messages stay in the offline queue and drain on the next connect, when
-	 * the contact is back. */
-	if (!vcontactMsgWaitHeld() && !_vcontact_app_hidden) {
-		pushMsgWaiting();
-	} else {
-		LOG_INF("msgwait: suppressed (hold=%d hidden=%d), %d queued",
-			(int)_vcontact_hold_msgwait, (int)_vcontact_app_hidden,
-			_offline_queue_count);
-	}
-}
-
-void CompanionMesh::vcontactNotify(const char *text)
-{
-	if (!isVContactEnabled() || !text || !text[0]) return;
-	LOG_INF("vcontact notify: %s", text);
-	if (!vcontactClockValid()) {
-		/* Clock never synced — a message queued now would show as 1970.
-		 * Buffer it; vcontactClockSynced() flushes with a real timestamp.
-		 * Drop-oldest when full (restart reason + battery is the whole
-		 * expected population). */
-		if (_vcontact_pending_count >= (uint8_t)ARRAY_SIZE(_vcontact_pending)) {
-			memmove(_vcontact_pending[0], _vcontact_pending[1],
-				sizeof(_vcontact_pending[0]) * (ARRAY_SIZE(_vcontact_pending) - 1));
-			_vcontact_pending_count = ARRAY_SIZE(_vcontact_pending) - 1;
-		}
-		strncpy(_vcontact_pending[_vcontact_pending_count], text,
-			sizeof(_vcontact_pending[0]) - 1);
-		_vcontact_pending[_vcontact_pending_count][sizeof(_vcontact_pending[0]) - 1] = '\0';
-		_vcontact_pending_count++;
-		return;
-	}
-	vcontactQueueText(text);
-}
-
-/* How long the delivery-ack is held back after its PACKET_SENT.
- *
- * A plain timer on purpose.  The tempting trigger — "flush as soon as the app
- * sends us another frame, that proves it is done with the response" — is
- * useless here: we emit MSG_WAITING for the CLI reply a few lines further
- * down, and the app answers that with CMD_SYNC_NEXT_MESSAGE inside one
- * connection interval.  That inbound frame would arrive ~50 ms in and flush
- * the confirm almost as early as sending it inline did, which is the bug.
- *
- * Bounded on the other side by the 3000 ms est_timeout we advertise in
- * PACKET_SENT: the confirm must land well before the app gives up and resends,
- * or the resend races it. */
-#define VCONTACT_CONFIRM_DELAY_MS 300
-
-void CompanionMesh::vcontactConfirmWorkHandler(struct k_work *work)
-{
-	struct k_work_delayable *dwork = k_work_delayable_from_work(work);
-	ConfirmWork *cw = CONTAINER_OF(dwork, ConfirmWork, work);
-	cw->self->vcontactFlushConfirm();
-}
-
-void CompanionMesh::vcontactFlushConfirm()
-{
-	/* Single 32-bit read/clear: a concurrent flush from the work handler and
-	 * the frame path can at worst emit the push twice, which the app treats as
-	 * idempotent.  Losing it is the failure that matters, so no lock. */
-	uint32_t ack = _vcontact_confirm_ack;
-	if (ack == 0) {
-		return;
-	}
-	_vcontact_confirm_ack = 0;
-	k_work_cancel_delayable(&_vcontact_confirm_work.work);
-
-	uint8_t ack_push[8];
-	memcpy(ack_push, &ack, 4);
-	memset(&ack_push[4], 0, 4);        /* trip time: 0 ms — never left the box */
-	LOG_DBG("vcontact: emitting deferred ack 0x%08x", ack);
-	sendPush(PUSH_CODE_SEND_CONFIRMED, ack_push, 8);
-}
-
-void CompanionMesh::deriveVContactKey()
-{
-	/* v-contact pubkey = the Ed25519 public point of a keypair derived from
-	 * SHA256("zc-vcontact" || self prv_key || counter). Re-run whenever the
-	 * identity changes (boot, CMD_IMPORT_PRIVATE_KEY) so the key always tracks
-	 * the current identity.
-	 *
-	 * This used to be the bare hash SHA256("zc-vcontact" || self pubkey) placed
-	 * straight into a pub_key field. That is wrong on the wire: a uniformly
-	 * random 32-byte string decompresses to a valid Ed25519 point only about
-	 * half the time (the recovered x^2 must be a quadratic residue), so ~50% of
-	 * nodes advertised a v-contact whose key strict clients reject outright —
-	 * they decompress peer keys on contact upsert and on DM build, and error
-	 * with "peer pub_key is not a valid Ed25519 point". ZephCore itself never
-	 * noticed because it only ever memcmp()s this key (see isVContactKey();
-	 * buildVContact() sets shared_secret_valid = false). Deriving the point via
-	 * scalarbase instead makes it valid by construction, for every node.
-	 *
-	 * Seeded from the PRIVATE key, not the public one: the seed then sits
-	 * behind a value no one else holds, so an outsider cannot link a v-contact
-	 * to the node it belongs to, and cannot derive the matching private key.
-	 * Nothing needs that link — the app receives the v-contact through an
-	 * explicit PUSH_CODE_NEW_ADVERT and never derives it. The private half is
-	 * computed here and dropped: it is never stored, never signs, and never
-	 * takes part in a key exchange. Publishing the point leaks nothing about
-	 * the identity — reaching prv from it means solving the Ed25519 discrete
-	 * log AND inverting SHA-512 AND inverting SHA-256.
-	 *
-	 * The counter byte serves the reserved-prefix guard: MeshCore treats
-	 * pub_key[0] of 0x00/0xFF as a protocol marker (same rule as
-	 * ZephyrRNG::generateFirstBootIdentity and validatePrivateKey), and a
-	 * deterministic derivation cannot simply "draw again" without one. Each
-	 * bump re-rolls the whole key; P(a single miss) = 2/256, so the loop
-	 * essentially always ends on the first pass and stays deterministic. */
-	static const char vc_salt[] = "zc-vcontact";
-	uint8_t material[PRV_KEY_SIZE + 1];
-	uint8_t seed[SEED_SIZE];
-	mesh::LocalIdentity vc;
-
-	/* writeTo()'s buffer format is prv || pub; capping max_len at PRV_KEY_SIZE
-	 * asks for the private half alone. */
-	if (self_id.writeTo(material, PRV_KEY_SIZE) != PRV_KEY_SIZE) {
-		/* Cannot happen — kept so a future signature change fails loudly
-		 * rather than seeding off an uninitialised stack buffer. */
-		LOG_ERR("vcontact: private key unavailable, key not derived");
-		mesh::Utils::secureZeroize(material, sizeof(material));
-		return;
-	}
-
-	for (int counter = 0; counter < 256; counter++) {
-		material[PRV_KEY_SIZE] = (uint8_t)counter;
-		mesh::Utils::sha256(seed, SEED_SIZE,
-			(const uint8_t *)vc_salt, sizeof(vc_salt) - 1,
-			material, sizeof(material));
-		vc.fromSeed(seed);
-		if (vc.pub_key[0] != 0x00 && vc.pub_key[0] != 0xFF) break;
-	}
-	memcpy(_vcontact_pubkey, vc.pub_key, PUB_KEY_SIZE);
-
-	/* material holds the real identity private key, and vc holds the v-key's
-	 * discarded private half. Neither has any business outliving this call.
-	 * LocalIdentity keeps prv_key private and has no wipe of its own, so the
-	 * object is cleared wholesale — it has no virtuals, so there is no vtable
-	 * pointer to destroy. */
-	mesh::Utils::secureZeroize(material, sizeof(material));
-	mesh::Utils::secureZeroize(seed, sizeof(seed));
-	mesh::Utils::secureZeroize(&vc, sizeof(vc));
-}
-
-void CompanionMesh::vcontactPushAdvert()
-{
-	if (!isVContactEnabled()) return;
-	/* The app deleted it this session — don't push it straight back at them.
-	 * It returns on its own at the next CMD_APP_START. */
-	if (_vcontact_app_hidden) return;
-	if (!vcontactClockValid()) {
-		/* Defer — an advert stamped now would carry a 1970 timestamp.
-		 * vcontactClockSynced() re-runs this once a time source arrives. */
-		return;
-	}
-	/* Bump lastmod so incremental contact syncs (since > 0) pick up the
-	 * rename/re-enable. */
-	_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
-	ContactInfo vc;
-	buildVContact(vc);
-	uint8_t rsp[CONTACT_FRAME_SIZE];
-	size_t n = serializeContact(rsp, vc);  /* no header — push code is separate */
-	sendPush(PUSH_CODE_NEW_ADVERT, rsp, n);
-}
-
-void CompanionMesh::vcontactPushDeleted()
-{
-	sendPush(PUSH_CODE_CONTACT_DELETED, _vcontact_pubkey, PUB_KEY_SIZE);
-}
-
-bool CompanionMesh::vcontactHandleFrame(const uint8_t *data, size_t len)
-{
-	if (!isVContactEnabled()) return false;
-
-	switch (data[0]) {
-	case CMD_SEND_TXT_MSG:
-		/* Same frame layout as the real handler: cmd(1) + txt_type(1) +
-		 * attempt(1) + timestamp(4) + pub_key_prefix(6) + text(N). */
-		if (len >= 14 && isVContactKey(&data[7], 6)) {
-			uint8_t txt_type = data[1];
-			if (txt_type != TXT_TYPE_PLAIN && txt_type != TXT_TYPE_CLI_DATA &&
-			    txt_type != TXT_TYPE_CLI_COMMAND) {
-				sendPacketError(ERR_UNSUPPORTED);
-				return true;
-			}
-			uint32_t msg_timestamp = get_le32(&data[3]);
-
-			/* Extract the text now — needed both for the ack hash below and
-			 * for the CLI call. */
-			char line[MAX_TEXT_LEN + 1];
-			size_t text_len = len - 13;
-			if (text_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN;
-			memcpy(line, &data[13], text_len);
-			line[text_len] = '\0';
-
-			/* Compute the SAME delivery-ack the app expects for this exact
-			 * (timestamp, attempt, text): sha256 over ts(4) + (attempt&3)(1) +
-			 * text, salted with our pubkey — identical to composeMsgPacket() on
-			 * the real send path. The old code sent a RANDOM ack, which never
-			 * matched the value the app derives locally, so the app treated the
-			 * loopback message as un-acked and resent it once (attempt=1) a few
-			 * seconds later → duplicate reply.
-			 *
-			 * The value is right, but the CONFIRMED that carries it is NOT sent
-			 * inline — see _vcontact_confirm_ack. Sent here it lands
-			 * sub-millisecond after the PACKET_SENT response to the same write,
-			 * before the app has committed the outgoing message, and the app
-			 * drops it. Deferred by a few hundred ms it sticks first time. */
-			uint8_t hbuf[5 + MAX_TEXT_LEN];
-			memcpy(hbuf, &data[3], 4);          /* timestamp, on-wire LE bytes */
-			hbuf[4] = (data[2] & 3);            /* attempt & 3 */
-			memcpy(&hbuf[5], line, text_len);
-			uint32_t ack = 0;
-			mesh::Utils::sha256((uint8_t *)&ack, 4, hbuf, 5 + text_len,
-				self_id.pub_key, PUB_KEY_SIZE);
-			if (ack == 0) ack = 1;
-
-			sendPacketSent(MSG_SEND_SENT_DIRECT, ack, 3000);
-			/* One slot, not a queue: a second v-contact message inside
-			 * VCONTACT_CONFIRM_DELAY_MS would overwrite the first ack before
-			 * its work ever ran, so that message stayed un-confirmed until the
-			 * app hit est_timeout and resent it. Flush the pending one first —
-			 * it is already past the sub-millisecond window that made deferring
-			 * necessary, so emitting it now is safe. */
-			vcontactFlushConfirm();
-			_vcontact_confirm_ack = ack;
-			k_work_reschedule(&_vcontact_confirm_work.work,
-					  K_MSEC(VCONTACT_CONFIRM_DELAY_MS));
-
-			/* Dedupe app resends: a retry reuses the message timestamp (only
-			 * the attempt byte changes). The correct ack above should stop most
-			 * retries, but a CONFIRMED lost under BLE congestion still triggers
-			 * one — and it lands after other messages, so match against a ring
-			 * of recent timestamps (a single last-seen slot misses it). A
-			 * surviving retry re-acks (done above) without re-running the CLI. */
-			bool dup = false;
-			if (msg_timestamp != 0) {
-				for (uint8_t i = 0; i < VCONTACT_DEDUP_SLOTS; i++) {
-					if (_vcontact_recent_ts[i] == msg_timestamp) { dup = true; break; }
-				}
-				if (!dup) {
-					_vcontact_recent_ts[_vcontact_recent_head] = msg_timestamp;
-					_vcontact_recent_head =
-						(_vcontact_recent_head + 1) % VCONTACT_DEDUP_SLOTS;
-				}
-			}
-
-			if (!dup) {
-				/* Phone keyboards autocapitalize the first letter of a
-				 * chat line, so a v-contact command arrives as "Get cad".
-				 * Fold character 0 only.
-				 *
-				 * Safe by construction: character 0 is always inside the
-				 * command verb -- no CLI command takes an argument at
-				 * position 0 -- so this cannot alter a value.  Deliberately
-				 * NOT generalized beyond one character: the previous attempt
-				 * folded the first two whitespace-delimited tokens and
-				 * silently lowercased admin passwords (see the comment above
-				 * CommonCLI::handleCommand in helpers/CommonCLI.cpp).
-				 *
-				 * Must stay after the delivery-ack hash above, which covers
-				 * the original text the app will match against. */
-				if (line[0] >= 'A' && line[0] <= 'Z') {
-					line[0] = (char)(line[0] - 'A' + 'a');
-				}
-
-				LOG_INF("vcontact CLI: '%s'", line);
-				char reply[COMPANION_CLI_REPLY_SIZE];
-				reply[0] = '\0';
-				if (_cli_exec_cb) {
-					_cli_exec_cb(line, reply);
-				} else {
-					strcpy(reply, "CLI not available");
-				}
-				if (reply[0] != '\0') {
-					vcontactQueueText(reply);
-				}
-			} else {
-				LOG_DBG("vcontact CLI: dup ts=%u, re-ack only", msg_timestamp);
-			}
-			return true;
-		}
-		return false;
-
-	case CMD_GET_CONTACT_BY_KEY:
-		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
-			ContactInfo vc;
-			buildVContact(vc);
-			uint8_t rsp[CONTACT_FRAME_SIZE];
-			size_t n = serializeContact(rsp, vc, PACKET_CONTACT);
-			writeFrame(rsp, n);
-			return true;
-		}
-		return false;
-
-	case CMD_GET_ADVERT_PATH:
-		/* The v-contact appears in the app's contact list, so the app queries
-		 * its advert path (at connect, and around a config/identity import). The
-		 * v-contact has no over-the-air advert, so the real handler's
-		 * findAdvertPath() misses and returns ERR_NOT_FOUND — which the app
-		 * surfaces as a fatal "not found" that aborts the whole operation. The
-		 * v-contact IS this node (loopback), so its path is direct (zero hops):
-		 * answer that here, before the real handler runs. Frame layout matches
-		 * the real handler: [cmd][reserved][7-byte pubkey prefix]. */
-		if (len >= 2 + 7 && isVContactKey(&data[2], 7)) {
-			uint8_t rsp[6];
-			size_t i = 0;
-			rsp[i++] = PACKET_ADVERT_PATH;
-			put_le32(&rsp[i], _vcontact_lastmod ? _vcontact_lastmod
-				: (uint32_t)getRTCClock()->getCurrentTime()); i += 4;
-			rsp[i++] = 0;  // path_len = 0 → direct (zero hop)
-			writeFrame(rsp, i);
-			return true;
-		}
-		return false;
-
-	case CMD_ADD_UPDATE_CONTACT:
-		/* Never let the v-contact into the real contacts table (it must stay out
-		 * of the RF RX matching path) — but do keep the one field the app owns
-		 * and expects back: the flags byte (bit 0 = favourite, upper bits =
-		 * telemetry permissions). Everything else in the frame (name, path,
-		 * lat/lon, advert timestamp) is ours to generate in buildVContact().
-		 * Frame layout matches the real handler: [cmd][32-byte pubkey][type]
-		 * [flags][...]. Reply OK so app-side flows don't surface errors. */
-		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
-			if (len >= 1 + PUB_KEY_SIZE + 2) {
-				uint8_t flags = data[1 + PUB_KEY_SIZE + 1];
-				if (flags != prefs.v_contact_flags) {
-					prefs.v_contact_flags = flags;
-					_store->savePrefs(prefs);
-				}
-			}
-			sendPacketOk();
-			return true;
-		}
-		return false;
-
-	case CMD_RESET_PATH:
-		/* Path resets are meaningless for a loopback contact — accept and drop
-		 * so app-side flows don't surface errors. */
-		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
-			sendPacketOk();
-			return true;
-		}
-		return false;
-
-	case CMD_REMOVE_CONTACT:
-		/* App-side delete hides the v-contact for the rest of this session and
-		 * nothing more — see _vcontact_app_hidden. It used to set
-		 * prefs.v_contact_enabled = 0, which made a routine "purge all
-		 * contacts" in the app silently disable the feature for good: the
-		 * v-contact is an ordinary list entry, so a purge removes it like any
-		 * other, and only the USB CLI could turn it back on. Durable disable
-		 * stays with the node-side pref (`set v.contact off`).
-		 *
-		 * Flags are deliberately kept: the same contact returns on the next
-		 * connect, so its favourite star should return with it. */
-		if (len >= 1 + PUB_KEY_SIZE && isVContactKey(&data[1], PUB_KEY_SIZE)) {
-			_vcontact_app_hidden = true;
-			LOG_INF("vcontact: hidden by app delete (this session only)");
-			sendPacketOk();
-			return true;
-		}
-		return false;
-
-	case CMD_SEND_TELEMETRY_REQ:
-		/* Contact telemetry request: [cmd][3 reserved][32-byte pubkey].
-		 * The v-contact represents THIS node, so its telemetry is our own
-		 * self-telemetry. Synthesize the SENT ack the app blocks on, then push
-		 * a TELEMETRY_RESPONSE tagged with the v-contact key so the app matches
-		 * it to the loopback contact. (Real contacts fall through to the async
-		 * RF path below; the loopback key just isn't in the contacts table.) */
-		if (len >= 4 + PUB_KEY_SIZE && isVContactKey(&data[4], PUB_KEY_SIZE)) {
-			uint32_t tag = 0;
-			getRNG()->random((uint8_t *)&tag, 4);
-			if (tag == 0) tag = 1;
-			sendPacketSent(MSG_SEND_SENT_DIRECT, tag, 3000);
-
-			uint8_t rsp[8 + 4 + 11 + 15 + (12 * POWER_MAX_CHANNELS) + 8];
-			int i = 0;
-			rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
-			rsp[i++] = 0;  /* reserved */
-			memcpy(&rsp[i], _vcontact_pubkey, 6);
-			i += 6;
-			i += appendSelfTelemetry(&rsp[i],
-				TELEM_PERM_BASE | TELEM_PERM_LOCATION | TELEM_PERM_ENVIRONMENT);
-			sendPush(rsp[0], &rsp[1], i - 1);
-			return true;
-		}
-		return false;
-
-	default:
-		/* Every other pubkey-addressed opcode (login, binary req,
-		 * path discovery, export, ...) resolves the contact via
-		 * lookupContactByPubKey(); the v-contact is never in the table, so
-		 * they fail with ERR_NOT_FOUND before any packet exists. */
-		return false;
-	}
+	LOG_DBG("queueMessage: frame_len=%d type=0x%02x", i, frame[0]);
+	addToOfflineQueue(frame, i);
 }
 
 void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
@@ -1540,7 +899,7 @@ void CompanionMesh::queueLocalSentContactMessage(const ContactInfo &contact,
 	i += text_len;
 
 	LOG_DBG("queueLocalSentContactMessage: frame_len=%d delivered=%d", i, (int)delivered);
-	queueOfflineMessage(frame, i);
+	addToOfflineQueue(frame, i);
 	pushMsgWaiting();
 }
 
@@ -1586,7 +945,7 @@ void CompanionMesh::queueLocalSentChannelMessage(uint8_t channel_idx,
 
 	LOG_DBG("queueLocalSentChannelMessage: frame_len=%d channel_idx=%d heard=%d",
 		i, channel_idx, (int)heard_repeat);
-	queueOfflineMessage(frame, i);
+	addToOfflineQueue(frame, i);
 	pushMsgWaiting();
 }
 
@@ -1597,12 +956,80 @@ void CompanionMesh::onCommandDataRecv(const ContactInfo &contact, mesh::Packet *
 		contact.name, sender_timestamp, text);
 
 	markConnectionActive(contact);
-	queueContactMessage(contact, pkt, TXT_TYPE_CLI_DATA, sender_timestamp, nullptr, 0, text);
+	queueMessage(contact, TXT_TYPE_CLI_DATA, pkt, sender_timestamp, nullptr, 0, text);
 	pushMsgWaiting();
 	{
 		struct ui_joystick_cli_data cli = { text };
 		ui_notify_joystick_event(UI_JOYSTICK_CLI_RESPONSE, contact.id.pub_key, &cli);
 	}
+}
+
+void CompanionMesh::onCLICommandRecv(const ContactInfo &contact, mesh::Packet *pkt,
+	uint32_t sender_timestamp, const char *text, char *reply)
+{
+	markConnectionActive(contact);  // in case this is from a server, and we have a connection
+	if (contact.isRemoteCLIAllowed()) {
+		if (!handleCommand(text, sender_timestamp, reply)) {
+			strcat(reply, "Unknown command");  // reply may have cmd prefix from 'text'
+		}
+	} else {
+		queueMessage(contact, TXT_TYPE_CLI_COMMAND, pkt, sender_timestamp, nullptr, 0, text);
+		pushMsgWaiting();
+	}
+}
+
+/* Over the air, a contact with flag 0x10 reaches the commands upstream's
+ * companion handles (MyMesh::handleCommand and CommonRadioPrefs) and nothing
+ * else: the ZephCore-only commands (start ota/dfu, erase, prv.key, clkreboot,
+ * v.contact, autoshutdown, ...) stay local. */
+static bool isUpstreamCompanionCommand(const char *cmd)
+{
+	static const char *const exact[] = {
+		"get radio", "get freq", "get af", "get dutycycle", "get int.thresh", "get cad",
+		"get radio.rxgain", "get tx", "get rxdelay", "get agc.reset.interval",
+		"get path.hash.mode", "get multi.acks", "get txdelay", "get direct.txdelay",
+		"reboot", "poweroff", "shutdown", "get name", "get wifi.pwd", "set wifi.clear",
+		"get wifi.ssid", "get wifi.enabled", "get wifi.status", "get wifi.ip",
+		"board", "ver", "get tz.offset",
+	};
+	static const char *const prefix[] = {
+		"set radio ", "set af ", "set dutycycle ", "set int.thresh ", "set cad ",
+		"set radio.rxgain ", "get tx ", "set tx ", "set rxdelay ", "set agc.reset.interval ",
+		"set path.hash.mode ", "set multi.acks ", "set txdelay ", "set direct.txdelay ",
+		"set name ", "set pin ", "set wifi.ssid ", "set wifi.pwd ", "set wifi.enabled ",
+		"set tz.offset ",
+	};
+	for (const char *e : exact) {
+		if (strcmp(cmd, e) == 0) return true;
+	}
+	for (const char *p : prefix) {
+		if (strncmp(cmd, p, strlen(p)) == 0) return true;
+	}
+	return false;
+}
+
+bool CompanionMesh::handleCommand(const char *command, uint32_t sender_timestamp, char *reply)
+{
+	while (*command == ' ') command++;  // skip leading spaces
+
+	uint8_t hdr_used = 0;
+	if (strlen(command) > 4 && command[2] == '|') {  // optional prefix (for companion radio CLI)
+		memcpy(reply, command, 3);                    // reflect the prefix back
+		reply += 3;
+		command += 3;
+		hdr_used = 3;
+	}
+	*reply = 0;
+
+	if (sender_timestamp != 0 && !isUpstreamCompanionCommand(command)) {
+		return false;
+	}
+	if (_cli_exec_cb == nullptr) {
+		strcpy(reply, "CLI not available");
+		return true;
+	}
+	_cli_exec_cb(command, sender_timestamp, hdr_used, reply);
+	return *reply != 0;
 }
 
 void CompanionMesh::onSignedMessageRecv(const ContactInfo &contact, mesh::Packet *pkt,
@@ -1614,7 +1041,7 @@ void CompanionMesh::onSignedMessageRecv(const ContactInfo &contact, mesh::Packet
 	markConnectionActive(contact);
 	markContactsDirty();
 	// sender_prefix is 4 bytes
-	queueContactMessage(contact, pkt, TXT_TYPE_SIGNED_PLAIN, sender_timestamp, sender_prefix, 4, text);
+	queueMessage(contact, TXT_TYPE_SIGNED_PLAIN, pkt, sender_timestamp, sender_prefix, 4, text);
 	pushMsgWaiting();
 #if ZEPHCORE_HAS_UI_TASK
 	notify_contact_msg_ui(contact, pkt, text, _offline_queue_count);
@@ -1684,7 +1111,7 @@ void CompanionMesh::onChannelMessageRecv(const mesh::GroupChannel &channel, mesh
 	i += text_len;
 
 	LOG_DBG("onChannelMessageRecv: frame_len=%d channel_idx=%d", i, channel_idx);
-	queueOfflineMessage(frame, i);
+	addToOfflineQueue(frame, i);
 	pushMsgWaiting();
 #if ZEPHCORE_HAS_UI_TASK
 	{
@@ -1729,7 +1156,7 @@ void CompanionMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::P
 
 	LOG_DBG("onChannelDataRecv: frame_len=%d channel_idx=%d data_type=%d",
 		i, channel_idx, (int)data_type);
-	queueOfflineMessage(frame, i);
+	addToOfflineQueue(frame, i);
 	pushMsgWaiting();
 }
 
@@ -2341,7 +1768,7 @@ const AdvertPath *CompanionMesh::findAdvertPath(const uint8_t *pubkey_prefix, in
 	return nullptr;
 }
 
-bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
+bool CompanionMesh::handleCmdFrame(const uint8_t *data, size_t len)
 {
 	if (len < 1) return false;
 
@@ -2362,1600 +1789,1758 @@ bool CompanionMesh::handleProtocolFrame(const uint8_t *data, size_t len)
 	}
 
 	switch (data[0]) {
-	case CMD_APP_START: {
-		if (len < 8) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		LOG_INF("CMD_APP_START: session reset, %d queued", _offline_queue_count);
-		// Reset per-session state for a fresh app session. BLE/USB also run
-		// this cleanup on disconnect, but the serial transport has no
-		// disconnect event, so APP_START is its authoritative session-reset
-		// point: drop a stale contact iteration (a leftover PACKET_CONTACT_END
-		// would confuse the new session's sync state machine), a half-finished
-		// message sync, and free an abandoned Ed25519 sign buffer (else an 8KB
-		// leak if the previous session dropped mid-CMD_SIGN). Idempotent — all
-		// no-ops when the state is already clean.
-		_contact_iter_active = false;
-		cancelSyncPending();
-		cleanupSignState();
-		/* Drop a deferred v-contact confirm from the previous session: its ack
-		 * matches an outbound message the new session never sent, so delivering
-		 * it here would push an unmatched SEND_CONFIRMED into a fresh app. */
-		_vcontact_confirm_ack = 0;
-		k_work_cancel_delayable(&_vcontact_confirm_work.work);
-
-		/* New session: suppress v-contact notice MSG_WAITING until the initial
-		 * sync (contacts + messages) completes at PACKET_NO_MORE_MSGS, or the
-		 * deadline expires — see _vcontact_hold_expiry for why the latch needs
-		 * a second exit. */
-		_vcontact_hold_msgwait = true;
-		_vcontact_hold_expiry = _ms->getMillis() + VCONTACT_HOLD_MAX_MS;
-		/* An app-side delete only hides the v-contact for the session it
-		 * happened in — this is that session boundary, so it comes back. */
-		_vcontact_app_hidden = false;
-
-		/* If a time source already ran (hardware RTC, GPS), activate the
-		 * deferred v-contact and flush buffered notices for this session. */
-		vcontactClockSynced();
-
-		/* Re-stamp the v-contact once per app session so it stays "fresh".
-		 * _vcontact_lastmod feeds both lastmod and last_advert_timestamp, and
-		 * it used to move only on boot / rename / identity import: the app
-		 * showed an ever-growing "last seen" age, and — worse — the contact
-		 * sync gate is `_vcontact_lastmod > _contact_iter_since`, so after the
-		 * first sync the v-contact was never streamed again and app-side state
-		 * (flags, name) could never be corrected. Bumping here, before the
-		 * CMD_GET_CONTACTS that follows APP_START, means every session's sync
-		 * carries a current timestamp; deferring it to the end of sync would
-		 * always land one session late. Silent on purpose — no NEW_ADVERT push
-		 * mid-handshake; the sync itself delivers it. */
-		if (vcontactReady() && vcontactClockValid()) {
-			_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
-		}
-
-		// Return SELF_INFO
-		uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
-		size_t i = 0;
-		rsp[i++] = PACKET_SELF_INFO;
-		rsp[i++] = ADV_TYPE_CHAT;
-		rsp[i++] = prefs.tx_power_dbm;
-		rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
-		memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
-		int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
-		int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
-		put_le32(&rsp[i], lat); i += 4;
-		put_le32(&rsp[i], lon); i += 4;
-		rsp[i++] = prefs.multi_acks;
-		rsp[i++] = prefs.advert_loc_policy;
-		// Telemetry modes: (env << 4) | (loc << 2) | base
-		rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
-		rsp[i++] = prefs.manual_add_contacts;
-		put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
-		put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
-		rsp[i++] = prefs.sf;
-		rsp[i++] = prefs.cr;
-		size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
-		memcpy(&rsp[i], prefs.node_name, name_len);
-		i += name_len;
-		writeFrame(rsp, i);
-		return true;
-	}
-
-	case CMD_GET_CONTACTS:
-		if (_contact_iter_active) {
-			sendPacketError(ERR_BAD_STATE);
-		} else {
-			// Parse optional 'since' parameter for incremental sync
-			if (len >= 5) {
-				_contact_iter_since = get_le32(&data[1]);
-			} else {
-				_contact_iter_since = 0;
-			}
-
-			// Send PACKET_CONTACT_START with total count (unfiltered, but excluding
-			// transient anon slots -- continueContactIteration() never streams those)
-			_contact_iter_num = getNumContacts();
-			_contact_iter_vc = vcontactReady();  /* virtual tail entry (post time sync) */
-			uint32_t total = 0;
-			for (int i = 0; i < _contact_iter_num; i++) {
-				ContactInfo c;
-				if (getContactByIdx(i, c) && c.type != ADV_TYPE_NONE) total++;
-			}
-			if (_contact_iter_vc) total++;
-			uint8_t rsp[5];
-			rsp[0] = PACKET_CONTACT_START;
-			put_le32(&rsp[1], total);
-			writeFrame(rsp, sizeof(rsp));
-			_contact_iter_idx = 0;
-			_contact_iter_lastmod = 0;
-			_contact_iter_active = true;
-		}
-		return true;
-
-	case CMD_ADD_UPDATE_CONTACT:
-		if (len >= 1 + PUB_KEY_SIZE + 1 + 1 + 1 + MAX_PATH_SIZE + 32 + 4) {
-			const uint8_t *pub_key = &data[1];
-			ContactInfo *existing = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
-
-			ContactInfo c;
-			size_t i = 1;
-			memcpy(c.id.pub_key, &data[i], PUB_KEY_SIZE); i += PUB_KEY_SIZE;
-			c.type = data[i++];
-			c.flags = data[i++];
-			c.out_path_len = data[i++];
-			memcpy(c.out_path, &data[i], MAX_PATH_SIZE); i += MAX_PATH_SIZE;
-			memcpy(c.name, &data[i], 32); i += 32;
-			c.name[31] = '\0';  /* defensive null-term — matches CMD_SET_CHANNEL pattern */
-			c.last_advert_timestamp = get_le32(&data[i]); i += 4;
-			c.gps_lat = 0;
-			c.gps_lon = 0;
-			c.lastmod = (uint32_t)getRTCClock()->getCurrentTime();
-			if (len >= i + 8) {
-				c.gps_lat = (int32_t)get_le32(&data[i]); i += 4;
-				c.gps_lon = (int32_t)get_le32(&data[i]); i += 4;
-				if (len >= i + 4) {
-					c.lastmod = get_le32(&data[i]);
-				}
-			}
-			c.sync_since = 0;
-			c.shared_secret_valid = false;
-
-			if (existing) {
-				// Update existing
-				*existing = c;
-				markContactsDirty();
-				sendPacketOk();
-			} else if (addContact(c)) {
-				markContactsDirty();
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_REMOVE_CONTACT:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (c && removeContact(*c)) {
-				_store->deleteBlobByKey(&data[1], PUB_KEY_SIZE);
-				markContactsDirty();
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_RESET_PATH:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (c) {
-				resetPathTo(*c);
-				markContactsDirty();
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_GET_CONTACT_BY_KEY:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (c) {
-				uint8_t rsp[CONTACT_FRAME_SIZE];
-				size_t n = serializeContact(rsp, *c, PACKET_CONTACT);
-				writeFrame(rsp, n);
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_GET_CHANNEL:
-		// Format: [cmd][channel_idx]
-		// Response: [code][idx][32 name][16 secret] = 50 bytes (matches Arduino)
-		// Arduino returns channel info even if slot is empty (name[0]=='\0')
-		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		{
-			static int64_t last_get_channel_ms;
-			int64_t now_ms = _ms->getMillis();
-			uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
-			last_get_channel_ms = now_ms;
-			LOG_DBG("CMD_GET_CHANNEL idx=%u dt=%ums", data[1], dt_ms);
-			drainPendingChannelInfos();
-			if (!enqueuePendingChannelInfo(data[1])) {
-				sendPacketError(ERR_BAD_STATE);
-				return true;
-			}
-			drainPendingChannelInfos();
-			return true;
-		}
-
-	case CMD_SET_CHANNEL:
-		// Format: [cmd][idx][32 name][16 or 32 secret]
-		// Arduino rejects 32-byte secrets, but we accept 16-byte (50 bytes total)
-		if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		if (len >= 2 + 32 + 32) {
-			// 32-byte secret not supported (matches Arduino)
-			sendPacketError(ERR_UNSUPPORTED);
-			return true;
-		}
-		if (len >= 2 + 32 + 16) {
-			ChannelDetails ch;
-			// Copy name (null-terminate if needed)
-			memcpy(ch.name, &data[2], 32);
-			ch.name[31] = '\0';  // ensure null termination
-			// Copy 16-byte secret, zero upper 16 bytes
-			memset(ch.channel.secret, 0, sizeof(ch.channel.secret));
-			memcpy(ch.channel.secret, &data[2 + 32], 16);
-			// setChannel computes the hash based on whether upper 16 bytes are zero
-			if (setChannel(data[1], ch)) {
-				markChannelsDirty();
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_NOT_FOUND);  // bad channel_idx
-			}
-			return true;
-		}
-		sendPacketError(ERR_ILLEGAL_ARG);
-		return true;
-
-	case CMD_GET_BATT_AND_STORAGE: {
-		uint8_t rsp[11];
-		rsp[0] = PACKET_BATTERY;
-		put_le16(&rsp[1], _batt_cb ? _batt_cb() : 0);
-		put_le32(&rsp[3], _store->getStorageUsedKb());
-		put_le32(&rsp[7], _store->getStorageTotalKb());
-		writeFrame(rsp, sizeof(rsp));
-		return true;
-	}
-
-	case CMD_GET_STATS:
-		if (len >= 2) {
-			uint8_t stats_type = data[1];
-			if (stats_type == 0) {
-				// STATS_TYPE_CORE: battery_mv(2) + uptime_secs(4) + err_flags(2) + queue_len(1)
-				uint8_t rsp[11];
-				size_t i = 0;
-				rsp[i++] = PACKET_STATS;
-				rsp[i++] = 0;  // STATS_TYPE_CORE
-				put_le16(&rsp[i], _batt_cb ? _batt_cb() : 0); i += 2;
-				put_le32(&rsp[i], (uint32_t)(_ms->getMillis() / 1000)); i += 4;  // uptime_secs
-				put_le16(&rsp[i], getErrFlags()); i += 2;
-				rsp[i++] = (uint8_t)_mgr->getOutboundCount((uint32_t)_ms->getMillis());
-				writeFrame(rsp, i);
-			} else if (stats_type == 1) {
-				// STATS_TYPE_RADIO: noise_floor(2) + last_rssi(1) + last_snr(1) + tx_air_secs(4) + rx_air_secs(4)
-				uint8_t rsp[14];
-				size_t i = 0;
-				rsp[i++] = PACKET_STATS;
-				rsp[i++] = 1;  // STATS_TYPE_RADIO
-				put_le16(&rsp[i], (int16_t)_radio->getNoiseFloor()); i += 2;
-				rsp[i++] = (int8_t)_radio->getLastRSSI();
-				rsp[i++] = (int8_t)(_radio->getLastSNR() * 4);  // scaled by 4
-				put_le32(&rsp[i], getTotalAirTime() / 1000); i += 4;  // tx_air_secs
-				put_le32(&rsp[i], getReceiveAirTime() / 1000); i += 4;  // rx_air_secs
-				writeFrame(rsp, i);
-			} else if (stats_type == 2) {
-				// STATS_TYPE_PACKETS: recv(4) + sent(4) + sent_flood(4) + sent_direct(4) + recv_flood(4) + recv_direct(4) + recv_errors(4)
-				uint8_t rsp[30];
-				size_t i = 0;
-				rsp[i++] = PACKET_STATS;
-				rsp[i++] = 2;  // STATS_TYPE_PACKETS
-				uint32_t sent_flood = getNumSentFlood();
-				uint32_t sent_direct = getNumSentDirect();
-				uint32_t recv_flood = getNumRecvFlood();
-				uint32_t recv_direct = getNumRecvDirect();
-				put_le32(&rsp[i], recv_flood + recv_direct); i += 4;  // total recv
-				put_le32(&rsp[i], sent_flood + sent_direct); i += 4;  // total sent
-				put_le32(&rsp[i], sent_flood); i += 4;
-				put_le32(&rsp[i], sent_direct); i += 4;
-				put_le32(&rsp[i], recv_flood); i += 4;
-				put_le32(&rsp[i], recv_direct); i += 4;
-				put_le32(&rsp[i], _radio->getPacketsRecvErrors()); i += 4;
-				writeFrame(rsp, i);
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SHARE_CONTACT:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (c && shareContactZeroHop(*c)) {
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_EXPORT_CONTACT:
-		if (len < 1 + PUB_KEY_SIZE) {
-			// Export SELF - create self advert packet
-			mesh::Packet *pkt;
-			if (prefs.advert_loc_policy == 0) {  // ADVERT_LOC_NONE
-				pkt = createSelfAdvert(prefs.node_name);
-			} else {
-				pkt = createSelfAdvert(prefs.node_name, prefs.node_lat, prefs.node_lon);
-			}
-			if (pkt) {
-				pkt->header |= ROUTE_TYPE_FLOOD;
-				uint8_t rsp[128];
-				rsp[0] = PACKET_EXPORT_CONTACT;
-				uint8_t out_len = pkt->writeTo(&rsp[1]);
-				releasePacket(pkt);
-				writeFrame(rsp, out_len + 1);
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			// Export specific contact by pubkey
-			ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (c) {
-				uint8_t rsp[128];
-				rsp[0] = PACKET_EXPORT_CONTACT;
-				uint8_t export_len = exportContact(*c, &rsp[1]);
-				if (export_len > 0) {
-					writeFrame(rsp, export_len + 1);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		}
-		return true;
-
-	case CMD_IMPORT_CONTACT:
-		// Arduino: len > 2 + 32 + 64 = 98 bytes (header + pubkey + signature)
-		if (len > 2 + 32 + 64) {
-			if (importContact(&data[1], len - 1)) {
-				markContactsDirty();
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);  // Match Arduino error code
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_TXT_MSG:
-		// Frame format: cmd(1) + txt_type(1) + attempt(1) + timestamp(4) + pub_key_prefix(6) + text(N)
-		// Minimum: 1 + 1 + 1 + 4 + 6 + 1 = 14 bytes
-		LOG_DBG("CMD_SEND_TXT_MSG: len=%u (min=14)", (unsigned)len);
-		if (len >= 14) {
-			int i = 1;
-			uint8_t txt_type = data[i++];
-			uint8_t attempt = data[i++];
-			uint32_t msg_timestamp = get_le32(&data[i]); i += 4;
-			const uint8_t *pub_key_prefix = &data[i]; i += 6;
-
-			// Copy text and ensure null termination
-			size_t text_len = len - 13;  // Everything after header (13 bytes)
-			char text_buf[MAX_TEXT_LEN + 1];
-			if (text_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN;
-			memcpy(text_buf, &data[i], text_len);
-			text_buf[text_len] = '\0';
-			const char *text = text_buf;
-
-			LOG_DBG("CMD_SEND_TXT_MSG: txt_type=%d attempt=%d pubkey=%02x%02x%02x%02x%02x%02x",
-				txt_type, attempt, pub_key_prefix[0], pub_key_prefix[1], pub_key_prefix[2],
-				pub_key_prefix[3], pub_key_prefix[4], pub_key_prefix[5]);
-
-			ContactInfo *contact = lookupContactByPubKey(pub_key_prefix, 6);
-			if (contact && (txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_CLI_DATA ||
-					txt_type == TXT_TYPE_CLI_COMMAND)) {
-				LOG_DBG("CMD_SEND_TXT_MSG: contact='%s' text='%s' text_len=%u", contact->name, text, (unsigned)text_len);
-
-				uint32_t expected_ack = 0, est_timeout;
-				int result;
-
-				if (txt_type == TXT_TYPE_CLI_DATA || txt_type == TXT_TYPE_CLI_COMMAND) {
-					// Use node's RTC instead of app timestamp
-					msg_timestamp = getRTCClock()->getCurrentTimeUnique();
-					result = sendCommandData(*contact, msg_timestamp, attempt, txt_type, text,
-								 est_timeout);
-				} else {
-					result = sendMessage(*contact, msg_timestamp, attempt, text, expected_ack, est_timeout);
-				}
-
-				LOG_DBG("CMD_SEND_TXT_MSG: sendMessage result=%d expected_ack=0x%08x", result, expected_ack);
-
-				if (result != MSG_SEND_FAILED) {
-					if (expected_ack) {
-						// Track ACK
-						int idx = -1;
-						ContactInfo ci;
-						for (int k = 0; k < getNumContacts(); k++) {
-							if (getContactByIdx(k, ci) && ci.id.matches(contact->id)) {
-								idx = k;
-								break;
-							}
-						}
-						addPendingAck(expected_ack, idx);
-					}
-
-					// Response: RESP_CODE_SENT + is_flood(1) + expected_ack(4) + est_timeout(4)
-					sendPacketSent(result, expected_ack, est_timeout);
-				} else {
-					sendPacketError(ERR_TABLE_FULL);
-				}
-			} else {
-				LOG_WRN("CMD_SEND_TXT_MSG: contact not found or unsupported txt_type=%d", txt_type);
-				sendPacketError(contact == nullptr ? ERR_NOT_FOUND : ERR_UNSUPPORTED);
-			}
-			return true;
-		}
-		LOG_WRN("CMD_SEND_TXT_MSG: frame too short (len=%u, need 14)", (unsigned)len);
-		sendPacketError(ERR_ILLEGAL_ARG);
-		return true;
-
-	case CMD_SEND_CHANNEL_TXT_MSG:
-		// Arduino format: [cmd][txt_type][channel_idx][4-byte timestamp][text...]
-		// Minimum: 1 + 1 + 1 + 4 + 1 = 8 bytes
-		if (len < 8) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		{
-			int i = 1;
-			uint8_t txt_type = data[i++];
-			uint8_t ch_idx = data[i++];
-			uint32_t msg_timestamp = get_le32(&data[i]);
-			i += 4;
-			const char *text = (const char *)&data[i];
-			size_t text_len = len - i;
-
-			if (txt_type != TXT_TYPE_PLAIN) {
-				sendPacketError(ERR_UNSUPPORTED);
-			} else {
-				ChannelDetails ch;
-				if (getChannel(ch_idx, ch)) {
-					if (sendGroupMessage(msg_timestamp, ch.channel, prefs.node_name, text, text_len)) {
-						sendPacketOk();
-					} else {
-						sendPacketError(ERR_BAD_STATE);
-					}
-				} else {
-					sendPacketError(ERR_NOT_FOUND);
-				}
-			}
-			return true;
-		}
-
-	case CMD_SEND_SELF_ADVERT: {
-		/* Optional param: data[1] == 1 means flood, else zero-hop */
-		bool flood = (len >= 2 && data[1] == 1);
-		if (sendSelfAdvert(flood)) {
-			sendPacketOk();
-		} else {
-			sendPacketError(ERR_TABLE_FULL);
-		}
-		return true;
-	}
-
-	case CMD_SYNC_NEXT_MESSAGE: {
-		LOG_DBG("CMD_SYNC_NEXT_MESSAGE: queue_count=%d pending=%d",
-			_offline_queue_count, _sync_pending);
-
-		/* The app is draining — hold the watchdog off for another window. */
-		_last_sync_req_ms = _ms->getMillis();
-		LOG_INF("msgwait: app asked for next msg, %d queued",
-			_offline_queue_count);
-
-		/* Phone asking for next = implicit ACK for the previously-peeked message */
-		if (_sync_pending) {
-			confirmOfflineMessage();
-			_sync_pending = false;
-#if ZEPHCORE_HAS_UI_TASK
-			ui_set_msg_count((uint16_t)_offline_queue_count);
-#endif
-		}
-
-		uint8_t buf[MAX_FRAME_SIZE];
-		size_t msg_len;
-		if (peekOfflineMessage(buf, msg_len)) {
-			LOG_DBG("CMD_SYNC_NEXT_MESSAGE: peeked msg_len=%u type=0x%02x", (unsigned)msg_len, buf[0]);
-			if (writeFrame(buf, msg_len)) {
-				_sync_pending = true;  /* confirmed on next request or lost on disconnect */
-			}
-		} else {
-			LOG_DBG("CMD_SYNC_NEXT_MESSAGE: queue empty, sending NO_MORE_MSGS");
-			uint8_t rsp[] = { PACKET_NO_MORE_MSGS };
-			if (!writeFrame(rsp, sizeof(rsp))) {
-				return true;
-			}
-
-			/* Initial sync is done — safe to apply deferred
-			 * connection parameters now without disrupting
-			 * channel/contact/message throughput. */
-			zephcore_ble_conn_params_ready();
-
-			/* Full initial sync (contacts + messages) complete: stop
-			 * suppressing v-contact notice prompts. Any notice queued during
-			 * the window was just drained by this message-sync; if one raced in
-			 * after the last peek, prompt for it now. */
-			_vcontact_hold_msgwait = false;
-			_vcontact_hold_expiry = 0;
-			if (_offline_queue_count > 0) {
-				pushMsgWaiting();
-			}
-		}
-		return true;
-	}
-
-	case CMD_SET_ADVERT_NAME:
-		if (len >= 2) {
-			size_t nlen = len - 1;
-			if (nlen >= sizeof(prefs.node_name)) nlen = sizeof(prefs.node_name) - 1;
-			memcpy(prefs.node_name, &data[1], nlen);
-			prefs.node_name[nlen] = '\0';
-			_store->savePrefs(prefs);
-			/* Push the new name to BLE so scanners see it without a reboot. */
-			zephcore_ble_update_name(prefs.node_name);
-			/* v-contact name tracks the node name — update the app's copy. */
-			vcontactPushAdvert();
-		}
-		sendPacketOk();
-		return true;
-
-	case CMD_SET_RADIO_PARAMS:
-		if (len >= 11) {
-			uint32_t freq = get_le32(&data[1]);
-			uint32_t bw = get_le32(&data[5]);
-			uint8_t sf = data[9];
-			uint8_t cr = data[10];
-			uint8_t repeat = 0;
-			if (len > 11) {
-				repeat = data[11];  // v9+: client repeat flag
-			}
-			// If repeat requested, validate frequency against allowed bands
-			if (repeat && !isValidClientRepeatFreq(freq)) {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			/* freq arrives in kHz, bw in Hz. Same limits as the USB
-			 * CLI and the prefs loader — see NodePrefs.h. Accepting
-			 * here what loadPrefs() later rejects is how a 2.4 GHz
-			 * setting used to vanish on reboot. */
-			} else if (freq >= (uint32_t)(ZC_RADIO_FREQ_MIN_MHZ * 1000.0f) &&
-			    freq <= (uint32_t)(ZC_RADIO_FREQ_MAX_MHZ * 1000.0f) &&
-			    bw >= (uint32_t)(ZC_RADIO_BW_MIN_KHZ * 1000.0f) &&
-			    bw <= (uint32_t)(ZC_RADIO_BW_MAX_KHZ * 1000.0f) &&
-			    sf >= 5 && sf <= 12 &&
-			    cr >= 5 && cr <= 8) {
-				/* Coding rate is deliberately not in this test:
-				 * it changes airtime, not the channel or the
-				 * per-SF/per-bandwidth detPeak base, so it does
-				 * not invalidate the learned CAD offset. */
-				bool preset_changed =
-					prefs.freq != (float)freq / 1000.0f ||
-					prefs.bw != (float)bw / 1000.0f ||
-					prefs.sf != sf;
-				prefs.freq = (float)freq / 1000.0f;
-				prefs.bw = (float)bw / 1000.0f;
-				prefs.sf = sf;
-				prefs.cr = cr;
-				prefs.client_repeat = repeat;
-				_store->savePrefs(prefs);
-				if (_radio_reconfig_cb) _radio_reconfig_cb(preset_changed);
-				LOG_INF("SET_RADIO_PARAMS: client_repeat=%d", repeat);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_RADIO_TX_POWER:
-		if (len >= 2) {
-			int8_t power = (int8_t)data[1];
-			if (power >= -9 && power <= MAX_LORA_TX_POWER) {
-				prefs.tx_power_dbm = power;
-				_store->savePrefs(prefs);
-				if (_radio_reconfig_cb) _radio_reconfig_cb(false);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_ADVERT_LATLON:
-		if (len >= 9) {
-			int32_t lat = (int32_t)get_le32(&data[1]);
-			int32_t lon = (int32_t)get_le32(&data[5]);
-			// Arduino validation: lat ±90°, lon ±180° (in microdegrees)
-			if (lat >= -90000000 && lat <= 90000000 &&
-			    lon >= -180000000 && lon <= 180000000) {
-				prefs.node_lat = (double)lat / 1000000.0;
-				prefs.node_lon = (double)lon / 1000000.0;
-				_store->savePrefs(prefs);
-				LOG_INF("SET_ADVERT_LATLON: lat=%d lon=%d policy=%d",
-					lat, lon, prefs.advert_loc_policy);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_GET_DEVICE_TIME: {
-		uint8_t rsp[5];
-		rsp[0] = PACKET_CURR_TIME;
-		put_le32(&rsp[1], (uint32_t)getRTCClock()->getCurrentTime());
-		writeFrame(rsp, sizeof(rsp));
-		return true;
-	}
-
-	case CMD_SET_DEVICE_TIME:
-		if (len >= 5) {
-			/* If we have GPS-synced time, ignore phone time sync attempts.
-			 * GPS time is more accurate than phone time. Still return OK
-			 * so the app doesn't keep retrying. */
-			if (gps_has_time_sync()) {
-				LOG_DBG("Ignoring phone time sync - GPS time sync active");
-				sendPacketOk();
-				vcontactClockSynced();  /* GPS time counts as valid too */
-				return true;
-			}
-
-			uint32_t secs = get_le32(&data[1]);
-			uint32_t curr = getRTCClock()->getCurrentTime();
-			// Arduino: only allow setting time forward (prevents time attacks)
-			if (secs >= curr) {
-				getRTCClock()->setCurrentTime(secs);
-				time_sync_report(TIME_SYNC_APP);
-				zephcore_rtc_save(secs);  /* persist to hardware RTC */
-				_timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
-				sendPacketOk();
-				/* App just gave us wall time — activate the deferred
-				 * v-contact and flush buffered notices. */
-				vcontactClockSynced();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_DEVICE_QUERY:
-		if (len < 2) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		{
-			_app_target_ver = data[1];  // Which version of protocol does app understand
-			#ifndef FIRMWARE_BUILD_DATE
-			#define FIRMWARE_BUILD_DATE __DATE__
-			#endif
-			#ifndef FIRMWARE_VERSION
-			#define FIRMWARE_VERSION "v0.0.0-dev"  // real value injected by CMakeLists.txt
-			#endif
-			/* Wire format reserves 40 bytes for the board name. Require room
-			 * for a null terminator within those 40 bytes so a phone parsing
-			 * it as a C-string never reads past the field. */
-			static_assert(sizeof(CONFIG_ZEPHCORE_BOARD_NAME) <= 40,
-				"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
-			static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
-			static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
-			static const uint8_t version[20] = FIRMWARE_VERSION;  // injected by CMakeLists.txt
-			uint8_t rsp[82];
-			rsp[0] = PACKET_DEVICE_INFO;
-			/* v14 = CMD_RUN_CLI_COMMAND / PACKET_CLI_REPLY, plus TXT_TYPE_CLI_COMMAND
-			 * accepted by CMD_SEND_TXT_MSG and by the repeater / room-server admin
-			 * CLI.  Deliberately NOT the whole of upstream's v14: a companion here
-			 * never *executes* an over-the-air TXT_TYPE_CLI_COMMAND, so contact
-			 * flag 0x10 (remote-CLI-allowed) is stored and ignored.  See
-			 * devdocs/UPSTREAM_TRACKER.md for why. */
-			rsp[1] = 14;  // FIRMWARE_VER_CODE
-			rsp[2] = (MAX_CONTACTS / 2 > 255) ? 255 : (MAX_CONTACTS / 2);  // protocol byte, app multiplies by 2
-			rsp[3] = MAX_GROUP_CHANNELS;
-			put_le32(&rsp[4], prefs.ble_pin ? prefs.ble_pin : 123456);  // BLE PIN
-			memcpy(&rsp[8], fw_build, 12);
-			memcpy(&rsp[20], model, 40);
-			memcpy(&rsp[60], version, 20);
-			rsp[80] = prefs.client_repeat;  // v9+: offgrid mode state
-			rsp[81] = prefs.path_hash_mode;  // v10+: path hash mode
-			writeFrame(rsp, sizeof(rsp));
-			return true;
-		}
-
-	case CMD_GET_TUNING_PARAMS: {
-		uint8_t rsp[9];
-		rsp[0] = PACKET_TUNING_PARAMS;
-		put_le32(&rsp[1], (uint32_t)(prefs.rx_delay_base * 1000));
-		put_le32(&rsp[5], (uint32_t)(prefs.airtime_factor * 1000));
-		writeFrame(rsp, sizeof(rsp));
-		return true;
-	}
-
-	case CMD_SET_TUNING_PARAMS:
-		if (len < 9) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
-		prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
-		_store->savePrefs(prefs);
-		sendPacketOk();
-		return true;
-
-	case CMD_EXPORT_PRIVATE_KEY: {
-		// Response: [PACKET_PRIVATE_KEY=0x0E][64 bytes: 32 private + 32 public]
-		uint8_t rsp[65];
-		rsp[0] = PACKET_PRIVATE_KEY;
-		self_id.writeTo(&rsp[1], 64);
-		writeFrame(rsp, sizeof(rsp));
-		return true;
-	}
-
-	case CMD_FACTORY_RESET:
-		// Arduino: requires "reset" magic string for safety
-		if (len >= 6 && memcmp(&data[1], "reset", 5) == 0) {
-			LOG_INF("Factory reset requested");
-			_store->factoryReset();
-			sendPacketOk();
-			// Reboot to regenerate identity
-			sys_reboot(SYS_REBOOT_COLD);
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_REBOOT:
-		if (len >= 7 && memcmp(&data[1], "reboot", 6) == 0) {
-			LOG_INF("Reboot requested");
-			/* Flush any pending lazy writes before reboot */
-			flushDirtyContacts();
-			flushDirtyChannels();
-			sendPacketOk();
-			sys_reboot(SYS_REBOOT_COLD);
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_OTHER_PARAMS:
-		if (len >= 2) {
-			prefs.manual_add_contacts = data[1];
-			if (len >= 3) {
-				// Telemetry modes: (env << 4) | (loc << 2) | base
-				prefs.telemetry_mode_base = data[2] & 0x03;
-				prefs.telemetry_mode_loc = (data[2] >> 2) & 0x03;
-				prefs.telemetry_mode_env = (data[2] >> 4) & 0x03;
-				if (len >= 4) {
-					prefs.advert_loc_policy = data[3];
-					LOG_INF("SET_OTHER_PARAMS: advert_loc_policy=%d", prefs.advert_loc_policy);
-					if (len >= 5) {
-						prefs.multi_acks = data[4];
-					}
-				}
-			}
-			_store->savePrefs(prefs);
-		}
-		sendPacketOk();
-		return true;
-
-	case CMD_SET_DEVICE_PIN:
-		if (len >= 5) {
-			uint32_t pin;
-			memcpy(&pin, &data[1], 4);
-			if (pin == 0 || (pin >= 100000 && pin <= 999999)) {
-				prefs.ble_pin = pin;
-				_store->savePrefs(prefs);
-				if (_pin_change_cb) _pin_change_cb(pin);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SIGN_START:
-		// Free any previous signing state
-		if (_sign_data) {
-			delete[] _sign_data;
-			_sign_data = nullptr;
-		}
-		_sign_data_len = 0;
-		_sign_data_capacity = 0;
-		// Allocate new buffer
-		_sign_data = new uint8_t[MAX_SIGN_DATA_LEN];
-		if (_sign_data) {
-			_sign_data_capacity = MAX_SIGN_DATA_LEN;
-			// Response: [code][reserved][4-byte max_len] = 6 bytes (matches Arduino)
-			uint8_t rsp[6];
-			rsp[0] = PACKET_SIGN_START;
-			rsp[1] = 0;  // reserved
-			uint32_t max_len = MAX_SIGN_DATA_LEN;
-			put_le32(&rsp[2], max_len);
-			writeFrame(rsp, sizeof(rsp));
-		} else {
-			sendPacketError(ERR_BAD_STATE);
-		}
-		return true;
-
-	case CMD_SIGN_DATA:
-		if (_sign_data && len > 1) {
-			size_t chunk_len = len - 1;
-			if (_sign_data_len + chunk_len <= _sign_data_capacity) {
-				memcpy(&_sign_data[_sign_data_len], &data[1], chunk_len);
-				_sign_data_len += chunk_len;
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			sendPacketError(ERR_BAD_STATE);
-		}
-		return true;
-
-	case CMD_SIGN_FINISH:
-		if (_sign_data && _sign_data_len > 0) {
-			uint8_t signature[64];
-			// Sign the data using Ed25519 via LocalIdentity method
-			self_id.sign(signature, _sign_data, _sign_data_len);
-			uint8_t rsp[1 + 64];
-			rsp[0] = PACKET_SIGNATURE;
-			memcpy(&rsp[1], signature, 64);
-			writeFrame(rsp, sizeof(rsp));
-			// Clean up
-			delete[] _sign_data;
-			_sign_data = nullptr;
-			_sign_data_len = 0;
-			_sign_data_capacity = 0;
-		} else {
-			sendPacketError(ERR_BAD_STATE);
-		}
-		return true;
-
-	case CMD_SEND_TRACE_PATH:
-		/* Trace path: [cmd][4-byte tag][4-byte auth][flags][path...] */
-		if (len > 10 && (len - 10) < MAX_PACKET_PAYLOAD - 5) {
-			uint8_t path_len = len - 10;
-			uint8_t flags = data[9];
-			uint8_t path_sz = flags & 0x03;  /* Path hash size encoding */
-			/* Validate path length is multiple of hash size */
-			if ((path_len >> path_sz) > MAX_PATH_SIZE || (path_len % (1 << path_sz)) != 0) {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			} else {
-				uint32_t tag = get_le32(&data[1]);
-				uint32_t auth_code = get_le32(&data[5]);
-				mesh::Packet *trace = createTrace(tag, auth_code, flags);
-				if (trace) {
-					sendDirect(trace, &data[10], path_len);
-
-					uint32_t airtime = _radio->getEstAirtimeFor(trace->payload_len + trace->path_len + 2);
-					uint32_t est_timeout = calcDirectTimeoutMillisFor(airtime, path_len >> path_sz);
-
-					uint8_t rsp[10];
-					rsp[0] = PACKET_SENT;
-					rsp[1] = 0;  /* Not flood */
-					put_le32(&rsp[2], tag);
-					put_le32(&rsp[6], est_timeout);
-					writeFrame(rsp, sizeof(rsp));
-				} else {
-					sendPacketError(ERR_TABLE_FULL);
-				}
-			}
-		} else if (len >= 9) {
-			/* Legacy: zero-hop trace (backwards compat) */
-			uint32_t tag = get_le32(&data[1]);
-			uint32_t auth_code = get_le32(&data[5]);
-			mesh::Packet *trace = createTrace(tag, auth_code);
-			if (trace) {
-				sendZeroHop(trace);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_BAD_STATE);
-			}
-		} else {
-			sendPacketOk();  /* Backwards compat */
-		}
-		return true;
-
-	case CMD_IMPORT_PRIVATE_KEY:
-		/* Import private key: [cmd][64 bytes prv_key] */
-		if (len >= 1 + PRV_KEY_SIZE) {
-			if (!mesh::LocalIdentity::validatePrivateKey(&data[1])) {
-				sendPacketError(ERR_ILLEGAL_ARG); /* invalid key */
-			} else {
-				mesh::LocalIdentity new_identity;
-				new_identity.readFrom(&data[1], PRV_KEY_SIZE);
-				if (_store->saveMainIdentity(new_identity)) {
-					/* The v-contact key is derived from our identity, so it
-					 * changes with the new key. Tell the connected app to drop
-					 * the old v-contact (old key), re-derive, then re-advertise
-					 * the new one — otherwise the app's cached loopback contact
-					 * points at a key we no longer recognise (messaging + its
-					 * advert-path query break until a reboot re-syncs). Order
-					 * matters: delete uses the CURRENT (old) key. */
-					bool vc_was_enabled = isVContactEnabled();
-					if (vc_was_enabled) vcontactPushDeleted();
-					self_id = new_identity;
-					deriveVContactKey();
-					/* New identity → old advert timestamp is meaningless. Clear
-					 * it so vcontactPushAdvert() re-activates cleanly: with a
-					 * valid clock it stamps + emits now; without one it defers
-					 * and vcontactClockSynced() (the lastmod==0 path) emits at the
-					 * next time-sync instead of only after a reboot. */
-					_vcontact_lastmod = 0;
-					/* Different key → different contact in the app; the old
-					 * favourite/telemetry flags don't carry over. Persist
-					 * before the push so a reboot can't resurrect them. */
-					if (prefs.v_contact_flags != 0) {
-						prefs.v_contact_flags = 0;
-						_store->savePrefs(prefs);
-					}
-					if (vc_was_enabled) vcontactPushAdvert();
-					/* Reload contacts to invalidate ECDH shared secrets */
-					resetContacts();
-					_store->loadContacts(this);
-					sendPacketOk();
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_RAW_DATA:
-		/* Raw data packet: [cmd][path_len][path...][payload...]
-		 *
-		 * path_len is the encoded 2-bit (hash_size - 1) + 6-bit hop count, not
-		 * a byte count, so it has to be decoded rather than added to an offset.
-		 * Treating it as a length rejected every path with a hash size above 1:
-		 * hash_size 2 sets bit 6 (path_len 0x42 for two hops read as 66 bytes,
-		 * failing the length check) and hash_size 3 sets bit 7, which used to
-		 * read back as a negative int8_t. */
-		if (len >= 6) {  /* min: cmd + path_len + 4 byte payload */
-			size_t i = 1;
-			uint8_t path_len = data[i++];
-			if (mesh::Packet::isValidPathLen(path_len)) {
-				uint8_t path[MAX_PATH_SIZE];
-				/* Untrusted phone frame: bound the source at the bytes that
-				 * actually remain, so a crafted path_len cannot over-read. */
-				size_t path_bytes = mesh::Packet::writePath(path, &data[i], len - i, path_len);
-				if (path_bytes == 0 && (path_len & 63) != 0) {
-					/* Zero bytes written with a non-zero hop count (low 6
-					 * bits): the decoded path runs past the end of the frame. */
-					sendPacketError(ERR_ILLEGAL_ARG);
-					return true;
-				}
-				i += path_bytes;
-				if (i + 4 > len) {  /* min payload 4 bytes */
-					sendPacketError(ERR_ILLEGAL_ARG);
-				} else {
-					mesh::Packet *pkt = createRawData(&data[i], len - i);
-					if (pkt) {
-						sendDirect(pkt, path, path_len);
-						sendPacketOk();
-					} else {
-						sendPacketError(ERR_TABLE_FULL);
-					}
-				}
-			} else {
-				/* Flood mode not supported */
-				sendPacketError(ERR_UNSUPPORTED);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_LOGIN:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			size_t pw_len = len - 1 - PUB_KEY_SIZE;
-			char pw_buf[64];
-			if (pw_len >= sizeof(pw_buf)) pw_len = sizeof(pw_buf) - 1;
-			memcpy(pw_buf, &data[1 + PUB_KEY_SIZE], pw_len);
-			pw_buf[pw_len] = '\0';
-			const char *password = pw_buf;
-			if (contact) {
-				uint32_t est_timeout;
-				LOG_DBG("CMD_SEND_LOGIN: sending to contact, path_len=%d", contact->out_path_len);
-				int result = sendLogin(*contact, password, est_timeout);
-				LOG_DBG("CMD_SEND_LOGIN: sendLogin returned %d, est_timeout=%u", result, est_timeout);
-				if (result != MSG_SEND_FAILED) {
-					/* _pending_login was set by onLoginSent (BaseChatMesh::sendLogin hook);
-					 * clear the other pending fields manually — clearPendingReqs() would wipe it. */
-					_pending_status = _pending_telemetry = _pending_discovery = _pending_req = 0;
-					LOG_DBG("CMD_SEND_LOGIN: _pending_login set to %08x", _pending_login);
-					sendPacketSent(result, _pending_login, est_timeout);
-				} else {
-					sendPacketError(ERR_TABLE_FULL);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_STATUS_REQ:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (contact) {
-				uint32_t tag, est_timeout;
-				int result = sendRequest(*contact, REQ_TYPE_GET_STATUS, tag, est_timeout);
-				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					memcpy(&_pending_status, contact->id.pub_key, 4);  // legacy matching scheme
-					sendPacketSent(result, tag, est_timeout);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_HAS_CONNECTION:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			if (hasConnectionTo(&data[1])) {
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_LOGOUT:
-		if (len >= 1 + PUB_KEY_SIZE) {
-			stopConnection(&data[1]);
-		}
-		sendPacketOk();
-		return true;
-
-	case CMD_SEND_TELEMETRY_REQ:
-		if (len == 4) {
-			// Self-telemetry request: return battery, GPS, and environment data
-			// Format: Cayenne LPP: [channel][type][data...]
-			// Response: [PUSH_CODE_TELEMETRY_RESPONSE][reserved][6-byte pubkey][telemetry_data]
-			// Worst-case size tracks POWER_MAX_CHANNELS so a future bump can't
-			// silently overflow this stack buffer. With current value 4:
-			// header(8) + batt(4) + gps(11) + env(temp4+hum3+press4+lum4=15)
-			// + power(POWER_MAX_CHANNELS * 12 = 48) + 8 byte safety pad = 94.
-			uint8_t rsp[8 + 4 + 11 + 15 + (12 * POWER_MAX_CHANNELS) + 8];
-			int i = 0;
-			rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
-			rsp[i++] = 0;  // reserved
-			memcpy(&rsp[i], self_id.pub_key, 6);
-			i += 6;  // pubkey prefix
-
-			// Self-telemetry is unconditional (all permission bits set).
-			i += appendSelfTelemetry(&rsp[i], TELEM_PERM_BASE | TELEM_PERM_LOCATION | TELEM_PERM_ENVIRONMENT);
-			writeFrame(rsp, i);
-		} else if (len >= 4 + PUB_KEY_SIZE) {
-			// Contact telemetry request: [cmd][3 reserved bytes][32-byte pubkey]
-			ContactInfo *contact = lookupContactByPubKey(&data[4], PUB_KEY_SIZE);
-			if (contact) {
-				uint32_t tag, est_timeout;
-				int result = sendRequest(*contact, REQ_TYPE_GET_TELEMETRY_DATA, tag, est_timeout);
-				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					_pending_telemetry = tag;
-					sendPacketSent(result, tag, est_timeout);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_BINARY_REQ:
-		// Format: [cmd][32-byte pubkey][req_data...]
-		if (len >= 1 + PUB_KEY_SIZE + 1) {  // Need at least cmd + pubkey + 1 byte req_data
-			ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (contact) {
-				uint32_t tag, est_timeout;
-				// req_data starts after pubkey
-				const uint8_t *req_data = &data[1 + PUB_KEY_SIZE];
-				size_t req_len = len - (1 + PUB_KEY_SIZE);
-				int result = sendRequest(*contact, req_data, req_len, tag, est_timeout);
-				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					_pending_req = tag;
-					sendPacketSent(result, tag, est_timeout);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_PATH_DISCOVERY:
-		if (len >= 2 + PUB_KEY_SIZE && data[1] == 0) {
-			// Path Discovery is a special flood + Telemetry request
-			ContactInfo *contact = lookupContactByPubKey(&data[2], PUB_KEY_SIZE);
-			if (contact) {
-				uint32_t tag, est_timeout;
-				// Build telemetry request with only BASE permissions
-				uint8_t req_data[9];
-				req_data[0] = REQ_TYPE_GET_TELEMETRY_DATA;
-				req_data[1] = ~(TELEM_PERM_BASE);  // inverse permissions mask
-				memset(&req_data[2], 0, 3);  // reserved
-				getRNG()->random(&req_data[5], 4);  // random to make packet-hash unique
-
-				// Temporarily force flood
-				auto save = contact->out_path_len;
-				contact->out_path_len = OUT_PATH_UNKNOWN;
-				int result = sendRequest(*contact, req_data, sizeof(req_data), tag, est_timeout);
-				contact->out_path_len = save;
-
-				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					_pending_discovery = tag;
-					sendPacketSent(result, tag, est_timeout);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_GET_ADVERT_PATH:
-		// Format: [cmd][reserved][7-byte pubkey prefix]
-		if (len >= 2 + 7) {
-			const AdvertPath *ap = findAdvertPath(&data[2], 7);  // pubkey at offset 2
-			if (ap) {
-				// Response: [code][4-byte timestamp][path_len][path...]
-				uint8_t rsp[6 + MAX_PATH_SIZE];
-				size_t i = 0;
-				rsp[i++] = PACKET_ADVERT_PATH;
-				put_le32(&rsp[i], ap->recv_timestamp); i += 4;
-				rsp[i++] = ap->path_len;
-				/* Trusted source: AdvertPath::path is MAX_PATH_SIZE-sized. */
-				i += mesh::Packet::writePath(&rsp[i], ap->path, MAX_PATH_SIZE, ap->path_len);
-				writeFrame(rsp, i);
-			} else {
-				sendPacketError(ERR_NOT_FOUND);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_GET_CUSTOM_VARS: {
-		// Return GPS and sensor settings as comma-separated key:value pairs
-		// Format: [PACKET_CUSTOM_VARS][key1:val1,key2:val2,...]
-		uint8_t rsp[64];
-		char *dp = (char *)&rsp[1];
-		char *const rsp_end = (char *)&rsp[sizeof(rsp)];
-		rsp[0] = PACKET_CUSTOM_VARS;
-
-		// snprintf returns the would-be length, NOT bytes actually written.
-		// We must check truncation and only advance dp on real progress —
-		// otherwise dp can outrun the initialized portion of rsp and
-		// writeFrame(rsp, dp-rsp) leaks adjacent stack to the phone.
-
-		bool first = true;
-		if (gps_is_available()) {
-			size_t remaining = (size_t)(rsp_end - dp);
-			int n = snprintf(dp, remaining, "gps:%d", gps_is_enabled() ? 1 : 0);
-			if (n > 0 && (size_t)n < remaining) {
-				dp += n;
-				first = false;
-			}
-		}
-		uint32_t gps_interval = gps_get_poll_interval_sec();
-		if (gps_interval > 0) {
-			size_t remaining = (size_t)(rsp_end - dp);
-			// Reserve 1 byte for the leading ',' if needed
-			if (!first && remaining > 0) {
-				*dp++ = ',';
-				remaining--;
-			}
-			int n = snprintf(dp, remaining, "gps_interval:%u", (unsigned)gps_interval);
-			if (n > 0 && (size_t)n < remaining) {
-				dp += n;
-				first = false;
-			}
-			// If snprintf would have truncated, dp stays put — writeFrame
-			// sends only what we successfully wrote.
-		}
-		{
-			size_t remaining = (size_t)(rsp_end - dp);
-			if (!first && remaining > 0) {
-				*dp++ = ',';
-				remaining--;
-			}
-			int n = snprintf(dp, remaining, "meshtimesync:%d",
-					 prefs.meshtimesync ? 1 : 0);
-			if (n > 0 && (size_t)n < remaining) {
-				dp += n;
-			}
-		}
-		// Note: Environment sensors are auto-detected, no settings needed
-
-		writeFrame(rsp, (size_t)(dp - (char *)rsp));
-		return true;
-	}
-
-	case CMD_SET_CUSTOM_VAR:
-		// Format: [cmd][key:value]
-		if (len >= 4) {
-			char buf[64];
-			size_t copy_len = (len - 1 < sizeof(buf) - 1) ? len - 1 : sizeof(buf) - 1;
-			memcpy(buf, &data[1], copy_len);
-			buf[copy_len] = '\0';
-
-			char *sep = strchr(buf, ':');
-			if (sep) {
-				*sep = '\0';
-				char *key = buf;
-				char *val = sep + 1;
-
-				if (strcmp(key, "gps") == 0) {
-					bool enable = (val[0] == '1');
-					gps_enable(enable);
-					/* Persist GPS state across reboots */
-					prefs.gps_enabled = enable ? 1 : 0;
-					_store->savePrefs(prefs);
-					sendPacketOk();
-				} else if (strcmp(key, "gps_interval") == 0) {
-					uint32_t interval = (uint32_t)atoi(val);
-					if (interval > 0 && interval <= 86400) {
-						gps_set_poll_interval_sec(interval);
-						/* Persist GPS interval across reboots */
-						prefs.gps_interval = interval;
-						_store->savePrefs(prefs);
-						sendPacketOk();
-					} else {
-						sendPacketError(ERR_ILLEGAL_ARG);
-					}
-				} else if (strcmp(key, "meshtimesync") == 0) {
-					prefs.meshtimesync = (val[0] == '1') ? 1 : 0;
-					_store->savePrefs(prefs);
-					sendPacketOk();
-				} else {
-					sendPacketError(ERR_ILLEGAL_ARG);
-				}
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_FLOOD_SCOPE_KEY:
-		/* Set send scope mode (Arduino MeshCore PR #2492, ver 12+):
-		 * [cmd][0][16-byte key] = explicit scoped override
-		 * [cmd][0]             = clear scope override (use default_scope from prefs)
-		 * [cmd][1]             = explicit unscoped (sticky flag, bypasses default_scope)
-		 */
-		if (len >= 2 && data[1] == 0) {
-			if (len >= 2 + 16) {
-				memcpy(_send_scope.key, &data[2], sizeof(_send_scope.key));
-			} else {
-				memset(_send_scope.key, 0, sizeof(_send_scope.key));
-			}
-			_send_scope_force_unscoped = false;
-			sendPacketOk();
-		} else if (len == 2 && data[1] == 1) {
-			_send_scope_force_unscoped = true;
-			memset(_send_scope.key, 0, sizeof(_send_scope.key));
-			sendPacketOk();
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_DEFAULT_FLOOD_SCOPE:
-		/* Set default flood scope: [cmd][name:31][key:16] or [cmd] alone (clear) */
-		if (len >= 1 + 31 + 16) {
-			int n = strnlen((const char *)&data[1], 31);
-			if (n > 0 && n < 31) {
-				memset(prefs.default_scope_name, 0, sizeof(prefs.default_scope_name));
-				memcpy(prefs.default_scope_name, &data[1], n);
-				memcpy(prefs.default_scope_key, &data[1 + 31], 16);
-				_store->savePrefs(prefs);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			}
-		} else {
-			memset(prefs.default_scope_name, 0, sizeof(prefs.default_scope_name));
-			memset(prefs.default_scope_key, 0, sizeof(prefs.default_scope_key));
-			_store->savePrefs(prefs);
-			sendPacketOk();
-		}
-		return true;
-
-	case CMD_GET_DEFAULT_FLOOD_SCOPE: {
-		uint8_t rsp[1 + 31 + 16];
-		rsp[0] = PACKET_DEFAULT_FLOOD_SCOPE;
-		if (strlen(prefs.default_scope_name) > 0) {
-			memcpy(&rsp[1], prefs.default_scope_name, 31);
-			memcpy(&rsp[1 + 31], prefs.default_scope_key, 16);
-			writeFrame(rsp, sizeof(rsp));
-		} else {
-			writeFrame(rsp, 1);  /* no name or key means null */
-		}
-		return true;
-	}
-
-	case CMD_SEND_CONTROL_DATA:
-		/* Control data: [cmd][flags | 0x80][data...] */
-		if (len >= 2 && (data[1] & 0x80) != 0) {
-			mesh::Packet *pkt = createControlData(&data[1], len - 1);
-			if (pkt) {
-				sendZeroHop(pkt);
-				sendPacketOk();
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SET_AUTOADD_CONFIG:
-		if (len >= 2) {
-			prefs.autoadd_config = data[1];
-			if (len >= 3) {
-				prefs.autoadd_max_hops = (data[2] > 64) ? 64 : data[2];
-			}
-			LOG_INF("SET_AUTOADD_CONFIG: autoadd_config=0x%02x max_hops=%u",
-				prefs.autoadd_config, prefs.autoadd_max_hops);
-			_store->savePrefs(prefs);
-		}
-		sendPacketOk();
-		return true;
-
-	case CMD_GET_AUTOADD_CONFIG: {
-		uint8_t rsp[3];
-		rsp[0] = PACKET_AUTOADD_CONFIG;
-		rsp[1] = prefs.autoadd_config;
-		rsp[2] = prefs.autoadd_max_hops;
-		writeFrame(rsp, sizeof(rsp));
-		return true;
-	}
-
-	case CMD_GET_ALLOWED_REPEAT_FREQ: {
-		uint8_t rsp[1 + sizeof(repeat_freq_ranges)];
-		int i = 0;
-		rsp[i++] = PACKET_ALLOWED_REPEAT_FREQ;
-		for (size_t k = 0; k < sizeof(repeat_freq_ranges) / sizeof(repeat_freq_ranges[0]); k++) {
-			put_le32(&rsp[i], repeat_freq_ranges[k].lower_freq); i += 4;
-			put_le32(&rsp[i], repeat_freq_ranges[k].upper_freq); i += 4;
-		}
-		writeFrame(rsp, i);
-		return true;
-	}
-
-	case CMD_SET_PATH_HASH_MODE:
-		if (len >= 3 && data[1] == 0) {
-			if (data[2] >= 3) {
-				sendPacketError(ERR_ILLEGAL_ARG);
-			} else {
-				prefs.path_hash_mode = data[2];
-				_store->savePrefs(prefs);
-				sendPacketOk();
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_CHANNEL_DATA: {
-		/* Minimum frame: cmd(1) + channel_idx(1) + path_len(1) + path(0..) +
-		 * data_type(2) + payload(0..) = 5 bytes when path is empty. */
-		if (len < 5) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-		int i = 1;
-		uint8_t channel_idx = data[i++];
-		uint8_t path_len = data[i++];
-
-		if (!mesh::Packet::isValidPathLen(path_len) && path_len != OUT_PATH_UNKNOWN) {
-			LOG_WRN("CMD_SEND_CHANNEL_DATA invalid path size: %d", path_len);
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-
-		/* Compute decoded path byte count and ensure source frame has room
-		 * for path + data_type. (path_len is the 6-bit hash_count + 2-bit
-		 * hash_size encoding; writePath itself will reject if src_len is
-		 * too small, but failing here also rejects truncated data_type.) */
-		uint8_t hash_count = path_len & 63;
-		uint8_t hash_size  = (path_len >> 6) + 1;
-		size_t path_bytes  = (path_len == OUT_PATH_UNKNOWN) ? 0
-		                                                  : (size_t)hash_count * hash_size;
-		if ((size_t)i + path_bytes + 2 > len) {
-			LOG_WRN("CMD_SEND_CHANNEL_DATA short frame: len=%u need >=%u",
-				(unsigned)len, (unsigned)(i + path_bytes + 2));
-			sendPacketError(ERR_ILLEGAL_ARG);
-			return true;
-		}
-
-		uint8_t path[MAX_PATH_SIZE];
-		if (path_len != OUT_PATH_UNKNOWN) {
-			/* src_len = remaining bytes from data[i] onward. */
-			i += mesh::Packet::writePath(path, &data[i], len - i, path_len);
-		}
-
-		uint16_t data_type = ((uint16_t)data[i]) | (((uint16_t)data[i + 1]) << 8);
-		i += 2;
-		const uint8_t *payload = &data[i];
-		int payload_len = (len > (size_t)i) ? (int)(len - i) : 0;
-
-		ChannelDetails channel;
-		if (!getChannel(channel_idx, channel)) {
-			sendPacketError(ERR_NOT_FOUND);
-		} else if (data_type == DATA_TYPE_RESERVED) {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		} else if (payload_len > MAX_GROUP_DATA_LENGTH) {
-			/* Radio-side bound (165), NOT the host-frame bound (167).  These
-			 * disagree, and sendGroupData() enforces the smaller one, so gating
-			 * here on MAX_CHANNEL_DATA_LENGTH let a 166/167-byte payload pass the
-			 * frame check, fail the radio check, and come back to the app as
-			 * ERR_TABLE_FULL — the "outbound queue full, retry later" code — for a
-			 * send that can never succeed at any queue depth.  Upstream 0a82fcd2. */
-			LOG_WRN("CMD_SEND_CHANNEL_DATA payload too long: %d > %d", payload_len, MAX_GROUP_DATA_LENGTH);
-			sendPacketError(ERR_ILLEGAL_ARG);
-		} else if (sendGroupData(channel.channel, path, path_len, data_type, payload, payload_len)) {
-			sendPacketOk();
-		} else {
-			sendPacketError(ERR_TABLE_FULL);
-		}
-		return true;
-	}
-
-	case CMD_SEND_ANON_REQ:
-		if (len >= 1 + PUB_KEY_SIZE + 1) {
-			ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-			if (contact == nullptr) {
-				/* FIRMWARE_VER_CODE 13+: allow requests to a non-contact pubkey by
-				 * creating a transient "anon" contact (ADV_TYPE_NONE). These are never
-				 * persisted or synced to the app; re-lookup to get the stable slot. */
-				ContactInfo anon{};
-				memcpy(anon.id.pub_key, &data[1], PUB_KEY_SIZE);
-				anon.out_path_len = 0;       // zero-hop direct by default
-				anon.type = ADV_TYPE_NONE;   // transient/unknown
-				anon.lastmod = getRTCClock()->getCurrentTime();  // so slot recycling is LRU, not always slot 0
-				if (addContact(anon)) {
-					contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
-				}
-			}
-			if (contact) {
-				uint32_t tag, est_timeout;
-				int result = sendAnonReq(*contact, &data[1 + PUB_KEY_SIZE], len - 1 - PUB_KEY_SIZE, tag, est_timeout);
-				if (result != MSG_SEND_FAILED) {
-					clearPendingReqs();
-					_pending_req = tag;
-					sendPacketSent(result, tag, est_timeout);
-				} else {
-					sendPacketError(ERR_BAD_STATE);
-				}
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_RUN_CLI_COMMAND:
-		/* Runs a CLI line on behalf of the connected app.  This is the same
-		 * local CLI the USB text sideband and the v-contact chat already reach,
-		 * over the same already-paired transport, so it adds no reach that an
-		 * app connected to this node did not already have — it is executed with
-		 * sender_timestamp 0 (local) for exactly that reason. */
-		if (len >= 2) {
-			if (_cli_exec_cb == nullptr) {
-				sendPacketError(ERR_UNSUPPORTED);
-				return true;
-			}
-
-			/* `data` is const, so the line has to be copied out to be
-			 * null-terminated.  A command can never exceed one frame. */
-			char line[MAX_FRAME_SIZE];
-			size_t cmd_len = len - 1;
-			if (cmd_len > sizeof(line) - 1) cmd_len = sizeof(line) - 1;
-			memcpy(line, &data[1], cmd_len);
-			line[cmd_len] = '\0';
-
-			/* Reply is built in place behind the frame type byte; the callback
-			 * contract requires COMPANION_CLI_REPLY_SIZE of room. */
-			uint8_t rsp[1 + COMPANION_CLI_REPLY_SIZE];
-			char *reply = (char *)&rsp[1];
-			rsp[0] = PACKET_CLI_REPLY;
-			reply[0] = '\0';
-			_cli_exec_cb(line, reply);
-			if (reply[0] == '\0') {
-				strcpy(reply, "Unknown command");
-			}
-
-			/* A CommonCLI reply can be longer than one companion frame and the
-			 * app protocol has no continuation for this response, so truncate
-			 * rather than drop. */
-			size_t rlen = strlen(reply);
-			if (rlen > MAX_FRAME_SIZE - 1) rlen = MAX_FRAME_SIZE - 1;
-			writeFrame(rsp, rlen + 1);
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
-	case CMD_SEND_RAW_PACKET:
-		if (len >= 4) {
-			mesh::Packet *pkt = obtainNewPacket();
-			if (pkt) {
-				uint8_t priority = data[1];
-				if (tryParsePacket(pkt, &data[2], len - 2)) {
-					sendPacket(pkt, priority, 0);
-					sendPacketOk();
-				} else {
-					releasePacket(pkt);
-					sendPacketError(ERR_ILLEGAL_ARG);
-				}
-			} else {
-				sendPacketError(ERR_TABLE_FULL);
-			}
-		} else {
-			sendPacketError(ERR_ILLEGAL_ARG);
-		}
-		return true;
-
+	case CMD_DEVICE_QUERY: return handleCmdDeviceQuery(data, len);
+	case CMD_APP_START: return handleCmdAppStart(data, len);
+	case CMD_RUN_CLI_COMMAND: return handleCmdRunCliCommand(data, len);
+	case CMD_SEND_TXT_MSG: return handleCmdSendTxtMsg(data, len);
+	case CMD_SEND_CHANNEL_TXT_MSG: return handleCmdSendChannelTxtMsg(data, len);
+	case CMD_SEND_CHANNEL_DATA: return handleCmdSendChannelData(data, len);
+	case CMD_GET_CONTACTS: return handleCmdGetContacts(data, len);
+	case CMD_SET_ADVERT_NAME: return handleCmdSetAdvertName(data, len);
+	case CMD_SET_ADVERT_LATLON: return handleCmdSetAdvertLatlon(data, len);
+	case CMD_GET_DEVICE_TIME: return handleCmdGetDeviceTime(data, len);
+	case CMD_SET_DEVICE_TIME: return handleCmdSetDeviceTime(data, len);
+	case CMD_SEND_SELF_ADVERT: return handleCmdSendSelfAdvert(data, len);
+	case CMD_RESET_PATH: return handleCmdResetPath(data, len);
+	case CMD_ADD_UPDATE_CONTACT: return handleCmdAddUpdateContact(data, len);
+	case CMD_REMOVE_CONTACT: return handleCmdRemoveContact(data, len);
+	case CMD_SHARE_CONTACT: return handleCmdShareContact(data, len);
+	case CMD_GET_CONTACT_BY_KEY: return handleCmdGetContactByKey(data, len);
+	case CMD_EXPORT_CONTACT: return handleCmdExportContact(data, len);
+	case CMD_IMPORT_CONTACT: return handleCmdImportContact(data, len);
+	case CMD_SYNC_NEXT_MESSAGE: return handleCmdSyncNextMessage(data, len);
+	case CMD_SET_RADIO_PARAMS: return handleCmdSetRadioParams(data, len);
+	case CMD_SET_RADIO_TX_POWER: return handleCmdSetRadioTxPower(data, len);
+	case CMD_SET_TUNING_PARAMS: return handleCmdSetTuningParams(data, len);
+	case CMD_GET_TUNING_PARAMS: return handleCmdGetTuningParams(data, len);
+	case CMD_SET_OTHER_PARAMS: return handleCmdSetOtherParams(data, len);
+	case CMD_SET_PATH_HASH_MODE: return handleCmdSetPathHashMode(data, len);
+	case CMD_REBOOT: return handleCmdReboot(data, len);
+	case CMD_GET_BATT_AND_STORAGE: return handleCmdGetBattAndStorage(data, len);
+	case CMD_EXPORT_PRIVATE_KEY: return handleCmdExportPrivateKey(data, len);
+	case CMD_IMPORT_PRIVATE_KEY: return handleCmdImportPrivateKey(data, len);
+	case CMD_SEND_RAW_DATA: return handleCmdSendRawData(data, len);
+	case CMD_SEND_LOGIN: return handleCmdSendLogin(data, len);
+	case CMD_SEND_ANON_REQ: return handleCmdSendAnonReq(data, len);
+	case CMD_SEND_STATUS_REQ: return handleCmdSendStatusReq(data, len);
+	case CMD_SEND_PATH_DISCOVERY_REQ: return handleCmdSendPathDiscoveryReq(data, len);
+	case CMD_SEND_TELEMETRY_REQ: return handleCmdSendTelemetryReq(data, len);
+	case CMD_SEND_BINARY_REQ: return handleCmdSendBinaryReq(data, len);
+	case CMD_HAS_CONNECTION: return handleCmdHasConnection(data, len);
+	case CMD_LOGOUT: return handleCmdLogout(data, len);
+	case CMD_GET_CHANNEL: return handleCmdGetChannel(data, len);
+	case CMD_SET_CHANNEL: return handleCmdSetChannel(data, len);
+	case CMD_SIGN_START: return handleCmdSignStart(data, len);
+	case CMD_SIGN_DATA: return handleCmdSignData(data, len);
+	case CMD_SIGN_FINISH: return handleCmdSignFinish(data, len);
+	case CMD_SEND_TRACE_PATH: return handleCmdSendTracePath(data, len);
+	case CMD_SET_DEVICE_PIN: return handleCmdSetDevicePin(data, len);
+	case CMD_GET_CUSTOM_VARS: return handleCmdGetCustomVars(data, len);
+	case CMD_SET_CUSTOM_VAR: return handleCmdSetCustomVar(data, len);
+	case CMD_GET_ADVERT_PATH: return handleCmdGetAdvertPath(data, len);
+	case CMD_GET_STATS: return handleCmdGetStats(data, len);
+	case CMD_FACTORY_RESET: return handleCmdFactoryReset(data, len);
+	case CMD_SET_FLOOD_SCOPE_KEY: return handleCmdSetFloodScopeKey(data, len);
+	case CMD_SET_DEFAULT_FLOOD_SCOPE: return handleCmdSetDefaultFloodScope(data, len);
+	case CMD_GET_DEFAULT_FLOOD_SCOPE: return handleCmdGetDefaultFloodScope(data, len);
+	case CMD_SEND_CONTROL_DATA: return handleCmdSendControlData(data, len);
+	case CMD_SET_AUTOADD_CONFIG: return handleCmdSetAutoaddConfig(data, len);
+	case CMD_GET_AUTOADD_CONFIG: return handleCmdGetAutoaddConfig(data, len);
+	case CMD_GET_ALLOWED_REPEAT_FREQ: return handleCmdGetAllowedRepeatFreq(data, len);
+	case CMD_SEND_RAW_PACKET: return handleCmdSendRawPacket(data, len);
 	default:
 		break;
 	}
 
 	return false;
+}
+
+bool CompanionMesh::handleCmdDeviceQuery(const uint8_t *data, size_t len)
+{
+	if (len < 2) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	{
+		_app_target_ver = data[1];  // Which version of protocol does app understand
+		#ifndef FIRMWARE_BUILD_DATE
+		#define FIRMWARE_BUILD_DATE __DATE__
+		#endif
+		#ifndef FIRMWARE_VERSION
+		#define FIRMWARE_VERSION "v0.0.0-dev"  // real value injected by CMakeLists.txt
+		#endif
+		/* Wire format reserves 40 bytes for the board name. Require room
+		 * for a null terminator within those 40 bytes so a phone parsing
+		 * it as a C-string never reads past the field. */
+		static_assert(sizeof(CONFIG_ZEPHCORE_BOARD_NAME) <= 40,
+			"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
+		static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
+		static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
+		static const uint8_t version[20] = FIRMWARE_VERSION;  // injected by CMakeLists.txt
+		uint8_t rsp[82];
+		rsp[0] = PACKET_DEVICE_INFO;
+		/* v14 = CMD_RUN_CLI_COMMAND / PACKET_CLI_REPLY, and TXT_TYPE_CLI_COMMAND
+		 * both sent (CMD_SEND_TXT_MSG) and executed from a contact with flag
+		 * 0x10 (onCLICommandRecv), as upstream. */
+		rsp[1] = 14;  // FIRMWARE_VER_CODE
+		rsp[2] = (MAX_CONTACTS / 2 > 255) ? 255 : (MAX_CONTACTS / 2);  // protocol byte, app multiplies by 2
+		rsp[3] = MAX_GROUP_CHANNELS;
+		put_le32(&rsp[4], prefs.ble_pin ? prefs.ble_pin : 123456);  // BLE PIN
+		memcpy(&rsp[8], fw_build, 12);
+		memcpy(&rsp[20], model, 40);
+		memcpy(&rsp[60], version, 20);
+		rsp[80] = prefs.client_repeat;  // v9+: offgrid mode state
+		rsp[81] = prefs.path_hash_mode;  // v10+: path hash mode
+		writeFrame(rsp, sizeof(rsp));
+		return true;
+	}
+}
+
+bool CompanionMesh::handleCmdAppStart(const uint8_t *data, size_t len)
+{
+	if (len < 8) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	LOG_INF("CMD_APP_START: session reset, %d queued", _offline_queue_count);
+	// Reset per-session state for a fresh app session. BLE/USB also run
+	// this cleanup on disconnect, but the serial transport has no
+	// disconnect event, so APP_START is its authoritative session-reset
+	// point: drop a stale contact iteration (a leftover PACKET_CONTACT_END
+	// would confuse the new session's sync state machine), a half-finished
+	// message sync, and free an abandoned Ed25519 sign buffer (else an 8KB
+	// leak if the previous session dropped mid-CMD_SIGN). Idempotent — all
+	// no-ops when the state is already clean.
+	_contact_iter_active = false;
+	cancelSyncPending();
+	cleanupSignState();
+	/* Drop a deferred v-contact confirm from the previous session: its ack
+	 * matches an outbound message the new session never sent, so delivering
+	 * it here would push an unmatched SEND_CONFIRMED into a fresh app. */
+	_vcontact_confirm_ack = 0;
+	k_work_cancel_delayable(&_vcontact_confirm_work.work);
+
+	/* New session: suppress v-contact notice MSG_WAITING until the initial
+	 * sync (contacts + messages) completes at PACKET_NO_MORE_MSGS, or the
+	 * deadline expires — see _vcontact_hold_expiry for why the latch needs
+	 * a second exit. */
+	_vcontact_hold_msgwait = true;
+	_vcontact_hold_expiry = _ms->getMillis() + VCONTACT_HOLD_MAX_MS;
+	/* An app-side delete only hides the v-contact for the session it
+	 * happened in — this is that session boundary, so it comes back. */
+	_vcontact_app_hidden = false;
+
+	/* If a time source already ran (hardware RTC, GPS), activate the
+	 * deferred v-contact and flush buffered notices for this session. */
+	vcontactClockSynced();
+
+	/* Re-stamp the v-contact once per app session so it stays "fresh".
+	 * _vcontact_lastmod feeds both lastmod and last_advert_timestamp, and
+	 * it used to move only on boot / rename / identity import: the app
+	 * showed an ever-growing "last seen" age, and — worse — the contact
+	 * sync gate is `_vcontact_lastmod > _contact_iter_since`, so after the
+	 * first sync the v-contact was never streamed again and app-side state
+	 * (flags, name) could never be corrected. Bumping here, before the
+	 * CMD_GET_CONTACTS that follows APP_START, means every session's sync
+	 * carries a current timestamp; deferring it to the end of sync would
+	 * always land one session late. Silent on purpose — no NEW_ADVERT push
+	 * mid-handshake; the sync itself delivers it. */
+	if (vcontactReady() && vcontactClockValid()) {
+		_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
+	}
+
+	// Return SELF_INFO
+	uint8_t rsp[90];  // 58 fixed + up to 32 bytes name
+	size_t i = 0;
+	rsp[i++] = PACKET_SELF_INFO;
+	rsp[i++] = ADV_TYPE_CHAT;
+	rsp[i++] = prefs.tx_power_dbm;
+	rsp[i++] = MAX_LORA_TX_POWER;  // Max allowed TX power
+	memcpy(&rsp[i], self_id.pub_key, PUB_KEY_SIZE); i += PUB_KEY_SIZE;
+	int32_t lat = (int32_t)(prefs.node_lat * 1000000.0);
+	int32_t lon = (int32_t)(prefs.node_lon * 1000000.0);
+	put_le32(&rsp[i], lat); i += 4;
+	put_le32(&rsp[i], lon); i += 4;
+	rsp[i++] = prefs.multi_acks;
+	rsp[i++] = prefs.advert_loc_policy;
+	// Telemetry modes: (env << 4) | (loc << 2) | base
+	rsp[i++] = (prefs.telemetry_mode_env << 4) | (prefs.telemetry_mode_loc << 2) | prefs.telemetry_mode_base;
+	rsp[i++] = prefs.manual_add_contacts;
+	put_le32(&rsp[i], (uint32_t)(prefs.freq * 1000)); i += 4;
+	put_le32(&rsp[i], (uint32_t)(prefs.bw * 1000)); i += 4;
+	rsp[i++] = prefs.sf;
+	rsp[i++] = prefs.cr;
+	size_t name_len = strnlen(prefs.node_name, sizeof(prefs.node_name) - 1);
+	memcpy(&rsp[i], prefs.node_name, name_len);
+	i += name_len;
+	writeFrame(rsp, i);
+	return true;
+}
+
+bool CompanionMesh::handleCmdRunCliCommand(const uint8_t *data, size_t len)
+{
+	/* Runs a CLI line on behalf of the connected app.  This is the same
+	 * local CLI the USB text sideband and the v-contact chat already reach,
+	 * over the same already-paired transport, so it adds no reach that an
+	 * app connected to this node did not already have — it is executed with
+	 * sender_timestamp 0 (local) for exactly that reason. */
+	if (len >= 2) {
+		if (_cli_exec_cb == nullptr) {
+			writeErrFrame(ERR_UNSUPPORTED);
+			return true;
+		}
+
+		/* `data` is const, so the line has to be copied out to be
+		 * null-terminated.  A command can never exceed one frame. */
+		char line[MAX_FRAME_SIZE];
+		size_t cmd_len = len - 1;
+		if (cmd_len > sizeof(line) - 1) cmd_len = sizeof(line) - 1;
+		memcpy(line, &data[1], cmd_len);
+		line[cmd_len] = '\0';
+
+		/* Reply is built in place behind the frame type byte. */
+		uint8_t rsp[1 + COMPANION_CLI_PREFIX_ROOM + COMPANION_CLI_REPLY_SIZE];
+		char *reply = (char *)&rsp[1];
+		rsp[0] = PACKET_CLI_REPLY;
+		if (!handleCommand(line, 0, reply)) {
+			strcat(reply, "Unknown command");  // reply may have cmd prefix from 'line'
+		}
+
+		/* A CommonCLI reply can be longer than one companion frame and the
+		 * app protocol has no continuation for this response, so truncate
+		 * rather than drop. */
+		size_t rlen = strlen(reply);
+		if (rlen > MAX_FRAME_SIZE - 1) rlen = MAX_FRAME_SIZE - 1;
+		writeFrame(rsp, rlen + 1);
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendTxtMsg(const uint8_t *data, size_t len)
+{
+	// Frame format: cmd(1) + txt_type(1) + attempt(1) + timestamp(4) + pub_key_prefix(6) + text(N)
+	// Minimum: 1 + 1 + 1 + 4 + 6 + 1 = 14 bytes
+	LOG_DBG("CMD_SEND_TXT_MSG: len=%u (min=14)", (unsigned)len);
+	if (len >= 14) {
+		int i = 1;
+		uint8_t txt_type = data[i++];
+		uint8_t attempt = data[i++];
+		uint32_t msg_timestamp = get_le32(&data[i]); i += 4;
+		const uint8_t *pub_key_prefix = &data[i]; i += 6;
+
+		// Copy text and ensure null termination
+		size_t text_len = len - 13;  // Everything after header (13 bytes)
+		char text_buf[MAX_TEXT_LEN + 1];
+		if (text_len > MAX_TEXT_LEN) text_len = MAX_TEXT_LEN;
+		memcpy(text_buf, &data[i], text_len);
+		text_buf[text_len] = '\0';
+		const char *text = text_buf;
+
+		LOG_DBG("CMD_SEND_TXT_MSG: txt_type=%d attempt=%d pubkey=%02x%02x%02x%02x%02x%02x",
+			txt_type, attempt, pub_key_prefix[0], pub_key_prefix[1], pub_key_prefix[2],
+			pub_key_prefix[3], pub_key_prefix[4], pub_key_prefix[5]);
+
+		ContactInfo *contact = lookupContactByPubKey(pub_key_prefix, 6);
+		if (contact && (txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_CLI_DATA ||
+				txt_type == TXT_TYPE_CLI_COMMAND)) {
+			LOG_DBG("CMD_SEND_TXT_MSG: contact='%s' text='%s' text_len=%u", contact->name, text, (unsigned)text_len);
+
+			uint32_t expected_ack = 0, est_timeout;
+			int result;
+
+			if (txt_type == TXT_TYPE_CLI_DATA || txt_type == TXT_TYPE_CLI_COMMAND) {
+				// Use node's RTC instead of app timestamp
+				msg_timestamp = getRTCClock()->getCurrentTimeUnique();
+				result = sendCommandData(*contact, msg_timestamp, attempt, txt_type, text,
+							 est_timeout);
+			} else {
+				result = sendMessage(*contact, msg_timestamp, attempt, text, expected_ack, est_timeout);
+			}
+
+			LOG_DBG("CMD_SEND_TXT_MSG: sendMessage result=%d expected_ack=0x%08x", result, expected_ack);
+
+			if (result != MSG_SEND_FAILED) {
+				if (expected_ack) {
+					// Track ACK
+					int idx = -1;
+					ContactInfo ci;
+					for (int k = 0; k < getNumContacts(); k++) {
+						if (getContactByIdx(k, ci) && ci.id.matches(contact->id)) {
+							idx = k;
+							break;
+						}
+					}
+					addPendingAck(expected_ack, idx);
+				}
+
+				// Response: RESP_CODE_SENT + is_flood(1) + expected_ack(4) + est_timeout(4)
+				sendPacketSent(result, expected_ack, est_timeout);
+			} else {
+				writeErrFrame(ERR_TABLE_FULL);
+			}
+		} else {
+			LOG_WRN("CMD_SEND_TXT_MSG: contact not found or unsupported txt_type=%d", txt_type);
+			writeErrFrame(contact == nullptr ? ERR_NOT_FOUND : ERR_UNSUPPORTED);
+		}
+		return true;
+	}
+	LOG_WRN("CMD_SEND_TXT_MSG: frame too short (len=%u, need 14)", (unsigned)len);
+	writeErrFrame(ERR_ILLEGAL_ARG);
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendChannelTxtMsg(const uint8_t *data, size_t len)
+{
+	// Arduino format: [cmd][txt_type][channel_idx][4-byte timestamp][text...]
+	// Minimum: 1 + 1 + 1 + 4 + 1 = 8 bytes
+	if (len < 8) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	{
+		int i = 1;
+		uint8_t txt_type = data[i++];
+		uint8_t ch_idx = data[i++];
+		uint32_t msg_timestamp = get_le32(&data[i]);
+		i += 4;
+		const char *text = (const char *)&data[i];
+		size_t text_len = len - i;
+
+		if (txt_type != TXT_TYPE_PLAIN) {
+			writeErrFrame(ERR_UNSUPPORTED);
+		} else {
+			ChannelDetails ch;
+			if (getChannel(ch_idx, ch)) {
+				if (sendGroupMessage(msg_timestamp, ch.channel, prefs.node_name, text, text_len)) {
+					writeOKFrame();
+				} else {
+					writeErrFrame(ERR_BAD_STATE);
+				}
+			} else {
+				writeErrFrame(ERR_NOT_FOUND);
+			}
+		}
+		return true;
+	}
+}
+
+bool CompanionMesh::handleCmdSendChannelData(const uint8_t *data, size_t len)
+{
+	/* Minimum frame: cmd(1) + channel_idx(1) + path_len(1) + path(0..) +
+	 * data_type(2) + payload(0..) = 5 bytes when path is empty. */
+	if (len < 5) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	int i = 1;
+	uint8_t channel_idx = data[i++];
+	uint8_t path_len = data[i++];
+
+	if (!mesh::Packet::isValidPathLen(path_len) && path_len != OUT_PATH_UNKNOWN) {
+		LOG_WRN("CMD_SEND_CHANNEL_DATA invalid path size: %d", path_len);
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+
+	/* Compute decoded path byte count and ensure source frame has room
+	 * for path + data_type. (path_len is the 6-bit hash_count + 2-bit
+	 * hash_size encoding; writePath itself will reject if src_len is
+	 * too small, but failing here also rejects truncated data_type.) */
+	uint8_t hash_count = path_len & 63;
+	uint8_t hash_size  = (path_len >> 6) + 1;
+	size_t path_bytes  = (path_len == OUT_PATH_UNKNOWN) ? 0
+	                                                  : (size_t)hash_count * hash_size;
+	if ((size_t)i + path_bytes + 2 > len) {
+		LOG_WRN("CMD_SEND_CHANNEL_DATA short frame: len=%u need >=%u",
+			(unsigned)len, (unsigned)(i + path_bytes + 2));
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+
+	uint8_t path[MAX_PATH_SIZE];
+	if (path_len != OUT_PATH_UNKNOWN) {
+		/* src_len = remaining bytes from data[i] onward. */
+		i += mesh::Packet::writePath(path, &data[i], len - i, path_len);
+	}
+
+	uint16_t data_type = ((uint16_t)data[i]) | (((uint16_t)data[i + 1]) << 8);
+	i += 2;
+	const uint8_t *payload = &data[i];
+	int payload_len = (len > (size_t)i) ? (int)(len - i) : 0;
+
+	ChannelDetails channel;
+	if (!getChannel(channel_idx, channel)) {
+		writeErrFrame(ERR_NOT_FOUND);
+	} else if (data_type == DATA_TYPE_RESERVED) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	} else if (payload_len > MAX_GROUP_DATA_LENGTH) {
+		/* Radio-side bound (165), NOT the host-frame bound (167).  These
+		 * disagree, and sendGroupData() enforces the smaller one, so gating
+		 * here on MAX_CHANNEL_DATA_LENGTH let a 166/167-byte payload pass the
+		 * frame check, fail the radio check, and come back to the app as
+		 * ERR_TABLE_FULL — the "outbound queue full, retry later" code — for a
+		 * send that can never succeed at any queue depth.  Upstream 0a82fcd2. */
+		LOG_WRN("CMD_SEND_CHANNEL_DATA payload too long: %d > %d", payload_len, MAX_GROUP_DATA_LENGTH);
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	} else if (sendGroupData(channel.channel, path, path_len, data_type, payload, payload_len)) {
+		writeOKFrame();
+	} else {
+		writeErrFrame(ERR_TABLE_FULL);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetContacts(const uint8_t *data, size_t len)
+{
+	if (_contact_iter_active) {
+		writeErrFrame(ERR_BAD_STATE);
+	} else {
+		// Parse optional 'since' parameter for incremental sync
+		if (len >= 5) {
+			_contact_iter_since = get_le32(&data[1]);
+		} else {
+			_contact_iter_since = 0;
+		}
+
+		// Send PACKET_CONTACT_START with total count (unfiltered, but excluding
+		// transient anon slots -- continueContactIteration() never streams those)
+		_contact_iter_num = getNumContacts();
+		_contact_iter_vc = vcontactReady();  /* virtual tail entry (post time sync) */
+		uint32_t total = 0;
+		for (int i = 0; i < _contact_iter_num; i++) {
+			ContactInfo c;
+			if (getContactByIdx(i, c) && c.type != ADV_TYPE_NONE) total++;
+		}
+		if (_contact_iter_vc) total++;
+		uint8_t rsp[5];
+		rsp[0] = PACKET_CONTACT_START;
+		put_le32(&rsp[1], total);
+		writeFrame(rsp, sizeof(rsp));
+		_contact_iter_idx = 0;
+		_contact_iter_lastmod = 0;
+		_contact_iter_active = true;
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetAdvertName(const uint8_t *data, size_t len)
+{
+	if (len >= 2) {
+		size_t nlen = len - 1;
+		if (nlen >= sizeof(prefs.node_name)) nlen = sizeof(prefs.node_name) - 1;
+		memcpy(prefs.node_name, &data[1], nlen);
+		prefs.node_name[nlen] = '\0';
+		_store->savePrefs(prefs);
+		/* Push the new name to BLE so scanners see it without a reboot. */
+		zephcore_ble_update_name(prefs.node_name);
+		/* v-contact name tracks the node name — update the app's copy. */
+		vcontactPushAdvert();
+	}
+	writeOKFrame();
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetAdvertLatlon(const uint8_t *data, size_t len)
+{
+	if (len >= 9) {
+		int32_t lat = (int32_t)get_le32(&data[1]);
+		int32_t lon = (int32_t)get_le32(&data[5]);
+		// Arduino validation: lat ±90°, lon ±180° (in microdegrees)
+		if (lat >= -90000000 && lat <= 90000000 &&
+		    lon >= -180000000 && lon <= 180000000) {
+			prefs.node_lat = (double)lat / 1000000.0;
+			prefs.node_lon = (double)lon / 1000000.0;
+			_store->savePrefs(prefs);
+			LOG_INF("SET_ADVERT_LATLON: lat=%d lon=%d policy=%d",
+				lat, lon, prefs.advert_loc_policy);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetDeviceTime(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[5];
+	rsp[0] = PACKET_CURR_TIME;
+	put_le32(&rsp[1], (uint32_t)getRTCClock()->getCurrentTime());
+	writeFrame(rsp, sizeof(rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetDeviceTime(const uint8_t *data, size_t len)
+{
+	if (len >= 5) {
+		/* If we have GPS-synced time, ignore phone time sync attempts.
+		 * GPS time is more accurate than phone time. Still return OK
+		 * so the app doesn't keep retrying. */
+		if (gps_has_time_sync()) {
+			LOG_DBG("Ignoring phone time sync - GPS time sync active");
+			writeOKFrame();
+			vcontactClockSynced();  /* GPS time counts as valid too */
+			return true;
+		}
+
+		uint32_t secs = get_le32(&data[1]);
+		uint32_t curr = getRTCClock()->getCurrentTime();
+		// Arduino: only allow setting time forward (prevents time attacks)
+		if (secs >= curr) {
+			getRTCClock()->setCurrentTime(secs);
+			time_sync_report(TIME_SYNC_APP);
+			zephcore_rtc_save(secs);  /* persist to hardware RTC */
+			_timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
+			writeOKFrame();
+			/* App just gave us wall time — activate the deferred
+			 * v-contact and flush buffered notices. */
+			vcontactClockSynced();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendSelfAdvert(const uint8_t *data, size_t len)
+{
+	/* Optional param: data[1] == 1 means flood, else zero-hop */
+	bool flood = (len >= 2 && data[1] == 1);
+	if (sendSelfAdvert(flood)) {
+		writeOKFrame();
+	} else {
+		writeErrFrame(ERR_TABLE_FULL);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdResetPath(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (c) {
+			resetPathTo(*c);
+			markContactsDirty();
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdAddUpdateContact(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE + 1 + 1 + 1 + MAX_PATH_SIZE + 32 + 4) {
+		const uint8_t *pub_key = &data[1];
+		ContactInfo *existing = lookupContactByPubKey(pub_key, PUB_KEY_SIZE);
+
+		ContactInfo c;
+		size_t i = 1;
+		memcpy(c.id.pub_key, &data[i], PUB_KEY_SIZE); i += PUB_KEY_SIZE;
+		c.type = data[i++];
+		c.flags = data[i++];
+		c.out_path_len = data[i++];
+		memcpy(c.out_path, &data[i], MAX_PATH_SIZE); i += MAX_PATH_SIZE;
+		memcpy(c.name, &data[i], 32); i += 32;
+		c.name[31] = '\0';  /* defensive null-term — matches CMD_SET_CHANNEL pattern */
+		c.last_advert_timestamp = get_le32(&data[i]); i += 4;
+		c.gps_lat = 0;
+		c.gps_lon = 0;
+		c.lastmod = (uint32_t)getRTCClock()->getCurrentTime();
+		if (len >= i + 8) {
+			c.gps_lat = (int32_t)get_le32(&data[i]); i += 4;
+			c.gps_lon = (int32_t)get_le32(&data[i]); i += 4;
+			if (len >= i + 4) {
+				c.lastmod = get_le32(&data[i]);
+			}
+		}
+		c.sync_since = 0;
+		c.shared_secret_valid = false;
+
+		if (existing) {
+			// Update existing
+			*existing = c;
+			markContactsDirty();
+			writeOKFrame();
+		} else if (addContact(c)) {
+			markContactsDirty();
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdRemoveContact(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (c && removeContact(*c)) {
+			_store->deleteBlobByKey(&data[1], PUB_KEY_SIZE);
+			markContactsDirty();
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdShareContact(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (c && shareContactZeroHop(*c)) {
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetContactByKey(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (c) {
+			uint8_t rsp[CONTACT_FRAME_SIZE];
+			size_t n = serializeContact(rsp, *c, PACKET_CONTACT);
+			writeFrame(rsp, n);
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdExportContact(const uint8_t *data, size_t len)
+{
+	if (len < 1 + PUB_KEY_SIZE) {
+		// Export SELF - create self advert packet
+		mesh::Packet *pkt;
+		if (prefs.advert_loc_policy == 0) {  // ADVERT_LOC_NONE
+			pkt = createSelfAdvert(prefs.node_name);
+		} else {
+			pkt = createSelfAdvert(prefs.node_name, prefs.node_lat, prefs.node_lon);
+		}
+		if (pkt) {
+			pkt->header |= ROUTE_TYPE_FLOOD;
+			uint8_t rsp[128];
+			rsp[0] = PACKET_EXPORT_CONTACT;
+			uint8_t out_len = pkt->writeTo(&rsp[1]);
+			releasePacket(pkt);
+			writeFrame(rsp, out_len + 1);
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		// Export specific contact by pubkey
+		ContactInfo *c = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (c) {
+			uint8_t rsp[128];
+			rsp[0] = PACKET_EXPORT_CONTACT;
+			uint8_t export_len = exportContact(*c, &rsp[1]);
+			if (export_len > 0) {
+				writeFrame(rsp, export_len + 1);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdImportContact(const uint8_t *data, size_t len)
+{
+	// Arduino: len > 2 + 32 + 64 = 98 bytes (header + pubkey + signature)
+	if (len > 2 + 32 + 64) {
+		if (importContact(&data[1], len - 1)) {
+			markContactsDirty();
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);  // Match Arduino error code
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSyncNextMessage(const uint8_t *data, size_t len)
+{
+	LOG_DBG("CMD_SYNC_NEXT_MESSAGE: queue_count=%d pending=%d",
+		_offline_queue_count, _sync_pending);
+
+	/* The app is draining — hold the watchdog off for another window. */
+	_last_sync_req_ms = _ms->getMillis();
+	LOG_INF("msgwait: app asked for next msg, %d queued",
+		_offline_queue_count);
+
+	/* Phone asking for next = implicit ACK for the previously-peeked message */
+	if (_sync_pending) {
+		confirmOfflineMessage();
+		_sync_pending = false;
+#if ZEPHCORE_HAS_UI_TASK
+		ui_set_msg_count((uint16_t)_offline_queue_count);
+#endif
+	}
+
+	uint8_t buf[MAX_FRAME_SIZE];
+	size_t msg_len;
+	if (peekOfflineMessage(buf, msg_len)) {
+		LOG_DBG("CMD_SYNC_NEXT_MESSAGE: peeked msg_len=%u type=0x%02x", (unsigned)msg_len, buf[0]);
+		if (writeFrame(buf, msg_len)) {
+			_sync_pending = true;  /* confirmed on next request or lost on disconnect */
+		}
+	} else {
+		LOG_DBG("CMD_SYNC_NEXT_MESSAGE: queue empty, sending NO_MORE_MSGS");
+		uint8_t rsp[] = { PACKET_NO_MORE_MSGS };
+		if (!writeFrame(rsp, sizeof(rsp))) {
+			return true;
+		}
+
+		/* Initial sync is done — safe to apply deferred
+		 * connection parameters now without disrupting
+		 * channel/contact/message throughput. */
+		zephcore_ble_conn_params_ready();
+
+		/* Full initial sync (contacts + messages) complete: stop
+		 * suppressing v-contact notice prompts. Any notice queued during
+		 * the window was just drained by this message-sync; if one raced in
+		 * after the last peek, prompt for it now. */
+		_vcontact_hold_msgwait = false;
+		_vcontact_hold_expiry = 0;
+		if (_offline_queue_count > 0) {
+			pushMsgWaiting();
+		}
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetRadioParams(const uint8_t *data, size_t len)
+{
+	if (len >= 11) {
+		uint32_t freq = get_le32(&data[1]);
+		uint32_t bw = get_le32(&data[5]);
+		uint8_t sf = data[9];
+		uint8_t cr = data[10];
+		uint8_t repeat = 0;
+		if (len > 11) {
+			repeat = data[11];  // v9+: client repeat flag
+		}
+		// If repeat requested, validate frequency against allowed bands
+		if (repeat && !isValidClientRepeatFreq(freq)) {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		/* freq arrives in kHz, bw in Hz. Same limits as the USB
+		 * CLI and the prefs loader — see NodePrefs.h. Accepting
+		 * here what loadPrefs() later rejects is how a 2.4 GHz
+		 * setting used to vanish on reboot. */
+		} else if (freq >= (uint32_t)(ZC_RADIO_FREQ_MIN_MHZ * 1000.0f) &&
+		    freq <= (uint32_t)(ZC_RADIO_FREQ_MAX_MHZ * 1000.0f) &&
+		    bw >= (uint32_t)(ZC_RADIO_BW_MIN_KHZ * 1000.0f) &&
+		    bw <= (uint32_t)(ZC_RADIO_BW_MAX_KHZ * 1000.0f) &&
+		    sf >= 5 && sf <= 12 &&
+		    cr >= 5 && cr <= 8) {
+			/* Coding rate is deliberately not in this test:
+			 * it changes airtime, not the channel or the
+			 * per-SF/per-bandwidth detPeak base, so it does
+			 * not invalidate the learned CAD offset. */
+			bool preset_changed =
+				prefs.freq != (float)freq / 1000.0f ||
+				prefs.bw != (float)bw / 1000.0f ||
+				prefs.sf != sf;
+			prefs.freq = (float)freq / 1000.0f;
+			prefs.bw = (float)bw / 1000.0f;
+			prefs.sf = sf;
+			prefs.cr = cr;
+			prefs.client_repeat = repeat;
+			_store->savePrefs(prefs);
+			if (_radio_reconfig_cb) _radio_reconfig_cb(preset_changed);
+			LOG_INF("SET_RADIO_PARAMS: client_repeat=%d", repeat);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetRadioTxPower(const uint8_t *data, size_t len)
+{
+	if (len >= 2) {
+		int8_t power = (int8_t)data[1];
+		if (power >= -9 && power <= MAX_LORA_TX_POWER) {
+			prefs.tx_power_dbm = power;
+			_store->savePrefs(prefs);
+			if (_radio_reconfig_cb) _radio_reconfig_cb(false);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetTuningParams(const uint8_t *data, size_t len)
+{
+	if (len < 9) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
+	prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
+	_store->savePrefs(prefs);
+	writeOKFrame();
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetTuningParams(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[9];
+	rsp[0] = PACKET_TUNING_PARAMS;
+	put_le32(&rsp[1], (uint32_t)(prefs.rx_delay_base * 1000));
+	put_le32(&rsp[5], (uint32_t)(prefs.airtime_factor * 1000));
+	writeFrame(rsp, sizeof(rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetOtherParams(const uint8_t *data, size_t len)
+{
+	if (len >= 2) {
+		prefs.manual_add_contacts = data[1];
+		if (len >= 3) {
+			// Telemetry modes: (env << 4) | (loc << 2) | base
+			prefs.telemetry_mode_base = data[2] & 0x03;
+			prefs.telemetry_mode_loc = (data[2] >> 2) & 0x03;
+			prefs.telemetry_mode_env = (data[2] >> 4) & 0x03;
+			if (len >= 4) {
+				prefs.advert_loc_policy = data[3];
+				LOG_INF("SET_OTHER_PARAMS: advert_loc_policy=%d", prefs.advert_loc_policy);
+				if (len >= 5) {
+					prefs.multi_acks = data[4];
+				}
+			}
+		}
+		_store->savePrefs(prefs);
+	}
+	writeOKFrame();
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetPathHashMode(const uint8_t *data, size_t len)
+{
+	if (len >= 3 && data[1] == 0) {
+		if (data[2] >= 3) {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		} else {
+			prefs.path_hash_mode = data[2];
+			_store->savePrefs(prefs);
+			writeOKFrame();
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdReboot(const uint8_t *data, size_t len)
+{
+	if (len >= 7 && memcmp(&data[1], "reboot", 6) == 0) {
+		LOG_INF("Reboot requested");
+		/* Flush any pending lazy writes before reboot */
+		flushDirtyContacts();
+		flushDirtyChannels();
+		writeOKFrame();
+		sys_reboot(SYS_REBOOT_COLD);
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetBattAndStorage(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[11];
+	rsp[0] = PACKET_BATTERY;
+	put_le16(&rsp[1], _batt_cb ? _batt_cb() : 0);
+	put_le32(&rsp[3], _store->getStorageUsedKb());
+	put_le32(&rsp[7], _store->getStorageTotalKb());
+	writeFrame(rsp, sizeof(rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdExportPrivateKey(const uint8_t *data, size_t len)
+{
+	// Response: [PACKET_PRIVATE_KEY=0x0E][64 bytes: 32 private + 32 public]
+	uint8_t rsp[65];
+	rsp[0] = PACKET_PRIVATE_KEY;
+	self_id.writeTo(&rsp[1], 64);
+	writeFrame(rsp, sizeof(rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdImportPrivateKey(const uint8_t *data, size_t len)
+{
+	/* Import private key: [cmd][64 bytes prv_key] */
+	if (len >= 1 + PRV_KEY_SIZE) {
+		if (!mesh::LocalIdentity::validatePrivateKey(&data[1])) {
+			writeErrFrame(ERR_ILLEGAL_ARG); /* invalid key */
+		} else {
+			mesh::LocalIdentity new_identity;
+			new_identity.readFrom(&data[1], PRV_KEY_SIZE);
+			if (_store->saveMainIdentity(new_identity)) {
+				/* The v-contact key is derived from our identity, so it
+				 * changes with the new key. Tell the connected app to drop
+				 * the old v-contact (old key), re-derive, then re-advertise
+				 * the new one — otherwise the app's cached loopback contact
+				 * points at a key we no longer recognise (messaging + its
+				 * advert-path query break until a reboot re-syncs). Order
+				 * matters: delete uses the CURRENT (old) key. */
+				bool vc_was_enabled = isVContactEnabled();
+				if (vc_was_enabled) vcontactPushDeleted();
+				self_id = new_identity;
+				deriveVContactKey();
+				/* New identity → old advert timestamp is meaningless. Clear
+				 * it so vcontactPushAdvert() re-activates cleanly: with a
+				 * valid clock it stamps + emits now; without one it defers
+				 * and vcontactClockSynced() (the lastmod==0 path) emits at the
+				 * next time-sync instead of only after a reboot. */
+				_vcontact_lastmod = 0;
+				/* Different key → different contact in the app; the old
+				 * favourite/telemetry flags don't carry over. Persist
+				 * before the push so a reboot can't resurrect them. */
+				if (prefs.v_contact_flags != 0) {
+					prefs.v_contact_flags = 0;
+					_store->savePrefs(prefs);
+				}
+				if (vc_was_enabled) vcontactPushAdvert();
+				/* Reload contacts to invalidate ECDH shared secrets */
+				resetContacts();
+				_store->loadContacts(this);
+				writeOKFrame();
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendRawData(const uint8_t *data, size_t len)
+{
+	/* Raw data packet: [cmd][path_len][path...][payload...]
+	 *
+	 * path_len is the encoded 2-bit (hash_size - 1) + 6-bit hop count, not
+	 * a byte count, so it has to be decoded rather than added to an offset.
+	 * Treating it as a length rejected every path with a hash size above 1:
+	 * hash_size 2 sets bit 6 (path_len 0x42 for two hops read as 66 bytes,
+	 * failing the length check) and hash_size 3 sets bit 7, which used to
+	 * read back as a negative int8_t. */
+	if (len >= 6) {  /* min: cmd + path_len + 4 byte payload */
+		size_t i = 1;
+		uint8_t path_len = data[i++];
+		if (mesh::Packet::isValidPathLen(path_len)) {
+			uint8_t path[MAX_PATH_SIZE];
+			/* Untrusted phone frame: bound the source at the bytes that
+			 * actually remain, so a crafted path_len cannot over-read. */
+			size_t path_bytes = mesh::Packet::writePath(path, &data[i], len - i, path_len);
+			if (path_bytes == 0 && (path_len & 63) != 0) {
+				/* Zero bytes written with a non-zero hop count (low 6
+				 * bits): the decoded path runs past the end of the frame. */
+				writeErrFrame(ERR_ILLEGAL_ARG);
+				return true;
+			}
+			i += path_bytes;
+			if (i + 4 > len) {  /* min payload 4 bytes */
+				writeErrFrame(ERR_ILLEGAL_ARG);
+			} else {
+				mesh::Packet *pkt = createRawData(&data[i], len - i);
+				if (pkt) {
+					sendDirect(pkt, path, path_len);
+					writeOKFrame();
+				} else {
+					writeErrFrame(ERR_TABLE_FULL);
+				}
+			}
+		} else {
+			/* Flood mode not supported */
+			writeErrFrame(ERR_UNSUPPORTED);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendLogin(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		size_t pw_len = len - 1 - PUB_KEY_SIZE;
+		char pw_buf[64];
+		if (pw_len >= sizeof(pw_buf)) pw_len = sizeof(pw_buf) - 1;
+		memcpy(pw_buf, &data[1 + PUB_KEY_SIZE], pw_len);
+		pw_buf[pw_len] = '\0';
+		const char *password = pw_buf;
+		if (contact) {
+			uint32_t est_timeout;
+			LOG_DBG("CMD_SEND_LOGIN: sending to contact, path_len=%d", contact->out_path_len);
+			int result = sendLogin(*contact, password, est_timeout);
+			LOG_DBG("CMD_SEND_LOGIN: sendLogin returned %d, est_timeout=%u", result, est_timeout);
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				memcpy(&_pending_login, contact->id.pub_key, 4);  // match this to onContactResponse()
+				LOG_DBG("CMD_SEND_LOGIN: _pending_login set to %08x", _pending_login);
+				sendPacketSent(result, _pending_login, est_timeout);
+			} else {
+				writeErrFrame(ERR_TABLE_FULL);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendAnonReq(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE + 1) {
+		ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (contact == nullptr) {
+			/* FIRMWARE_VER_CODE 13+: allow requests to a non-contact pubkey by
+			 * creating a transient "anon" contact (ADV_TYPE_NONE). These are never
+			 * persisted or synced to the app; re-lookup to get the stable slot. */
+			ContactInfo anon{};
+			memcpy(anon.id.pub_key, &data[1], PUB_KEY_SIZE);
+			anon.out_path_len = 0;       // zero-hop direct by default
+			anon.type = ADV_TYPE_NONE;   // transient/unknown
+			anon.lastmod = getRTCClock()->getCurrentTime();  // so slot recycling is LRU, not always slot 0
+			if (addContact(anon)) {
+				contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+			}
+		}
+		if (contact) {
+			uint32_t tag, est_timeout;
+			int result = sendAnonReq(*contact, &data[1 + PUB_KEY_SIZE], len - 1 - PUB_KEY_SIZE, tag, est_timeout);
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				_pending_req = tag;
+				sendPacketSent(result, tag, est_timeout);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendStatusReq(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (contact) {
+			uint32_t tag, est_timeout;
+			int result = sendRequest(*contact, REQ_TYPE_GET_STATUS, tag, est_timeout);
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				memcpy(&_pending_status, contact->id.pub_key, 4);  // legacy matching scheme
+				sendPacketSent(result, tag, est_timeout);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendPathDiscoveryReq(const uint8_t *data, size_t len)
+{
+	if (len >= 2 + PUB_KEY_SIZE && data[1] == 0) {
+		// Path Discovery is a special flood + Telemetry request
+		ContactInfo *contact = lookupContactByPubKey(&data[2], PUB_KEY_SIZE);
+		if (contact) {
+			uint32_t tag, est_timeout;
+			// Build telemetry request with only BASE permissions
+			uint8_t req_data[9];
+			req_data[0] = REQ_TYPE_GET_TELEMETRY_DATA;
+			req_data[1] = ~(TELEM_PERM_BASE);  // inverse permissions mask
+			memset(&req_data[2], 0, 3);  // reserved
+			getRNG()->random(&req_data[5], 4);  // random to make packet-hash unique
+
+			// Temporarily force flood
+			auto save = contact->out_path_len;
+			contact->out_path_len = OUT_PATH_UNKNOWN;
+			int result = sendRequest(*contact, req_data, sizeof(req_data), tag, est_timeout);
+			contact->out_path_len = save;
+
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				_pending_discovery = tag;
+				sendPacketSent(result, tag, est_timeout);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendTelemetryReq(const uint8_t *data, size_t len)
+{
+	if (len == 4) {
+		// Self-telemetry request: return battery, GPS, and environment data
+		// Format: Cayenne LPP: [channel][type][data...]
+		// Response: [PUSH_CODE_TELEMETRY_RESPONSE][reserved][6-byte pubkey][telemetry_data]
+		// Worst-case size tracks POWER_MAX_CHANNELS so a future bump can't
+		// silently overflow this stack buffer. With current value 4:
+		// header(8) + batt(4) + gps(11) + env(temp4+hum3+press4+lum4=15)
+		// + power(POWER_MAX_CHANNELS * 12 = 48) + 8 byte safety pad = 94.
+		uint8_t rsp[8 + 4 + 11 + 15 + (12 * POWER_MAX_CHANNELS) + 8];
+		int i = 0;
+		rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
+		rsp[i++] = 0;  // reserved
+		memcpy(&rsp[i], self_id.pub_key, 6);
+		i += 6;  // pubkey prefix
+
+		// Self-telemetry is unconditional (all permission bits set).
+		i += appendSelfTelemetry(&rsp[i], TELEM_PERM_BASE | TELEM_PERM_LOCATION | TELEM_PERM_ENVIRONMENT);
+		writeFrame(rsp, i);
+	} else if (len >= 4 + PUB_KEY_SIZE) {
+		// Contact telemetry request: [cmd][3 reserved bytes][32-byte pubkey]
+		ContactInfo *contact = lookupContactByPubKey(&data[4], PUB_KEY_SIZE);
+		if (contact) {
+			uint32_t tag, est_timeout;
+			int result = sendRequest(*contact, REQ_TYPE_GET_TELEMETRY_DATA, tag, est_timeout);
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				_pending_telemetry = tag;
+				sendPacketSent(result, tag, est_timeout);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendBinaryReq(const uint8_t *data, size_t len)
+{
+	// Format: [cmd][32-byte pubkey][req_data...]
+	if (len >= 1 + PUB_KEY_SIZE + 1) {  // Need at least cmd + pubkey + 1 byte req_data
+		ContactInfo *contact = lookupContactByPubKey(&data[1], PUB_KEY_SIZE);
+		if (contact) {
+			uint32_t tag, est_timeout;
+			// req_data starts after pubkey
+			const uint8_t *req_data = &data[1 + PUB_KEY_SIZE];
+			size_t req_len = len - (1 + PUB_KEY_SIZE);
+			int result = sendRequest(*contact, req_data, req_len, tag, est_timeout);
+			if (result != MSG_SEND_FAILED) {
+				clearPendingReqs();
+				_pending_req = tag;
+				sendPacketSent(result, tag, est_timeout);
+			} else {
+				writeErrFrame(ERR_BAD_STATE);
+			}
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdHasConnection(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		if (hasConnectionTo(&data[1])) {
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdLogout(const uint8_t *data, size_t len)
+{
+	if (len >= 1 + PUB_KEY_SIZE) {
+		stopConnection(&data[1]);
+	}
+	writeOKFrame();
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetChannel(const uint8_t *data, size_t len)
+{
+	// Format: [cmd][channel_idx]
+	// Response: [code][idx][32 name][16 secret] = 50 bytes (matches Arduino)
+	// Arduino returns channel info even if slot is empty (name[0]=='\0')
+	if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	{
+		static int64_t last_get_channel_ms;
+		int64_t now_ms = _ms->getMillis();
+		uint32_t dt_ms = last_get_channel_ms ? (uint32_t)(now_ms - last_get_channel_ms) : 0;
+		last_get_channel_ms = now_ms;
+		LOG_DBG("CMD_GET_CHANNEL idx=%u dt=%ums", data[1], dt_ms);
+		drainPendingChannelInfos();
+		if (!enqueuePendingChannelInfo(data[1])) {
+			writeErrFrame(ERR_BAD_STATE);
+			return true;
+		}
+		drainPendingChannelInfos();
+		return true;
+	}
+}
+
+bool CompanionMesh::handleCmdSetChannel(const uint8_t *data, size_t len)
+{
+	// Format: [cmd][idx][32 name][16 or 32 secret]
+	// Arduino rejects 32-byte secrets, but we accept 16-byte (50 bytes total)
+	if (len < 2 || data[1] >= MAX_GROUP_CHANNELS) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
+	if (len >= 2 + 32 + 32) {
+		// 32-byte secret not supported (matches Arduino)
+		writeErrFrame(ERR_UNSUPPORTED);
+		return true;
+	}
+	if (len >= 2 + 32 + 16) {
+		ChannelDetails ch;
+		// Copy name (null-terminate if needed)
+		memcpy(ch.name, &data[2], 32);
+		ch.name[31] = '\0';  // ensure null termination
+		// Copy 16-byte secret, zero upper 16 bytes
+		memset(ch.channel.secret, 0, sizeof(ch.channel.secret));
+		memcpy(ch.channel.secret, &data[2 + 32], 16);
+		// setChannel computes the hash based on whether upper 16 bytes are zero
+		if (setChannel(data[1], ch)) {
+			markChannelsDirty();
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);  // bad channel_idx
+		}
+		return true;
+	}
+	writeErrFrame(ERR_ILLEGAL_ARG);
+	return true;
+}
+
+bool CompanionMesh::handleCmdSignStart(const uint8_t *data, size_t len)
+{
+	// Free any previous signing state
+	if (_sign_data) {
+		delete[] _sign_data;
+		_sign_data = nullptr;
+	}
+	_sign_data_len = 0;
+	_sign_data_capacity = 0;
+	// Allocate new buffer
+	_sign_data = new uint8_t[MAX_SIGN_DATA_LEN];
+	if (_sign_data) {
+		_sign_data_capacity = MAX_SIGN_DATA_LEN;
+		// Response: [code][reserved][4-byte max_len] = 6 bytes (matches Arduino)
+		uint8_t rsp[6];
+		rsp[0] = PACKET_SIGN_START;
+		rsp[1] = 0;  // reserved
+		uint32_t max_len = MAX_SIGN_DATA_LEN;
+		put_le32(&rsp[2], max_len);
+		writeFrame(rsp, sizeof(rsp));
+	} else {
+		writeErrFrame(ERR_BAD_STATE);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSignData(const uint8_t *data, size_t len)
+{
+	if (_sign_data && len > 1) {
+		size_t chunk_len = len - 1;
+		if (_sign_data_len + chunk_len <= _sign_data_capacity) {
+			memcpy(&_sign_data[_sign_data_len], &data[1], chunk_len);
+			_sign_data_len += chunk_len;
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		writeErrFrame(ERR_BAD_STATE);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSignFinish(const uint8_t *data, size_t len)
+{
+	if (_sign_data && _sign_data_len > 0) {
+		uint8_t signature[64];
+		// Sign the data using Ed25519 via LocalIdentity method
+		self_id.sign(signature, _sign_data, _sign_data_len);
+		uint8_t rsp[1 + 64];
+		rsp[0] = PACKET_SIGNATURE;
+		memcpy(&rsp[1], signature, 64);
+		writeFrame(rsp, sizeof(rsp));
+		// Clean up
+		delete[] _sign_data;
+		_sign_data = nullptr;
+		_sign_data_len = 0;
+		_sign_data_capacity = 0;
+	} else {
+		writeErrFrame(ERR_BAD_STATE);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendTracePath(const uint8_t *data, size_t len)
+{
+	/* Trace path: [cmd][4-byte tag][4-byte auth][flags][path...] */
+	if (len > 10 && (len - 10) < MAX_PACKET_PAYLOAD - 5) {
+		uint8_t path_len = len - 10;
+		uint8_t flags = data[9];
+		uint8_t path_sz = flags & 0x03;  /* Path hash size encoding */
+		/* Validate path length is multiple of hash size */
+		if ((path_len >> path_sz) > MAX_PATH_SIZE || (path_len % (1 << path_sz)) != 0) {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		} else {
+			uint32_t tag = get_le32(&data[1]);
+			uint32_t auth_code = get_le32(&data[5]);
+			mesh::Packet *trace = createTrace(tag, auth_code, flags);
+			if (trace) {
+				sendDirect(trace, &data[10], path_len);
+
+				uint32_t airtime = _radio->getEstAirtimeFor(trace->payload_len + trace->path_len + 2);
+				uint32_t est_timeout = calcDirectTimeoutMillisFor(airtime, path_len >> path_sz);
+
+				uint8_t rsp[10];
+				rsp[0] = PACKET_SENT;
+				rsp[1] = 0;  /* Not flood */
+				put_le32(&rsp[2], tag);
+				put_le32(&rsp[6], est_timeout);
+				writeFrame(rsp, sizeof(rsp));
+			} else {
+				writeErrFrame(ERR_TABLE_FULL);
+			}
+		}
+	} else if (len >= 9) {
+		/* Legacy: zero-hop trace (backwards compat) */
+		uint32_t tag = get_le32(&data[1]);
+		uint32_t auth_code = get_le32(&data[5]);
+		mesh::Packet *trace = createTrace(tag, auth_code);
+		if (trace) {
+			sendZeroHop(trace);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_BAD_STATE);
+		}
+	} else {
+		writeOKFrame();  /* Backwards compat */
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetDevicePin(const uint8_t *data, size_t len)
+{
+	if (len >= 5) {
+		uint32_t pin;
+		memcpy(&pin, &data[1], 4);
+		if (pin == 0 || (pin >= 100000 && pin <= 999999)) {
+			prefs.ble_pin = pin;
+			_store->savePrefs(prefs);
+			if (_pin_change_cb) _pin_change_cb(pin);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetCustomVars(const uint8_t *data, size_t len)
+{
+	// Return GPS and sensor settings as comma-separated key:value pairs
+	// Format: [PACKET_CUSTOM_VARS][key1:val1,key2:val2,...]
+	uint8_t rsp[64];
+	char *dp = (char *)&rsp[1];
+	char *const rsp_end = (char *)&rsp[sizeof(rsp)];
+	rsp[0] = PACKET_CUSTOM_VARS;
+
+	// snprintf returns the would-be length, NOT bytes actually written.
+	// We must check truncation and only advance dp on real progress —
+	// otherwise dp can outrun the initialized portion of rsp and
+	// writeFrame(rsp, dp-rsp) leaks adjacent stack to the phone.
+
+	bool first = true;
+	if (gps_is_available()) {
+		size_t remaining = (size_t)(rsp_end - dp);
+		int n = snprintf(dp, remaining, "gps:%d", gps_is_enabled() ? 1 : 0);
+		if (n > 0 && (size_t)n < remaining) {
+			dp += n;
+			first = false;
+		}
+	}
+	uint32_t gps_interval = gps_get_poll_interval_sec();
+	if (gps_interval > 0) {
+		size_t remaining = (size_t)(rsp_end - dp);
+		// Reserve 1 byte for the leading ',' if needed
+		if (!first && remaining > 0) {
+			*dp++ = ',';
+			remaining--;
+		}
+		int n = snprintf(dp, remaining, "gps_interval:%u", (unsigned)gps_interval);
+		if (n > 0 && (size_t)n < remaining) {
+			dp += n;
+			first = false;
+		}
+		// If snprintf would have truncated, dp stays put — writeFrame
+		// sends only what we successfully wrote.
+	}
+	{
+		size_t remaining = (size_t)(rsp_end - dp);
+		if (!first && remaining > 0) {
+			*dp++ = ',';
+			remaining--;
+		}
+		int n = snprintf(dp, remaining, "meshtimesync:%d",
+				 prefs.meshtimesync ? 1 : 0);
+		if (n > 0 && (size_t)n < remaining) {
+			dp += n;
+		}
+	}
+	// Note: Environment sensors are auto-detected, no settings needed
+
+	writeFrame(rsp, (size_t)(dp - (char *)rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetCustomVar(const uint8_t *data, size_t len)
+{
+	// Format: [cmd][key:value]
+	if (len >= 4) {
+		char buf[64];
+		size_t copy_len = (len - 1 < sizeof(buf) - 1) ? len - 1 : sizeof(buf) - 1;
+		memcpy(buf, &data[1], copy_len);
+		buf[copy_len] = '\0';
+
+		char *sep = strchr(buf, ':');
+		if (sep) {
+			*sep = '\0';
+			char *key = buf;
+			char *val = sep + 1;
+
+			if (strcmp(key, "gps") == 0) {
+				bool enable = (val[0] == '1');
+				gps_enable(enable);
+				/* Persist GPS state across reboots */
+				prefs.gps_enabled = enable ? 1 : 0;
+				_store->savePrefs(prefs);
+				writeOKFrame();
+			} else if (strcmp(key, "gps_interval") == 0) {
+				uint32_t interval = (uint32_t)atoi(val);
+				if (interval > 0 && interval <= 86400) {
+					gps_set_poll_interval_sec(interval);
+					/* Persist GPS interval across reboots */
+					prefs.gps_interval = interval;
+					_store->savePrefs(prefs);
+					writeOKFrame();
+				} else {
+					writeErrFrame(ERR_ILLEGAL_ARG);
+				}
+			} else if (strcmp(key, "meshtimesync") == 0) {
+				prefs.meshtimesync = (val[0] == '1') ? 1 : 0;
+				_store->savePrefs(prefs);
+				writeOKFrame();
+			} else {
+				writeErrFrame(ERR_ILLEGAL_ARG);
+			}
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetAdvertPath(const uint8_t *data, size_t len)
+{
+	// Format: [cmd][reserved][7-byte pubkey prefix]
+	if (len >= 2 + 7) {
+		const AdvertPath *ap = findAdvertPath(&data[2], 7);  // pubkey at offset 2
+		if (ap) {
+			// Response: [code][4-byte timestamp][path_len][path...]
+			uint8_t rsp[6 + MAX_PATH_SIZE];
+			size_t i = 0;
+			rsp[i++] = PACKET_ADVERT_PATH;
+			put_le32(&rsp[i], ap->recv_timestamp); i += 4;
+			rsp[i++] = ap->path_len;
+			/* Trusted source: AdvertPath::path is MAX_PATH_SIZE-sized. */
+			i += mesh::Packet::writePath(&rsp[i], ap->path, MAX_PATH_SIZE, ap->path_len);
+			writeFrame(rsp, i);
+		} else {
+			writeErrFrame(ERR_NOT_FOUND);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetStats(const uint8_t *data, size_t len)
+{
+	if (len >= 2) {
+		uint8_t stats_type = data[1];
+		if (stats_type == 0) {
+			// STATS_TYPE_CORE: battery_mv(2) + uptime_secs(4) + err_flags(2) + queue_len(1)
+			uint8_t rsp[11];
+			size_t i = 0;
+			rsp[i++] = PACKET_STATS;
+			rsp[i++] = 0;  // STATS_TYPE_CORE
+			put_le16(&rsp[i], _batt_cb ? _batt_cb() : 0); i += 2;
+			put_le32(&rsp[i], (uint32_t)(_ms->getMillis() / 1000)); i += 4;  // uptime_secs
+			put_le16(&rsp[i], getErrFlags()); i += 2;
+			rsp[i++] = (uint8_t)_mgr->getOutboundCount((uint32_t)_ms->getMillis());
+			writeFrame(rsp, i);
+		} else if (stats_type == 1) {
+			// STATS_TYPE_RADIO: noise_floor(2) + last_rssi(1) + last_snr(1) + tx_air_secs(4) + rx_air_secs(4)
+			uint8_t rsp[14];
+			size_t i = 0;
+			rsp[i++] = PACKET_STATS;
+			rsp[i++] = 1;  // STATS_TYPE_RADIO
+			put_le16(&rsp[i], (int16_t)_radio->getNoiseFloor()); i += 2;
+			rsp[i++] = (int8_t)_radio->getLastRSSI();
+			rsp[i++] = (int8_t)(_radio->getLastSNR() * 4);  // scaled by 4
+			put_le32(&rsp[i], getTotalAirTime() / 1000); i += 4;  // tx_air_secs
+			put_le32(&rsp[i], getReceiveAirTime() / 1000); i += 4;  // rx_air_secs
+			writeFrame(rsp, i);
+		} else if (stats_type == 2) {
+			// STATS_TYPE_PACKETS: recv(4) + sent(4) + sent_flood(4) + sent_direct(4) + recv_flood(4) + recv_direct(4) + recv_errors(4)
+			uint8_t rsp[30];
+			size_t i = 0;
+			rsp[i++] = PACKET_STATS;
+			rsp[i++] = 2;  // STATS_TYPE_PACKETS
+			uint32_t sent_flood = getNumSentFlood();
+			uint32_t sent_direct = getNumSentDirect();
+			uint32_t recv_flood = getNumRecvFlood();
+			uint32_t recv_direct = getNumRecvDirect();
+			put_le32(&rsp[i], recv_flood + recv_direct); i += 4;  // total recv
+			put_le32(&rsp[i], sent_flood + sent_direct); i += 4;  // total sent
+			put_le32(&rsp[i], sent_flood); i += 4;
+			put_le32(&rsp[i], sent_direct); i += 4;
+			put_le32(&rsp[i], recv_flood); i += 4;
+			put_le32(&rsp[i], recv_direct); i += 4;
+			put_le32(&rsp[i], _radio->getPacketsRecvErrors()); i += 4;
+			writeFrame(rsp, i);
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdFactoryReset(const uint8_t *data, size_t len)
+{
+	// Arduino: requires "reset" magic string for safety
+	if (len >= 6 && memcmp(&data[1], "reset", 5) == 0) {
+		LOG_INF("Factory reset requested");
+		_store->factoryReset();
+		writeOKFrame();
+		// Reboot to regenerate identity
+		sys_reboot(SYS_REBOOT_COLD);
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetFloodScopeKey(const uint8_t *data, size_t len)
+{
+	/* Set send scope mode (Arduino MeshCore PR #2492, ver 12+):
+	 * [cmd][0][16-byte key] = explicit scoped override
+	 * [cmd][0]             = clear scope override (use default_scope from prefs)
+	 * [cmd][1]             = explicit unscoped (sticky flag, bypasses default_scope)
+	 */
+	if (len >= 2 && data[1] == 0) {
+		if (len >= 2 + 16) {
+			memcpy(_send_scope.key, &data[2], sizeof(_send_scope.key));
+		} else {
+			memset(_send_scope.key, 0, sizeof(_send_scope.key));
+		}
+		_send_scope_force_unscoped = false;
+		writeOKFrame();
+	} else if (len == 2 && data[1] == 1) {
+		_send_scope_force_unscoped = true;
+		memset(_send_scope.key, 0, sizeof(_send_scope.key));
+		writeOKFrame();
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetDefaultFloodScope(const uint8_t *data, size_t len)
+{
+	/* Set default flood scope: [cmd][name:31][key:16] or [cmd] alone (clear) */
+	if (len >= 1 + 31 + 16) {
+		int n = strnlen((const char *)&data[1], 31);
+		if (n > 0 && n < 31) {
+			memset(prefs.default_scope_name, 0, sizeof(prefs.default_scope_name));
+			memcpy(prefs.default_scope_name, &data[1], n);
+			memcpy(prefs.default_scope_key, &data[1 + 31], 16);
+			_store->savePrefs(prefs);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_ILLEGAL_ARG);
+		}
+	} else {
+		memset(prefs.default_scope_name, 0, sizeof(prefs.default_scope_name));
+		memset(prefs.default_scope_key, 0, sizeof(prefs.default_scope_key));
+		_store->savePrefs(prefs);
+		writeOKFrame();
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetDefaultFloodScope(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[1 + 31 + 16];
+	rsp[0] = PACKET_DEFAULT_FLOOD_SCOPE;
+	if (strlen(prefs.default_scope_name) > 0) {
+		memcpy(&rsp[1], prefs.default_scope_name, 31);
+		memcpy(&rsp[1 + 31], prefs.default_scope_key, 16);
+		writeFrame(rsp, sizeof(rsp));
+	} else {
+		writeFrame(rsp, 1);  /* no name or key means null */
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendControlData(const uint8_t *data, size_t len)
+{
+	/* Control data: [cmd][flags | 0x80][data...] */
+	if (len >= 2 && (data[1] & 0x80) != 0) {
+		mesh::Packet *pkt = createControlData(&data[1], len - 1);
+		if (pkt) {
+			sendZeroHop(pkt);
+			writeOKFrame();
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
+}
+
+bool CompanionMesh::handleCmdSetAutoaddConfig(const uint8_t *data, size_t len)
+{
+	if (len >= 2) {
+		prefs.autoadd_config = data[1];
+		if (len >= 3) {
+			prefs.autoadd_max_hops = (data[2] > 64) ? 64 : data[2];
+		}
+		LOG_INF("SET_AUTOADD_CONFIG: autoadd_config=0x%02x max_hops=%u",
+			prefs.autoadd_config, prefs.autoadd_max_hops);
+		_store->savePrefs(prefs);
+	}
+	writeOKFrame();
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetAutoaddConfig(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[3];
+	rsp[0] = PACKET_AUTOADD_CONFIG;
+	rsp[1] = prefs.autoadd_config;
+	rsp[2] = prefs.autoadd_max_hops;
+	writeFrame(rsp, sizeof(rsp));
+	return true;
+}
+
+bool CompanionMesh::handleCmdGetAllowedRepeatFreq(const uint8_t *data, size_t len)
+{
+	uint8_t rsp[1 + sizeof(repeat_freq_ranges)];
+	int i = 0;
+	rsp[i++] = PACKET_ALLOWED_REPEAT_FREQ;
+	for (size_t k = 0; k < sizeof(repeat_freq_ranges) / sizeof(repeat_freq_ranges[0]); k++) {
+		put_le32(&rsp[i], repeat_freq_ranges[k].lower_freq); i += 4;
+		put_le32(&rsp[i], repeat_freq_ranges[k].upper_freq); i += 4;
+	}
+	writeFrame(rsp, i);
+	return true;
+}
+
+bool CompanionMesh::handleCmdSendRawPacket(const uint8_t *data, size_t len)
+{
+	if (len >= 4) {
+		mesh::Packet *pkt = obtainNewPacket();
+		if (pkt) {
+			uint8_t priority = data[1];
+			if (tryParsePacket(pkt, &data[2], len - 2)) {
+				sendPacket(pkt, priority, 0);
+				writeOKFrame();
+			} else {
+				releasePacket(pkt);
+				writeErrFrame(ERR_ILLEGAL_ARG);
+			}
+		} else {
+			writeErrFrame(ERR_TABLE_FULL);
+		}
+	} else {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+	}
+	return true;
 }

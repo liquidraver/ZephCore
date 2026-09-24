@@ -1175,14 +1175,14 @@ DIO1 interrupt → Zephyr lora driver → async RX callback
           → direct: process immediately
             → Mesh::onRecvPacket() → decrypt → dispatch by type
               → BaseChatMesh::onPeerDataRecv() → onMessageRecv()
-                → CompanionMesh: writeFrame() to phone or queueOfflineMessage()
+                → CompanionMesh: writeFrame() to phone or addToOfflineQueue()
 ```
 
 ### 14.2 Sending a Text Message
 
 ```
 Phone sends CMD_SEND_TXT_MSG via BLE NUS
-  → CompanionMesh::handleProtocolFrame()
+  → CompanionMesh::handleCmdFrame() → handleCmd<Name>()
     → BaseChatMesh::sendMessage(contact, text)
       → composeMsgPacket(): ECDH secret → AES encrypt → MAC
       → if contact has path: trySendDirect()

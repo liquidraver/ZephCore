@@ -94,7 +94,7 @@ static struct k_spinlock usb_tx_lock;
 
 /* Main-thread wake for assembled binary frames (set by init).  The byte
  * assembly below runs on sysworkq, but V3-protocol parsing must happen on the
- * main thread (handleProtocolFrame mutates mesh state shared with loop()), so
+ * main thread (handleCmdFrame mutates mesh state shared with loop()), so
  * we post this event instead of running the parser here. */
 static struct k_event *s_mesh_events;
 static uint32_t s_mesh_event_ble_rx;

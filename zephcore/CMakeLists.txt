@@ -577,6 +577,7 @@ else()
     helpers/TransportKeyStore.cpp
     helpers/ui/ui_mesh_actions.cpp
     app/CompanionMesh.cpp
+    app/VContact.cpp
     # CommonCLI backs the v-contact loopback admin chat (companion_cli_exec in
     # main_companion.cpp), which is NOT gated on the wired-USB stack — so it
     # must be compiled unconditionally. Builds without CONFIG_LOG/COMPANION_USB/
