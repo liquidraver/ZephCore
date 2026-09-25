@@ -57,6 +57,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include <Serial.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
 #include <ZephyrSensorManager.h>
+#include <zephyr_poweroff.h>
 
 /* UI subsystem (display, buttons, buzzer) */
 #include "ui_task.h"
@@ -98,7 +99,7 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 /* Event bits: the shared ones are in mesh_events.h. */
 #define MESH_EVENT_INIT_ADVERT   BIT(MESH_EVENT_ROLE_BASE)      /* Deferred boot advert — send on main thread */
 #define MESH_EVENT_WAKE          BIT(MESH_EVENT_ROLE_BASE + 1)  /* Off-main state set; run loop() promptly */
-#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_MAINTENANCE | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_RTC_SAVE | MESH_EVENT_INIT_ADVERT | MESH_EVENT_WAKE)
+#define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_MAINTENANCE | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_INIT_ADVERT | MESH_EVENT_WAKE)
 
 /* Maintenance is deadline-driven, not periodic: after every pass the loop asks
  * the mesh when its soonest pending deadline is (msUntilNextMaintenance) and
@@ -116,18 +117,6 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 
 /* Event object for mesh loop */
 static struct k_event mesh_events;
-
-/* Pending epoch for a deferred zephcore_rtc_save() — gps_fix_callback runs on
- * the GNSS modem_chat worker thread, where the RTC's blocking I2C transactions
- * would stall NMEA ingest. Stash the latest epoch and let the main thread
- * perform the write; concurrent posts coalesce into one save. */
-static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
-
-static void request_rtc_save(uint32_t epoch)
-{
-	atomic_set(&pending_rtc_epoch, (atomic_val_t)epoch);
-	k_event_post(&mesh_events, MESH_EVENT_RTC_SAVE);
-}
 
 /* USB CDC state */
 static const struct device *usb_dev;
@@ -411,7 +400,8 @@ static void gps_event_callback(void)
 
 static RepeaterDataStore data_store;
 
-/* GPS fix callback - syncs RTC from GPS time.
+/* GPS fix callback (main thread, from gps_process_event()) - syncs RTC from
+ * GPS time.
  * Servers do NOT update prefs lat/lon from GPS — prefs coordinates are the
  * user's manually-set position used for adverts.  Precise GPS position is
  * served only via telemetry requests (gps_get_last_known_position). */
@@ -420,11 +410,17 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 	if (utc_time > 0) {
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
-		/* Defer the hardware-RTC write to the main thread — blocking I2C
-		 * here would stall NMEA ingest (gps_fix_callback runs in the
-		 * GNSS modem_chat worker context). */
-		request_rtc_save((uint32_t)utc_time);
+#ifdef ZEPHCORE_LORA
+		/* Arm the mesh time-sync drift envelope. */
+		if (server_role) {
+			server_role->note_gps_time_sync();
+		}
+#endif
 	}
+
+	/* The live position: `gps setloc` and `gps advert share` read it. */
+	sensors.node_lat = lat;
+	sensors.node_lon = lon;
 
 	int lat_deg = (int)lat;
 	int lon_deg = (int)lon;
@@ -432,7 +428,7 @@ static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 	int lon_frac = (int)((lon - lon_deg) * 1000000);
 	if (lat_frac < 0) lat_frac = -lat_frac;
 	if (lon_frac < 0) lon_frac = -lon_frac;
-	LOG_INF("GPS fix: lat=%d.%06d lon=%d.%06d (telemetry only)",
+	LOG_INF("GPS fix: lat=%d.%06d lon=%d.%06d",
 		lat_deg, lat_frac, lon_deg, lon_frac);
 }
 
@@ -596,19 +592,6 @@ static void server_event_loop(void)
 #endif /* ZEPHCORE_HAS_UI */
 		}
 
-		/* Off-main RTC write request (gps_fix_callback runs in modem_chat
-		 * context — see request_rtc_save()). Perform the blocking I2C
-		 * write here on the main thread instead. */
-		if (events & MESH_EVENT_RTC_SAVE) {
-			zephcore_rtc_save((uint32_t)atomic_get(&pending_rtc_epoch));
-#ifdef ZEPHCORE_LORA
-			/* GPS just set the clock — arm the mesh time-sync drift envelope. */
-			if (server_role) {
-				server_role->note_gps_time_sync();
-			}
-#endif
-		}
-
 		/* Re-arm for the soonest deadline this pass left behind.  Done for
 		 * every wake, not just maintenance ones: a CLI command, an inbound
 		 * packet or a GPS fix can all create or clear a deadline. */
@@ -678,14 +661,25 @@ int server_main(const ServerRole &role)
 	}
 
 	/* Initialize sensor manager */
-	sensor_manager_init();
+	sensors.begin();
+#ifdef ZEPHCORE_LORA
+	zephyr_board.captureBootVoltage();
+#endif
+	/* Take the shutdown marker now, so it describes this boot only. */
+	{
+		uint8_t sdr = zephcore_shutdown_reason();
+
+		if (sdr != ZC_SHUTDOWN_NONE) {
+			LOG_INF("Last shutdown: %s", zephcore_shutdown_reason_str(sdr));
+		}
+	}
 
 	/* Restore wall-clock time from a battery-backed hardware RTC if present
 	 * (shown tagged "L" until the next GPS/CLI sync; no-op if no RTC). */
 	{
 		uint32_t rtc_epoch;
 		if (zephcore_rtc_restore(&rtc_epoch)) {
-			rtc_clock.setCurrentTime(rtc_epoch);
+			rtc_clock.seedCurrentTime(rtc_epoch);
 		}
 	}
 
@@ -752,6 +746,9 @@ int server_main(const ServerRole &role)
 	/* LED gate and GPS duty from prefs.  After loadPrefs() and ui_init(),
 	 * before begin() -- see boot_prefs.h. */
 	apply_boot_prefs(role.prefs, true);
+	/* Until the first fix, the position is the configured one. */
+	sensors.node_lat = role.prefs->node_lat;
+	sensors.node_lon = role.prefs->node_lon;
 
 	/* Start mesh with data store - loads ACL, regions */
 	role.begin(&data_store);

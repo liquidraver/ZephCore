@@ -369,6 +369,7 @@ int main(void)
 	 * to change it, but a unit reflashed from a repeater build keeps the setting
 	 * — and it still drives lora-tx-led on TX-capable boards. */
 	apply_boot_prefs(prefs, false);
+	gps_park();  /* unused here; see ZephyrGPSManager.h */
 
 	/* Initialize USB serial for CLI */
 #if ZEPHCORE_USB_STACK && DT_HAS_COMPAT_STATUS_OKAY(zephyr_cdc_acm_uart)

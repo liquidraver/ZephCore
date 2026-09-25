@@ -3,7 +3,9 @@
  */
 
 #include "ZephyrBoard.h"
+#include "zephyr_poweroff.h"
 #include "battery_curve.h"
+#include "boot_info.h"
 #include "led_gate.h"
 #include <NodePrefs.h>   /* LEDS_RADIO_* mode values */
 #include <zephyr/kernel.h>
@@ -216,16 +218,39 @@ static int tx_led_init(void)
 SYS_INIT(tx_led_init, APPLICATION, 90);
 #endif
 
+/* How long one battery reading serves every caller. The voltage moves over
+ * minutes; the burst it replaces costs 10 ms of divider settling plus 8 ADC
+ * samples on the caller's thread each time. */
+#define BATT_CACHE_MS 10000
+
+/* Callers are on the main thread and the UI thread. */
+static K_MUTEX_DEFINE(s_batt_lock);
+
 namespace mesh {
 
 uint16_t ZephyrBoard::getBattMilliVolts()
 {
+	k_mutex_lock(&s_batt_lock, K_FOREVER);
+	int64_t now = k_uptime_get();
+
+	if (_batt_read_ms < 0 || now - _batt_read_ms >= BATT_CACHE_MS) {
+		_batt_mv = readBattMilliVolts();
+		_batt_read_ms = now;
+	}
+	uint16_t mv = _batt_mv;
+
+	k_mutex_unlock(&s_batt_lock);
+	return mv;
+}
+
+uint16_t ZephyrBoard::readBattMilliVolts()
+{
 #if HAS_FUEL_GAUGE
 	if (device_is_ready(fuel_gauge_dev)) {
 		union fuel_gauge_prop_val val;
-		int ret = fuel_gauge_get_prop(fuel_gauge_dev, FUEL_GAUGE_VOLTAGE, &val);
+		int ret = fuel_gauge_get_prop(fuel_gauge_dev, FUEL_GAUGE_VOLTAGE_UV, &val);
 		if (ret == 0) {
-			return (uint16_t)(val.voltage / 1000);  /* µV -> mV */
+			return (uint16_t)(val.voltage_uv / 1000);  /* µV -> mV */
 		}
 		LOG_WRN("Fuel gauge voltage read failed: %d", ret);
 	}
@@ -301,9 +326,9 @@ uint8_t ZephyrBoard::getBattPercent()
 	if (device_is_ready(fuel_gauge_dev)) {
 		union fuel_gauge_prop_val val;
 		int ret = fuel_gauge_get_prop(fuel_gauge_dev,
-					      FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE, &val);
+					      FUEL_GAUGE_RELATIVE_STATE_OF_CHARGE_PCT, &val);
 		if (ret == 0) {
-			return val.relative_state_of_charge;
+			return val.relative_state_of_charge_pct;
 		}
 		LOG_WRN("Fuel gauge SoC read failed: %d", ret);
 	}
@@ -317,6 +342,7 @@ bool ZephyrBoard::setAdcMultiplier(float multiplier)
 #if DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \
 	DT_NODE_HAS_PROP(DT_PATH(zephyr_user), io_channels)
 	_adc_multiplier_override = multiplier;
+	_batt_read_ms = -1;  /* the next reading uses it */
 	return true;
 #else
 	(void)multiplier;
@@ -433,6 +459,13 @@ void ZephyrBoard::reboot()
 	sys_reboot(SYS_REBOOT_COLD);
 }
 
+void ZephyrBoard::powerOff()
+{
+	zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
+	k_msleep(50);  /* Let UART/USB flush */
+	zephcore_power_off();
+}
+
 void ZephyrBoard::rebootToBootloader()
 {
 #ifdef NRF52_GPREGRET
@@ -545,6 +578,50 @@ void ZephyrBoard::clearBootloaderMagic()
 uint8_t ZephyrBoard::getStartupReason() const
 {
 	return BD_STARTUP_NORMAL;
+}
+
+uint32_t ZephyrBoard::getResetReason() const
+{
+	uint32_t cause = 0;
+
+	return zephcore_boot_reset_cause(&cause) ? cause : 0;
+}
+
+/* This boot's reset cause as hwinfo labels ("PIN", "SOFTWARE", ...) where
+ * upstream has one phrase, plus the fatal error when the last run crashed.
+ * reason is always getResetReason() (all callers pass it), so the labels come
+ * straight from boot_info. */
+const char *ZephyrBoard::getResetReasonString(uint32_t reason)
+{
+	static char buf[112];
+
+	ARG_UNUSED(reason);
+	int n = zephcore_boot_reset_cause_str(buf, sizeof(buf), false);
+
+	if (n > 0) {
+		memmove(buf, buf + 1, (size_t)n);  /* drop the leading space */
+		n--;
+	} else {
+		n = snprintf(buf, sizeof(buf), "Unknown");
+	}
+
+	struct zephcore_crash crash;
+
+	if (zephcore_boot_crash(&crash) && (size_t)n < sizeof(buf)) {
+		snprintf(buf + n, sizeof(buf) - (size_t)n, " (crash %u in %s, pc 0x%08x)",
+			 crash.reason, crash.thread, crash.pc);
+	}
+	return buf;
+}
+
+uint8_t ZephyrBoard::getShutdownReason() const
+{
+	return zephcore_shutdown_reason();
+}
+
+const char *ZephyrBoard::getShutdownReasonString(uint8_t reason)
+{
+	return zephcore_shutdown_reason_str(reason);
 }
 
 bool ZephyrBoard::isExternalPowered()

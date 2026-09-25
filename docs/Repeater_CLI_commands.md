@@ -27,10 +27,11 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 | `ver` | Firmware version and build date |
 | `board` | Board manufacturer name |
 | `reboot` | Reboot immediately |
+| `poweroff` / `shutdown` | Power the node off, as upstream: GPS, sensor and buzzer rails off, LoRa held in reset, then System OFF (the power latch released first on soft-power boards). Wake with the user button (nRF) or a power cycle — a node without a reachable button stays off until someone gets to it, so think twice before sending it over remote admin. The shutdown reason `User Request` is recorded for `get pwrmgt.bootreason`. Replies `OK - powering off`; deferred like `reboot` |
 | `start dfu` | nRF52: reboot into the UF2 bootloader for drag-and-drop update. ESP32-S3: reboot into the ROM download mode on USB-Serial-JTAG (`303a:1001`), so ordinary `esptool write-flash` and browser flashers can reach the chip. Every other chip replies with an error and does **not** reboot — ESP32-C3/C6 and classic ESP32 never lose the port to USB OTG so esptool resets them itself, and nRF54L15/MG24/STM32WL have no USB device peripheral and are flashed over SWD |
 | `start ota` | ESP32: start WiFi AP + HTTP OTA server. nRF52: reboot into BLE OTA DFU mode |
 | `stop ota` | Stop WiFi OTA server (ESP32 only) |
-| `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot |
+| `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot. On a board with a hardware RTC the reference time is written to the chip too, as upstream, so the reset survives the reboot |
 | `powersaving` | Not implemented |
 
 ---
@@ -42,6 +43,8 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 | `clock` | Display current UTC time |
 | `clock sync` | Sync clock from the sender's timestamp (only advances, cannot go backwards). Arms the 7-day mesh-time-sync suppression window. |
 | `time <unix_timestamp>` | Set RTC to a specific Unix timestamp (cannot go backwards). Arms the 7-day mesh-time-sync suppression window. |
+
+Every clock set (these commands, GPS, the app, mesh time sync, SNTP) is also written to the board's hardware RTC when it has one, so the time survives a power-off.
 
 ---
 
@@ -145,10 +148,12 @@ Regions control which flood packets the repeater forwards. The region tree is hi
 
 | Command | Description |
 |---------|-------------|
-| `gps` | Show GPS status (`on` or `off`) |
+| `gps` | GPS status in upstream's form: `on, active\|standby, fix\|no fix, N sats`, `off`, or `Can't find GPS`. `standby` (upstream: `deactivated`) means on but asleep between duty-cycle fixes |
+| `get gps` | The detail: `> on state=<off\|standby\|acquiring> sats=N fix=Ns ago lat= lon=`, or `no fix next=Ns` (seconds to the next wake) |
+| `gps sync` | Take a fresh fix now (wake the GPS or extend its window); the fix sets the clock. `gps is off` / `gps provider not found` otherwise |
 | `gps on` | Enable GPS module |
-| `gps off` | Disable GPS module |
-| `gps setloc` | Update stored latitude/longitude from current GPS fix |
+| `gps off` | Disable GPS module. Persisted: a repeater or room server with GPS off stays off across reboots. Boards whose GPS has no power line (RAK4631, RAK3401 1W, Station G2) put the module to sleep over UART |
+| `gps setloc` | Update stored latitude/longitude from the last GPS fix (unchanged if there has been none since boot) |
 | `gps advert` | Show current location advertising policy |
 | `gps advert none` | Do not include location in advertisements |
 | `gps advert share` | Include live GPS location in advertisements |
@@ -197,6 +202,8 @@ Caveats: the `sys=` tally needs `CONFIG_ZEPHCORE_GPS_SAT_DIAG` (default on for r
 | `sensor list [<start_idx>]` | List custom sensor settings (paginated at 134 chars) |
 | `sensor get <key>` | Get a custom sensor setting value by key |
 | `sensor set <key> <value>` | Set a custom sensor setting value |
+
+As upstream, the one setting is `gps` (`0`/`1`), listed only on a board with a GPS; `sensor set gps_interval <sec>` also works and sets the duty interval. Neither is saved — `gps on|off` and `set gps duty` are.
 
 ---
 
@@ -305,6 +312,10 @@ Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: tr
 | `get extra.sf` | LR2021 side detectors: the extra spreading factors currently received alongside `sf`, comma-separated (bare, no `> ` prefix), or `No extra SF configured`. Reflects the saved prefs, not what the chip accepted — if the set became invalid after an `sf`/`bw` change it is reported here but was refused at boot (a `WRN` line says so). |
 | `get adc.multiplier` | Battery voltage ADC calibration multiplier |
 | `get bootloader.ver` | Bootloader version string |
+| `get pwrmgt.support` | `> supported` on nRF52 (VBUS detection, boot voltage), else `> unsupported` — upstream's reply |
+| `get pwrmgt.source` | nRF52: `> external` (VBUS present) or `> battery`; elsewhere `ERROR: Power management not supported` |
+| `get pwrmgt.bootreason` | `> Reset: <cause>; Shutdown: <reason>`. The cause is this boot's hardware reset cause as labels (`PIN`, `SOFTWARE`, `BROWNOUT`, `POR`, `WATCHDOG`, `LOWPOWER` for a wake from System OFF, ...), followed by `(crash <K_ERR> in <thread>, pc 0x...)` when the previous run ended in a fatal error and rebooted — resolve the pc with `addr2line` against the same build. The shutdown reason is `User Request`, `Low Voltage` or `None` |
+| `get pwrmgt.bootmv` | nRF52: battery voltage sampled at boot, `> <mV> mV` |
 | `get public.key` | Node's public key as hex. **Not** USB-only — it is answerable over remote admin, matching Arduino MeshCore. A public key is broadcast in every advert, so there is nothing to gate. |
 | `get prv.key` | *(USB only)* Node's private key as hex — the 128-char expanded form, the same one `set prv.key` takes |
 
@@ -416,4 +427,4 @@ four radio parameters together, since they are one interop-critical set.
 - **USB-only commands** — `get acl`, `get prv.key`, `set freq`, `log` (dump), `stats-packets`, `stats-radio`, `stats-core`, `erase` — are blocked when the command arrives over the mesh (remote admin). These are the only ones gated on `sender_timestamp == 0`; `get public.key` and `set prv.key` are **not** among them.
 - **Adaptive contention window** — `txdelay`, `rxdelay`, and `direct.txdelay` are accepted and stored for Arduino prefs compatibility but have no effect. Use `get txdelay` to inspect the current adaptive state and `set backoff.multiplier` to tune reactive backoff.
 - **Region load mode** — after `region load`, every line received is parsed as a region entry until a blank line is sent. The loaded map is only committed to the live region tree at that point; use `region save` to persist it. Region rows must be indented by at least one space, so an **unindented line that starts with a name character aborts the mode and is executed as a normal command** — the escape hatch if a `region load` is started by accident or a client dies mid-transfer. An abort discards the partial map, leaving the live region tree untouched. The exported wildcard header line `*` stays unindented and is ignored as before, so pasting the output of `region` still loads cleanly.
-- **Reboot delay** — `start dfu`, `start ota` (nRF52 BLE-DFU path only), `reboot`, `clkreboot` and `erase` defer the reset by **2 seconds** so the reply can be transmitted over LoRa first. On a companion the handler then keeps deferring in 20 ms steps until the BLE/USB transport has drained, up to a further 3 s grace. On ESP32 `start ota` starts a WiFi AP + HTTP server and does **not** reboot.
+- **Reboot delay** — `start dfu`, `start ota` (nRF52 BLE-DFU path only), `reboot`, `poweroff`, `clkreboot` and `erase` defer the reset by **2 seconds** so the reply can be transmitted over LoRa first. On a companion the handler then keeps deferring in 20 ms steps until the BLE/USB transport has drained, up to a further 3 s grace. On ESP32 `start ota` starts a WiFi AP + HTTP server and does **not** reboot.

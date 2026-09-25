@@ -155,6 +155,9 @@ bool RepeaterDataStore::loadLegacyPrefs(const char* path, NodePrefs& prefs) {
 	if (prefs.gps_interval == CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC) {
 		prefs.gps_interval = CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC;
 	}
+	/* Likewise gps_enabled: that firmware ran the GPS whatever it said. */
+	prefs.gps_enabled = 1;
+	prefs.gps_enabled_set = 1;
 	return true;
 }
 

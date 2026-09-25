@@ -382,38 +382,6 @@ bool ZephyrDataStore::saveMainIdentity(const mesh::LocalIdentity &identity)
 	return zephcore_identity_save(MAIN_ID_FILE, identity);
 }
 
-/* ── Shutdown-reason breadcrumb ────────────────────────────────────── */
-
-void ZephyrDataStore::saveShutdownReason(uint8_t code)
-{
-	/* Best-effort: called at a software power-off, possibly at low battery. */
-	(void)zephcore_fs_atomic_replace(SHUTDOWN_FILE, &code, 1, "shutdown marker");
-}
-
-uint8_t ZephyrDataStore::takeShutdownReason()
-{
-	uint8_t code = 0;
-	size_t len = 0;
-
-	/* No marker is the NORMAL case — it exists only after a software
-	 * power-off.  Probe before opening: fs_open() on a missing path is
-	 * logged at ERR level by Zephyr's FS layer, so an unguarded read here
-	 * put a second <err> line on every clean boot. */
-	struct fs_dirent marker;
-
-	if (fs_stat(SHUTDOWN_FILE, &marker) != 0) {
-		return 0;
-	}
-
-	if (zephcore_fs_read_file(SHUTDOWN_FILE, &code, sizeof(code), &len) && len >= 1) {
-		zephcore_fs_remove(SHUTDOWN_FILE);
-		return code;
-	}
-	/* Stray/empty file — clear it so it can't linger. */
-	zephcore_fs_remove(SHUTDOWN_FILE);
-	return 0;
-}
-
 /* ── Preferences ───────────────────────────────────────────────────── */
 
 void ZephyrDataStore::loadPrefs(NodePrefs &prefs)

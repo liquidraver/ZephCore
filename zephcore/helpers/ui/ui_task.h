@@ -217,17 +217,6 @@ void ui_set_battery_provider(uint16_t (*provider)(void));
 void ui_refresh_battery(void);
 
 /**
- * Prepare the device for sys_poweroff(): stop heartbeat LED, blank the
- * display, power off GPS + sensor regulators, hold LoRa in HW reset,
- * configure SENSE on sw0 (nRF only) for button wakeup.
- *
- * Caller is responsible for any shutdown chime BEFORE this call and the
- * final sys_poweroff() AFTER. Both UI variants share this so the System
- * OFF state is consistent regardless of which UI design is compiled in.
- */
-void ui_prepare_for_system_off(void);
-
-/**
  * Register a power-source provider used by ui_auto_shutdown_check().
  * provider() must return true when the device is externally powered
  * (USB/charger present), false on battery. NULL = always treat as battery.
@@ -271,7 +260,7 @@ void ui_set_shutdown_hook(ui_shutdown_fn fn);
  * CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS is 0 this is a no-op. Otherwise,
  * if the battery is below the threshold AND not externally powered, it shows
  * a brief warning (3 s on OLED, instant-persist on e-paper) and powers off
- * via ui_prepare_for_system_off() + sys_poweroff().
+ * via zephcore_power_off().
  */
 void ui_auto_shutdown_check(void);
 

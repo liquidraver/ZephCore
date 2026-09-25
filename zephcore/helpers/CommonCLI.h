@@ -11,6 +11,7 @@
 #include <helpers/IdentityStore.h>
 #include <helpers/ClientACL.h>
 #include <helpers/RegionMap.h>
+#include <helpers/SensorManager.h>
 #include "NodePrefs.h"
 
 class MeshTimeSync;
@@ -27,6 +28,7 @@ class MeshTimeSync;
 #define REBOOT_NORMAL     1
 #define REBOOT_DFU        2
 #define REBOOT_OTA        3
+#define REBOOT_POWEROFF   4
 
 class CommonCLICallbacks {
 public:
@@ -97,24 +99,14 @@ public:
 	// Mesh time sync (all roles wire one; nullptr = not compiled/available)
 	virtual MeshTimeSync* getMeshTimeSync() { return nullptr; }
 
-	// Sensor manager interface (for GPS)
-	virtual double getNodeLat() const { return 0.0; }
-	virtual double getNodeLon() const { return 0.0; }
-	virtual bool setGpsEnabled(bool enabled) { return false; }
-	virtual bool isGpsEnabled() const { return false; }
-	virtual void formatGpsStatsReply(char* reply) { strcpy(reply, "off"); }
 	/* "set gps duty default"; the server roles override it. */
 	virtual uint32_t getDefaultGpsIntervalSec() const { return CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC; }
-	virtual int getNumSensorSettings() const { return 0; }
-	virtual const char* getSensorSettingName(int idx) const { return nullptr; }
-	virtual const char* getSensorSettingValue(int idx) const { return nullptr; }
-	virtual const char* getSensorSettingByKey(const char* key) const { return nullptr; }
-	virtual bool setSensorSettingValue(const char* key, const char* value) { return false; }
 };
 
 class CommonCLI {
 	mesh::MainBoard* _board;
 	mesh::RTCClock* _rtc;
+	SensorManager* _sensors;
 	RegionMap* _region_map;  /* nullptr on the companion: no region CLI */
 	ClientACL* _acl;         /* nullptr on the companion (it has no clients) */
 	NodePrefs* _prefs;
@@ -148,9 +140,10 @@ class CommonCLI {
 	void handleRegionCmdCopy(uint32_t sender_timestamp, const char* command, char* reply);
 
 public:
-	CommonCLI(mesh::MainBoard& board, mesh::RTCClock& rtc, RegionMap* region_map, ClientACL* acl,
-		  NodePrefs* prefs, CommonCLICallbacks* callbacks)
-		: _board(&board), _rtc(&rtc), _region_map(region_map), _acl(acl), _prefs(prefs), _callbacks(callbacks),
+	CommonCLI(mesh::MainBoard& board, mesh::RTCClock& rtc, SensorManager& sensors,
+		  RegionMap* region_map, ClientACL* acl, NodePrefs* prefs, CommonCLICallbacks* callbacks)
+		: _board(&board), _rtc(&rtc), _sensors(&sensors), _region_map(region_map), _acl(acl),
+		  _prefs(prefs), _callbacks(callbacks),
 		  _pending_reboot(REBOOT_NONE), _reboot_deadline_ms(0), _reply_hdr_used(0)
 	{
 		k_work_init_delayable(&_reboot_work, rebootWorkHandler);

@@ -44,6 +44,14 @@ config MAIN_STACK_SIZE
 	default 6144 if ZEPHCORE_ROLE_COMPANION
 	default 8192
 
+# The air530z driver's dynamic model (patch 0005) follows ours, so one knob
+# sets it for every role, room servers included. Ahead of Kconfig.zephyr so
+# it beats the driver's own default.
+config GNSS_LUATOS_AIR530Z_NAV_MODE
+	int
+	default ZEPHCORE_GPS_NAV_MODE
+	depends on GNSS_LUATOS_AIR530Z
+
 source "$(ZEPHYR_BASE)/Kconfig.zephyr"
 
 # DT-driven PSRAM auto-enable for ESP32 boards (see Kconfig.psram).
@@ -984,8 +992,8 @@ config ZEPHCORE_GPS_NAV_MODE
 	  previously lived in another device can arrive stuck in an airborne
 	  model that quietly degrades fixes on a fixed site.
 
-	  Boards that always carry a CASIC part use the air530z driver instead
-	  — see CONFIG_GNSS_LUATOS_AIR530Z_NAV_MODE for those.
+	  Boards that always carry a CASIC part use the air530z driver, whose
+	  CONFIG_GNSS_LUATOS_AIR530Z_NAV_MODE follows this value.
 
 config ZEPHCORE_GPS_SAT_DIAG
 	bool "GPS per-constellation satellite diagnostics"

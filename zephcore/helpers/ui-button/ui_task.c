@@ -55,18 +55,12 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <string.h>
 
-#ifdef CONFIG_POWEROFF
-#include <zephyr/sys/poweroff.h>
-#endif
-
-#if defined(CONFIG_SOC_FAMILY_NORDIC_NRF)
-#include <hal/nrf_gpio.h>
-#endif
+#include <zephyr_poweroff.h>
 
 #include <zephyr/sys/reboot.h>
 
-/* GPS control (extern "C" in ZephyrSensorManager.h) */
-#include <ZephyrSensorManager.h>
+/* GPS control */
+#include <ZephyrGPSManager.h>
 
 /* Mesh action wrappers (deferred to mesh event loop thread) */
 #include "ui_mesh_actions.h"
@@ -535,14 +529,10 @@ static void action_deep_sleep(void)
 	}
 #endif
 
-	/* Shared peripheral teardown + SENSE config for sw0 wake.
-	 * Single source of truth in helpers/ui/ui_common.c so the joystick
-	 * UI variant ends up in the same low-power state. */
-	ui_prepare_for_system_off();
-
-	LOG_INF("deep sleep: entering System OFF");
-	sys_poweroff();
-	CODE_UNREACHABLE;
+	/* The one power-off path (adapters/board/zephyr_poweroff.c), shared
+	 * with the joystick UI and the CLI. */
+	zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
+	zephcore_power_off();
 #else
 	LOG_WRN("deep sleep: CONFIG_POWEROFF not enabled");
 #endif

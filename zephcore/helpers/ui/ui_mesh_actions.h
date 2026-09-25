@@ -58,7 +58,6 @@ void mesh_ble_set_enabled(bool enable);
 void mesh_set_buzzer_mode(uint8_t mode);
 void mesh_set_offgrid_mode(bool enable);
 void mesh_set_leds_disabled(bool disabled);
-void mesh_disable_power_regulators(void);
 void mesh_reboot_to_ota_dfu(void);
 void mesh_save_brightness(uint8_t brightness);
 void mesh_save_and_restart(void);

@@ -15,7 +15,6 @@
 #include <helpers/buzzer_gate.h>
 #include <zephyr/device.h>
 #include <zephyr/devicetree.h>
-#include <zephyr/drivers/regulator.h>
 #include <zephyr/sys/reboot.h>
 
 #include <zephyr/logging/log.h>
@@ -108,10 +107,8 @@ extern "C" void mesh_send_zerohop_advert(void)
 
 extern "C" void mesh_gps_set_enabled(bool enable)
 {
-	/* Toggle GPS hardware immediately (lightweight, no flash) */
-	gps_enable(enable);
-
-	/* Defer the flash write (savePrefs) to mesh thread */
+	/* Applied on the mesh thread with the prefs write: the GPS state
+	 * machine runs on the main thread only (ZephyrGPSManager.h). */
 	atomic_set(&pending_gps_enabled, enable ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_GPS_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -177,10 +174,7 @@ extern "C" void mesh_save_path_hash_mode(uint8_t mode)
 
 extern "C" void mesh_save_gps_duty_sec(uint32_t sec)
 {
-	/* Apply immediately (lightweight, no flash) — same split as mesh_gps_set_enabled. */
-	gps_set_poll_interval_sec(sec);
-
-	/* Defer the flash write (savePrefs) to mesh thread */
+	/* Applied on the mesh thread, as mesh_gps_set_enabled. */
 	atomic_set(&pending_gps_duty_sec, (atomic_val_t)sec);
 	atomic_or(&pending_ui_actions, UI_ACTION_GPS_DUTY_SAVE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -208,27 +202,6 @@ extern "C" void mesh_set_leds_disabled(bool disabled)
 	atomic_set(&pending_leds_disabled, disabled ? 1 : 0);
 	atomic_or(&pending_ui_actions, UI_ACTION_LEDS_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
-}
-
-/* Disable power regulators for System OFF.
- * Only touches sensor power and buzzer power-gate regulators.
- * GPS is handled separately by gps_power_off_for_shutdown().
- * DO NOT touch BLE here — that corrupts controller state across reset. */
-extern "C" void mesh_disable_power_regulators(void)
-{
-#if DT_NODE_EXISTS(DT_NODELABEL(sensor_power))
-	const struct device *sensor_reg = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(sensor_power));
-	if (sensor_reg && device_is_ready(sensor_reg)) {
-		regulator_disable(sensor_reg);
-	}
-#endif
-
-#if DT_NODE_EXISTS(DT_NODELABEL(buzzer_enable))
-	const struct device *buzz_reg = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(buzzer_enable));
-	if (buzz_reg && device_is_ready(buzz_reg)) {
-		regulator_disable(buzz_reg);
-	}
-#endif
 }
 
 extern "C" void mesh_reboot_to_ota_dfu(void)
@@ -264,6 +237,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_GPS_TOGGLE) {
 		bool gps_en = atomic_get(&pending_gps_enabled) != 0;
+		gps_enable(gps_en);
 		s_mesh->prefs.gps_enabled = gps_en ? 1 : 0;
 		LOG_INF("GPS %s (button)", gps_en ? "on" : "off");
 		need_save = true;
@@ -338,6 +312,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_GPS_DUTY_SAVE) {
 		s_mesh->prefs.gps_interval = (uint32_t)atomic_get(&pending_gps_duty_sec);
+		gps_set_poll_interval_sec(s_mesh->prefs.gps_interval);
 		LOG_INF("gps_interval=%u (button)", s_mesh->prefs.gps_interval);
 		need_save = true;
 	}

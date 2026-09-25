@@ -7,8 +7,7 @@
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/MeshcoreJson.h>
 #include <adapters/radio/LoRaRadio.h>
-#include <adapters/sensors/SimpleLPP.h>
-#include <adapters/sensors/ZephyrEnvSensors.h>
+#include <adapters/sensors/ZephyrSensorManager.h>
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
@@ -222,86 +221,33 @@ int RoomServerMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp,
   }
 
   if (payload[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
-    /* CayenneLPP telemetry response using SimpleLPP encoder */
-    SimpleLPP lpp(&reply_data[4], sizeof(reply_data) - 4);
+    uint8_t perm_mask = ~(payload[1]); // NEW: first reserved byte (of 4), is now inverse mask to apply to permissions
 
-    /* Battery voltage — channel 1 = TELEM_CHANNEL_SELF (matches Arduino) */
-    const uint8_t CH_SELF = 1;
-    uint16_t batt_mv = _board.getBattMilliVolts();
-    lpp.addVoltage(CH_SELF, batt_mv / 1000.0f);
+    telemetry.reset();
+    telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)_board.getBattMilliVolts() / 1000.0f);
 
-    /* Environment sensors — prefer external, fallback to MCU die temp */
-    struct env_data env;
-    if (env_sensors_read(&env) == 0) {
-      if (env.has_temperature) {
-        lpp.addTemperature(CH_SELF, env.temperature_c);
-      } else if (env.has_mcu_temperature) {
-        lpp.addTemperature(CH_SELF, env.mcu_temperature_c);
-      } else {
-        /* Last resort: MCU temp from board API */
-        float mcu_temp = _board.getMCUTemperature();
-        if (!isnan(mcu_temp)) {
-          lpp.addTemperature(CH_SELF, mcu_temp);
-        }
-      }
-      if (env.has_humidity) {
-        lpp.addRelativeHumidity(CH_SELF, env.humidity_pct);
-      }
-      if (env.has_pressure) {
-        lpp.addBarometricPressure(CH_SELF, env.pressure_hpa);
-      }
-      if (env.has_luminosity) {
-        lpp.addLuminosity(CH_SELF, env.luminosity);
-      }
-    } else {
-      /* No env sensors at all — try MCU temp directly */
-      float mcu_temp = _board.getMCUTemperature();
-      if (!isnan(mcu_temp)) {
-        lpp.addTemperature(CH_SELF, mcu_temp);
-      }
+    // query other sensors -- target specific
+    if ((sender->permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST) {
+      perm_mask = 0x00;  // just base telemetry allowed
+    }
+    sensors.querySensors(perm_mask, telemetry);
+
+    // This default temperature will be overridden by external sensors (if any)
+    float temperature = _board.getMCUTemperature();
+    if(!isnan(temperature)) { // Supported boards with built-in temperature sensor. ESP32-C3 may return NAN
+      telemetry.addTemperature(TELEM_CHANNEL_SELF, temperature); // Built-in MCU Temperature
     }
 
-    /* Power monitors (INA219/INA3221/ina2xx) */
-    if (power_sensors_available()) {
-      struct power_data pwr;
-      if (power_sensors_read(&pwr) == 0) {
-        uint8_t ch = CH_SELF + 1;
-        for (int j = 0; j < pwr.num_channels; j++) {
-          if (pwr.channels[j].valid) {
-            lpp.addVoltage(ch, pwr.channels[j].voltage_v);
-            lpp.addCurrent(ch, pwr.channels[j].current_a);
-            lpp.addPower(ch, pwr.channels[j].power_w);
-            ch++;
-          }
-        }
-      }
+    // ZEPHCORE: wake the GPS (or extend its acquire window) so the next poll
+    // has a fresher fix. A server's GPS is normally asleep between its 48 h
+    // time syncs. Gated like the position, so a guest cannot keep it awake.
+    if ((perm_mask & TELEM_PERM_LOCATION) && gps_is_enabled()) {
+      gps_request_fresh_fix();
     }
 
-    /* GPS precise position — admin-only, and only via telemetry, never
-     * adverts. Guests get the rest of the LPP payload but no position:
-     * adverts already publish the operator-set prefs coordinates, so
-     * there is no reason to hand a guest login the live fix as well. */
-    if (sender->isAdmin()) {
-      struct gps_position gpos;
-      if (gps_get_last_known_position(&gpos)) {
-        lpp.addGPS(CH_SELF,
-            (float)(gpos.latitude_ndeg / 1e9),
-            (float)(gpos.longitude_ndeg / 1e9),
-            gpos.altitude_mm / 1000.0f);
-      }
-
-      /* Wake GPS / extend acquire window so the next telemetry poll has
-       * a fresher fix. In repeater mode GPS is normally off between the
-       * 48h time-sync cycles — this opportunistically rearms acquire
-       * when someone actually cares about our position. No-op if GPS
-       * is disabled in prefs. Gated with the position itself so a guest
-       * can't hold the GPS awake by polling. */
-      if (gps_is_available() && gps_is_enabled()) {
-        gps_request_fresh_fix();
-      }
-    }
-
-    return 4 + lpp.getSize();
+    uint8_t tlen = telemetry.getSize();
+    memcpy(&reply_data[4], telemetry.getBuffer(), tlen);
+    return 4 + tlen; // reply_len
   }
 
   if (payload[0] == REQ_TYPE_GET_ACCESS_LIST && sender->isAdmin()) {
@@ -748,12 +694,13 @@ RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh:
          mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables)
   : mesh::Mesh(radio, ms, rng, rtc, *new StaticPoolPacketManager(), tables),
     _board(board),
-    _cli(board, rtc, &region_map, &acl, &_prefs, this),
+    _cli(board, rtc, sensors, &region_map, &acl, &_prefs, this),
     region_map(key_store), temp_map(key_store),
     /* Failed-login rate limit: 4 wrong-password attempts per 180s.  Global
      * rate (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
      * Phase 4 (mitigation for upstream MeshCore#2556). */
-    login_fail_limiter(4, 180) {
+    login_fail_limiter(4, 180),
+    telemetry(MAX_PACKET_PAYLOAD - 4) {
 
   _store = nullptr;
   last_millis = 0;
@@ -773,6 +720,8 @@ RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh:
   /* path_hash_mode = 1 moved into initNodePrefs() -- see RepeaterMesh. */
   _prefs.disable_fwd = 1;  // a room server is an endpoint, never repeats
   _prefs.gps_interval = CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC;  // ZEPHCORE: as the repeater
+  _prefs.gps_enabled = 1;      // ZEPHCORE: GPS on for time sync (upstream: 0)
+  _prefs.gps_enabled_set = 1;
 
   /* Room server: circular post buffer + round-robin push state */
   next_post_idx = 0;
@@ -1133,63 +1082,6 @@ void RoomServerMesh::loop() {
 
 
 /* ---- ZEPHCORE: methods upstream does not have ---- */
-
-double RoomServerMesh::getNodeLat() const {
-  struct gps_position pos;
-  if (gps_get_last_known_position(&pos)) {
-    return pos.latitude_ndeg / 1e9;
-  }
-  return _prefs.node_lat;
-}
-
-double RoomServerMesh::getNodeLon() const {
-  struct gps_position pos;
-  if (gps_get_last_known_position(&pos)) {
-    return pos.longitude_ndeg / 1e9;
-  }
-  return _prefs.node_lon;
-}
-
-bool RoomServerMesh::setGpsEnabled(bool enabled) {
-  if (!gps_is_available()) return false;
-  gps_enable(enabled);
-  return true;
-}
-
-bool RoomServerMesh::isGpsEnabled() const {
-  return gps_is_enabled();
-}
-
-void RoomServerMesh::formatGpsStatsReply(char* reply) {
-  if (!gps_is_enabled()) {
-    strcpy(reply, "off");
-    return;
-  }
-
-  struct gps_state_info gsi;
-  gps_get_state_info(&gsi);
-
-  static const char* const state_str[] = { "off", "standby", "acquiring" };
-  const char* state = gsi.state < 3 ? state_str[gsi.state] : "unknown";
-
-  struct gps_position pos;
-  bool has_pos = gps_get_last_known_position(&pos);
-
-  if (has_pos) {
-    snprintf(reply, CLI_REPLY_SIZE,
-        "on state=%s sats=%u fix=%us ago lat=%.6f lon=%.6f",
-        state, gsi.satellites, gsi.last_fix_age_s,
-        pos.latitude_ndeg / 1e9, pos.longitude_ndeg / 1e9);
-  } else if (gsi.next_search_s > 0) {
-    snprintf(reply, CLI_REPLY_SIZE,
-        "on state=%s sats=%u no fix next=%us",
-        state, gsi.satellites, gsi.next_search_s);
-  } else {
-    snprintf(reply, CLI_REPLY_SIZE,
-        "on state=%s sats=%u no fix",
-        state, gsi.satellites);
-  }
-}
 
 void RoomServerMesh::savePrefs() {
   if (_store) {

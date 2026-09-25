@@ -132,6 +132,10 @@ struct NodePrefs {
 	uint8_t powersaving_enabled;
 	// GPS settings
 	uint8_t gps_enabled;
+	/* Servers only: 1 = gps_enabled is a real choice. Servers before
+	 * slice 10 ran the GPS whatever gps_enabled said, so a prefs file
+	 * without this marker is upgraded to gps_enabled = 1 once. */
+	uint8_t gps_enabled_set;
 	uint32_t gps_interval;          // in seconds
 	uint8_t advert_loc_policy;
 	uint32_t discovery_mod_timestamp;
@@ -282,6 +286,16 @@ static inline T saneBool(T v, T fallback) { return (v == 0 || v == 1) ? v : fall
  * behaviour the firmware had before the setting existed. */
 static inline uint8_t saneEnum(uint8_t v, uint8_t max) { return (v <= max) ? v : 0; }
 
+/* The GPS duty interval, in the one range every setter and the GPS manager
+ * share: 0 = always on, else 10 s to 1 week (safely below the ms overflow). */
+#define GPS_INTERVAL_MIN_SEC 10u
+#define GPS_INTERVAL_MAX_SEC 604800u
+static inline uint32_t clampGpsInterval(uint32_t sec) {
+	if (sec == 0) return 0;
+	if (sec < GPS_INTERVAL_MIN_SEC) return GPS_INTERVAL_MIN_SEC;
+	return (sec > GPS_INTERVAL_MAX_SEC) ? GPS_INTERVAL_MAX_SEC : sec;
+}
+
 static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->node_name[sizeof(p->node_name) - 1] = '\0';
 	p->password[sizeof(p->password) - 1] = '\0';
@@ -321,6 +335,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->multi_acks          = saneBool<uint8_t>(p->multi_acks, 0);
 	p->buzzer_quiet        = saneBool<uint8_t>(p->buzzer_quiet, 0);
 	p->gps_enabled         = saneBool<uint8_t>(p->gps_enabled, 0);
+	p->gps_enabled_set     = saneBool<uint8_t>(p->gps_enabled_set, 0);
 	p->rx_duty_cycle       = saneBool<uint8_t>(p->rx_duty_cycle, 0);
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
 	p->leds_radio_mode     = saneEnum(p->leds_radio_mode, LEDS_RADIO_MAX);
@@ -370,8 +385,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	/* 6-digit BLE passkey — anything else is rejected at pairing time and
 	 * leaves no way back in over BLE. */
 	if (p->ble_pin > 999999) p->ble_pin = 0;
-	/* Seconds; 0 = off.  A year is already far past any sane setting. */
-	if (p->gps_interval > 31536000UL) p->gps_interval = 0;
+	/* 0 is always-on, so a corrupt value clamps to the week, not to 0. */
+	p->gps_interval = clampGpsInterval(p->gps_interval);
 	/* 0 = board/Kconfig default on both, else the range the UI offers. */
 	if (p->display_brightness != 0) p->display_brightness = clampPref<uint8_t>(p->display_brightness, 10, 100);
 	if (p->screen_off_secs != 0) p->screen_off_secs = clampPref<uint16_t>(p->screen_off_secs, 5, 300);

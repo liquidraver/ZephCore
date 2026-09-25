@@ -66,6 +66,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <helpers/StatsFormatHelper.h>
 #include <app/CompanionCLI.h>
 #include <helpers/battery_curve.h>
+#include <zephyr_poweroff.h>
 #endif
 
 /* Without this a BLE controller assert freezes the CPU at top IRQ priority
@@ -92,16 +93,10 @@ static void save_prefs_to_flash(void);
 static void vcontact_battery_alert_check(void);
 #endif
 
-/* Epoch for a deferred hardware-RTC write. gps_fix_callback runs on the GNSS
- * modem_chat thread, where several ms of blocking I2C would stall NMEA ingest,
- * so the main thread does the write (MESH_EVENT_RTC_SAVE); posts coalesce to
- * the latest time. */
-static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
-
 #define MESH_EVENT_BASE          (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | \
 	MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION |  \
 	MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PREFS_DIRTY | \
-	MESH_EVENT_RTC_SAVE | MESH_EVENT_CONTACT_ITER | MESH_EVENT_LINK)
+	MESH_EVENT_CONTACT_ITER | MESH_EVENT_LINK)
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #define MESH_EVENT_ALL           (MESH_EVENT_BASE | MESH_EVENT_JOYSTICK_LOOP)
 #else
@@ -111,13 +106,6 @@ static atomic_t pending_rtc_epoch = ATOMIC_INIT(0);
 #define HOUSEKEEPING_INTERVAL_MS CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
 
 static struct k_event mesh_events;
-
-/* See pending_rtc_epoch. */
-static void request_rtc_save(uint32_t epoch)
-{
-	atomic_set(&pending_rtc_epoch, (atomic_val_t)epoch);
-	k_event_post(&mesh_events, MESH_EVENT_RTC_SAVE);
-}
 
 static void process_companion_rx(void);   /* runs on MAIN thread (see link_on_rx) */
 static void run_contact_iteration(void);  /* runs on MAIN thread (see MESH_EVENT_CONTACT_ITER) */
@@ -434,19 +422,6 @@ static void mesh_event_loop(void)
 		}
 #endif
 
-		/* See pending_rtc_epoch. */
-		if (events & MESH_EVENT_RTC_SAVE) {
-			zephcore_rtc_save((uint32_t)atomic_get(&pending_rtc_epoch));
-#ifdef ZEPHCORE_LORA
-			/* GPS set the clock: arm the time-sync drift envelope and
-			 * activate a deferred v-contact. */
-			if (companion_mesh_ptr) {
-				companion_mesh_ptr->noteGPSTimeSync();
-				companion_mesh_ptr->vcontactClockSynced();
-			}
-#endif
-		}
-
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 		if (events & MESH_EVENT_JOYSTICK_LOOP) {
 			joystick_ui_task.loop();
@@ -562,7 +537,7 @@ static bool companion_transport_tx_idle(void)
 static CompanionCLICallbacks companion_cli_cbs(data_store, companion_mesh, lora_radio, zephyr_board,
 					       ms_clock, packet_mgr, companion_transport_tx_idle);
 /* No region map and no client ACL: a companion has neither (nullptr both). */
-static CommonCLI companion_cli(zephyr_board, rtc_clock, nullptr, nullptr,
+static CommonCLI companion_cli(zephyr_board, rtc_clock, sensors, nullptr, nullptr,
 			       &companion_mesh.prefs, &companion_cli_cbs);
 
 /* CMD_SET_RADIO_PARAMS / CMD_SET_RADIO_TX_POWER (needs companion_cli, hence
@@ -754,7 +729,7 @@ static bool companion_shutdown_hook(int reason)
 		return true;   /* deliver live — ask the UI for the grace delay */
 	}
 
-	data_store.saveShutdownReason((uint8_t)reason);
+	zephcore_shutdown_reason_save(ZC_SHUTDOWN_LOW_VOLTAGE);
 	return false;      /* nobody listening — flash marker, power off now */
 }
 
@@ -885,15 +860,23 @@ static void gps_event_callback(void)
 	k_event_post(&mesh_events, MESH_EVENT_GPS_ACTION);
 }
 
-/* A valid fix (GNSS modem_chat thread): set the clock and the node position. */
+/* A validated fix (main thread, from gps_process_event()): set the clock and
+ * the node position. */
 static void gps_fix_callback(double lat, double lon, int64_t utc_time)
 {
 	if (utc_time > 0) {
 		LOG_INF("GPS fix: RTC sync time=%lld", utc_time);
 		rtc_clock.setCurrentTime((uint32_t)utc_time);
 		time_sync_report(TIME_SYNC_GPS);
-		request_rtc_save((uint32_t)utc_time);
+#ifdef ZEPHCORE_LORA
+		/* Arm the time-sync drift envelope; activate a deferred v-contact. */
+		companion_mesh.noteGPSTimeSync();
+		companion_mesh.vcontactClockSynced();
+#endif
 	}
+
+	sensors.node_lat = lat;
+	sensors.node_lon = lon;
 
 #ifdef ZEPHCORE_LORA
 	/* RAM only, as upstream: GPS jitter would otherwise rewrite prefs on
@@ -985,8 +968,8 @@ int main(void)
 	/* A low-battery shutdown with no app connected left its reason in flash
 	 * (see companion_shutdown_hook); the hardware cause cannot tell. */
 	{
-		uint8_t sdr = data_store.takeShutdownReason();
-		if (sdr == UI_SHUTDOWN_LOW_BATTERY) {
+		uint8_t sdr = zephcore_shutdown_reason();
+		if (sdr == ZC_SHUTDOWN_LOW_VOLTAGE) {
 			size_t l = strlen(boot_cause_msg);
 			snprintf(boot_cause_msg + l, sizeof(boot_cause_msg) - l,
 				 "%sLast shutdown: low battery",
@@ -997,13 +980,16 @@ int main(void)
 	/* Before bt_enable(): a first boot may have to erase the BLE bond store. */
 	data_store.adoptVolume();
 
-	sensor_manager_init();
+	sensors.begin();
+#ifdef ZEPHCORE_LORA
+	zephyr_board.captureBootVoltage();
+#endif
 
 	/* Wall-clock time from a battery-backed RTC, if one answers on I2C. */
 	{
 		uint32_t rtc_epoch;
 		if (zephcore_rtc_restore(&rtc_epoch)) {
-			rtc_clock.setCurrentTime(rtc_epoch);
+			rtc_clock.seedCurrentTime(rtc_epoch);
 		}
 	}
 
@@ -1036,6 +1022,9 @@ int main(void)
 	companion_mesh.prefs.gps_interval = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC; /* 0 = always on */
 
 	data_store.loadPrefs(companion_mesh.prefs);
+	/* Until the first fix, the position is the configured one. */
+	sensors.node_lat = companion_mesh.prefs.node_lat;
+	sensors.node_lon = companion_mesh.prefs.node_lon;
 
 	/* Saved BLE PIN (0 = Kconfig default) */
 #if IS_ENABLED(CONFIG_BT)
@@ -1080,6 +1069,7 @@ int main(void)
 	}
 
 	companion_mesh.setBatteryCallback(get_battery_mv);
+	companion_mesh.setBoard(&zephyr_board);
 	ui_set_battery_provider(get_battery_mv);
 	ui_set_power_source_provider([]() { return zephyr_board.isExternalPowered(); });
 	ui_set_auto_shutdown_mv(companion_mesh.prefs.auto_shutdown_mv);

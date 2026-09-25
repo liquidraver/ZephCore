@@ -16,7 +16,9 @@
  * - Full power-off only on user-disable or System OFF
  */
 
+#include "gps_internal.h"
 #include "ZephyrGPSManager.h"
+#include <helpers/NodePrefs.h>  /* clampGpsInterval */
 #include "../../helpers/pm_sleep_guard.h"
 
 #include <zephyr/kernel.h>
@@ -28,92 +30,11 @@
 #include <zephyr/drivers/regulator.h>
 #include <zephyr/drivers/i2c.h>
 #include <zephyr/pm/device.h>
+#include <zephyr/sys/timeutil.h>
 #include <string.h>
 #include <stdio.h>
-#if defined(CONFIG_SOC_NRF52840)
-#include <nrfx.h>
-#endif
 
 LOG_MODULE_REGISTER(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
-
-/* ========== GNSS Support ========== */
-#if DT_HAS_COMPAT_STATUS_OKAY(gnss_nmea_generic) || \
-	DT_HAS_COMPAT_STATUS_OKAY(u_blox_m8) || \
-	DT_HAS_COMPAT_STATUS_OKAY(u_blox_f9p) || \
-	DT_HAS_COMPAT_STATUS_OKAY(quectel_lcx6g) || \
-	DT_HAS_COMPAT_STATUS_OKAY(quectel_lc76g) || \
-	DT_HAS_COMPAT_STATUS_OKAY(luatos_air530z)
-#define HAS_GNSS 1
-#include <zephyr/drivers/gnss.h>
-#else
-#define HAS_GNSS 0
-#endif
-
-/* ========== GPS Feature Detection ==========
- * Every HAS_GPS_* predicate is defined HERE, before first use. They are pure
- * devicetree tests with no side effects, kept apart from the variables they
- * gate so that ordering can never drift again.
- *
- * Why this block exists: HAS_GPS_UART used to be defined ~500 lines below its
- * first `#if`, and an undefined identifier in `#if` is silently 0 — so the
- * entire PMTK/UBX module-configuration path compiled to nothing on every
- * board, and GPS ran at module defaults (GPS-only constellations, no AOP).
- * If you add another HAS_GPS_* macro, define it in this block.
- */
-
-/* GNSS module hangs off a UART we can write to (any compatible). */
-#if HAS_GNSS && DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \
-	DT_NODE_HAS_STATUS(DT_BUS(DT_NODELABEL(gnss)), okay)
-#define HAS_GPS_UART 1
-#else
-#define HAS_GPS_UART 0
-#endif
-
-/* Discrete GPS power-enable GPIO (gps-enable alias). */
-#if DT_NODE_EXISTS(DT_ALIAS(gps_enable))
-#define HAS_GPS_POWER_CONTROL 1
-#else
-#define HAS_GPS_POWER_CONTROL 0
-#endif
-
-/* GPS powered from a PMU regulator rail (chosen zephcore,gps-power). */
-#if DT_NODE_EXISTS(DT_CHOSEN(zephcore_gps_power))
-#define HAS_GPS_POWER_REGULATOR 1
-#else
-#define HAS_GPS_POWER_REGULATOR 0
-#endif
-
-/* Runtime diagnostics toggle. Declared OUT here, not inside the HAS_GNSS
- * block: gps_set_diag()/gps_get_diag()/gps_get_diag_report() are part of the
- * unconditional public API and are compiled on boards with no GNSS at all,
- * so a declaration hidden behind HAS_GNSS breaks every such board. */
-static bool gps_diag_on = false;
-
-/* ========== GPS Power Strategy ==========
- * Module power is GPIO/regulator controlled — GNSS driver PM is not used
- * for the module itself:
- * - Wio Tracker L1 (L76K): P1.09 is the module's WAKEUP pin, not a supply
- *   switch. Per the L76K hardware design: WAKEUP is a digital input, active
- *   low with an internal pull-up, that "enters or exits Standby mode". In
- *   Standby the RF is powered off but the internal core and I/O power domain
- *   stay active, so VCC is never removed and ephemeris/almanac/RTC survive —
- *   every wake is a warm start, not a cold one. (Backup mode, the deeper
- *   state, requires cutting VCC while V_BCKP holds the RTC domain; this
- *   board has no VCC switch, so Standby is the floor available to us.)
- * - T1000-E (AG3335): GPS_EN de-asserted + VRTC asserted = warm standby (ephemeris
- *   preserved via backup RAM, ~1-2µA VRTC current)
- * - All boards: gps-enable alias → GPIO power control
- *
- * CONFIG_PM_DEVICE is on globally, but nothing suspends automatically —
- * system-managed suspend is compiled only under CONFIG_PM (off everywhere).
- * This manager makes exactly two kinds of PM calls, both main-thread only:
- * - a one-time RESUME of the GNSS device at boot (gnss-nmea-generic inits
- *   suspended under CONFIG_PM_DEVICE and never opens its pipe otherwise);
- * - suspend/resume of the GNSS UARTE around standby/off (an armed UARTE RX
- *   holds HFCLK ≈0.5-1 mA on nRF52840 even with the module powered off).
- * The old "PM broke GPS" deadlock was modem_chat_run_script() being reached
- * from the system workqueue via driver PM hooks — the air530z driver is
- * PM-less now and every PM call here stays on the main thread. */
 
 /* ========== GPS State - Power Management ========== */
 #if HAS_GNSS
@@ -134,12 +55,13 @@ static gps_event_callback_t gps_event_cb = NULL;
 #define GPS_ACTION_WAKE     BIT(0)  /* Wake from standby → start acquiring */
 #define GPS_ACTION_TIMEOUT  BIT(1)  /* Acquisition timeout → go to standby */
 #define GPS_ACTION_FIX_DONE BIT(2)  /* Got enough good fixes → go to standby */
+#define GPS_ACTION_FIX      BIT(3)  /* A validated fix for gps_fix_cb (fix_pending) */
 static atomic_t pending_gps_actions;
 
 /* GPS Power Management State Machine */
 enum gps_state {
 	GPS_STATE_OFF,          /* GPS disabled by user */
-	GPS_STATE_STANDBY,      /* GPS enabled but sleeping (5 min cycle) */
+	GPS_STATE_STANDBY,      /* GPS enabled but asleep until the next duty wake */
 	GPS_STATE_ACQUIRING,    /* GPS awake, waiting for fixes */
 };
 
@@ -156,10 +78,10 @@ static uint64_t standby_interval_ms = 0; /* How long standby lasts (for next-wak
 #define GPS_GOOD_FIX_COUNT       3       /* Need 3 consecutive good fixes */
 #define GPS_MIN_SATELLITES       4       /* Minimum satellites for valid fix */
 
-/* Runtime-configurable intervals, initialized from Kconfig defaults */
-static uint32_t gps_acquire_timeout_ms   = CONFIG_ZEPHCORE_GPS_FIX_TIMEOUT_SEC * 1000U;
-static uint32_t gps_first_fix_timeout_ms = CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC * 1000U;
-static uint32_t gps_wake_interval_ms     = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC * 1000U;
+/* Acquire windows (Kconfig) and the duty interval (prefs, set at boot). */
+static const uint32_t gps_acquire_timeout_ms   = CONFIG_ZEPHCORE_GPS_FIX_TIMEOUT_SEC * 1000U;
+static const uint32_t gps_first_fix_timeout_ms = CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC * 1000U;
+static uint32_t gps_wake_interval_ms           = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC * 1000U;
 
 /* Duty cycle vs always-on: a non-zero standby interval duty-cycles; interval 0
  * keeps the GPS in continuous acquisition (never sleeps) so it streams fresh
@@ -177,6 +99,15 @@ static int64_t last_promote_ms = 0;
 /* Repeater acquire window — GPS only for time sync. The standby interval is
  * unified with companions via gps_wake_interval_ms (prefs.gps_interval). */
 #define GPS_REPEATER_SYNC_TIMEOUT_MS   (5 * 60 * 1000)           /* 5 minutes */
+
+/* The validated fix waiting for gps_process_event() to hand to gps_fix_cb on
+ * the main thread. Under gps_mutex. */
+static struct {
+	int64_t lat_ndeg;
+	int64_t lon_ndeg;
+	struct gnss_time utc;
+	int64_t at_ms;          /* k_uptime at validation, to age the UTC */
+} fix_pending;
 
 static bool gps_repeater_mode = false;  /* True = repeater (time sync only), False = companion */
 static bool gnss_activity_seen_this_cycle = false;  /* Runtime-only: set by GNSS callback while acquiring */
@@ -220,6 +151,35 @@ void gps_set_event_callback(gps_event_callback_t cb)
 
 #if HAS_GNSS
 
+/* GNSS UTC to Unix time; 0 if the date is out of range. */
+static int64_t gnss_time_to_unix(const struct gnss_time *t)
+{
+	/* The GNSS driver is trusted for ranges no further than this. */
+	if (t->month < 1 || t->month > 12 || t->month_day < 1 || t->month_day > 31) {
+		return 0;
+	}
+	struct tm tm = {
+		.tm_sec = t->millisecond / 1000,
+		.tm_min = t->minute,
+		.tm_hour = t->hour,
+		.tm_mday = t->month_day,
+		.tm_mon = t->month - 1,
+		.tm_year = 100 + t->century_year,
+	};
+	return (int64_t)timeutil_timegm(&tm);
+}
+
+/* Snapshot a validated fix for gps_process_event(). gps_mutex held; the
+ * caller posts the event after unlocking. */
+static void gps_post_fix_locked(const struct gnss_data *data)
+{
+	fix_pending.lat_ndeg = data->nav_data.latitude;
+	fix_pending.lon_ndeg = data->nav_data.longitude;
+	fix_pending.utc = data->utc;
+	fix_pending.at_ms = k_uptime_get();
+	atomic_or(&pending_gps_actions, GPS_ACTION_FIX);
+}
+
 /* GNSS callback - called when new fix data is available */
 static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 {
@@ -258,8 +218,9 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 		 * fix_status + altitude-only motion + (0,0) coords. Observed on
 		 * AT6558R (RAK WisMesh Tag) during early acquisition; Air530Z
 		 * (ThinkNode M1) doesn't desync GGA/RMC this way. (0,0) is never
-		 * a real fix — skip so we don't poison current_pos, persist
-		 * zeros to flash, or promote consecutive_good_fixes. */
+		 * a real fix — skip so we don't poison current_pos (and with it
+		 * telemetry and the node position) or promote
+		 * consecutive_good_fixes. */
 		if (data->nav_data.latitude == 0 && data->nav_data.longitude == 0) {
 			LOG_DBG("GPS: Ignoring (0,0) fix — GGA/RMC desync "
 				"(fix=%d sats=%d alt_mm=%d)",
@@ -310,20 +271,17 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 						/* Cancel timeout */
 						k_work_cancel_delayable(&gps_timeout_work);
 
-						/* Notify fix callback with validated position */
-						if (gps_fix_cb) {
-							double lat = (double)data->nav_data.latitude / 1000000000.0;
-							double lon = (double)data->nav_data.longitude / 1000000000.0;
-							k_mutex_unlock(&gps_mutex);
-							gps_fix_cb(lat, lon, gps_get_utc_time());
-						} else {
-							k_mutex_unlock(&gps_mutex);
-						}
+						/* One fix per window: further good fixes before the
+						 * main thread's standby must not deliver it again. */
+						consecutive_good_fixes = 0;
 
-						/* Defer standby to main thread — we're on the system
-						 * workqueue here (GNSS callback), can't call PM suspend
-						 * (modem_chat_run_script deadlocks on same workqueue). */
+						/* The fix, then standby, both on the main thread —
+						 * we're on the system workqueue here (GNSS callback),
+						 * can't call PM suspend (modem_chat_run_script
+						 * deadlocks on same workqueue). */
+						gps_post_fix_locked(data);
 						atomic_or(&pending_gps_actions, GPS_ACTION_FIX_DONE);
+						k_mutex_unlock(&gps_mutex);
 						if (gps_event_cb) {
 							gps_event_cb();
 						}
@@ -340,15 +298,14 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 					bool promote = first_ever ||
 						(k_uptime_get() - last_promote_ms >=
 						 (int64_t)gps_acquire_timeout_ms);
-					if (promote && gps_fix_cb) {
+					if (promote) {
 						last_promote_ms = k_uptime_get();
-						double lat = (double)data->nav_data.latitude / 1000000000.0;
-						double lon = (double)data->nav_data.longitude / 1000000000.0;
-						k_mutex_unlock(&gps_mutex);
-						gps_fix_cb(lat, lon, gps_get_utc_time());
-						return;
+						gps_post_fix_locked(data);
 					}
 					k_mutex_unlock(&gps_mutex);
+					if (promote && gps_event_cb) {
+						gps_event_cb();
+					}
 					return;
 				}
 			} else {
@@ -449,1083 +406,41 @@ static void gnss_satellites_cb(const struct device *dev,
 }
 
 GNSS_SATELLITES_CALLBACK_DEFINE(NULL, gnss_satellites_cb);
+
+void gps_sat_tally(uint8_t out[5])
+{
+	/* Age out constellations that have stopped reporting, so a stale count
+	 * is never presented as current. */
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	int64_t now_ms = k_uptime_get();
+	for (int i = 0; i < 5; i++) {
+		out[i] = ((now_ms - sat_seen_ms[i]) > SAT_TALLY_STALE_MS) ? 0 : sat_count[i];
+	}
+	k_mutex_unlock(&gps_mutex);
+}
 #endif /* CONFIG_ZEPHCORE_GPS_SAT_DIAG */
 
 /* Find and initialize GNSS device */
-static const struct device *gnss_dev = NULL;
+const struct device *gnss_dev = NULL;
 
-/* Multi-constellation configuration — runs ONCE at boot.
- * modem_chat_run_script() blocks on a semaphore signaled from the system
- * work queue. Calling it after a GPIO power cycle can deadlock because:
- * 1. The L76K needs ~300ms to boot after power restore
- * 2. Meanwhile the modem_chat may be processing stale UART data
- * 3. The script completion callback competes with NMEA processing
- *
- * Safe to call at boot because the driver init already ran and the chip
- * is powered and outputting NMEA. After power cycles, the L76K retains
- * constellation + fix rate settings in internal flash (PCAS commands
- * persist). So we only need to configure once. */
-static bool gnss_configured = false;
+/* The SoC light-sleep lock, held only while ACQUIRING: the GNSS UART is not a
+ * wake source, so a sleeping SoC would drop NMEA mid-stream, but a GPS in
+ * standby (48 h on a repeater) must not keep the SoC awake. Tracked, so the
+ * get/put stay 1:1 whichever path ends the window. Nothing without CONFIG_PM. */
+static bool gps_sleep_locked;
 
-/* ========== Configuration Diagnostics ==========
- * Module configuration is sent blind — nothing in the protocol path tells us
- * the module accepted it. This records what was attempted so the operator can
- * read it back over the CLI on a release build. `gps_set_diag(true)` also
- * clears gnss_configured, so the next GPS enable re-runs configuration and
- * refreshes the record. RAM only, never persisted. */
-enum gps_cfg_path {
-	GPS_CFG_NEVER = 0,  /* configuration has not run yet */
-	GPS_CFG_API,        /* driver implements the GNSS API (air530z, lc76g, ...) */
-	GPS_CFG_UART,       /* passive NMEA listener — raw PMTK + UBX sent */
-	GPS_CFG_BLIND,      /* no GNSS API and no writable UART — module defaults */
-};
-
-static struct {
-	uint8_t path;        /* enum gps_cfg_path */
-	int8_t api_ret;      /* gnss_set_enabled_systems() result */
-	int8_t rate_ret;     /* gnss_set_fix_rate() result */
-	uint8_t cmds;        /* config commands written to the UART */
-	uint16_t bytes;      /* bytes written to the UART */
-	int64_t at_ms;       /* uptime when configuration last ran */
-} gps_cfg_diag;
-
-
-/* Module identification string, captured by the GNSS driver from the reply to
- * its version query (CASIC parts answer in-band as a $GPTXT sentence).
- * Weak so that boards whose driver has no version query still link — an
- * absent symbol and an empty string mean the same thing to the report.
- *
- * Its real value is not the version text: on a transport where every command
- * is written blind, a captured reply is the only positive proof that the
- * MCU's TX line reaches the module at all. */
-extern "C" int zephcore_gnss_version_get(char *buf, size_t len) __attribute__((weak));
-
-/* Count of NMEA sentences the GNSS driver has parsed. This is the one signal
- * in the whole diagnostic that cannot be misread: no satellites, a module
- * silenced by a disabled output protocol, and a module stranded at the wrong
- * baud all look identical otherwise. Non-zero means the module is alive and
- * talking at our baud, so anything still wrong is signal; zero means nothing
- * is arriving and no antenna work will change that. */
-extern "C" uint32_t zephcore_gnss_rx_count(void) __attribute__((weak));
-
-/* True only while gps_configure_via_uart() is running (see gps_uart_send). */
-static bool gps_cfg_counting = false;
-
-/* ========== Vendor-Specific Configuration Commands ==========
- *
- * The RAK WisBlock GPS slot accepts multiple modules (L76K, ZOE-M8Q, etc.)
- * and we use gnss-nmea-generic which is a passive NMEA listener — it has no
- * GNSS API for configuration.
- *
- * Strategy: send BOTH Quectel PMTK and u-blox UBX configuration commands.
- * Each module ignores the protocol it doesn't understand.
- *
- * This runs once at boot. Both modules persist config to internal flash,
- * so these are effectively no-ops on subsequent boots. */
-
-#if HAS_GPS_UART
-
-/* The UART the GNSS module is connected to. Works for any GNSS-on-UART node
- * regardless of compatible string. */
-static const struct device *gps_uart_dev = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(gnss)));
-
-/* Send raw bytes to the GPS UART using blocking poll_out.
- * Safe to call even though modem_chat/modem_ubx owns the UART pipe:
- * uart_poll_out writes one byte at a time through the TX register,
- * and GNSS modules are receive-only (no TX contention).
- *
- * Gated on HAS_GPS_UART alone — writing to the module is safe on every
- * UART-attached GNSS. The narrower power-control gate below applies to the
- * software *sleep* commands, which are only a fallback for boards that
- * cannot cut GPS power. */
-static void gps_uart_send(const uint8_t *data, size_t len)
+static void gps_hold_sleep_lock(bool hold)
 {
-	if (!device_is_ready(gps_uart_dev)) {
+	if (hold == gps_sleep_locked) {
 		return;
 	}
-	for (size_t i = 0; i < len; i++) {
-		uart_poll_out(gps_uart_dev, data[i]);
-	}
-	/* Count only configuration traffic — the same helper carries the
-	 * sleep/wake commands, which would otherwise inflate the tally. */
-	if (gps_cfg_counting) {
-		gps_cfg_diag.cmds++;
-		gps_cfg_diag.bytes += (uint16_t)len;
-	}
-}
-
-/* --- MediaTek-family (PMTK) configuration ---
- *
- * PMTK is MediaTek's protocol. It applies to genuine MTK parts (L76B and
- * relatives). It does NOT apply to the Quectel L76K/L76KB or Air530Z, which
- * are CASIC silicon and speak PCAS — their protocol specification contains no
- * PMTK command at all, so these sentences are inert there. Those modules are
- * driven by the air530z driver via the GNSS API instead and never reach this
- * path. Kept because the RAK WisBlock GPS slot can hold an MTK part. */
-
-/* PMTK353: Enable GPS + GLONASS + Galileo + BeiDou (no QZSS).
- * Default is GPS-only. Multi-constellation dramatically improves TTFF
- * and fix reliability, especially indoors or with limited sky view. */
-static const char pmtk_constellations[] = "$PMTK353,1,1,1,1,0*2B\r\n";
-
-/* PMTK869: Enable EASY (Embedded Assist System).
- * Caches predicted satellite ephemeris in the GNSS module's internal flash.
- * Reduces TTFF from 15-45s (cold) to 1-3s (warm) for up to 3 days after
- * last fix. Setting persists in flash — resending is a harmless no-op. */
-static const char pmtk_easy[] = "$PMTK869,1,1*35\r\n";
-
-/* PMTK286: Enable AIC (Active Interference Cancellation).
- * Filters out narrowband jammers (e.g. harmonics from nearby electronics,
- * LoRa radio leakage). Improves sensitivity by ~2dB in noisy environments.
- * Especially useful when GPS antenna is near the SX1262 + SKY66122 PA. */
-static const char pmtk_aic[] = "$PMTK286,1*23\r\n";
-
-/* --- CASIC (PCAS) configuration ---
- *
- * The Quectel L76K/L76KB (RAK12501) and Air530Z are CASIC silicon: they speak
- * neither PMTK nor UBX, so without these sentences such a module in a
- * WisBlock slot receives no configuration at all and sits on its factory
- * defaults. Boards that always carry one use the air530z driver and the GNSS
- * API instead; these are for the generic-NMEA boards whose GPS slot can hold
- * any module.
- *
- * Inert on the other families, same as PMTK and UBX are here. */
-
-/* PCAS03: NMEA sentence selection. Field order is
- * GGA,GLL,GSA,GSV,RMC,VTG,ZDA,ANT,... — keep GGA + RMC (position, time) and
- * add GSV only when the satellite tally needs it, to keep the 9600-baud link
- * from spending its budget on sentences nobody parses. */
-#ifdef CONFIG_ZEPHCORE_GPS_SAT_DIAG
-static const char pcas_sentences[] = "$PCAS03,1,0,0,1,1,0,0,0,0,0,0,0,0*1F\r\n";
-#else
-static const char pcas_sentences[] = "$PCAS03,1,0,0,0,1,0,0,0,0,0,0,0,0*1E\r\n";
-#endif
-
-/* PCAS04,7 = GPS + BeiDou + GLONASS, everything the part supports.
- * (No Galileo on these modules — that is silicon, not configuration.) */
-static const char pcas_constellations[] = "$PCAS04,7*1E\r\n";
-
-/* PCAS11: navigation dynamic model. Stored IN THE MODULE and survives
- * reflashing the host, so a slot module that previously lived in another
- * device can arrive stuck in an automotive or airborne model that quietly
- * degrades fixes on a fixed site. See CONFIG_ZEPHCORE_GPS_NAV_MODE. */
-#if CONFIG_ZEPHCORE_GPS_NAV_MODE == 0
-static const char pcas_nav_mode[] = "$PCAS11,0*1D\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 1
-static const char pcas_nav_mode[] = "$PCAS11,1*1C\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 2
-static const char pcas_nav_mode[] = "$PCAS11,2*1F\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 3
-static const char pcas_nav_mode[] = "$PCAS11,3*1E\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 4
-static const char pcas_nav_mode[] = "$PCAS11,4*19\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 5
-static const char pcas_nav_mode[] = "$PCAS11,5*18\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 6
-static const char pcas_nav_mode[] = "$PCAS11,6*1B\r\n";
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 7
-static const char pcas_nav_mode[] = "$PCAS11,7*1A\r\n";
-#endif
-
-/* PCAS06,0: ask the module to identify itself. A CASIC part answers in-band
- * with a $GPTXT sentence — the only readable reply available on this
- * otherwise write-only path, and therefore the only positive proof that the
- * MCU's TX line reaches the module at all. Captured by the GNSS driver and
- * surfaced as `mod=` in "get gps diag". */
-static const char pcas_version_query[] = "$PCAS06,0*1B\r\n";
-
-/* u-blox equivalent of the query above. u-blox ignore $PCAS06 entirely, so
- * without this a u-blox module always reports "no reply" and the TX-path
- * proof — the whole point of asking — is unavailable on those boards. The
- * $PUBX,04 reply carries time and clock status, not a version; what matters
- * is that a reply arrives at all, which only happens if the module received
- * the request. */
-static const char pubx_version_query[] = "$PUBX,04*37\r\n";
-
-/* --- u-blox NMEA output trim ($PUBX,40) ---
- *
- * THE LINK BUDGET IS THE CONSTRAINT, and it is easy to blow past it. At 9600
- * baud only ~960 bytes/s fit. With multi-GNSS enabled a u-blox emits, per
- * second: GGA + RMC + GLL + VTG, one GSA per constellation, and a GSV burst
- * that grows with satellite count — roughly 1030 bytes/s at ~26 SVs. The
- * stream then cannot fit in the second it is generated in, sentences are
- * truncated or dropped, and the symptom is not "slow GPS" but a receiver
- * that appears to have stopped: no parseable GGA, so no fix, so no position.
- *
- * Enabling constellations without trimming output is therefore actively
- * harmful on a 9600-baud link. We already do exactly this trim for CASIC
- * parts via $PCAS03; u-blox had no equivalent, which is the asymmetry this
- * fixes. GLL, GSA and VTG are dropped outright — nothing in the driver parses
- * them — and GSV is kept only when the satellite tally needs it.
- *
- * Dropping GLL/GSA/VTG takes ~1030 -> ~650 bytes/s; dropping GSV as well
- * takes it to ~160. */
-static const char pubx_off_gll[] = "$PUBX,40,GLL,0,0,0,0,0,0*5C\r\n";
-static const char pubx_off_gsa[] = "$PUBX,40,GSA,0,0,0,0,0,0*4E\r\n";
-static const char pubx_off_vtg[] = "$PUBX,40,VTG,0,0,0,0,0,0*5E\r\n";
-#ifndef CONFIG_ZEPHCORE_GPS_SAT_DIAG
-static const char pubx_off_gsv[] = "$PUBX,40,GSV,0,0,0,0,0,0*59\r\n";
-#endif
-
-/* --- u-blox ZOE-M8Q (UBX binary) configuration --- */
-
-/* UBX-CFG-PRT: force UART1 to 9600 8N1 with BOTH UBX and NMEA enabled in and
- * out. Sent first, before anything that depends on the module talking to us.
- *
- * This exists because the module's port configuration is persistent and not
- * necessarily ours. RAK's own RAK12500 example — and any host using the
- * SparkFun u-blox library — calls setUART1Output(COM_TYPE_UBX) followed by
- * saveConfiguration(), which stores "UBX only, NMEA off" in the module's
- * flash. A module that has ever been driven that way stays silent on an
- * NMEA-only host forever after, through power cycles and reflashes, and
- * presents as a completely dead receiver: no GGA, no fix, no reply to any
- * query. Re-asserting the port configuration costs one frame and removes a
- * failure mode that is otherwise almost impossible to diagnose from the host.
- *
- * Limitation: if the module was also saved at a different baud rate, it will
- * not parse this frame either. Recovering from that needs a baud scan, which
- * the devicetree's fixed current-speed does not currently allow. */
-static const uint8_t ubx_cfg_prt_uart1[] = {
-	0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC0, 0x08,
-	0x00, 0x00, 0x80, 0x25, 0x00, 0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x8E, 0x95
-};
-
-/* UBX-CFG-GNSS: Enable GPS + Galileo + GLONASS (+ QZSS) on u-blox M8.
- *
- * Config block layout is gnssId, resTrkCh, maxTrkCh, reserved0, flags[4] —
- * EIGHT bytes, and the payload length must be exactly 4 + 8*numConfigBlocks
- * or the receiver rejects the whole message. The previous version of this
- * frame omitted reserved0, giving 7-byte blocks and a 39-byte payload where
- * numConfigBlocks=5 demanded 44, so no u-blox module ever accepted it.
- *
- * Only THREE major GNSS (GPS/Galileo/GLONASS/BeiDou) can run concurrently on
- * M8, so BeiDou is explicitly disabled rather than left alone: if the module
- * came up with BeiDou on, enabling three others would make four and the
- * message would be refused.
- *
- * QZSS is enabled even though it is Japan-regional and costs ~3 channels —
- * u-blox require GPS and QZSS to be both enabled or both disabled (they
- * share L1 C/A), and a mismatch is grounds for rejection.
- *
- * SBAS stays off: it needs 30-60 s to download corrections, useless for our
- * quick-fix-then-sleep pattern (companions 30 s, repeaters 5 min).
- *
- * numTrkChHw = 0 and numTrkChUse = 0xFF (read-only / "use max available").
- *
- * resTrkCh MUST be 0 on the disabled blocks. Reserving tracking channels for
- * a system whose enable bit is clear is self-contradictory, and the receiver
- * validates CFG-GNSS atomically — one bad block rejects all six. An earlier
- * revision left SBAS at 1 and BeiDou at 8 and the whole frame was refused
- * (observed on hardware: RAK12500/ZOE-M8Q stayed GPS-only, sys=G8/R0/E0/B0).
- *
- * NOTE — this is an M8 frame. u-blox 7 parts (MAX-7Q on the RAK1910) have no
- * Galileo or BeiDou and use a different sigCfgMask, so they will refuse it
- * and stay GPS-only. Sending an M7 frame as well is NOT safe blind: its
- * sigCfgMask of 0 would be a signal-disabling value on M8. */
-static const uint8_t ubx_cfg_gnss[] = {
-	0xB5, 0x62, 0x06, 0x3E, 0x34, 0x00, 0x00, 0x00, 0xFF, 0x06, 0x00, 0x08,
-	0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00,
-	0x01, 0x01, 0x02, 0x04, 0x08, 0x00, 0x01, 0x00, 0x01, 0x01, 0x03, 0x00,
-	0x10, 0x00, 0x00, 0x00, 0x01, 0x01, 0x05, 0x00, 0x03, 0x00, 0x01, 0x00,
-	0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x01, 0x00, 0x01, 0x01, 0xEE, 0x64
-};
-
-/* UBX-CFG-NMEA: switch the NMEA output to version 4.10.
- *
- * Without this, Galileo and BeiDou satellites cannot be reported at all: the
- * $GAGSV and $GBGSV talker IDs only exist from NMEA 4.10, and M8 firmware
- * defaults lower. So a fully successful CFG-GNSS would still show zero
- * Galileo in "get gps diag" — a reporting limit masquerading as a config
- * failure. Mirrors Meshtastic's "enable NMEA 4.10" step (src/gps/ubx.h).
- *
- * gsvTalkerId = 0 (use the GNSS-specific talker per constellation) is what
- * makes the per-constellation tally work — do not set it to 1, which forces
- * every GSV onto the main talker and would collapse the tally into GPS. */
-static const uint8_t ubx_cfg_nmea_410[] = {
-	0xB5, 0x62, 0x06, 0x17, 0x14, 0x00, 0x00, 0x41, 0x00, 0x02, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x75, 0x57
-};
-
-/* UBX-CFG-NAV5: Set 5° minimum satellite elevation.
- * Ignore satellites below 5° elevation — they have more atmospheric
- * noise and multipath, degrading fix quality. The default 0° lets in
- * everything including horizon-level junk.
- * Dynamic model left at factory default (Portable) — works for fixed
- * repeaters, walking companions, and vehicles alike.
- * apply mask 0x0002 = minEl(bit1) only
- *
- * The trailing checksum was CK_B=0x37 (should be 0xE7) — a one-byte typo
- * that made every receiver drop this frame silently, with no NAK. */
-static const uint8_t ubx_cfg_nav5_minelev[] = {
-	0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x58, 0xE7
-};
-
-/* UBX-CFG-NAVX5: Enable AssistNow Autonomous (AOP).
- * u-blox equivalent of Quectel EASY — the receiver autonomously predicts
- * satellite orbits from previously downloaded ephemeris data. Predictions
- * stay valid for 3-6 days, reducing TTFF from 26-30s (cold) to 2-5s.
- * No server connection needed — runs entirely on-chip.
- * mask1 bit 14 = aop, aopCfg bit 0 = enable. */
-static const uint8_t ubx_cfg_navx5_aop[] = {
-	0xB5, 0x62, 0x06, 0x23, 0x28, 0x00, 0x04, 0x00, 0x00, 0x40, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x96, 0x66
-};
-
-/* UBX-CFG-CFG: Save all configuration to BBR + Flash + EEPROM.
- * Persists constellation, nav model, SBAS settings across power cycles
- * and backup mode. Without this, ZOE-M8Q reverts to factory defaults
- * after a full power loss (though BBR survives backup mode). */
-static const uint8_t ubx_cfg_save[] = {
-	0xB5, 0x62, 0x06, 0x09, 0x0D, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF,
-	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x17, 0x31, 0xBF
-};
-
-/* Settle time after a command that makes the receiver restart its navigation
- * engine — constellation changes on every family do this. A command issued
- * into a restarting engine is simply lost, and because everything here is
- * written blind the loss is silent. 20-50 ms was optimistic. */
-#define GPS_CFG_SETTLE_MS      120
-#define GPS_CFG_RESTART_MS     500
-
-/* Send an NMEA command string (including \r\n). */
-static void gps_send_nmea(const char *cmd, uint32_t settle_ms = GPS_CFG_SETTLE_MS)
-{
-	gps_uart_send((const uint8_t *)cmd, strlen(cmd));
-	k_msleep(settle_ms);
-}
-
-/* Send a UBX binary frame. */
-static void gps_send_ubx(const uint8_t *frame, size_t len,
-			 uint32_t settle_ms = GPS_CFG_SETTLE_MS)
-{
-	gps_uart_send(frame, len);
-	k_msleep(settle_ms);
-}
-
-/* u-blox dynamic model for CFG-NAV5, translated from the CASIC-numbered
- * CONFIG_ZEPHCORE_GPS_NAV_MODE so one setting drives both families.
- * u-blox: 0 portable, 2 stationary, 3 pedestrian, 4 automotive, 5 sea,
- * 6-8 airborne. */
-#if   CONFIG_ZEPHCORE_GPS_NAV_MODE == 1
-#define UBX_DYNMODEL 2
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 2
-#define UBX_DYNMODEL 3
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 3
-#define UBX_DYNMODEL 4
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 4
-#define UBX_DYNMODEL 5
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE >= 5
-#define UBX_DYNMODEL 6
-#elif CONFIG_ZEPHCORE_GPS_NAV_MODE == 0
-#define UBX_DYNMODEL 0
-#endif
-
-/* Send CFG-NAV5 with the dynamic model patched in and the checksum redone.
- * A stationary model on a fixed node suppresses position wander and lets the
- * receiver apply much tighter velocity assumptions; leaving a roof-mounted
- * repeater on the factory Portable model throws that away. Patched at runtime
- * rather than as eight hard-coded frames — one place to get the checksum
- * right instead of eight. */
-#ifdef UBX_DYNMODEL
-static void gps_send_ubx_nav5(void)
-{
-	uint8_t f[sizeof(ubx_cfg_nav5_minelev)];
-
-	memcpy(f, ubx_cfg_nav5_minelev, sizeof(f));
-	f[6] = 0x03;            /* mask: dyn (bit0) + minEl (bit1) */
-	f[8] = UBX_DYNMODEL;    /* dynModel */
-
-	uint8_t ck_a = 0, ck_b = 0;
-	for (size_t i = 2; i < sizeof(f) - 2; i++) {
-		ck_a = (uint8_t)(ck_a + f[i]);
-		ck_b = (uint8_t)(ck_b + ck_a);
-	}
-	f[sizeof(f) - 2] = ck_a;
-	f[sizeof(f) - 1] = ck_b;
-
-	gps_send_ubx(f, sizeof(f));
-}
-#endif
-
-/* Configure the GPS module with optimal settings for a mesh repeater.
- * Sends both PMTK (Quectel) and UBX (u-blox) commands — the module that
- * isn't present ignores bytes it doesn't understand. */
-static void gps_configure_via_uart(void)
-{
-	LOG_INF("GPS: Configuring via UART (PMTK + UBX dual-protocol)");
-
-	gps_cfg_diag.cmds = 0;
-	gps_cfg_diag.bytes = 0;
-	gps_cfg_counting = true;
-
-	/* --- MediaTek-family (PMTK) --- */
-	gps_send_nmea(pmtk_constellations, GPS_CFG_RESTART_MS);
-	gps_send_nmea(pmtk_easy);
-	gps_send_nmea(pmtk_aic);
-	LOG_INF("GPS: PMTK config sent (constellations, EASY, AIC)");
-
-	/* --- CASIC (PCAS) ---
-	 * Version query last, so its $GPTXT reply is not stepped on by a
-	 * constellation restart. */
-	gps_send_nmea(pcas_sentences);
-	gps_send_nmea(pcas_constellations, GPS_CFG_RESTART_MS);
-#if CONFIG_ZEPHCORE_GPS_NAV_MODE >= 0
-	gps_send_nmea(pcas_nav_mode);
-#endif
-	gps_send_nmea(pcas_version_query);
-	LOG_INF("GPS: PCAS config sent (sentences, constellations, nav mode, version query)");
-
-	/* --- u-blox ZOE-M8Q (UBX) ---
-	 * NMEA 4.10 goes first: it governs whether the constellations enabled
-	 * by the next frame can be *reported* at all. CFG-GNSS restarts the
-	 * navigation engine, so it gets the long settle before the frames that
-	 * follow it — at 50 ms they were being issued into a restarting
-	 * receiver. CFG-CFG stays last so it only persists whatever was
-	 * actually accepted; note that makes a rejected configuration sticky
-	 * too, which is why a frame bug here survives power cycles. */
-	/* Make sure NMEA output is even switched on before anything else — a
-	 * module saved as UBX-only by a previous host is otherwise mute. */
-	gps_send_ubx(ubx_cfg_prt_uart1, sizeof(ubx_cfg_prt_uart1), GPS_CFG_RESTART_MS);
-
-	/* Trim the NMEA stream BEFORE enabling more constellations — the extra
-	 * GSV traffic must have somewhere to fit. */
-	gps_send_nmea(pubx_off_gll);
-	gps_send_nmea(pubx_off_gsa);
-	gps_send_nmea(pubx_off_vtg);
-#ifndef CONFIG_ZEPHCORE_GPS_SAT_DIAG
-	gps_send_nmea(pubx_off_gsv);
-#endif
-	gps_send_ubx(ubx_cfg_nmea_410, sizeof(ubx_cfg_nmea_410));
-	gps_send_ubx(ubx_cfg_gnss, sizeof(ubx_cfg_gnss), GPS_CFG_RESTART_MS);
-#ifdef UBX_DYNMODEL
-	gps_send_ubx_nav5();
-#else
-	gps_send_ubx(ubx_cfg_nav5_minelev, sizeof(ubx_cfg_nav5_minelev));
-#endif
-	gps_send_ubx(ubx_cfg_navx5_aop, sizeof(ubx_cfg_navx5_aop));
-	gps_send_ubx(ubx_cfg_save, sizeof(ubx_cfg_save));
-	/* Ask a u-blox to say something back — the TX-path proof for this
-	 * family, sent last so the reply is not stepped on by a restart. */
-	gps_send_nmea(pubx_version_query);
-	LOG_INF("GPS: UBX config sent (NMEA 4.10, multi-GNSS, 5° min elev, AOP, saved)");
-
-	gps_cfg_counting = false;
-}
-#endif /* HAS_GPS_UART */
-
-/* Re-run module configuration on a GPS enable, but only when diagnostics are
- * armed — this is a deliberate, operator-triggered action, not a normal path.
- *
- * Only the raw-UART path is re-runnable. gnss_configure()'s API path goes
- * through modem_chat_run_script(), which is safe at boot only: after a GPIO
- * power restore the chip needs ~300 ms and calling it here deadlocks the main
- * thread. So on API-driver boards this records nothing new and "get gps diag"
- * keeps reporting the boot-time result, which is the honest answer. */
-static void gps_diag_maybe_reconfigure(void)
-{
-	if (!gps_diag_on || gnss_configured || gnss_dev == NULL) {
-		return;
-	}
-#if HAS_GPS_UART
-	if (gps_cfg_diag.path == GPS_CFG_UART || gps_cfg_diag.path == GPS_CFG_NEVER) {
-		/* The module has just been powered; give it time to boot before
-		 * clocking configuration at it (same ~300 ms the modem needs). */
-		k_msleep(300);
-		gps_cfg_diag.path = GPS_CFG_UART;
-		gps_cfg_diag.at_ms = k_uptime_get();
-		gps_configure_via_uart();
-	}
-#endif
-	gnss_configured = true;
-}
-
-static void gnss_configure(void)
-{
-	if (gnss_configured || gnss_dev == NULL) {
-		return;
-	}
-
-	/* Enable all available constellation systems for faster TTFF.
-	 * Try GPS+GLONASS+Galileo+BeiDou first (AG3335 supports all).
-	 * Fall back to GPS+GLONASS+BeiDou if Galileo not supported (L76KB). */
-	gnss_systems_t systems = GNSS_SYSTEM_GPS | GNSS_SYSTEM_GLONASS |
-				 GNSS_SYSTEM_GALILEO | GNSS_SYSTEM_BEIDOU;
-	int ret = gnss_set_enabled_systems(gnss_dev, systems);
-	if (ret == -EINVAL) {
-		/* Some systems not supported — try without Galileo */
-		systems = GNSS_SYSTEM_GPS | GNSS_SYSTEM_GLONASS | GNSS_SYSTEM_BEIDOU;
-		ret = gnss_set_enabled_systems(gnss_dev, systems);
-	}
-	gps_cfg_diag.api_ret = (int8_t)ret;
-	gps_cfg_diag.at_ms = k_uptime_get();
-
-	if (ret == 0) {
-		LOG_INF("GPS: Multi-constellation enabled via GNSS API");
-		gps_cfg_diag.path = GPS_CFG_API;
-	} else if (ret == -ENOSYS || ret == -ENOTSUP) {
-#if HAS_GPS_UART
-		/* gnss-nmea-generic is a passive listener — no GNSS API.
-		 * Configure everything via direct UART commands instead. */
-		gps_cfg_diag.path = GPS_CFG_UART;
-		gps_configure_via_uart();
-#else
-		LOG_INF("GPS: No GNSS API and no UART access — using module defaults");
-		gps_cfg_diag.path = GPS_CFG_BLIND;
-#endif
+	gps_sleep_locked = hold;
+	if (hold) {
+		zc_pm_block_sleep();
 	} else {
-		LOG_WRN("GPS: Failed to set constellations: %d", ret);
-		/* Will retry on next power-on cycle */
-		return;
-	}
-
-	/* Set 1Hz fix rate (explicit, don't rely on chip defaults) */
-	ret = gnss_set_fix_rate(gnss_dev, 1000);
-	gps_cfg_diag.rate_ret = (int8_t)ret;
-	if (ret == 0) {
-		LOG_INF("GPS: Fix rate set to 1Hz");
-	} else if (ret != -ENOSYS && ret != -ENOTSUP) {
-		LOG_WRN("GPS: Failed to set fix rate: %d", ret);
-	}
-
-	gnss_configured = true;
-}
-
-#endif /* HAS_GNSS - GPS power GPIO section is unconditional (needed for shutdown) */
-
-/* ========== GPS Power GPIO Control ==========
- * These are unconditional (not gated by HAS_GNSS) because
- * gps_power_off_for_shutdown() must be available for System OFF
- * even on boards without a GNSS driver.
- *
- * IMPORTANT: Do NOT touch GPIO during init! The GNSS driver needs the GPS
- * to be powered and outputting NMEA for the modem pipe to work.
- * We only configure GPIO lazily on first power-off request.
- *
- * Board-specific pins (defined in board overlays as gps-enable alias):
- * - T1000-E: P1.11 (GPS_EN), P0.8 (GPS_VRTC_EN), P1.15 (GPS_RESET), P1.12 (GPS_SLEEP_INT)
- * - Wio Tracker L1: P1.09 (GPS power, shared with luatos,air530z on-off-gpios)
- */
-#if HAS_GPS_POWER_CONTROL
-static const struct gpio_dt_spec gps_enable_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_enable), gpios);
-#endif
-
-/* GPS powered by a PMU regulator rail instead of a discrete enable GPIO (e.g.
- * LilyGo T-Beam: GPS is on the AXP2101 ALDO3 rail). Selected via the chosen
- * `zephcore,gps-power` node pointing at the regulator. Acts as a master power
- * switch driven by enable/disable; the duty-cycle standby/wake uses software
- * sleep/wake (UART) and leaves the rail up, so the regulator is only toggled on
- * the (unguarded) enable/disable/boot paths — never per duty cycle. */
-#if HAS_GPS_POWER_REGULATOR
-static const struct device *const gps_power_reg =
-	DEVICE_DT_GET(DT_CHOSEN(zephcore_gps_power));
-/* Tracks our intended rail state so enable/disable stay balanced (idempotent).
- * Starts true: the rail is `regulator-boot-on`, so it is already up at boot. */
-static bool gps_reg_enabled = true;
-#endif
-
-/* AXP2101 backup (button-battery) charger — feeds the GPS receiver's V_BCKP
- * domain so ephemeris/RTC survive main-rail (ALDO3) power cuts, giving a
- * warm/hot re-fix instead of a cold start each duty cycle. The Zephyr regulator
- * driver doesn't expose VBACKUP, so enable it with raw I2C at boot (mirrors
- * Arduino enablePowerOutput(XPOWERS_VBACKUP) + setPowerChannelVoltage 3.3V).
- * Selected via chosen `zephcore,gps-backup-pmu` pointing at the AXP2101 node. */
-#if DT_NODE_EXISTS(DT_CHOSEN(zephcore_gps_backup_pmu))
-#define AXP2101_REG_CHG_GAUGE_WDT_CTRL  0x18U  /* bit 2 = button-battery charge enable */
-#define AXP2101_BTN_CHARGE_ENABLE       BIT(2)
-#define AXP2101_REG_BTN_BAT_CHG_VOL_SET 0x6AU  /* low 3 bits: (mV - 2600) / 100 */
-#define AXP2101_BTN_VOL_3V3             0x07U  /* (3300 - 2600) / 100 */
-static int gps_backup_charger_init(void)
-{
-	static const struct i2c_dt_spec axp = I2C_DT_SPEC_GET(DT_CHOSEN(zephcore_gps_backup_pmu));
-
-	if (!device_is_ready(axp.bus)) {
-		LOG_WRN("GPS backup: AXP2101 I2C bus not ready");
-		return 0;
-	}
-	/* Set the backup-charge target to 3.3V (low 3 bits), then enable the
-	 * charger. Read-modify-write so the fuel-gauge enable (bit 3 of 0x18) and
-	 * the other 0x6A bits are preserved. */
-	i2c_reg_update_byte_dt(&axp, AXP2101_REG_BTN_BAT_CHG_VOL_SET, 0x07U, AXP2101_BTN_VOL_3V3);
-	i2c_reg_update_byte_dt(&axp, AXP2101_REG_CHG_GAUGE_WDT_CTRL,
-			       AXP2101_BTN_CHARGE_ENABLE, AXP2101_BTN_CHARGE_ENABLE);
-	LOG_INF("GPS backup: AXP2101 VBACKUP charger enabled (3.3V)");
-	return 0;
-}
-/* After the MFD/I2C is up (POST_KERNEL ~86); APPLICATION is safely later. */
-SYS_INIT(gps_backup_charger_init, APPLICATION, 50);
-#endif
-
-/* T1000-E specific GPS control pins */
-#if DT_NODE_EXISTS(DT_ALIAS(gps_vrtc_enable))
-static const struct gpio_dt_spec gps_vrtc_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_vrtc_enable), gpios);
-#define HAS_GPS_VRTC 1
-#else
-#define HAS_GPS_VRTC 0
-#endif
-
-#if DT_NODE_EXISTS(DT_ALIAS(gps_reset))
-static const struct gpio_dt_spec gps_reset_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_reset), gpios);
-#define HAS_GPS_RESET 1
-#else
-#define HAS_GPS_RESET 0
-#endif
-
-#if DT_NODE_EXISTS(DT_ALIAS(gps_sleep_int))
-static const struct gpio_dt_spec gps_sleep_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_sleep_int), gpios);
-#define HAS_GPS_SLEEP 1
-#else
-#define HAS_GPS_SLEEP 0
-#endif
-
-/* GPS RTC interrupt pin — held de-asserted during normal operation */
-#if DT_NODE_EXISTS(DT_ALIAS(gps_rtc_int))
-static const struct gpio_dt_spec gps_rtcint_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_rtc_int), gpios);
-#define HAS_GPS_RTCINT 1
-#else
-#define HAS_GPS_RTCINT 0
-#endif
-
-/* GPS RESETB (active-LOW reset, declared GPIO_ACTIVE_LOW) — must be
- * INPUT_PULLUP for normal operation; the pull-up is a physical setting.
- * Without the pull-up, this pin floats LOW and holds the AG3335 in permanent
- * reset, preventing any UART output. */
-#if DT_NODE_EXISTS(DT_ALIAS(gps_resetb))
-static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_resetb), gpios);
-#define HAS_GPS_RESETB 1
-#else
-#define HAS_GPS_RESETB 0
-#endif
-
-/* T1000-E has extra GPS control pins that require a specific init sequence */
-#define HAS_T1000_GPS_CONTROL (HAS_GPS_VRTC || HAS_GPS_RESET || HAS_GPS_SLEEP)
-
-#if HAS_GPS_POWER_CONTROL
-static bool gps_gpio_configured = false;
-#endif
-
-/* GPS power control with warm standby support.
- * @param on        true = power on, false = power off
- * @param keep_vrtc When powering off: true = keep VRTC alive (warm standby,
- *                  preserves ephemeris/almanac/RTC for fast re-acquisition),
- *                  false = full power-off (cold start on next wake).
- *                  Only relevant on T1000-E (HAS_GPS_VRTC); ignored on other boards. */
-static void gps_power_control(bool on, bool keep_vrtc = false)
-{
-#if HAS_GPS_POWER_REGULATOR
-	/* Master power rail (PMU regulator). Idempotent enable/disable so the
-	 * refcount stays balanced regardless of how often this is called. */
-	if (on != gps_reg_enabled && device_is_ready(gps_power_reg)) {
-		int ret = on ? regulator_enable(gps_power_reg)
-			     : regulator_disable(gps_power_reg);
-		if (ret == 0) {
-			gps_reg_enabled = on;
-			LOG_INF("GPS power %s (regulator)", on ? "ON" : "OFF");
-		} else {
-			LOG_WRN("GPS regulator %s failed: %d", on ? "enable" : "disable", ret);
-		}
-	}
-#endif
-#if HAS_GPS_POWER_CONTROL
-	/* Direct GPIO power control — works on all boards.
-	 * We toggle the GPS power pin ourselves rather than using driver PM
-	 * (driver PM can hang on modem_pipe_close / modem_chat_run_script).
-	 * The GNSS driver's modem pipe stays open.
-	 *
-	 * T1000-E (HAS_GPS_VRTC): Use warm standby (keep VRTC) for app toggle
-	 *   so UART/chip state is preserved. Matches Arduino sleep_gps().
-	 * Simple boards (Wio etc.): Full power off/on via GPS_EN. */
-	if (on) {
-#if HAS_T1000_GPS_CONTROL
-		/* T1000-E power-on sequence (from Arduino target.cpp start_gps())
-		 * Must follow this exact order with delays. Levels are ASSERTED /
-		 * DE-ASSERTED, not physical: Arduino states them as HIGH/LOW because
-		 * its pins are all active-high, while this block is also reached by
-		 * boards whose lines are active-low (see the gate below).
-		 * 1. GPS_EN asserted, delay 10ms
-		 * 2. GPS_VRTC_EN asserted, delay 10ms (critical - RTC power)
-		 * 3. GPS_RESET asserted, delay 10ms, then released
-		 * 4. GPS_SLEEP_INT asserted
-		 *
-		 * Despite the name this is not a T1000-E-only path:
-		 * HAS_T1000_GPS_CONTROL is (HAS_GPS_VRTC || HAS_GPS_RESET ||
-		 * HAS_GPS_SLEEP), so a bare gps-reset alias is enough to route a
-		 * board here. heltec_wifi_lora32_v4, _v43 and thinknode_m9 all arrive
-		 * this way, and all three declare gps-enable active-low.
-		 */
-		if (gpio_is_ready_dt(&gps_enable_gpio)) {
-			gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_ACTIVE);
-		}
-		k_msleep(10);
-
-#if HAS_GPS_VRTC
-		if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
-			gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_ACTIVE);
-		}
-		k_msleep(10);
-#endif
-
-#if HAS_GPS_RESET
-		if (gpio_is_ready_dt(&gps_reset_gpio)) {
-			gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
-			k_msleep(10);
-			gpio_pin_set_dt(&gps_reset_gpio, 0);  /* Release reset (logical) */
-		}
-#endif
-
-#if HAS_GPS_SLEEP
-		if (gpio_is_ready_dt(&gps_sleep_gpio)) {
-			gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_ACTIVE);
-		}
-#endif
-
-#if HAS_GPS_RTCINT
-		/* GPS_RTC_INT (P0.15) — held de-asserted during normal operation */
-		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
-		}
-#endif
-
-#if HAS_GPS_RESETB
-		/* GPS_RESETB (P1.14) — active-LOW reset, must be pulled HIGH.
-		 * INPUT_PULLUP de-asserts reset so the AG3335 can boot.
-		 * Without this the pin floats LOW → chip stuck in reset → no UART. */
-		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
-			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_INPUT | GPIO_PULL_UP);
-		}
-#endif
-		gps_gpio_configured = true;
-		LOG_INF("GPS power ON (T1000-E sequence)");
-#else
-		/* Simple boards - just GPS_EN */
-		if (!gps_gpio_configured) {
-			if (gpio_is_ready_dt(&gps_enable_gpio)) {
-				/* ACTIVE, not HIGH: gpio_pin_set_dt() below is
-				 * logical, so a physical init flag here would assert
-				 * the opposite level on an active-low gps-enable. */
-				gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_ACTIVE);
-				gps_gpio_configured = true;
-				LOG_INF("GPS power GPIO configured, set ACTIVE");
-			} else {
-				LOG_WRN("GPS power GPIO not ready");
-				return;
-			}
-		} else {
-			gpio_pin_set_dt(&gps_enable_gpio, 1);
-			LOG_INF("GPS power ON");
-		}
-#endif
-	} else {
-		/* Power off sequence */
-#if HAS_GPS_RESET
-		/* Hold GPS in reset during power-off — matches Arduino sleep_gps()/stop_gps().
-		 * Ensures chip sees RESET asserted when GPS_EN is asserted on next
-		 * power-on, preventing uncontrolled startup before the reset pulse.
-		 * Configure-on-first-use (mirrors the GPS_EN pin below): on a
-		 * boot-with-GPS-off the power-on path never ran, so the pin isn't an
-		 * output yet — gpio_pin_set_dt() alone would leave it floating instead
-		 * of asserting reset. GPIO_OUTPUT_ACTIVE drives the active (asserted)
-		 * level directly. */
-		if (gpio_is_ready_dt(&gps_reset_gpio)) {
-			if (!gps_gpio_configured) {
-				gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
-			} else {
-				gpio_pin_set_dt(&gps_reset_gpio, 1);
-			}
-		}
-#endif
-
-#if HAS_GPS_VRTC
-		if (!keep_vrtc) {
-			/* Full power-off: VRTC off too (cold start on next wake) */
-			if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
-				if (!gps_gpio_configured) {
-					gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_INACTIVE);
-				} else {
-					gpio_pin_set_dt(&gps_vrtc_gpio, 0);
-				}
-			}
-		}
-		/* else: warm standby — VRTC stays asserted, preserving
-		 * ephemeris/almanac/RTC for fast re-acquisition (~1-2 µA) */
-#endif
-		if (gpio_is_ready_dt(&gps_enable_gpio)) {
-			if (!gps_gpio_configured) {
-				gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
-				gps_gpio_configured = true;
-			} else {
-				gpio_pin_set_dt(&gps_enable_gpio, 0);
-			}
-		}
-
-#if HAS_GPS_RESETB
-		/* Assert RESETB when GPS is off (Arduino sleep_gps/stop_gps).
-		 * The alias is declared GPIO_ACTIVE_LOW, so this drives it LOW. */
-		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
-			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_ACTIVE);
-		}
-#endif
-
-#if HAS_GPS_RTCINT
-		/* GPS_RTC_INT stays de-asserted during sleep/off (same as normal operation) */
-		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
-		}
-#endif
-
-#if HAS_GPS_VRTC
-		LOG_INF("GPS power OFF (%s)", keep_vrtc ?
-			"standby — VRTC retained" : "full");
-#else
-		LOG_INF("GPS power OFF");
-#endif
-	}
-#else
-	ARG_UNUSED(keep_vrtc);
-#endif
-}
-
-/* Put every GPS control line this board declares into its System OFF state:
- * the power enable, and where present VRTC, sleep and rtcint, de-asserted;
- * reset and resetb asserted, holding the module in reset while its supply is
- * gated -- the same levels gps_power_control(false) leaves them at.
- * Uses gpio_pin_configure_dt() so pins are properly set even if
- * gps_power_control() was never called (GPIO not yet configured). */
-void gps_power_off_for_shutdown(void)
-{
-#if HAS_GPS_POWER_REGULATOR
-	if (gps_reg_enabled && device_is_ready(gps_power_reg)) {
-		regulator_disable(gps_power_reg);
-		gps_reg_enabled = false;
-	}
-#endif
-#if HAS_GPS_POWER_CONTROL
-	/* INACTIVE: physical LOW leaves an active-low enable asserted, i.e. the
-	 * module still powered across System OFF. */
-	if (gpio_is_ready_dt(&gps_enable_gpio)) {
-		gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_VRTC
-	if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
-		gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RESET
-	/* ACTIVE, matching the power-off path: reset stays asserted across
-	 * System OFF, as Arduino stop_gps() leaves it. */
-	if (gpio_is_ready_dt(&gps_reset_gpio)) {
-		gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
-#if HAS_GPS_SLEEP
-	if (gpio_is_ready_dt(&gps_sleep_gpio)) {
-		gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RTCINT
-	if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-		gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RESETB
-	if (gpio_is_ready_dt(&gps_resetb_gpio)) {
-		gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
-}
-
-#if HAS_GNSS  /* Resume GNSS-specific code */
-
-/* ========== Software Sleep/Wake (no GPIO required) ==========
- *
- * On boards without dedicated GPS power control (e.g. RAK3401 where the
- * 3V3_S rail is shared with the LoRa FEM), we send vendor-specific UART
- * commands to put the GPS module into low-power mode.
- *
- * Strategy: send BOTH MediaTek and u-blox sleep commands — the module that
- * isn't present simply ignores the bytes it doesn't understand.
- *
- * - MediaTek (e.g. L76B):      $PMTK161,0*28\r\n → standby (~1mA), wake on UART
- * - u-blox ZOE-M8Q (RAK12500): UBX-RXM-PMREQ    → backup  (~7µA), wake on UART
- *
- * Neither reaches a CASIC part (L76K/L76KB/Air530Z): those ignore PMTK, UBX
- * and PCAS12 sleep commands alike — verified on hardware, which is why the
- * boards carrying them duty-cycle with a power GPIO instead. Note also that
- * the RAK1910 is a u-blox MAX-7Q, not an L76K, despite older comments here.
- *
- * Wake: any byte on UART wakes both modules from their low-power modes.
- * After wake, the module resumes outputting NMEA autonomously.
- */
-
-/* HAS_GPS_UART, gps_uart_dev and gps_uart_send are defined near the top of
- * this file (see "GPS Feature Detection") — they are needed by the boot-time
- * module configuration, which runs long before this section. */
-
-/* ========== GNSS UART Suspend/Resume (device PM) ==========
- * nRF UARTE only. An armed UARTE RX holds HFCLK (~0.5-1 mA on nRF52840)
- * even when the GPS module is powered off or silent, so standby/off
- * suspends the UART device and every wake resumes it first.
- *
- * Verified symmetric in uart_nrfx_uarte.c under the still-open modem pipe:
- * suspend saves the RX-interrupt state, STOPRXes, disables the peripheral
- * and applies the sleep pinctrl; resume restores all of it. Other UART
- * drivers (legacy nordic,nrf-uart on RAK4631, ESP32) are deliberately not
- * gated in — their suspend/resume round-trip is unverified and the HFCLK
- * cost is UARTE-specific.
- *
- * Every GPS UART node must carry a sleep pinctrl state (all boards do):
- * without one, suspend fails *after* disabling RX while the PM state stays
- * ACTIVE, so the next resume no-ops with -EALREADY — a dead GPS.
- *
- * REQUIRES GPS POWER CONTROL — do not relax this gate.
- * uarte_pm_suspend() busy-waits for RXTO with no timeout after triggering
- * STOPRX (uart_nrfx_uarte.c, the only unbounded wait in the path). In
- * interrupt-driven mode RX runs on a 1-byte buffer with no ENDRX_STARTRX
- * short, so the receiver stops after every byte until the ISR re-arms it —
- * and suspend disables the ENDRX interrupt *before* STOPRX, removing the
- * re-arm. Land in that window with bytes still arriving and STOPRX hits an
- * already-stopped receiver, no RXTO is generated, and the caller spins
- * forever. It runs on the main thread, so the whole mesh wedges (observed:
- * RAK3401 1W repeater on 1.16.6, CLI answering only "-> busy").
- *
- * Boards with GPIO/regulator power control cut the module before we get
- * here, so the line is genuinely quiet and STOPRX always yields RXTO.
- * Boards without it fall back to gps_software_sleep(), whose PMTK/UBX
- * commands the module may simply ignore (u-blox MAX-7Q on RAK3401 is
- * protocol 14/15; the 16-byte UBX-RXM-PMREQ we send is protocol 23+) —
- * NMEA keeps streaming straight into the suspend. Those boards give up the
- * ~0.5-1 mA HFCLK saving; uptime wins. */
-#if HAS_GPS_UART && defined(CONFIG_PM_DEVICE) && \
-	(HAS_GPS_POWER_CONTROL || HAS_GPS_POWER_REGULATOR) && \
-	DT_NODE_HAS_COMPAT(DT_BUS(DT_NODELABEL(gnss)), nordic_nrf_uarte)
-#define HAS_GPS_UART_PM 1
-#else
-#define HAS_GPS_UART_PM 0
-#endif
-
-/* Suspend/resume the GNSS UART. Main thread only (like all GPS power
- * paths — pm_device_action_run() calls the driver synchronously).
- * Ordering: resume BEFORE powering the module / sending the wake byte;
- * suspend AFTER the module is off / sleep commands were sent. */
-#if HAS_GPS_UART_PM
-static void gps_uart_set_power(bool on)
-{
-	if (!device_is_ready(gps_uart_dev)) {
-		return;
-	}
-	if (!on) {
-		/* Let the GNSS line go quiet before suspending. Every caller
-		 * cuts module power (GPS_EN low / reset asserted / regulator
-		 * off) immediately before this, but a byte can still be in
-		 * flight. Settle so it finishes and the driver's RX ISR re-arms,
-		 * leaving the receiver armed-and-idle when the suspend's STOPRX
-		 * fires — that state yields RXTO, whereas a just-stopped,
-		 * un-rearmed receiver can produce none and (pre-0010) hung the
-		 * main thread. ~5 ms comfortably covers one character time at
-		 * GNSS baud plus ISR latency; standby happens at most every few
-		 * minutes, so the cost is negligible. Backstop: patch 0010
-		 * bounds the driver's RXTO wait so a missed RXTO can never hang
-		 * us even if a byte still lands in the race window. */
-		k_msleep(5);
-	}
-	int ret = pm_device_action_run(gps_uart_dev,
-				       on ? PM_DEVICE_ACTION_RESUME
-					  : PM_DEVICE_ACTION_SUSPEND);
-	if (ret == 0) {
-		LOG_INF("GPS UART %s", on ? "resumed" : "suspended");
-	} else if (ret != -EALREADY) {
-		LOG_WRN("GPS UART %s failed: %d", on ? "resume" : "suspend", ret);
+		zc_pm_unblock_sleep();
 	}
 }
-#else
-static inline void gps_uart_set_power(bool on) { ARG_UNUSED(on); }
-#endif
-
-#if HAS_GPS_UART && !HAS_GPS_POWER_CONTROL && !HAS_GPS_POWER_REGULATOR
-/* gps_uart_send() lives near the top of the file — see "GPS Feature
- * Detection". Only the sleep/wake commands below are gated on this board
- * having no hardware GPS power control. */
-
-/* MediaTek parts: $PMTK161,0*28\r\n → enter standby mode
- * Module stops NMEA output and draws ~1mA. Wakes on any UART RX byte.
- * Inert on CASIC parts (L76K and relatives) — they have no such command. */
-static const uint8_t pmtk_standby[] = "$PMTK161,0*28\r\n";
-
-/* u-blox ZOE-M8Q: UBX-RXM-PMREQ → enter backup mode
- * UBX frame: B5 62 | 02 41 | 10 00 | payload(16) | CK_A CK_B
- * Payload (protocol 23+, 16 bytes):
- *   version=0, reserved[3]=0,
- *   duration=0x00000000 (infinite),
- *   flags=0x00000006 (backup + force),
- *   wakeupSources=0x00000028 (uartrx bit3 | extint0 bit5)
- *
- * THE WAKE SOURCE BIT IS LOAD-BEARING. wakeupSources bit 3 is uartrx; bit 5
- * is extint0. This frame previously sent 0x20 — extint0 only — with a comment
- * claiming that was "UART RX (bit 5)". It is not. EXTINT is not routed to the
- * WisBlock connector on the RAK12500 (RAK's datasheet: only UART/I2C, 1PPS,
- * RESET, VDD and GND are connected), so the module was told to sleep forever
- * with a wake source that can never be asserted. duration=0 means infinite,
- * so it never came back: no NMEA at any baud, and no I2C either, because
- * backup mode powers down the DDC interface too. Only a physical power cycle
- * recovered it — a reboot does not, since the 3V3_S rail stays up.
- * Confirmed on hardware: reseat -> module answers -> one fix -> first standby
- * -> gone again.
- *
- * 0x28 sets both, so a board that does wire EXTINT keeps that path as well.
- * Module stops all output and draws ~20µA (ZOE-M8Q at 3V, datasheet Table 13;
- * the 15µA hardware-backup figure needs VCC removed entirely). */
-static const uint8_t ubx_pmreq_backup[] = {
-	0xB5, 0x62,             /* UBX sync chars */
-	0x02, 0x41,             /* Class: RXM, ID: PMREQ */
-	0x10, 0x00,             /* Length: 16 bytes (little-endian) */
-	/* Payload */
-	0x00,                   /* version */
-	0x00, 0x00, 0x00,       /* reserved1[3] */
-	0x00, 0x00, 0x00, 0x00, /* duration: 0 = infinite */
-	0x06, 0x00, 0x00, 0x00, /* flags: backup(0x02) | force(0x04) */
-	0x28, 0x00, 0x00, 0x00, /* wakeupSources: uartrx(bit3) | extint0(bit5) */
-	/* Checksum (Fletcher-8 over class..payload) */
-	0x81, 0xEB
-};
-
-/* Put GPS module into software sleep (for boards without GPIO power control).
- * Sends both Quectel PMTK and u-blox UBX commands — the wrong one is
- * harmlessly ignored by whichever module is actually connected. */
-static void gps_software_sleep(void)
-{
-	LOG_INF("GPS: Sending software sleep (PMTK + UBX)");
-
-	/* MediaTek standby */
-	gps_uart_send(pmtk_standby, sizeof(pmtk_standby) - 1);  /* exclude null terminator */
-
-	/* Small delay between commands — let the first one drain */
-	k_msleep(50);
-
-	/* u-blox ZOE-M8Q backup */
-	gps_uart_send(ubx_pmreq_backup, sizeof(ubx_pmreq_backup));
-
-	LOG_DBG("GPS: Software sleep commands sent");
-}
-
-/* Wake GPS module from software sleep.
- * A single 0xFF byte on UART triggers wake on both Quectel and u-blox.
- * After wake, the module resumes NMEA output within ~100-500ms. */
-static void gps_software_wake(void)
-{
-	LOG_INF("GPS: Sending UART wake byte");
-	const uint8_t wake = 0xFF;
-	gps_uart_send(&wake, 1);
-	/* Give the module time to boot and start NMEA output */
-	k_msleep(200);
-}
-#endif /* HAS_GPS_UART && !HAS_GPS_POWER_CONTROL && !HAS_GPS_POWER_REGULATOR */
 
 /* Acquire-window timeout (ms) for the current phase.
  * - Repeater: fixed 5-min time-sync window.
@@ -1575,20 +490,15 @@ static void gps_go_to_standby(void)
 	 *   VBACKUP charger keeps the receiver's V_BCKP domain alive, so ephemeris/
 	 *   RTC survive the cut and re-acquisition is a warm/hot start, not cold.
 	 * Other non-GPIO boards: software sleep via UART commands (PMTK + UBX). */
-#if HAS_GPS_POWER_CONTROL
-	gps_power_control(false, true);
-#elif HAS_GPS_POWER_REGULATOR
-	gps_power_control(false);
-#elif HAS_GPS_UART
-	gps_software_sleep();
-#endif
+	gps_module_power(false);
 
 	/* Module is off/asleep — release the UART until the next wake
 	 * (nRF: drops the HFCLK request held by the armed RX). */
 	gps_uart_set_power(false);
+	gps_hold_sleep_lock(false);
 
 	/* NOTE: gnss_configured stays true — L76K retains PCAS settings in
-	 * flash across power cycles. Re-running gnss_configure() after GPIO
+	 * flash across power cycles. Re-running gps_module_configure() after GPIO
 	 * wake would call modem_chat_run_script() before the chip has booted,
 	 * risking a deadlock (modem_chat blocks on system work queue). */
 
@@ -1599,7 +509,7 @@ static void gps_go_to_standby(void)
 /* Wake GPS and start acquiring.
  * GPIO boards: hardware power-on.
  * Non-GPIO boards: UART wake byte (wakes L76K from standby, ZOE-M8Q from backup).
- * Does NOT call gnss_configure() — constellation/fix-rate settings persist
+ * Does NOT call gps_module_configure() — constellation/fix-rate settings persist
  * in L76K flash across power cycles. Calling modem_chat_run_script() here
  * would deadlock: the chip needs ~300ms to boot after GPIO power restore,
  * but modem_chat blocks the calling thread waiting for the system work
@@ -1610,16 +520,12 @@ static void gps_start_acquiring(void)
 	gps_current_state = GPS_STATE_ACQUIRING;
 	consecutive_good_fixes = 0;
 	gnss_activity_seen_this_cycle = false;
+	gps_hold_sleep_lock(true);
 
 	/* Bring the UART back before the module powers up / the wake byte
 	 * goes out, so the first NMEA sentences aren't lost. */
 	gps_uart_set_power(true);
-
-#if HAS_GPS_POWER_CONTROL || HAS_GPS_POWER_REGULATOR
-	gps_power_control(true);
-#elif HAS_GPS_UART
-	gps_software_wake();
-#endif
+	gps_module_power(true);
 
 	/* Schedule the standby timeout — unless always-on (interval 0), where the
 	 * GPS stays in continuous acquisition and never sleeps. Every duty window
@@ -1677,87 +583,6 @@ static void gps_timeout_work_fn(struct k_work *work)
 	}
 }
 
-/* ========== GPS UART Diagnostics ========== */
-
-/**
- * Dump nRF52840 UARTE0 hardware register state.
- * Reads PSEL (pin select), ENABLE, BAUDRATE, and ERRORSRC directly
- * from the peripheral registers — no assumptions, just facts.
- */
-static void gps_uart_dump_hw_state(void)
-{
-#if defined(CONFIG_SOC_NRF52840)
-	NRF_UARTE_Type *uart = NRF_UARTE0;
-
-	uint32_t psel_txd = uart->PSEL.TXD;
-	uint32_t psel_rxd = uart->PSEL.RXD;
-	uint32_t enable   = uart->ENABLE;
-	uint32_t baudrate = uart->BAUDRATE;
-	uint32_t errorsrc = uart->ERRORSRC;
-
-	/* PSEL format: bit 31 = CONNECT (0=connected, 1=disconnected),
-	 * bits 4:0 = pin, bit 5 = port */
-	bool txd_connected = !(psel_txd & (1U << 31));
-	bool rxd_connected = !(psel_rxd & (1U << 31));
-	uint8_t txd_port = (psel_txd >> 5) & 1;
-	uint8_t txd_pin  = psel_txd & 0x1F;
-	uint8_t rxd_port = (psel_rxd >> 5) & 1;
-	uint8_t rxd_pin  = psel_rxd & 0x1F;
-
-	LOG_INF("UART0 HW state:");
-	LOG_INF("  ENABLE=0x%02x (8=enabled)", enable);
-	LOG_INF("  PSEL.TXD=0x%08x → P%d.%02d %s",
-		psel_txd, txd_port, txd_pin,
-		txd_connected ? "CONNECTED" : "DISCONNECTED");
-	LOG_INF("  PSEL.RXD=0x%08x → P%d.%02d %s",
-		psel_rxd, rxd_port, rxd_pin,
-		rxd_connected ? "CONNECTED" : "DISCONNECTED");
-	LOG_INF("  BAUDRATE=0x%08x ERRORSRC=0x%x", baudrate, errorsrc);
-
-	/* Clear any error flags */
-	if (errorsrc) {
-		uart->ERRORSRC = errorsrc;
-		LOG_WRN("  UART errors cleared: overrun=%d parity=%d framing=%d break=%d",
-			(errorsrc >> 0) & 1, (errorsrc >> 1) & 1,
-			(errorsrc >> 2) & 1, (errorsrc >> 3) & 1);
-	}
-#endif
-}
-
-#if HAS_GPS_POWER_CONTROL
-/**
- * Log actual GPIO pin states after power-up sequence.
- * Reads back each configured pin to verify the hardware accepted our config.
- */
-static void gps_dump_gpio_states(void)
-{
-	/* Port/pin come from the gpio_dt_spec so the board's real wiring is
-	 * printed. These used to be hardcoded T1000-E pin numbers, which read
-	 * as plausible nonsense on every other board. */
-#define GPS_LOG_PIN(_label, _spec)                                            	if (gpio_is_ready_dt(&(_spec))) {                                     		LOG_INF("  %-14s %s.%02u: %d", _label, (_spec).port->name,    			(_spec).pin, gpio_pin_get_dt(&(_spec)));              	}
-
-	LOG_INF("GPS GPIO states after power-up:");
-	GPS_LOG_PIN("GPS_EN", gps_enable_gpio);
-#if HAS_GPS_VRTC
-	GPS_LOG_PIN("GPS_VRTC_EN", gps_vrtc_gpio);
-#endif
-#if HAS_GPS_RESET
-	GPS_LOG_PIN("GPS_RESET", gps_reset_gpio);
-#endif
-#if HAS_GPS_SLEEP
-	GPS_LOG_PIN("GPS_SLEEP_INT", gps_sleep_gpio);
-#endif
-#if HAS_GPS_RTCINT
-	GPS_LOG_PIN("GPS_RTC_INT", gps_rtcint_gpio);
-#endif
-#if HAS_GPS_RESETB
-	GPS_LOG_PIN("GPS_RESETB", gps_resetb_gpio);   /* INPUT_PULLUP, expect 0 (logical, de-asserted) */
-#endif
-
-#undef GPS_LOG_PIN
-}
-#endif /* HAS_GPS_POWER_CONTROL */
-
 /* ========== GNSS Init ========== */
 
 static int gnss_init(void)
@@ -1770,12 +595,6 @@ static int gnss_init(void)
 	gnss_dev = DEVICE_DT_GET_ANY(quectel_lc76g);
 #elif DT_HAS_COMPAT_STATUS_OKAY(luatos_air530z)
 	gnss_dev = DEVICE_DT_GET_ANY(luatos_air530z);
-#elif DT_HAS_COMPAT_STATUS_OKAY(quectel_lcx6g)
-	gnss_dev = DEVICE_DT_GET_ANY(quectel_lcx6g);
-#elif DT_HAS_COMPAT_STATUS_OKAY(u_blox_m8)
-	gnss_dev = DEVICE_DT_GET_ANY(u_blox_m8);
-#elif DT_HAS_COMPAT_STATUS_OKAY(u_blox_f9p)
-	gnss_dev = DEVICE_DT_GET_ANY(u_blox_f9p);
 #elif DT_HAS_COMPAT_STATUS_OKAY(gnss_nmea_generic)
 	gnss_dev = DEVICE_DT_GET_ANY(gnss_nmea_generic);
 #endif
@@ -1805,8 +624,8 @@ static int gnss_init(void)
 		gps_dump_gpio_states();
 #endif
 
-#if defined(CONFIG_SOC_NRF52840)
-		NRF_UARTE_Type *uart = NRF_UARTE0;
+#ifdef GPS_NRF_UARTE
+		NRF_UARTE_Type *uart = GPS_NRF_UARTE;
 
 		/* Wait up to 2s for UARTE errors — their presence means the GPS
 		 * module is alive and transmitting (ERRORSRC gets set because no
@@ -1901,7 +720,11 @@ static int gnss_init(void)
 int gps_manager_init(void)
 {
 #if HAS_GNSS
-	gnss_init();
+	/* Nothing to configure on a module that did not come up: the GNSS API
+	 * would drive modem_chat on a failed device. */
+	if (gnss_init() != 0) {
+		return 0;
+	}
 
 	/* Configure constellations + fix rate NOW while chip is powered
 	 * and the modem pipe is open (driver init already ran).
@@ -1909,9 +732,18 @@ int gps_manager_init(void)
 	 * after power cycles the chip needs ~300ms boot time and calling
 	 * modem_chat from the main thread risks deadlock. L76K retains
 	 * PCAS settings in flash, so one-time config at boot is enough. */
-	gnss_configure();
+	gps_module_configure();
 #endif
 	return 0;
+}
+
+void gps_park(void)
+{
+#if HAS_GNSS
+	if (gnss_init() == 0) {
+		gps_ensure_power_state(false);
+	}
+#endif
 }
 
 bool gps_is_available(void)
@@ -1943,7 +775,7 @@ void gps_ensure_power_state(bool should_be_enabled)
 	 * If it should be disabled, explicitly power it off now. */
 	if (!should_be_enabled) {
 		LOG_INF("GPS: Powering off at boot (disabled in prefs)");
-		gps_power_control(false);
+		gps_module_power(false, false);
 		/* GPS stays off — release the UART too. Without this, the RX
 		 * armed at driver init would hold HFCLK for the entire uptime
 		 * of every GPS-disabled node. */
@@ -1962,20 +794,10 @@ void gps_set_repeater_mode(bool repeater)
 		return;
 	}
 
+	/* Only the mode: the acquire window becomes the time-sync one. Whether
+	 * the GPS runs is prefs.gps_enabled, applied through gps_enable(). */
 	gps_repeater_mode = repeater;
-
-	if (repeater) {
-		LOG_INF("GPS: Repeater mode - starting initial time sync, then every 48h");
-
-		gps_enabled = true;  /* Logically enabled */
-
-		/* Start acquiring immediately for initial time sync at boot.
-		 * GPS hardware is already powered from bootloader, so we just
-		 * start the acquisition state machine. */
-		gps_start_acquiring();
-	} else {
-		LOG_INF("GPS: Companion mode");
-	}
+	LOG_INF("GPS: %s mode", repeater ? "Time-sync (server)" : "Companion");
 #else
 	ARG_UNUSED(repeater);
 #endif
@@ -1998,48 +820,18 @@ void gps_enable(bool enable)
 	if (enable) {
 		LOG_INF("GPS enabled - starting acquisition");
 
-		/* Block SoC light sleep for as long as the module is powered.
-		 * The GNSS UART is not a wake source, so a sleeping SoC drops
-		 * inbound NMEA outright — sentences would be lost mid-stream and
-		 * a fix would never converge. Balanced by the put in the disable
-		 * branch; the early return above keeps the pair 1:1, and under a
-		 * GPS duty cycle the lock is only held during the awake phase.
-		 * Compiles to nothing without CONFIG_PM. */
-		zc_pm_block_sleep();
+		/* The same wake as the duty cycle's: UART, module power, sleep
+		 * lock, and the first (longer) acquire window unless always-on. */
+		gps_start_acquiring();
 
-		/* Start acquiring immediately (no delay for first wake) */
-		gps_current_state = GPS_STATE_ACQUIRING;
-		consecutive_good_fixes = 0;
-
-		/* Resume the GNSS UART first so no NMEA is lost at power-on
-		 * (it may be suspended from a boot-with-GPS-off or a prior
-		 * disable). */
-		gps_uart_set_power(true);
-
-		/* Power on GPS - uses lazy GPIO init */
-		gps_power_control(true);
-
-		/* gnss_configure() runs once at boot (see gps_manager_init path).
+		/* gps_module_configure() runs once at boot (see gps_manager_init path).
 		 * L76K retains PCAS settings in flash across power cycles.
 		 * Do NOT call modem_chat_run_script() here — the chip needs
 		 * ~300ms to boot after GPIO power restore and calling it
 		 * immediately deadlocks the main thread. */
 		gps_diag_maybe_reconfigure();
-
-		/* Bounded first-acquisition window, then the normal duty cycle —
-		 * unless always-on (interval 0), where GPS never sleeps. */
-		if (gps_duty_cycling()) {
-			uint32_t timeout_ms = gps_acquire_window_ms();
-			LOG_INF("GPS: Acquire window %u s", timeout_ms / 1000U);
-			k_work_schedule(&gps_timeout_work, K_MSEC(timeout_ms));
-		} else {
-			LOG_INF("GPS: Always-on (continuous, no standby)");
-		}
 	} else {
 		LOG_INF("GPS disabled - canceling timers and powering off");
-
-		/* Matches the block taken in the enable branch. */
-		zc_pm_unblock_sleep();
 
 		/* Cancel any pending work */
 		k_work_cancel_delayable(&gps_wake_work);
@@ -2047,15 +839,14 @@ void gps_enable(bool enable)
 
 		/* Power off GPS — warm standby if VRTC available (Arduino sleep_gps),
 		 * full power off otherwise. Warm standby preserves ephemeris/RTC
-		 * in AG3335 backup RAM for fast re-acquisition (1-8s vs 15-45s). */
-#if HAS_GPS_VRTC
-		gps_power_control(false, true);  /* Warm standby — keep VRTC */
-#else
-		gps_power_control(false);        /* No VRTC — full power off */
-#endif
+		 * in AG3335 backup RAM for fast re-acquisition (1-8s vs 15-45s).
+		 * Boards with no power line get the UART sleep commands, as in
+		 * the duty cycle's standby. */
+		gps_module_power(false);
 
 		/* GPS is off until re-enabled — release the UART. */
 		gps_uart_set_power(false);
+		gps_hold_sleep_lock(false);
 
 		gps_current_state = GPS_STATE_OFF;
 		consecutive_good_fixes = 0;
@@ -2112,10 +903,7 @@ uint32_t gps_get_poll_interval_sec(void)
 void gps_set_poll_interval_sec(uint32_t interval)
 {
 #if HAS_GNSS
-	/* 0 = always-on (no standby); otherwise floor 10s. Cap at 1 week — sane
-	 * for time-sync and safely below the interval*1000 uint32 overflow (~49d). */
-	if (interval != 0 && interval < 10) interval = 10;
-	if (interval > 604800) interval = 604800;
+	interval = clampGpsInterval(interval);  /* 0 = always-on */
 	gps_wake_interval_ms = interval * 1000U;
 	LOG_INF("GPS poll interval set to %u seconds%s", interval,
 		interval == 0 ? " (always on)" : "");
@@ -2141,6 +929,8 @@ void gps_set_poll_interval_sec(uint32_t interval)
 				gps_event_cb();
 			}
 		} else {
+			/* The wake is re-armed from now, so the countdown restarts too. */
+			standby_start_ms = k_uptime_get();
 			standby_interval_ms = gps_wake_interval_ms;
 			k_work_reschedule(&gps_wake_work, K_MSEC(gps_wake_interval_ms));
 		}
@@ -2154,46 +944,11 @@ int64_t gps_get_utc_time(void)
 {
 #if HAS_GNSS
 	k_mutex_lock(&gps_mutex, K_FOREVER);
-	if (!current_pos.valid) {
-		k_mutex_unlock(&gps_mutex);
-		return 0;
-	}
-
+	bool valid = current_pos.valid;
 	struct gnss_time t = current_utc;
 	k_mutex_unlock(&gps_mutex);
 
-	/* Defensive: the date math below indexes month_days[m] for m < t.month.
-	 * t.month is a uint8_t straight from the GNSS driver — bound it (and the
-	 * day) so a driver that doesn't range-check (the NMEA parser does; binary
-	 * UBX/chip drivers are not all verified) can't drive an OOB read of
-	 * month_days[13] or a garbage RTC set. */
-	if (t.month < 1 || t.month > 12 || t.month_day < 1 || t.month_day > 31) {
-		return 0;
-	}
-
-	int year = 2000 + t.century_year;
-	int days = 0;
-
-	for (int y = 1970; y < year; y++) {
-		days += (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)) ? 366 : 365;
-	}
-
-	static const int month_days[] = {0, 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31};
-	for (int m = 1; m < t.month; m++) {
-		days += month_days[m];
-		if (m == 2 && (year % 4 == 0 && (year % 100 != 0 || year % 400 == 0))) {
-			days++;
-		}
-	}
-
-	days += t.month_day - 1;
-
-	int64_t timestamp = (int64_t)days * 86400;
-	timestamp += t.hour * 3600;
-	timestamp += t.minute * 60;
-	timestamp += t.millisecond / 1000;
-
-	return timestamp;
+	return valid ? gnss_time_to_unix(&t) : 0;
 #else
 	return 0;
 #endif
@@ -2266,103 +1021,6 @@ void gps_request_fresh_fix(void)
 #endif
 }
 
-void gps_set_diag(bool on)
-{
-	gps_diag_on = on;
-#if HAS_GNSS
-	if (on) {
-		/* Re-arm configuration so the next GPS enable ("gps off" then
-		 * "gps on") actually re-runs it and refreshes the record. */
-		gnss_configured = false;
-	}
-#endif
-}
-
-bool gps_get_diag(void)
-{
-	return gps_diag_on;
-}
-
-void gps_get_diag_report(char *buf, size_t len)
-{
-#if HAS_GNSS
-	static const char *const path_str[] = { "never", "api", "uart", "blind" };
-	uint8_t path = gps_cfg_diag.path;
-	const char *pname = (path < ARRAY_SIZE(path_str)) ? path_str[path] : "?";
-
-	if (path == GPS_CFG_NEVER) {
-		snprintf(buf, len, "diag=%s cfg=never-run (enable, then 'gps off'/'gps on')",
-			 gps_diag_on ? "on" : "off");
-		return;
-	}
-
-	uint32_t age_s = (uint32_t)((k_uptime_get() - gps_cfg_diag.at_ms) / 1000);
-	size_t n = (size_t)snprintf(buf, len, "diag=%s cfg=%s age=%us",
-				    gps_diag_on ? "on" : "off", pname, age_s);
-	if (n >= len) {
-		return;
-	}
-
-	/* Sentences parsed from the module. Print this before anything else
-	 * that could be misinterpreted — rx=0 makes every other field moot. */
-	if (zephcore_gnss_rx_count != NULL) {
-		n += (size_t)snprintf(buf + n, len - n, " rx=%u",
-				      (unsigned)zephcore_gnss_rx_count());
-		if (n >= len) {
-			return;
-		}
-	}
-
-	/* Module identity, when the driver could obtain it. Present means the
-	 * module answered us, i.e. the TX path is good; absent on a driver that
-	 * asks is a strong hint the module never hears our configuration. */
-	if (zephcore_gnss_version_get != NULL) {
-		char ver[40];
-		if (zephcore_gnss_version_get(ver, sizeof(ver)) > 0) {
-			n += (size_t)snprintf(buf + n, len - n, " mod=%s", ver);
-		} else {
-			n += (size_t)snprintf(buf + n, len - n, " mod=no-reply");
-		}
-		if (n >= len) {
-			return;
-		}
-	}
-
-	if (path == GPS_CFG_UART) {
-		/* Bytes actually clocked out to the module. Note these are sent
-		 * blind — this proves transmission, not acceptance. Constellation
-		 * tallies below are the acceptance evidence. */
-		n += (size_t)snprintf(buf + n, len - n, " sent=%u/%uB",
-				      gps_cfg_diag.cmds, gps_cfg_diag.bytes);
-	} else if (path == GPS_CFG_API) {
-		n += (size_t)snprintf(buf + n, len - n, " sys_ret=%d rate_ret=%d",
-				      gps_cfg_diag.api_ret, gps_cfg_diag.rate_ret);
-	}
-	if (n >= len) {
-		return;
-	}
-
-#ifdef CONFIG_ZEPHCORE_GPS_SAT_DIAG
-	k_mutex_lock(&gps_mutex, K_FOREVER);
-	/* Age out constellations that have stopped reporting, so a stale count
-	 * is never presented as current. */
-	int64_t now_ms = k_uptime_get();
-	uint8_t shown[5];
-	for (int i = 0; i < 5; i++) {
-		shown[i] = ((now_ms - sat_seen_ms[i]) > SAT_TALLY_STALE_MS) ? 0 : sat_count[i];
-	}
-	k_mutex_unlock(&gps_mutex);
-	snprintf(buf + n, len - n, " sys=G%u/R%u/E%u/B%u/?%u",
-		 shown[0], shown[1], shown[2], shown[3], shown[4]);
-#else
-	snprintf(buf + n, len - n, " (build without GPS_SAT_DIAG: no per-constellation proof)");
-#endif
-#else
-	ARG_UNUSED(gps_diag_on);
-	snprintf(buf, len, "no GNSS on this board");
-#endif
-}
-
 void gps_get_state_info(struct gps_state_info *info)
 {
 	memset(info, 0, sizeof(*info));
@@ -2385,19 +1043,6 @@ void gps_get_state_info(struct gps_state_info *info)
 	} else if (gps_current_state == GPS_STATE_ACQUIRING) {
 		info->next_search_s = 0;  /* Searching right now */
 	}
-
-#ifdef CONFIG_ZEPHCORE_GPS_SAT_DIAG
-	/* Same staleness rule as the diag report — never present a count for a
-	 * constellation that has stopped reporting. */
-	k_mutex_lock(&gps_mutex, K_FOREVER);
-	int64_t sat_now = k_uptime_get();
-	uint8_t *dst[5] = { &info->sats_gps, &info->sats_glonass, &info->sats_galileo,
-			    &info->sats_beidou, &info->sats_other };
-	for (int i = 0; i < 5; i++) {
-		*dst[i] = ((sat_now - sat_seen_ms[i]) > SAT_TALLY_STALE_MS) ? 0 : sat_count[i];
-	}
-	k_mutex_unlock(&gps_mutex);
-#endif
 #endif
 }
 
@@ -2414,6 +1059,23 @@ void gps_process_event(void)
 
 	if (actions == 0) {
 		return;
+	}
+
+	/* A validated fix: the clock and position, here on the main thread. */
+	if ((actions & GPS_ACTION_FIX) && gps_fix_cb) {
+		k_mutex_lock(&gps_mutex, K_FOREVER);
+		int64_t lat_ndeg = fix_pending.lat_ndeg;
+		int64_t lon_ndeg = fix_pending.lon_ndeg;
+		struct gnss_time utc = fix_pending.utc;
+		int64_t at_ms = fix_pending.at_ms;
+		k_mutex_unlock(&gps_mutex);
+
+		int64_t utc_time = gnss_time_to_unix(&utc);
+		if (utc_time > 0) {
+			utc_time += (k_uptime_get() - at_ms) / 1000;  /* time spent queued */
+		}
+		gps_fix_cb((double)lat_ndeg / 1000000000.0, (double)lon_ndeg / 1000000000.0,
+			   utc_time);
 	}
 
 	/* Wake takes priority — if both wake and timeout/fix-done are pending

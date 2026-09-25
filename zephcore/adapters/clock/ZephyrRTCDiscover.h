@@ -8,9 +8,9 @@
  * present fail the probe and are skipped — like the environment sensors.
  *
  * If a present chip holds a valid time, zephcore_rtc_restore() returns it so
- * the soft clock can be seeded at boot (shown tagged "L" — local). On every
- * authoritative sync (GPS/app/CLI) the caller writes it back via
- * zephcore_rtc_save() so time survives the next power-off.
+ * the soft clock can be seeded at boot (shown tagged "L" — local). Every
+ * ZephyrRTCClock::setCurrentTime() writes it back via zephcore_rtc_save(), so
+ * time survives the next power-off.
  */
 
 #pragma once

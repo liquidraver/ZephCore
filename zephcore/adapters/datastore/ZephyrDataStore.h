@@ -31,14 +31,6 @@ public:
 	bool saveMainIdentity(const mesh::LocalIdentity &identity);
 	void loadPrefs(NodePrefs &prefs);
 	void savePrefs(const NodePrefs &prefs);
-	/* Shutdown-reason breadcrumb: written just before a software power-off
-	 * (low-battery auto-shutdown) so the next boot can report why the node
-	 * went down — the offline queue doesn't survive System OFF, so this
-	 * flash marker is the only reliable channel. saveShutdownReason is
-	 * best-effort (called at critically low battery). takeShutdownReason
-	 * returns the stored code (0 = none) and clears it. */
-	void saveShutdownReason(uint8_t code);
-	uint8_t takeShutdownReason();
 	void loadContacts(DataStoreHost *host);
 	void saveContacts(DataStoreHost *host);
 	void loadChannels(DataStoreHost *host);
@@ -76,7 +68,6 @@ private:
 	 * firmware from before prefs.json. */
 	static constexpr const char *PREFS_FILE = "/lfs/new_prefs";
 	static constexpr const char *MAIN_ID_FILE = "/lfs/_main.id";
-	static constexpr const char *SHUTDOWN_FILE = "/lfs/shutdn";
 
 	/* External QSPI flash (optional) - contacts, channels, blobs */
 	static constexpr const char *EXT_MNT_POINT = "/ext";

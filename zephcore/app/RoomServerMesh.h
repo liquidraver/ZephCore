@@ -99,6 +99,7 @@ class RoomServerMesh : public mesh::Mesh, public CommonCLICallbacks {
   int next_client_idx;  // for round-robin polling
   int next_post_idx;
   PostInfo posts[MAX_UNSYNCED_POSTS];   // cyclic queue
+  CayenneLPP telemetry;
   unsigned long set_radio_at, revert_radio_at;
   float pending_freq;
   float pending_bw;
@@ -230,11 +231,6 @@ public:
   void loop();
 
   // ZEPHCORE: CommonCLICallbacks additions.
-  double getNodeLat() const override;
-  double getNodeLon() const override;
-  bool setGpsEnabled(bool enabled) override;
-  bool isGpsEnabled() const override;
-  void formatGpsStatsReply(char* reply) override;
   uint32_t getDefaultGpsIntervalSec() const override { return CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC; }
   void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) override;
   bool setFemRxGain(bool enable) override;

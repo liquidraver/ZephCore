@@ -380,7 +380,7 @@ bool CompanionMesh::vcontactHandleFrame(const uint8_t *data, size_t len)
 			if (tag == 0) tag = 1;
 			sendPacketSent(MSG_SEND_SENT_DIRECT, tag, 3000);
 
-			uint8_t rsp[8 + 4 + 11 + 15 + (12 * POWER_MAX_CHANNELS) + 8];
+			uint8_t rsp[8 + MAX_PACKET_PAYLOAD - 4];  /* header + telemetry */
 			int i = 0;
 			rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
 			rsp[i++] = 0;  /* reserved */

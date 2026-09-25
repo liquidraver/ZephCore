@@ -113,6 +113,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
 #if MAX_NEIGHBOURS
   NeighbourInfo neighbours[MAX_NEIGHBOURS];
 #endif
+  CayenneLPP telemetry;
   unsigned long set_radio_at, revert_radio_at;
   float pending_freq;
   float pending_bw;
@@ -283,11 +284,6 @@ public:
   bool configSideDetectors(const uint8_t* sfs, uint8_t num) override;
 
   // ZEPHCORE: CommonCLICallbacks additions.
-  double getNodeLat() const override;
-  double getNodeLon() const override;
-  bool setGpsEnabled(bool enabled) override;
-  bool isGpsEnabled() const override;
-  void formatGpsStatsReply(char* reply) override;
   uint32_t getDefaultGpsIntervalSec() const override { return CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC; }
   void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) override;
   bool setFemRxGain(bool enable) override;

@@ -23,8 +23,8 @@
 #define MESH_EVENT_HOUSEKEEPING  BIT(3)  /* companion: periodic housekeeping */
 #define MESH_EVENT_MAINTENANCE   BIT(3)  /* servers: a maintenance deadline came due */
 
-#define MESH_EVENT_GPS_ACTION    BIT(4)  /* GPS state change (must run on the main thread) */
+#define MESH_EVENT_GPS_ACTION    BIT(4)  /* GPS state change or fix (must run on the main thread) */
 #define MESH_EVENT_TX_DRAIN      BIT(5)  /* outbound packet delay expired, run checkSend */
-#define MESH_EVENT_RTC_SAVE      BIT(6)  /* hardware-RTC write requested off-main */
+/* BIT(6) free: was MESH_EVENT_RTC_SAVE, until ZephyrRTCClock wrote the hardware RTC itself */
 
 #define MESH_EVENT_ROLE_BASE     7       /* first role-only bit */

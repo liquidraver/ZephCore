@@ -34,11 +34,6 @@
 
 #define REQ_TYPE_GET_TELEMETRY_DATA   0x03
 
-/* Telemetry permissions (upstream: helpers/SensorManager.h) */
-#define TELEM_PERM_BASE         0x01
-#define TELEM_PERM_LOCATION     0x02
-#define TELEM_PERM_ENVIRONMENT  0x04
-
 /* Auto-add config bitmask */
 #define AUTO_ADD_OVERWRITE_OLDEST  (1 << 0)
 #define AUTO_ADD_CHAT              (1 << 1)
@@ -116,6 +111,8 @@ public:
 	/* As upstream: every frame to and from the app goes through `serial` */
 	void startInterface(BaseSerialInterface &serial);
 	void setBatteryCallback(GetBatteryCallback cb) { _batt_cb = cb; }
+	/* For the MCU temperature in telemetry (upstream: the global `board`). */
+	void setBoard(mesh::MainBoard *board) { _board = board; }
 	void setRadioReconfigureCallback(RadioReconfigureCallback cb) { _radio_reconfig_cb = cb; }
 	void setPinChangeCallback(PinChangeCallback cb) { _pin_change_cb = cb; }
 	void setCLICallback(CompanionCLICallback cb) { _cli_exec_cb = cb; }
@@ -277,6 +274,7 @@ private:
 	ZephyrDataStore *_store;
 	BaseSerialInterface *_serial;
 	GetBatteryCallback _batt_cb;
+	mesh::MainBoard *_board = nullptr;
 	RadioReconfigureCallback _radio_reconfig_cb;
 	PinChangeCallback _pin_change_cb;
 

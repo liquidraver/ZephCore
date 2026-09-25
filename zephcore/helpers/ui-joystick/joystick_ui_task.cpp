@@ -23,9 +23,7 @@
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/display.h>
-#ifdef CONFIG_POWEROFF
-#include <zephyr/sys/poweroff.h>
-#endif
+#include <zephyr_poweroff.h>
 #include <zephyr/random/random.h>
 #include <zephyr/logging/log.h>
 
@@ -1566,12 +1564,11 @@ void JoystickUITask::shutdown(bool restart)
 		sys_reboot(SYS_REBOOT_COLD);
 	} else {
 #ifdef CONFIG_POWEROFF
-		/* Full peripheral teardown + SENSE config for sw0 wake.  Shared
-		 * helper turns off display, GPS, regulators, holds LoRa in reset
-		 * and arms the button SENSE so the user can actually wake the
-		 * device. Same code path as the button UI's action_deep_sleep. */
-		ui_prepare_for_system_off();
-		sys_poweroff();
+		/* The one power-off path (adapters/board/zephyr_poweroff.c):
+		 * display, GPS, regulators, LoRa reset, the button SENSE so the
+		 * user can wake the device. Same as the button UI's deep sleep. */
+		zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
+		zephcore_power_off();
 #else
 		_display.turnOff();
 		sys_reboot(SYS_REBOOT_COLD);

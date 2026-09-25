@@ -14,7 +14,6 @@
 #include <helpers/MeshTimeSync.h>
 #include <helpers/LoopWakeStats.h>
 #include <helpers/time_sync.h>
-#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <adapters/board/ZephyrBoard.h>
@@ -288,7 +287,7 @@ uint8_t CommonCLI::buildAdvertData(uint8_t node_type, uint8_t* app_data) {
 		return builder.encodeTo(app_data);
 	} else if (_prefs->advert_loc_policy == ADVERT_LOC_SHARE) {
 		AdvertDataBuilder builder(node_type, _prefs->node_name,
-					 _callbacks->getNodeLat(), _callbacks->getNodeLon());
+					 _sensors->node_lat, _sensors->node_lon);
 		return builder.encodeTo(app_data);
 	} else {
 		AdvertDataBuilder builder(node_type, _prefs->node_name,
@@ -330,6 +329,9 @@ void CommonCLI::rebootWorkHandler(struct k_work *work)
 		/* reply already sent; startOTAUpdate will reset */
 		char dummy[80];
 		self->_board->startOTAUpdate(self->_prefs->node_name, dummy);
+		break;
+	case REBOOT_POWEROFF:
+		self->_board->powerOff();  // doesn't return
 		break;
 	case REBOOT_NORMAL:
 	default:
@@ -424,6 +426,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 #else
 		strcpy(reply, "Not supported");
 #endif
+	} else if (memcmp(command, "poweroff", 8) == 0 || memcmp(command, "shutdown", 8) == 0) {
+		/* Upstream calls powerOff() inline; deferred like reboot, so the reply
+		 * and its delivery-ack leave first. */
+		strcpy(reply, "OK - powering off");
+		scheduleReboot(REBOOT_POWEROFF);
 	} else if (memcmp(command, "reboot", 6) == 0) {
 		strcpy(reply, "OK - rebooting");
 		scheduleReboot(REBOOT_NORMAL);
@@ -445,7 +452,6 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (sender_timestamp > curr) {
 			getRTCClock()->setCurrentTime(sender_timestamp + 1);
 			time_sync_report(TIME_SYNC_CLI);
-			zephcore_rtc_save(sender_timestamp + 1);  /* persist to hardware RTC */
 			MeshTimeSync* ts = _callbacks->getMeshTimeSync();
 			if (ts) ts->noteManualSync((uint32_t)(k_uptime_get() / 1000));
 			uint32_t now = getRTCClock()->getCurrentTime();
@@ -468,7 +474,6 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (secs > curr) {
 			getRTCClock()->setCurrentTime(secs);
 			time_sync_report(TIME_SYNC_CLI);
-			zephcore_rtc_save(secs);  /* persist to hardware RTC */
 			MeshTimeSync* ts = _callbacks->getMeshTimeSync();
 			if (ts) ts->noteManualSync((uint32_t)(k_uptime_get() / 1000));
 			time_t t = (time_t)secs;
@@ -546,7 +551,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		snprintf(reply, CLI_REPLY_SIZE, "%s", _board->getManufacturerName());
 	} else if (memcmp(command, "sensor get ", 11) == 0) {
 		const char* key = command + 11;
-		const char* val = _callbacks->getSensorSettingByKey(key);
+		const char* val = _sensors->getSettingByKey(key);
 		if (val != nullptr) {
 			snprintf(reply, CLI_REPLY_SIZE, "> %s", val);
 		} else {
@@ -558,7 +563,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		int num = mesh::Utils::parseTextParts(tmp, parts, 2, ' ');
 		const char* key = (num > 0) ? parts[0] : "";
 		const char* value = (num > 1) ? parts[1] : "null";
-		if (_callbacks->setSensorSettingValue(key, value)) {
+		if (_sensors->setSettingValue(key, value)) {
 			strcpy(reply, "ok");
 		} else {
 			strcpy(reply, "can't find custom var");
@@ -566,7 +571,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 	} else if (memcmp(command, "sensor list", 11) == 0) {
 		char* dp = reply;
 		int start = 0;
-		int end = _callbacks->getNumSensorSettings();
+		int end = _sensors->getNumSettings();
 		if (strlen(command) > 11) {
 			start = _atoi(command + 12);
 		}
@@ -578,8 +583,8 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			int i;
 			for (i = start; i < end && (dp - reply < 134); i++) {
 				snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%s=%s\n",
-				    _callbacks->getSensorSettingName(i),
-				    _callbacks->getSensorSettingValue(i));
+				    _sensors->getSettingName(i),
+				    _sensors->getSettingValue(i));
 				dp = strchr(dp, 0);
 			}
 			if (i < end) {
@@ -589,7 +594,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			}
 		}
 	} else if (memcmp(command, "gps on", 6) == 0) {
-		if (_callbacks->setGpsEnabled(true)) {
+		if (_sensors->setSettingValue("gps", "1")) {
 			_prefs->gps_enabled = 1;
 			savePrefs();
 			strcpy(reply, "ok");
@@ -597,16 +602,27 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			strcpy(reply, "gps toggle not found");
 		}
 	} else if (memcmp(command, "gps off", 7) == 0) {
-		if (_callbacks->setGpsEnabled(false)) {
+		if (_sensors->setSettingValue("gps", "0")) {
 			_prefs->gps_enabled = 0;
 			savePrefs();
 			strcpy(reply, "ok");
 		} else {
 			strcpy(reply, "gps toggle not found");
 		}
+	} else if (memcmp(command, "gps sync", 8) == 0) {
+		/* ZEPHCORE: no LocationProvider::syncTime(); a fresh fix sets the
+		 * clock (gps_fix_callback in the mains) the same way. */
+		if (!_sensors->isGPSDetected()) {
+			strcpy(reply, "gps provider not found");
+		} else if (!gps_is_enabled()) {
+			strcpy(reply, "gps is off");
+		} else {
+			gps_request_fresh_fix();
+			strcpy(reply, "ok");
+		}
 	} else if (memcmp(command, "gps setloc", 10) == 0) {
-		_prefs->node_lat = _callbacks->getNodeLat();
-		_prefs->node_lon = _callbacks->getNodeLon();
+		_prefs->node_lat = _sensors->node_lat;
+		_prefs->node_lon = _sensors->node_lon;
 		savePrefs();
 		strcpy(reply, "ok");
 	} else if (memcmp(command, "gps advert", 10) == 0) {
@@ -633,7 +649,21 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			strcpy(reply, "error");
 		}
 	} else if (memcmp(command, "gps", 3) == 0) {
-		_callbacks->formatGpsStatsReply(reply);
+		/* Upstream's line. "standby" where upstream says "deactivated": the
+		 * GPS is on but asleep between duty-cycle fixes. Detail: get gps. */
+		if (!_sensors->isGPSDetected()) {
+			strcpy(reply, "Can't find GPS");
+		} else if (!gps_is_enabled()) {
+			strcpy(reply, "off");
+		} else {
+			struct gps_state_info gsi;
+			struct gps_position pos;
+			gps_get_state_info(&gsi);
+			snprintf(reply, CLI_REPLY_SIZE, "on, %s, %s, %d sats",
+				 gsi.state == GPS_STATE_INFO_ACQUIRING ? "active" : "standby",
+				 gps_get_last_known_position(&pos) ? "fix" : "no fix",
+				 (int)gsi.satellites);
+		}
 	} else if (memcmp(command, "powersaving", 11) == 0) {
 		strcpy(reply, "Not implemented");
 	} else if (memcmp(command, "log start", 9) == 0) {
@@ -1037,6 +1067,31 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		mesh::Utils::toHex(&reply[2], _callbacks->getSelfId().pub_key, PUB_KEY_SIZE);
 	} else if (memcmp(config, "role", 4) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s", _callbacks->getRole());
+	} else if (memcmp(config, "pwrmgt.support", 14) == 0) {
+		/* Upstream's replies. "supported" here: VBUS detection and the
+		 * boot battery voltage (nRF52); reset and shutdown reasons are on
+		 * every platform. */
+#if defined(CONFIG_SOC_SERIES_NRF52)
+		strcpy(reply, "> supported");
+#else
+		strcpy(reply, "> unsupported");
+#endif
+	} else if (memcmp(config, "pwrmgt.source", 13) == 0) {
+#if defined(CONFIG_SOC_SERIES_NRF52)
+		strcpy(reply, _board->isExternalPowered() ? "> external" : "> battery");
+#else
+		strcpy(reply, "ERROR: Power management not supported");
+#endif
+	} else if (memcmp(config, "pwrmgt.bootreason", 17) == 0) {
+		snprintf(reply, CLI_REPLY_SIZE, "> Reset: %s; Shutdown: %s",
+			 _board->getResetReasonString(_board->getResetReason()),
+			 _board->getShutdownReasonString(_board->getShutdownReason()));
+	} else if (memcmp(config, "pwrmgt.bootmv", 13) == 0) {
+#if defined(CONFIG_SOC_SERIES_NRF52)
+		snprintf(reply, CLI_REPLY_SIZE, "> %u mV", _board->getBootVoltage());
+#else
+		strcpy(reply, "ERROR: Power management not supported");
+#endif
 	} else if (memcmp(config, "bootloader.ver", 14) == 0) {
 		char ver[32];
 		if (_board->getBootloaderVersion(ver, sizeof(ver))) {
@@ -1087,6 +1142,30 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		uint32_t s = gps_get_poll_interval_sec();  // now-effective value
 		if (s == 0) strcpy(reply, "> always on (0)");
 		else snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)s);
+	} else if (memcmp(config, "gps", 3) == 0) {
+		/* The detail behind the `gps` line: duty-cycle state, fix age,
+		 * position. Per-constellation counts are in get gps diag. */
+		if (!gps_is_enabled()) {
+			strcpy(reply, "> off");
+		} else {
+			static const char* const state_str[] = { "off", "standby", "acquiring" };
+			struct gps_state_info gsi;
+			struct gps_position pos;
+			gps_get_state_info(&gsi);
+			const char* state = gsi.state < 3 ? state_str[gsi.state] : "unknown";
+			if (gps_get_last_known_position(&pos)) {
+				snprintf(reply, CLI_REPLY_SIZE,
+					 "> on state=%s sats=%u fix=%us ago lat=%.6f lon=%.6f",
+					 state, gsi.satellites, gsi.last_fix_age_s,
+					 pos.latitude_ndeg / 1e9, pos.longitude_ndeg / 1e9);
+			} else if (gsi.next_search_s > 0) {
+				snprintf(reply, CLI_REPLY_SIZE, "> on state=%s sats=%u no fix next=%us",
+					 state, gsi.satellites, gsi.next_search_s);
+			} else {
+				snprintf(reply, CLI_REPLY_SIZE, "> on state=%s sats=%u no fix",
+					 state, gsi.satellites);
+			}
+		}
 #if IS_ENABLED(CONFIG_ZEPHCORE_MEM_STATS)
 	} else if (memcmp(config, "mem", 3) == 0) {
 		memStatsLine(atoi(&config[3]), reply);
@@ -1681,8 +1760,7 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 		if (!ok) {
 			strcpy(reply, "usage: set gps duty <seconds> | default  (0 = always on)");
 		} else {
-			if (val > 604800UL) val = 604800UL;      // cap at 1 week
-			else if (val != 0 && val < 10) val = 10; // floor 10s (0 = always on)
+			val = clampGpsInterval(val);  // 0 = always on
 			_prefs->gps_interval = val;
 			gps_set_poll_interval_sec(val);          // apply live
 			savePrefs();

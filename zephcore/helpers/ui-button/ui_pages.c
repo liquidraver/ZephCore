@@ -20,7 +20,8 @@
 #include <helpers/buzzer_gate.h>
 
 #include <time_sync.h>
-#include <ZephyrSensorManager.h>
+#include <ZephyrGPSManager.h>
+#include <ZephyrEnvSensors.h>
 
 #include <zephyr/kernel.h>
 #include <stdio.h>

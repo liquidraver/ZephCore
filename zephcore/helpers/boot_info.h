@@ -39,6 +39,19 @@ int zephcore_boot_reset_cause_str(char *buf, size_t cap, bool hints);
  */
 uint32_t zephcore_boot_reset_cause_labelled(void);
 
+/* The fatal error that ended the previous run (helpers/fatal_reboot.c). pc
+ * and lr are 0 on Xtensa. */
+struct zephcore_crash {
+	uint32_t reason;        /* K_ERR_* */
+	uint32_t pc;
+	uint32_t lr;
+	char thread[20];
+};
+
+/* True if the previous run ended in a fatal error and rebooted (production
+ * builds, CONFIG_ZEPHCORE_RESET_ON_FATAL_ERROR). Call from main() or later. */
+bool zephcore_boot_crash(struct zephcore_crash *out);
+
 #ifdef __cplusplus
 }
 #endif

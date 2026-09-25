@@ -77,14 +77,16 @@ zephcore/
 │   │   ├── NoiseFloorEstimator.h  # Noise-floor EMA (host-tested)
 │   │   └── radio_common.h, radio_tuning.h  # Shared constants
 │   ├── ble/ZephyrBLE.cpp/h        # BLE NUS service, pairing, TX congestion
-│   ├── board/ZephyrBoard.cpp/h    # Battery ADC, LEDs, reboot, bootloader
+│   ├── board/ZephyrBoard.cpp/h    # Battery ADC, LEDs, reboot, bootloader, pwrmgt reasons
+│   ├── board/zephyr_poweroff.c/h  # The one power-off path + shutdown-reason marker
 │   ├── clock/                     # Millisecond uptime + software RTC + I2C RTC discovery
 │   ├── datastore/ZephyrDataStore.cpp/h  # LittleFS persistence
-│   ├── gps/ZephyrGPSManager.cpp/h      # GNSS state machine, power mgmt
+│   ├── gps/ZephyrGPSManager.cpp/h      # GNSS state machine, fix validation, public API
+│   ├── gps/gps_power.cpp, gps_module_cfg.cpp, gps_internal.h  # module power; module configuration + diag
 │   ├── mqtt/ZephyrMQTTPublisher.c/h    # MQTT packet publisher (observer / uplink)
 │   ├── ota/wifi_ota.c/h           # WiFi SoftAP + HTTP firmware upload
 │   ├── rng/ZephyrRNG.cpp/h        # Hardware CSPRNG with PRNG fallback
-│   ├── sensors/                   # I2C env sensors + power monitors
+│   ├── sensors/                   # ZephyrSensorManager (upstream SensorManager) over the I2C env sensors + power monitors
 │   ├── transport/                 # TCP companion (native Linux) + serial companion (STM32WL)
 │   ├── usb/                       # USB CDC for companion + repeater
 │   └── wifi/ZephyrWiFiStation.c/h # WiFi station client (ESP32)
@@ -724,8 +726,9 @@ Listen-only node (ESP32 only): receives LoRa packets and publishes them to an MQ
 
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
-GPS: `gps on/off/setloc/advert`, `set gps duty <sec>`
-Sensors: `sensor get/set/list`
+System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
+GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
+Sensors: `sensor get/set/list` (upstream's `SensorManager` settings: `gps`)
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
 Time: `clock`, `clock sync`, `time <epoch>`, `set meshtimesync on/off`
 
@@ -778,6 +781,10 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - Multi-constellation: GPS+GLONASS+Galileo+BeiDou with fallback
 - T1000-E: Complex 6-GPIO power sequencing with VRTC preservation
 - GPS time blocks phone time sync for 2 hours after last fix
+- Three files: `ZephyrGPSManager.cpp` (states, fix validation, public API), `gps_power.cpp` (power line / PMU rail / UART sleep commands, UARTE PM), `gps_module_cfg.cpp` (GNSS-API or PMTK/PCAS/UBX configuration, `get gps diag`); `gps_internal.h` carries the feature detection
+- **Main thread only.** The GNSS callbacks (system work queue) only validate and post: a validated fix is snapshotted and handed to the fix callback by `gps_process_event()` on the main thread, so the callback sets the clock and the node position directly. The UI's GPS toggles post an action too.
+- The SoC light-sleep lock is held only while ACQUIRING (`gps_hold_sleep_lock()`, tracked 1:1), never through standby
+- Boot: servers apply `prefs.gps_enabled` like upstream's `applyGpsPrefs()` (`zc.gps_set` in prefs.json marks it a real choice; older files are upgraded to on once, because older firmware ran the GPS regardless). The observer parks its GPS (`gps_park()`)
 
 **Duty cycle vs always-on**
 
@@ -811,6 +818,13 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
+- Battery reading cached 10 s for every caller (UI, telemetry, stats, alerts), under a mutex
+- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), power latch released, System OFF
+- Upstream's pwrmgt getters: reset cause from `boot_info`, the last fatal error from `fatal_reboot.c`'s `__noinit` record (reason, pc, lr, thread; resolve pc with `addr2line` on the same build), shutdown reason from the `/lfs/shutdn` marker, battery voltage at boot
+
+**Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1. Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
+
+**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back.
 
 **LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
 flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the

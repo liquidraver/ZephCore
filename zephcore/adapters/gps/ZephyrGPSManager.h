@@ -25,21 +25,17 @@ struct gps_position {
 	int64_t timestamp_ms;    /* Timestamp when fix was acquired */
 };
 
+/* gps_state_info.state */
+#define GPS_STATE_INFO_OFF        0
+#define GPS_STATE_INFO_STANDBY    1
+#define GPS_STATE_INFO_ACQUIRING  2
+
 /* GPS state info for UI display */
 struct gps_state_info {
 	uint8_t state;          /* 0=OFF, 1=STANDBY (sleeping), 2=ACQUIRING (searching) */
 	uint16_t satellites;    /* Current/last satellite count */
 	uint32_t last_fix_age_s;  /* Seconds since last validated fix (UINT32_MAX = never) */
 	uint32_t next_search_s;   /* Seconds until next search (0 = searching now or off) */
-	/* Tracked satellites per constellation, from GSV talker IDs. Populated
-	 * only when CONFIG_ZEPHCORE_GPS_SAT_DIAG is enabled; all zero otherwise.
-	 * Proves whether multi-constellation configuration actually took — a
-	 * module left in its GPS-only default reports sats_gps only. */
-	uint8_t sats_gps;
-	uint8_t sats_glonass;
-	uint8_t sats_galileo;
-	uint8_t sats_beidou;
-	uint8_t sats_other;
 };
 
 /* ===== GPS configuration diagnostics (runtime toggle, RAM only) =====
@@ -52,7 +48,6 @@ struct gps_state_info {
  *
  * Not persisted: a diagnostic, not a setting. Clears on reboot. */
 void gps_set_diag(bool on);
-bool gps_get_diag(void);
 
 /* Render the last configuration attempt as a single CLI line. Always
  * succeeds; reports "never run" if configuration has not happened yet. */
@@ -63,8 +58,9 @@ typedef void (*gps_enable_callback_t)(bool enabled);
 void gps_set_enable_callback(gps_enable_callback_t cb);
 
 /* GPS fix callback - called when GPS acquires a validated fix (3 consecutive good fixes)
- * Parameters: latitude (degrees), longitude (degrees), utc_time (Unix timestamp)
- * Use this to update node position for mesh advertising */
+ * Parameters: latitude (degrees), longitude (degrees), utc_time (Unix timestamp,
+ * 0 if the fix carried no usable date). Runs on the main thread, from
+ * gps_process_event(), so it may set the clock and prefs directly. */
 typedef void (*gps_fix_callback_t)(double lat, double lon, int64_t utc_time);
 void gps_set_fix_callback(gps_fix_callback_t cb);
 
@@ -129,14 +125,16 @@ void gps_get_state_info(struct gps_state_info *info);
  * current while nRF52840 is in System OFF (GPIO latches persist). */
 void gps_power_off_for_shutdown(void);
 
-/* Set repeater mode for GPS - time sync only, minimal power usage.
- * In repeater mode:
- * - GPS starts powered OFF
- * - Wakes every 48 hours for RTC time sync
- * - 5 minute timeout to acquire fix
- * - Powers off after fix or timeout
- * Call this at boot for repeater role before any gps_enable() calls. */
+/* Set repeater (time-sync) mode: every acquire window is the fixed 5-minute
+ * one, then standby for the poll interval (a server's default is
+ * CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC). Mode only: it does not power the
+ * GPS; gps_enable() does. Call at boot before any gps_enable(). */
 void gps_set_repeater_mode(bool repeater);
+
+/* For a role that never uses its GPS (the observer), instead of
+ * gps_manager_init(): power the module down and release its UART, which would
+ * otherwise stay powered and armed for the whole uptime. */
+void gps_park(void);
 
 #ifdef __cplusplus
 }

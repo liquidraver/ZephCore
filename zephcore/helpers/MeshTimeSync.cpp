@@ -6,7 +6,6 @@
 
 #include "MeshTimeSync.h"
 
-#include <adapters/clock/ZephyrRTCDiscover.h>
 #include <helpers/time_sync.h>
 #include <zephyr/kernel.h>
 #include <zephyr/logging/log.h>
@@ -349,7 +348,6 @@ bool MeshTimeSync::runTick(mesh::RTCClock &rtc)
 	}
 	uint32_t new_time = (uint32_t)nt;
 	rtc.setCurrentTime(new_time);
-	zephcore_rtc_save(new_time);
 	time_sync_report(TIME_SYNC_MESH);
 	noteStepApplied(v.delta, up, v.bootstrap);
 	LOG_WRN("stepped clock %+ld s (%s, votes %u/%u) -> %u",

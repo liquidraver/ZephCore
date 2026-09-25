@@ -39,7 +39,7 @@
 #include <zephyr/init.h>
 #include <zephyr/pm/pm.h>
 
-#include <esp_rom_uart.h>
+#include <esp_rom_serial_output.h>
 
 #include "pm_sleep_guard.h"
 
@@ -58,7 +58,7 @@ static void pm_console_flush(enum pm_state state)
 	 * is safe in this context (called with the scheduler locked).  Bounded
 	 * by the FIFO depth at the configured baud: ~11 ms worst case for a full
 	 * 128-byte FIFO at 115200, and normally microseconds. */
-	esp_rom_uart_tx_wait_idle(CONFIG_ZEPHCORE_PM_CONSOLE_UART_NUM);
+	esp_rom_output_tx_wait_idle(CONFIG_ZEPHCORE_PM_CONSOLE_UART_NUM);
 }
 
 static struct pm_notifier console_notifier = {

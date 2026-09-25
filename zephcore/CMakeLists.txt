@@ -352,13 +352,17 @@ target_sources(app PRIVATE
   src/StaticPoolPacketManager.cpp
   src/Utils.cpp
   adapters/board/ZephyrBoard.cpp
+  adapters/board/zephyr_poweroff.c
   adapters/radio/LoRaRadio.cpp
   adapters/radio/CadController.cpp
   adapters/clock/ZephyrMillisecondClock.cpp
   adapters/clock/ZephyrRTCClock.cpp
   adapters/rng/ZephyrRNG.cpp
   adapters/gps/ZephyrGPSManager.cpp
+  adapters/gps/gps_power.cpp
+  adapters/gps/gps_module_cfg.cpp
   adapters/sensors/ZephyrEnvSensors.cpp
+  adapters/sensors/ZephyrSensorManager.cpp
   helpers/AdvertDataHelpers.cpp
   helpers/MeshTimeSync.cpp
   # Captures the reset cause before anything consumes it; every role needs it

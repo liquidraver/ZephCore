@@ -13,13 +13,12 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
-#include <adapters/sensors/SimpleLPP.h>
+#include <math.h>
 #if IS_ENABLED(CONFIG_BT)
 #include <adapters/ble/ZephyrBLE.h>
 #endif
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <helpers/time_sync.h>
-#include <adapters/clock/ZephyrRTCDiscover.h>
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #include <ui_task.h>
 #define ZEPHCORE_HAS_UI_TASK 1
@@ -1175,148 +1174,29 @@ void CompanionMesh::onChannelDataRecv(const mesh::GroupChannel &channel, mesh::P
 	pushMsgWaiting();
 }
 
+/* Upstream's telemetry (MyMesh::onContactRequest): the battery on the node's
+ * own channel, the sensors (sensors.querySensors: GPS, then a channel each),
+ * the MCU temperature on the node's channel. */
 int CompanionMesh::appendSelfTelemetry(uint8_t *reply, uint8_t permissions)
 {
-	int i = 0;
-	const uint8_t CH_SELF = 1;
+	CayenneLPP telemetry(MAX_PACKET_PAYLOAD - 4);
 
-	// Battery voltage: [channel][LPP_VOLTAGE=116][2-byte 0.01V big-endian]
-	uint16_t batt_mv = _batt_cb ? _batt_cb() : 0;
-	reply[i++] = CH_SELF;
-	reply[i++] = 116;  // LPP_VOLTAGE
-	uint16_t batt_scaled = batt_mv / 10;
-	reply[i++] = (batt_scaled >> 8) & 0xFF;
-	reply[i++] = batt_scaled & 0xFF;
+	telemetry.addVoltage(TELEM_CHANNEL_SELF, (float)(_batt_cb ? _batt_cb() : 0) / 1000.0f);
+	sensors.querySensors(permissions, telemetry);
 
-	// GPS position if authorized and available
-	if (permissions & TELEM_PERM_LOCATION) {
-		struct gps_position pos;
-		if (gps_is_available() && gps_get_last_known_position(&pos)) {
-			reply[i++] = CH_SELF;
-			reply[i++] = 136;  // LPP_GPS
-			int32_t lat = (int32_t)(pos.latitude_ndeg / 100000);
-			int32_t lon = (int32_t)(pos.longitude_ndeg / 100000);
-			int32_t alt = pos.altitude_mm / 10;
-			reply[i++] = (lat >> 16) & 0xFF;
-			reply[i++] = (lat >> 8) & 0xFF;
-			reply[i++] = lat & 0xFF;
-			reply[i++] = (lon >> 16) & 0xFF;
-			reply[i++] = (lon >> 8) & 0xFF;
-			reply[i++] = lon & 0xFF;
-			reply[i++] = (alt >> 16) & 0xFF;
-			reply[i++] = (alt >> 8) & 0xFF;
-			reply[i++] = alt & 0xFF;
-		} else if (prefs.node_lat != 0 || prefs.node_lon != 0) {
-			// Use configured position
-			reply[i++] = CH_SELF;
-			reply[i++] = 136;  // LPP_GPS
-			int32_t lat = (int32_t)(prefs.node_lat * 10000);
-			int32_t lon = (int32_t)(prefs.node_lon * 10000);
-			int32_t alt = 0;
-			reply[i++] = (lat >> 16) & 0xFF;
-			reply[i++] = (lat >> 8) & 0xFF;
-			reply[i++] = lat & 0xFF;
-			reply[i++] = (lon >> 16) & 0xFF;
-			reply[i++] = (lon >> 8) & 0xFF;
-			reply[i++] = lon & 0xFF;
-			reply[i++] = (alt >> 16) & 0xFF;
-			reply[i++] = (alt >> 8) & 0xFF;
-			reply[i++] = alt & 0xFF;
-		}
+	float temperature = _board ? _board->getMCUTemperature() : NAN;
+	if (!isnan(temperature)) {
+		telemetry.addTemperature(TELEM_CHANNEL_SELF, temperature);
 	}
 
-	/* Sensors are read once here.  External temp/humidity/pressure require
-	 * TELEM_PERM_ENVIRONMENT, but the MCU die temperature is reported under
-	 * base permission — matching Arduino MeshCore (15e259c5) and ZephCore's
-	 * own repeater/room-server telemetry, neither of which gates it. */
-	struct env_data env;
-	bool env_ok = (env_sensors_read(&env) == 0);
-	bool temp_reported = false;
-
-	if (permissions & TELEM_PERM_ENVIRONMENT) {
-		if (env_ok) {
-			if (env.has_temperature) {
-				temp_reported = true;
-				reply[i++] = CH_SELF;
-				reply[i++] = LPP_TEMPERATURE;
-				int16_t temp = (int16_t)(env.temperature_c * 10);
-				reply[i++] = (temp >> 8) & 0xFF;
-				reply[i++] = temp & 0xFF;
-			}
-			if (env.has_humidity) {
-				reply[i++] = CH_SELF;
-				reply[i++] = LPP_RELATIVE_HUMIDITY;
-				reply[i++] = (uint8_t)(env.humidity_pct * 2);
-			}
-			if (env.has_pressure) {
-				reply[i++] = CH_SELF;
-				reply[i++] = LPP_BAROMETRIC_PRESSURE;
-				uint16_t press = (uint16_t)(env.pressure_hpa * 10);
-				reply[i++] = (press >> 8) & 0xFF;
-				reply[i++] = press & 0xFF;
-			}
-			if (env.has_luminosity) {
-				reply[i++] = CH_SELF;
-				reply[i++] = LPP_LUMINOSITY;
-				float lum = env.luminosity;
-				if (lum < 0.0f) lum = 0.0f;
-				if (lum > 65535.0f) lum = 65535.0f;
-				uint16_t lux = (uint16_t)lum;
-				reply[i++] = (lux >> 8) & 0xFF;
-				reply[i++] = lux & 0xFF;
-			}
-		}
-
-		// Power monitor telemetry (INA219/INA3221/ina2xx)
-		if (power_sensors_available()) {
-			struct power_data pwr;
-			if (power_sensors_read(&pwr) == 0) {
-				uint8_t ch = CH_SELF + 1;
-				for (int j = 0; j < pwr.num_channels; j++) {
-					if (pwr.channels[j].valid) {
-						// Voltage: [ch][LPP_VOLTAGE=116][2-byte 0.01V signed]
-						reply[i++] = ch;
-						reply[i++] = 116;
-						int16_t v = (int16_t)(pwr.channels[j].voltage_v * 100);
-						reply[i++] = (v >> 8) & 0xFF;
-						reply[i++] = v & 0xFF;
-						// Current: [ch][LPP_CURRENT=117][2-byte 0.001A signed]
-						// Signed: a bidirectional monitor (INA219) reports discharge
-						// as negative, and an unsigned cast saturates it to 0.
-						reply[i++] = ch;
-						reply[i++] = 117;
-						int16_t c = (int16_t)(pwr.channels[j].current_a * 1000);
-						reply[i++] = (c >> 8) & 0xFF;
-						reply[i++] = c & 0xFF;
-						// Power: [ch][LPP_POWER=128][2-byte 1W]
-						reply[i++] = ch;
-						reply[i++] = 128;
-						uint16_t p = (uint16_t)(pwr.channels[j].power_w);
-						reply[i++] = (p >> 8) & 0xFF;
-						reply[i++] = p & 0xFF;
-						ch++;
-					}
-				}
-			}
-		}
-	}
-
-	/* MCU die temperature — reported under base permission, but only when no
-	 * external sensor already supplied a CH_SELF temperature (never emit two). */
-	if (!temp_reported && env_ok && env.has_mcu_temperature) {
-		reply[i++] = CH_SELF;
-		reply[i++] = LPP_TEMPERATURE;
-		int16_t temp = (int16_t)(env.mcu_temperature_c * 10);
-		reply[i++] = (temp >> 8) & 0xFF;
-		reply[i++] = temp & 0xFF;
-	}
-
-	// Trigger GPS wake for fresh fix on next request
-	if (gps_is_available() && gps_is_enabled()) {
+	/* ZEPHCORE: wake the GPS so the next request has a fresher fix. */
+	if ((permissions & TELEM_PERM_LOCATION) && gps_is_enabled()) {
 		gps_request_fresh_fix();
 	}
 
-	return i;
+	uint8_t tlen = telemetry.getSize();
+	memcpy(reply, telemetry.getBuffer(), tlen);
+	return tlen;
 }
 
 uint8_t CompanionMesh::onContactRequest(const ContactInfo &contact, uint32_t sender_timestamp,
@@ -2310,7 +2190,6 @@ bool CompanionMesh::handleCmdSetDeviceTime(const uint8_t *data, size_t len)
 		if (secs >= curr) {
 			getRTCClock()->setCurrentTime(secs);
 			time_sync_report(TIME_SYNC_APP);
-			zephcore_rtc_save(secs);  /* persist to hardware RTC */
 			_timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
 			writeOKFrame();
 			/* App just gave us wall time — activate the deferred
@@ -2951,11 +2830,8 @@ bool CompanionMesh::handleCmdSendTelemetryReq(const uint8_t *data, size_t len)
 		// Self-telemetry request: return battery, GPS, and environment data
 		// Format: Cayenne LPP: [channel][type][data...]
 		// Response: [PUSH_CODE_TELEMETRY_RESPONSE][reserved][6-byte pubkey][telemetry_data]
-		// Worst-case size tracks POWER_MAX_CHANNELS so a future bump can't
-		// silently overflow this stack buffer. With current value 4:
-		// header(8) + batt(4) + gps(11) + env(temp4+hum3+press4+lum4=15)
-		// + power(POWER_MAX_CHANNELS * 12 = 48) + 8 byte safety pad = 94.
-		uint8_t rsp[8 + 4 + 11 + 15 + (12 * POWER_MAX_CHANNELS) + 8];
+		// header(8) + at most MAX_PACKET_PAYLOAD - 4 of telemetry.
+		uint8_t rsp[8 + MAX_PACKET_PAYLOAD - 4];
 		int i = 0;
 		rsp[i++] = PUSH_CODE_TELEMETRY_RESPONSE;
 		rsp[i++] = 0;  // reserved
@@ -3308,9 +3184,9 @@ bool CompanionMesh::handleCmdSetCustomVar(const uint8_t *data, size_t len)
 			} else if (strcmp(key, "gps_interval") == 0) {
 				uint32_t interval = (uint32_t)atoi(val);
 				if (interval > 0 && interval <= 86400) {
-					gps_set_poll_interval_sec(interval);
-					/* Persist GPS interval across reboots */
-					prefs.gps_interval = interval;
+					/* Stored as the GPS will run it (5 s is 10 s). */
+					prefs.gps_interval = clampGpsInterval(interval);
+					gps_set_poll_interval_sec(prefs.gps_interval);
 					_store->savePrefs(prefs);
 					writeOKFrame();
 				} else {

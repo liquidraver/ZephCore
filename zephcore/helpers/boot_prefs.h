@@ -24,9 +24,10 @@
  *     readback is correct and the hardware disagrees.
  *   - after ui_init(), so the heartbeat cycle exists to be stopped.
  *   - after the GPS fix/event callbacks are registered, because
- *     gps_set_repeater_mode() starts acquisition immediately.
- * gps_time_sync: put GPS in repeater (time-sync-only) mode.  Only roles that
- * own the GPS pass true. */
+ *     gps_enable() starts acquisition immediately.
+ * gps_time_sync: put GPS in repeater (time-sync-only) mode and apply
+ * prefs.gps_enabled, as upstream's applyGpsPrefs().  Only roles that own the
+ * GPS pass true. */
 static inline void apply_boot_prefs(const NodePrefs *p, bool gps_time_sync)
 {
 	bool leds_off = p->leds_disabled != 0;
@@ -39,6 +40,11 @@ static inline void apply_boot_prefs(const NodePrefs *p, bool gps_time_sync)
 	if (gps_time_sync && gps_is_available()) {
 		gps_set_poll_interval_sec(p->gps_interval);
 		gps_set_repeater_mode(true);
+		if (p->gps_enabled) {
+			gps_enable(true);
+		} else {
+			gps_ensure_power_state(false);
+		}
 	}
 }
 

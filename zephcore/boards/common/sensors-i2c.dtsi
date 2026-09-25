@@ -24,7 +24,8 @@
  *  SHT3xD      │ 0x44    │ sensirion,sht3xd    │ temp + humidity
  *  BME280      │ 0x76    │ bosch,bme280        │ temp + humidity + pressure
  *  BME680      │ 0x76    │ bosch,bme680        │ temp + humidity + pressure + gas
- *  BMP280      │ 0x77    │ bosch,bme280        │ temp + pressure (BME280 driver)
+ *  BME280      │ 0x77    │ bosch,bme280        │ bme280_alt: the same parts, other address
+ *  BMP280      │ 0x76/77 │ bosch,bme280        │ temp + pressure (BME280 driver)
  *  BMP388      │ 0x77    │ bosch,bmp388        │ temp + pressure
  *  LPS22HB     │ 0x5C    │ st,lps22hb-press    │ pressure + temp
  *
@@ -38,9 +39,9 @@
  *  defined.  We use BME280 as default (its driver also handles BMP280).
  *  Boards with BME680 should override this node in their overlay.
  *
- *  Note: BMP280 uses the BME280 driver (same register set), at alt
- *  address 0x77.  BMP388 also uses 0x77.  Only one can be defined —
- *  we use BMP388 since it's the newer part.
+ *  Note: BMP280 uses the BME280 driver (same register set). 0x77 carries
+ *  two nodes, bme280_alt and bmp388: each driver checks its chip ID, so
+ *  only the part actually fitted comes up.
  *
  * ─── Power Monitor Sensors (voltage / current / power) ───
  *
@@ -81,6 +82,14 @@ sht4x: sht4x@44 {
 bme280: bme280@76 {
 	compatible = "bosch,bme280";
 	reg = <0x76>;
+};
+
+/* The same parts strapped to their other address (the Adafruit breakouts'
+ * default), as upstream 2a6eabe1 probes both. Shares 0x77 with bmp388: each
+ * driver checks its chip ID, so only the part actually fitted comes up. */
+bme280_alt: bme280@77 {
+	compatible = "bosch,bme280";
+	reg = <0x77>;
 };
 
 /* ── Pressure (standalone) ── */

@@ -237,6 +237,7 @@ protected:
 		def("tz_offset", _p->tz_offset);
 		def("backoff", _p->backoff_multiplier);
 		def("disc_ts", _p->discovery_mod_timestamp);
+		def("gps_set", _p->gps_enabled_set);
 	}
 
 public:
@@ -329,8 +330,16 @@ bool serverPrefsFromJson(NodePrefs &p, Stream &in)
 	NodePrefs t = p;
 	ServerJson j(&t);
 
+	/* Absent keys keep the caller's value, so clear the marker first: a
+	 * file from before it existed was written by firmware that ran the GPS
+	 * regardless of gps.en, and keeps doing so (NodePrefs.h). */
+	t.gps_enabled_set = 0;
 	if (!j.load(in)) {
 		return false;
+	}
+	if (!t.gps_enabled_set) {
+		t.gps_enabled = 1;
+		t.gps_enabled_set = 1;
 	}
 	saneRadio(t);
 	sanitizeNodePrefs(&t);
