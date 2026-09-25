@@ -1,4 +1,4 @@
-# Build output (west build creates these)
+# ---- Build output ------------------------------------------------------------
 /build*/
 build/
 build-*/
@@ -6,46 +6,58 @@ build-*/
 **/build-*/
 **/build_*/
 /twister-out*/
-/build-tests/
 /test-results/
 /tests/lab.local.yaml
+CMakeCache.txt
+CMakeFiles/
+.ninja_*
+cmake_install.cmake
+Makefile
+compile_commands.json
 
-# Regression suite stays local until it is ready to publish.
-/tests/
-/.github/workflows/tests.yml
-/docs/REGRESSION_TEST_PLAN.md
-
-# West workspace (recreated by west init/update)
+# ---- West workspace: projects `west update` fetches beside zephcore/ -----------
 /.west/
-
-# Zephyr SDK and toolchain (large, downloaded separately)
-/bootloader/
-/doc/
+/zephyr/
 /modules/
 /tools/
-/zephyr/
+/doc/
+/bootloader/
 
-# Python
-.venv/
-__pycache__/
-*.pyc
+# ---- Local-only working docs --------------------------------------------------
+# devdocs/ holds the restructure plan, LLDs, audit indexes, handovers, trackers.
+/devdocs/
+/westchanges/
+/meshtimesync-sim/
+CLAUDE.md
+# Working docs dropped at the root by habit: matched by shape, not one by one
+# (a per-file list once missed one and it went into a commit).
+[Hh][Aa][Nn][Dd][Oo][Vv][Ee][Rr]_*.md
+*_AUDIT_INDEX.md
+*_HANDOFF.md
+UPSTREAM_TRACKER.md
+WEST_UPDATE.md
 
-# Editors / IDE
-.vscode/
-.idea/
-*.swp
-*~
-*.bak
+# Vendor reference docs (datasheets, errata): not ours to redistribute.
+/datasheets/
 
-# Debug artifacts
+# Release notes of versions released before the tracked set began. The notes
+# file of the CURRENT version must stay tracked: the release workflow publishes
+# it as the GitHub release body (body_path).
+releasenotes/RELEASE_NOTES_1.16.3-zephcore.md
+releasenotes/RELEASE_NOTES_1.16.4-zephcore.md
+
+# ---- Debug artifacts ----------------------------------------------------------
 *.log
+rtt_*.txt
 jlink_*.txt
-rtt_*.log
+*.jlink
+*.dmp
+core
+*.tmp
+*.orig
 
-# UF2 / binary artifacts
+# ---- Binaries -----------------------------------------------------------------
 *.uf2
-!formatter/
-!formatter/*.uf2
 *.hex
 *.bin
 *.elf
@@ -54,120 +66,26 @@ rtt_*.log
 *.o
 *.a
 *.zip
-
-# ...except the prebuilt formatter DFU packages. These are shipped artifacts, not
-# build output: build.sh publishes them as the Mesh America configurator's `erase`
-# packages (see formatter/README.md, PROVIDER_CATALOG.md), so they must be tracked.
+# ...except shipped artifacts: the SoftDevice formatter DFU packages (build.sh
+# publishes them as the configurator's `erase` packages, formatter/README.md) and
+# the prebuilt LR1110 radio-firmware updaters (LR1110_updater/README.md).
+!formatter/
+!formatter/*.uf2
 !formatter/*.zip
-
-# ...and the prebuilt LR1110 radio-firmware updaters. Also shipped artifacts:
-# updating an LR1110 needs Semtech's encrypted images compiled in, so handing
-# someone a prebuilt binary is far more practical than asking them to build the
-# tool. See LR1110_updater/README.md.
 !LR1110_updater/
 !LR1110_updater/*.uf2
 !LR1110_updater/*.bin
 
-# OS junk
+# ---- Tooling ------------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+.claude/
+.vscode/
+.idea/
+*.swp
+*~
+*.bak
 .DS_Store
 Thumbs.db
 desktop.ini
-
-# Claude Code project data
-.claude/
-
-# RTT output files (missed by *.log pattern)
-rtt_*.txt
-
-# JLink scripts and outputs
-*.jlink
-
-# Internal working docs: per-topic audit indexes, handovers, handoffs, and
-# other local-only scratch notes (see the HANDOVER_*/​*_AUDIT_INDEX rules below,
-# kept for pre-2026-08-24 history/muscle memory even though this covers them).
-/devdocs/
-
-# Temporary/scratch files
-*.tmp
-*.orig
-
-# CMake/Ninja build system
-CMakeCache.txt
-CMakeFiles/
-.ninja_*
-cmake_install.cmake
-Makefile
-compile_commands.json
-
-# Memory dumps
-*.dmp
-core
-
-# Utility/test source files
-meshcore/src/eraser_main.cpp
-zephcore/AUDIT_FINDINGS.md
-
-# Upstream tracking (local only)
-UPSTREAM_TRACKER.md
-WEST_UPDATE.md
-/westchanges/
-
-# Side projects (not part of main firmware)
-/doom/
-THINKNODE_M1_HANDOVER.md
-CLAUDE.md
-# Working docs at the workspace root are local-only: per-topic audit indexes,
-# handovers and handoffs.  These were listed one file at a time, which meant
-# every new one had to be remembered — and one was not, so it went into a commit
-# before anybody noticed.  Match by shape instead; the individual lines below are
-# now redundant but harmless.
-[Hh][Aa][Nn][Dd][Oo][Vv][Ee][Rr]_*.md
-*_AUDIT_INDEX.md
-*_AUDIT_HANDOFF.md
-*_HANDOFF.md
-
-zephcore/apc_checklist.md
-RADIO_AUDIT_INDEX.md
-RX_BUSY_LATCH_PLAN.md
-zephcore/SX126X_LBT_RX_DEBUG_HANDOFF.md
-PSRAM_HANDOFF.md
-BLE_AUDIT_INDEX.md
-POWER_AUDIT_HANDOFF.md
-POWER_AUDIT_INDEX.md
-CRYPTO_AUDIT_HANDOFF.md
-CRYPTO_AUDIT_INDEX.md
-AUDIT_MASTER_PLAN.md
-usb_companion_probe.py
-CORE_MESH_AUDIT_INDEX.md
-UPLINK_AUDIT_INDEX.md
-GPS_AUDIT_INDEX.md
-UI_AUDIT_INDEX.md
-RADIO2_AUDIT_INDEX.md
-MISC_AUDIT_INDEX.md
-HANDOVER_issue34_ble_esp32.md
-HANDOVER_crypto_hw_accel.md
-PATH_HASH_AUDIT_INDEX.md
-MESHTIMESYNC_PLAN.md
-/meshtimesync-sim/
-
-# Older release notes kept local-only. Renamed 2026-07-16 to the
-# RELEASE_NOTES_<version>-zephcore.md convention; these rules follow the rename.
-# NOTE: the notes file for the CURRENT version must stay TRACKED — the release
-# workflow publishes it as the GitHub release body (body_path). Only add a rule
-# here for versions that are already released.
-releasenotes/RELEASE_NOTES_1.16.3-zephcore.md
-releasenotes/RELEASE_NOTES_1.16.4-zephcore.md
-handover_thinknode_m9.md
-
-# Vendor reference docs (datasheets, errata). Local only — not ours to redistribute.
-/datasheets/
-LR2021_AUDIT_INDEX.md
-HANDOVER_lr2021_audit.md
-
-# LR2021 bring-up scratch: the CAD_LBT revert patch and its measurement notes.
-# Local only, like the audit index and handover above.  Ignore the whole
-# directory — per-file rules were tried and could not work, because .gitignore
-# does not apply to paths already in the index (three of these went into
-# b839c2c for exactly that reason; untrack with `git rm -r --cached`).
-lr2021_bench/
-LR2021_MATH_AUDIT.md

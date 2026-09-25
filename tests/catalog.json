@@ -1,0 +1,526 @@
+{
+  "schema_version": 1,
+  "profile": "quick",
+  "cases": [
+    {
+      "id": "UNIT-ADVERT-001",
+      "name": "Independent advertisement vector",
+      "source": "tests/unit/advert_tests.cpp"
+    },
+    {
+      "id": "UNIT-ADVERT-002",
+      "name": "Optional fields reject truncation and names stay bounded",
+      "source": "tests/unit/advert_tests.cpp"
+    },
+    {
+      "id": "UNIT-BATTERY-001",
+      "name": "Battery endpoints interpolation multicell scaling and monotonicity",
+      "source": "tests/unit/helper_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-001",
+      "name": "Level window narrows only where the driver clamp binds",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-002",
+      "name": "Configure keeps the learned peak across a base change and clamps to the window",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-003",
+      "name": "Staircase steps up below the knee, down on a clean plateau and holds at the knee",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-004",
+      "name": "Descent into the airtime cap is blocked by the hysteresis band",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-005",
+      "name": "Safety rung steps up on a pathological or over-cap level regardless of auto",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-006",
+      "name": "Visits use their own offset and TX starvation relaxes the offset in force",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-007",
+      "name": "Probe levels sweep when manual and mix operating and neighbours when auto",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CAD-008",
+      "name": "Pending verdicts book tp or fp, unresolved ones are withdrawn and reset drops them",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-CONTENTION-001",
+      "name": "Observation window exact boundary and wrap",
+      "source": "tests/unit/contention_tests.cpp"
+    },
+    {
+      "id": "UNIT-CONTENTION-002",
+      "name": "Duplicate saturation and exactly-once finalization",
+      "source": "tests/unit/contention_tests.cpp"
+    },
+    {
+      "id": "UNIT-CONTENTION-003",
+      "name": "Reactive airtime and hard caps plus disabled backoff",
+      "source": "tests/unit/contention_tests.cpp"
+    },
+    {
+      "id": "UNIT-CONTENTION-004",
+      "name": "Warmup eviction and decay independent of tick frequency",
+      "source": "tests/unit/contention_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-001",
+      "name": "Immediate wake delayed dispatch and exactly-once completion",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-002",
+      "name": "TX timeout releases ownership and next send recovers",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-003",
+      "name": "Driver refusal preserves priority schedule and accounting",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-004",
+      "name": "LBT starvation survives interleaved retry-gap wakes",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-005",
+      "name": "Final RX gate requeues without driver call or lost priority",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-006",
+      "name": "Persistent RX busy recovers and resumes sending",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-007",
+      "name": "Airtime budget gates and refills at the exact threshold",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-008",
+      "name": "Due admin packet can transmit after budget depletion",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-009",
+      "name": "One wake drains RX ring rejects invalid packets and returns slots",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-010",
+      "name": "Manual hold and delayed retransmit retain correct ownership",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-011",
+      "name": "Maintenance never consumes TX completion and reports CAD changes",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-012",
+      "name": "Stall watchdog latches without perpetual immediate deadline",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-013",
+      "name": "Invalid outbound packet releases slot without queue wake",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-014",
+      "name": "Dispatcher parser rejects incomplete route headers before reading",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-015",
+      "name": "TX accounting uses modem airtime across stats reset while active",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-016",
+      "name": "Delayed send and TX expiry operate across clock wrap",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-017",
+      "name": "Generated dispatcher inputs obey version header and path bounds",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-IDENTITY-001",
+      "name": "RFC8032 Ed25519 public keys and exact signatures",
+      "source": "tests/unit/identity_tests.cpp"
+    },
+    {
+      "id": "UNIT-IDENTITY-002",
+      "name": "Reject altered signature message and wrong signer",
+      "source": "tests/unit/identity_tests.cpp"
+    },
+    {
+      "id": "UNIT-IDENTITY-003",
+      "name": "Canonical legacy and private-only storage retain signing identity",
+      "source": "tests/unit/identity_tests.cpp"
+    },
+    {
+      "id": "UNIT-IDENTITY-004",
+      "name": "Malformed storage fails without replacing existing identity",
+      "source": "tests/unit/identity_tests.cpp"
+    },
+    {
+      "id": "UNIT-IDENTITY-005",
+      "name": "Real Ed25519-to-X25519 exchange agrees in both directions",
+      "source": "tests/unit/identity_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-001",
+      "name": "Preamble grace is (preamble+8) symbols rounded up with an unconfigured default",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-002",
+      "name": "Max-payload bound is 255 B at CR 4/8 with LDRO plus 25% and 100 ms",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-003",
+      "name": "Chip timer conversion saturates at 24 bits instead of wrapping",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-004",
+      "name": "LR11xx detPeak base table cells symbol adjustment and clamp headroom",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-NOISE-001",
+      "name": "Noise floor seeds from the first sample within the clamp window",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-NOISE-002",
+      "name": "Warm-up accepts everything then outliers are rejected except the periodic bypass",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-NOISE-003",
+      "name": "EMA step rounds to nearest symmetrically with a +-3 dB dead zone",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-NOISE-004",
+      "name": "Median of an even burst and the quiet verdict against the floor",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-001",
+      "name": "Exhaust all path encodings",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-002",
+      "name": "Zero-hop hash-width regression and bounded copying",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-003",
+      "name": "Independent transport-direct wire vector",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-004",
+      "name": "All header bytes and payload boundaries",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-005",
+      "name": "Reject truncated headers and paths",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-006",
+      "name": "Seeded valid packets preserve wire fields",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-007",
+      "name": "Seeded arbitrary input parser invariants",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PACKET-008",
+      "name": "Ordinary and TRACE hash input contracts (not crypto)",
+      "source": "tests/unit/packet_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-001",
+      "name": "Companion prefs survive prefs.json field for field",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-002",
+      "name": "Server prefs survive prefs.json field for field",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-003",
+      "name": "A companion prefs.json as upstream v1.17 writes it loads",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-004",
+      "name": "A broken prefs.json leaves prefs untouched, an empty object changes nothing",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-005",
+      "name": "Quotes, backslashes, newlines and UTF-8 in strings round trip",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-006",
+      "name": "Frequencies and bandwidths survive the 4-decimal float encoding exactly",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-007",
+      "name": "An implausible radio preset in prefs.json falls back to the defaults",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-PJSON-008",
+      "name": "Server gps.en: a file without zc.gps_set is upgraded to on once, then honoured",
+      "source": "tests/unit/prefs_json_tests.cpp"
+    },
+    {
+      "id": "UNIT-LPP-001",
+      "name": "Values round to the nearest step (3850 mV is 3.85 V, not the library's 3.84)",
+      "source": "tests/unit/lpp_tests.cpp"
+    },
+    {
+      "id": "UNIT-LPP-002",
+      "name": "Negative values are two's complement in the field, rounded on the magnitude",
+      "source": "tests/unit/lpp_tests.cpp"
+    },
+    {
+      "id": "UNIT-LPP-003",
+      "name": "GPS: 0.0001 deg and 0.01 m, 3 bytes each, rounded",
+      "source": "tests/unit/lpp_tests.cpp"
+    },
+    {
+      "id": "UNIT-LPP-004",
+      "name": "A field that does not fit is refused whole; the buffer keeps what fit",
+      "source": "tests/unit/lpp_tests.cpp"
+    },
+    {
+      "id": "UNIT-TTEXT-001",
+      "name": "A repeater's telemetry in slice-10 order renders every field, GPS second",
+      "source": "tests/unit/telemetry_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-TTEXT-002",
+      "name": "Power monitor: channel voltage is not 'batt', current is signed",
+      "source": "tests/unit/telemetry_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-TTEXT-003",
+      "name": "A type the screen does not show is skipped, not the end; empty is 'no telemetry'",
+      "source": "tests/unit/telemetry_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-POLICY-001",
+      "name": "Reply routing and scope truth tables",
+      "source": "tests/unit/policy_tests.cpp"
+    },
+    {
+      "id": "UNIT-POLICY-002",
+      "name": "Scoped unscoped and advert hop boundaries",
+      "source": "tests/unit/policy_tests.cpp"
+    },
+    {
+      "id": "UNIT-POOL-001",
+      "name": "Exhaust reclaim and reuse all pool slots",
+      "source": "tests/unit/pool_tests.cpp"
+    },
+    {
+      "id": "UNIT-POOL-002",
+      "name": "Only due packets dispatch in priority and tie order",
+      "source": "tests/unit/pool_tests.cpp"
+    },
+    {
+      "id": "UNIT-POOL-003",
+      "name": "Reschedule remove and dispatch across clock wrap",
+      "source": "tests/unit/pool_tests.cpp"
+    },
+    {
+      "id": "UNIT-POOL-004",
+      "name": "Seeded pool ownership conservation",
+      "source": "tests/unit/pool_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-001",
+      "name": "Companion prefs encode to the documented 272-byte layout",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-002",
+      "name": "Companion prefs decode what they encode",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-003",
+      "name": "Short companion files keep the caller's defaults past the end",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-004",
+      "name": "Companion decode rejects short or foreign data and leaves prefs untouched",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-005",
+      "name": "Corrupt companion bytes fall back to the sanitizeNodePrefs defaults",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-006",
+      "name": "Server prefs encode to the documented 311-byte layout",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-007",
+      "name": "Server prefs decode what they encode",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-008",
+      "name": "Short server files keep the caller's values past the end",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-009",
+      "name": "Server LED magic byte and implausible radio params",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-PREFS-010",
+      "name": "GPS interval: one clamp, and a corrupt value is not turned into always-on",
+      "source": "tests/unit/prefs_codec_tests.cpp"
+    },
+    {
+      "id": "UNIT-RATE-001",
+      "name": "Rate window threshold expiry and reset",
+      "source": "tests/unit/policy_tests.cpp"
+    },
+    {
+      "id": "UNIT-RTC-001",
+      "name": "Unique timestamps survive repeated and backward wall time",
+      "source": "tests/unit/helper_tests.cpp"
+    },
+    {
+      "id": "UNIT-STRING-001",
+      "name": "String copies terminate and respect zero exact and short capacities",
+      "source": "tests/unit/helper_tests.cpp"
+    },
+    {
+      "id": "UNIT-STRING-002",
+      "name": "Decimal trimming and blank classification",
+      "source": "tests/unit/helper_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-001",
+      "name": "Evaluation pacing and empty evidence leave clock untouched",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-002",
+      "name": "Normal quorum needs six tenured senders and two adverts",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-003",
+      "name": "Step threshold and positive negative one-hour caps",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-004",
+      "name": "Split vote abstains and strict majority defeats outliers",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-005",
+      "name": "Forward-only roles report but never apply backward corrections",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-006",
+      "name": "Bootstrap needs three fresh peers and bypasses normal step cap",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-007",
+      "name": "Manual and GPS suppression expire exactly at seven days",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-008",
+      "name": "Trusted-clock drift envelope rejects implausible consensus",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-009",
+      "name": "Clock steps remain rate-limited for six hours",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-010",
+      "name": "Hop limit monotonic dedup and eight-byte sender identity",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-011",
+      "name": "Stale samples expire and inconsistent sender must re-earn tenure",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-012",
+      "name": "Full evidence table protects mature and equally-close senders",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-013",
+      "name": "Status formatting respects every buffer capacity including zero",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-SYNC-014",
+      "name": "Reset discards evidence suppression counters and scheduling state",
+      "source": "tests/unit/timesync_tests.cpp"
+    },
+    {
+      "id": "UNIT-TIME-001",
+      "name": "Maintenance deadlines across uint32 wrap",
+      "source": "tests/unit/policy_tests.cpp"
+    },
+    {
+      "id": "UNIT-UTF8-001",
+      "name": "Complete codepoints only and invalid UTF-8 rejection",
+      "source": "tests/unit/advert_tests.cpp"
+    }
+  ]
+}
