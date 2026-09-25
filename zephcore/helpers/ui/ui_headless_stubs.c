@@ -37,11 +37,6 @@ WEAK void ui_set_msg_count(uint16_t count)
 	ARG_UNUSED(count);
 }
 
-WEAK void ui_set_ble_status(bool connected, const char *name)
-{
-	ARG_UNUSED(connected); ARG_UNUSED(name);
-}
-
 WEAK void ui_set_radio_params(uint32_t freq_hz, uint8_t sf,
 			       uint16_t bw_khz_x10, uint8_t cr,
 			       int8_t tx_power, int16_t noise_floor)
@@ -142,24 +137,13 @@ WEAK void ui_set_offgrid_mode(bool enabled)
 	ARG_UNUSED(enabled);
 }
 
-WEAK void ui_set_battery_provider(uint16_t (*provider)(void))
-{
-	ARG_UNUSED(provider);
-}
-
-WEAK void ui_set_power_source_provider(bool (*provider)(void))
-{
-	ARG_UNUSED(provider);
-}
-
-WEAK void ui_set_auto_shutdown_mv(uint16_t mv)
+WEAK void ui_set_battery_provider(uint16_t (*mv)(void), uint8_t (*pct)(void))
 {
 	ARG_UNUSED(mv);
+	ARG_UNUSED(pct);
 }
 
-WEAK void ui_auto_shutdown_check(void) { }
-
-WEAK void ui_set_shutdown_hook(ui_shutdown_fn fn) { ARG_UNUSED(fn); }
+WEAK void ui_show_low_battery(bool hold) { ARG_UNUSED(hold); }
 
 WEAK void ui_refresh_battery(void) { }
 WEAK void ui_invalidate_battery_cache(void) { }

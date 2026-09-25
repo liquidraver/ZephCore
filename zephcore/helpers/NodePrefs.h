@@ -236,6 +236,10 @@ struct NodePrefs {
 	uint8_t wake_on_msg;            // 0 = don't wake display on message, 1 = wake (default)
 	uint16_t screen_off_secs;       // 0 = default (Kconfig), else 5–300
 	uint16_t auto_shutdown_mv;      // low-batt auto-shutdown threshold; 0 = off, else 2900–4200
+	/* 1 = auto_shutdown_mv is a choice made after the default moved from
+	 * 3300 to 3200 mV; a stored 3300 without it is the old default and
+	 * becomes 3200 once (PrefsJson, the legacy loader). */
+	uint8_t auto_shutdown_set;
 	uint8_t v_contact_enabled;      // v-contact (loopback admin chat via BLE/USB); 1 = on (default)
 	uint16_t v_battery_alert_mv;    // 0 = alert off; 0xFFFF = board default (auto_shutdown+200); else mV
 	/* App-owned ContactInfo.flags byte for the v-contact.  The v-contact never
@@ -288,6 +292,18 @@ static inline uint8_t saneEnum(uint8_t v, uint8_t max) { return (v <= max) ? v :
 
 /* The GPS duty interval, in the one range every setter and the GPS manager
  * share: 0 = always on, else 10 s to 1 week (safely below the ms overflow). */
+/* The auto-shutdown default before 2026-09-25 (now 3200 mV): a stored
+ * 3300 without auto_shutdown_set is migrated (auto_shutdown_upgrade). */
+#define AUTO_SHUTDOWN_OLD_DEFAULT_MV 3300
+static inline void auto_shutdown_upgrade(NodePrefs *p) {
+#if defined(CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) && CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0
+	if (!p->auto_shutdown_set && p->auto_shutdown_mv == AUTO_SHUTDOWN_OLD_DEFAULT_MV) {
+		p->auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
+	}
+#endif
+	p->auto_shutdown_set = 1;
+}
+
 #define GPS_INTERVAL_MIN_SEC 10u
 #define GPS_INTERVAL_MAX_SEC 604800u
 static inline uint32_t clampGpsInterval(uint32_t sec) {
@@ -336,6 +352,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->buzzer_quiet        = saneBool<uint8_t>(p->buzzer_quiet, 0);
 	p->gps_enabled         = saneBool<uint8_t>(p->gps_enabled, 0);
 	p->gps_enabled_set     = saneBool<uint8_t>(p->gps_enabled_set, 0);
+	p->auto_shutdown_set   = saneBool<uint8_t>(p->auto_shutdown_set, 0);
 	p->rx_duty_cycle       = saneBool<uint8_t>(p->rx_duty_cycle, 0);
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
 	p->leds_radio_mode     = saneEnum(p->leds_radio_mode, LEDS_RADIO_MAX);
@@ -485,6 +502,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	 * through untouched — this default only applies to a fresh prefs struct. */
 #ifdef CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS
 	prefs->auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
+	prefs->auto_shutdown_set = 1;
 #else
 	prefs->auto_shutdown_mv = 0;
 #endif

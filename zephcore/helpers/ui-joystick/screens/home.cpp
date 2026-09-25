@@ -44,10 +44,7 @@ int HomeScreen::render(JoystickDisplay &display)
 	if (_task->getBatteryDisplayMode() == 1) {
 		snprintf(batt, sizeof(batt), "%.1fV", (double)batt_mv / 1000.0);
 	} else {
-		int pct = ((int)batt_mv - kBattMinMv) * 100 / (kBattMaxMv - kBattMinMv);
-		if (pct < 0) pct = 0;
-		if (pct > 100) pct = 100;
-		snprintf(batt, sizeof(batt), "%d%%", pct);
+		snprintf(batt, sizeof(batt), "%u%%", _task->getCachedBattPercent());
 	}
 
 	char icons[6] = {0};

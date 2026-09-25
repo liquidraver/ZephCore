@@ -29,6 +29,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <ZephyrSensorManager.h>
 #include <helpers/time_sync.h>
 #include "ui_task.h"
+#include "ui_radio_state.h"
 #include "ui_mesh_actions.h"
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
 #include "display.h"
@@ -67,6 +68,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <app/CompanionCLI.h>
 #include <helpers/battery_curve.h>
 #include <zephyr_poweroff.h>
+#include <app/PowerPolicy.h>
 #endif
 
 /* Without this a BLE controller assert freezes the CPU at top IRQ priority
@@ -90,7 +92,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 
 #ifdef ZEPHCORE_LORA
 static void save_prefs_to_flash(void);
-static void vcontact_battery_alert_check(void);
+static void power_policy_tick(void);
 #endif
 
 #define MESH_EVENT_BASE          (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | \
@@ -406,13 +408,9 @@ static void mesh_event_loop(void)
 				companion_mesh_ptr->timeSyncTick();
 			}
 
-			/* Low-battery auto-shutdown; compiled out unless the board
-			 * sets a threshold. */
-			ui_auto_shutdown_check();
-
-			/* The v-contact low-battery alert, separate because the
-			 * shutdown check is a no-op on headless builds. */
-			vcontact_battery_alert_check();
+			/* Low-battery auto-shutdown and the v-contact alert, UI or
+			 * not (app/PowerPolicy.cpp). */
+			power_policy_tick();
 		}
 
 		/* Prefs changed off-main: the flash write happens here, and posts
@@ -559,66 +557,48 @@ static void radio_reconfigure(bool preset_changed)
 #define ZEPHCORE_HAS_AUTO_SHUTDOWN 0
 #endif
 
-#if ZEPHCORE_HAS_AUTO_SHUTDOWN
-/* `get|set autoshutdown`: companion-only, so not in CommonCLI. True if the
- * line was one. */
-static bool handle_autoshutdown_cli(const char *line, char *reply)
+/* ========== Low-battery policy (app/PowerPolicy.cpp) ==========
+ * Auto-shutdown and the v-contact alert, on every companion that reads a
+ * battery. These hooks are its only v-contact side. */
+
+/* Just before a low-battery power-off: with an app connected, send the notice
+ * live (the policy then waits a short grace). Otherwise the policy stores the
+ * reason for the next boot, since the offline queue does not survive System
+ * OFF. */
+static bool power_notify_shutdown(void)
 {
-	if (strcmp(line, "get autoshutdown") == 0) {
-		uint16_t mv = companion_mesh.prefs.auto_shutdown_mv;
-		if (mv == 0) {
-			strcpy(reply, "autoshutdown: off");
-		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "autoshutdown: %u mV", mv);
-		}
-		return true;
-	}
-	if (strncmp(line, "set autoshutdown ", 17) == 0) {
-		const char *arg = line + 17;
-		while (*arg == ' ') {
-			arg++;
-		}
-		/* Digits only, then nothing but whitespace. */
-		char *end = NULL;
-		long v = strtol(arg, &end, 10);
-		while (*end == ' ' || *end == '\r' || *end == '\n' || *end == '\t') {
-			end++;
-		}
-		if (arg[0] < '0' || arg[0] > '9' || *end != '\0') {
-			strcpy(reply, "ERROR: numbers only (0 = off, 1-5000 mV)");
-			return true;
-		}
-		if (v > 5000) {
-			strcpy(reply, "ERROR: must be 0 (off) or 1-5000 mV");
-			return true;
-		}
-		companion_mesh.prefs.auto_shutdown_mv = (uint16_t)v;
-		/* Coalesced flash write from the event loop. */
-		k_event_post(&mesh_events, MESH_EVENT_PREFS_DIRTY);
-		ui_set_auto_shutdown_mv((uint16_t)v);
-		if (v == 0) {
-			strcpy(reply, "OK - autoshutdown off");
-		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "OK - autoshutdown %ld mV", v);
-		}
+	if (companion_transport_up() && companion_mesh.isVContactEnabled()) {
+		companion_mesh.vcontactNotify("Powering off: low battery");
 		return true;
 	}
 	return false;
 }
-#endif /* ZEPHCORE_HAS_AUTO_SHUTDOWN */
 
-static void vcontact_battery_alert_rearm(void);
-
-/* The v-contact battery-alert threshold in mV, 0 = off. The 0xFFFF default is
- * 200 mV above the auto-shutdown cutoff, so the alert beats the 90 s shutdown
- * confirm window; 3500 mV on boards without a cutoff. */
-static uint16_t vcontact_battery_alert_threshold_mv(void)
+static void power_battery_alert(uint16_t mv, uint16_t threshold_mv)
 {
-	uint16_t pref = companion_mesh.prefs.v_battery_alert_mv;
-	if (pref == 0) return 0;
-	if (pref != 0xFFFF) return pref;
-	uint16_t cutoff = companion_mesh.prefs.auto_shutdown_mv;
-	return cutoff ? (uint16_t)(cutoff + 200) : 3500;
+	char msg[48];
+
+	snprintf(msg, sizeof(msg), "Battery low: %u mV (alert at %u mV)", mv, threshold_mv);
+	companion_mesh.vcontactNotify(msg);
+}
+
+static bool power_alert_enabled(void)
+{
+	return companion_mesh.isVContactEnabled();
+}
+
+static void power_prefs_dirty(void)
+{
+	k_event_post(&mesh_events, MESH_EVENT_PREFS_DIRTY);
+}
+
+static PowerPolicy power_policy(zephyr_board, companion_mesh.prefs,
+				{power_notify_shutdown, power_battery_alert, power_alert_enabled,
+				 power_prefs_dirty});
+
+static void power_policy_tick(void)
+{
+	power_policy.tick();
 }
 
 /* The `v.*` commands (v-contact settings) and `help`. True if the line was one. */
@@ -627,12 +607,14 @@ static bool handle_vcontact_cli(const char *line, char *reply)
 	if (strcmp(line, "help") == 0 || strcmp(line, "?") == 0) {
 		/* There is no global help: list the companion extras only. */
 		strcpy(reply,
-		       "Companion extras (standard set/get commands also work):\r\n"
+		/* Short: the whole reply must fit one companion frame (the
+		 * padded table this replaced lost its last line). */
+		       "Companion extras (get|set):\r\n"
 #if ZEPHCORE_HAS_AUTO_SHUTDOWN
-		       "  get|set autoshutdown <mV>     - low-batt cutoff, 0 = off\r\n"
+		       " autoshutdown <mV>, 0 = off\r\n"
 #endif
-		       "  get|set v.contact on|off      - loopback admin contact\r\n"
-		       "  get|set v.batteryalert <mV>   - 0 = off, or default");
+		       " v.contact on|off\r\n"
+		       " v.batteryalert <mV>|0|default");
 		return true;
 	}
 	if (strcmp(line, "get v.contact") == 0) {
@@ -671,7 +653,7 @@ static bool handle_vcontact_cli(const char *line, char *reply)
 			strcpy(reply, "v.batteryalert: off");
 		} else if (pref == 0xFFFF) {
 			snprintf(reply, CLI_REPLY_SIZE, "v.batteryalert: default (%u mV)",
-				 vcontact_battery_alert_threshold_mv());
+				 power_policy.alertThresholdMv());
 		} else {
 			snprintf(reply, CLI_REPLY_SIZE, "v.batteryalert: %u mV", pref);
 		}
@@ -698,12 +680,12 @@ static bool handle_vcontact_cli(const char *line, char *reply)
 		}
 		companion_mesh.prefs.v_battery_alert_mv = v;
 		k_event_post(&mesh_events, MESH_EVENT_PREFS_DIRTY);
-		vcontact_battery_alert_rearm();
+		power_policy.rearmAlert();
 		if (v == 0) {
 			strcpy(reply, "OK - v.batteryalert off");
 		} else if (v == 0xFFFF) {
 			snprintf(reply, CLI_REPLY_SIZE, "OK - v.batteryalert default (%u mV)",
-				 vcontact_battery_alert_threshold_mv());
+				 power_policy.alertThresholdMv());
 		} else {
 			snprintf(reply, CLI_REPLY_SIZE, "OK - v.batteryalert %u mV", v);
 		}
@@ -712,26 +694,6 @@ static bool handle_vcontact_cli(const char *line, char *reply)
 	return false;
 }
 
-/* Called just before a low-battery power-off. With an app connected, send a
- * v-contact notice and return true (the UI waits a short grace for it).
- * Otherwise store the reason in flash, reported on the next boot, since the
- * offline queue does not survive System OFF, and return false. */
-static bool companion_shutdown_hook(int reason)
-{
-	const char *msg = (reason == UI_SHUTDOWN_LOW_BATTERY)
-			  ? "Powering off: low battery"
-			  : "Powering off";
-
-	bool connected = companion_transport_up();
-
-	if (connected && companion_mesh.isVContactEnabled()) {
-		companion_mesh.vcontactNotify(msg);
-		return true;   /* deliver live — ask the UI for the grace delay */
-	}
-
-	zephcore_shutdown_reason_save(ZC_SHUTDOWN_LOW_VOLTAGE);
-	return false;      /* nobody listening — flash marker, power off now */
-}
 
 /* The CompanionMesh::handleCommand callback (main thread). The v-contact and
  * autoshutdown commands never see a remote sender: handleCommand stops those. */
@@ -745,11 +707,9 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 	if (handle_vcontact_cli(line, reply)) {
 		return;
 	}
-#if ZEPHCORE_HAS_AUTO_SHUTDOWN
-	if (handle_autoshutdown_cli(line, reply)) {
+	if (power_policy.handleCommand(line, reply, CLI_REPLY_SIZE)) {
 		return;
 	}
-#endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
 	if (companion_wifi_cli(line, companion_mesh.prefs, save_prefs_to_flash, reply)) {
 		return;
@@ -757,63 +717,6 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 #endif
 	companion_cli.setReplyHeaderUsed(reply_hdr_used);
 	companion_cli.handleCommand(sender_timestamp, line, reply);
-}
-
-/* ========== V-contact battery alert ==========
- * Not in ui_auto_shutdown_check(), which is a no-op on headless builds; same
- * pattern: a 30 s sample gate on the housekeeping tick, three strikes so a TX
- * sag cannot trigger it, skipped on external power. Once per discharge; it
- * re-arms at threshold + 150 mV or on a threshold change. */
-static bool vcontact_batt_latched;
-static uint8_t vcontact_batt_low_count;
-
-static void vcontact_battery_alert_rearm(void)
-{
-	vcontact_batt_latched = false;
-	vcontact_batt_low_count = 0;
-}
-
-static void vcontact_battery_alert_check(void)
-{
-	if (!companion_mesh.isVContactEnabled()) {
-		return;
-	}
-	uint16_t thresh = vcontact_battery_alert_threshold_mv();
-	if (thresh == 0) {
-		return;
-	}
-
-	uint32_t now = k_uptime_get_32();
-	static uint32_t next_check_ms;  /* 0 at boot → first tick samples */
-	if (next_check_ms != 0 && (now - next_check_ms) < 30000) {
-		return;
-	}
-	next_check_ms = now;
-
-	uint16_t mv = zephyr_board.getBattMilliVolts();
-	if (mv == 0) {  /* no battery hardware / no reading */
-		vcontact_batt_low_count = 0;
-		return;
-	}
-	if (zephyr_board.isExternalPowered() || mv >= thresh + 150) {
-		/* charging or recovered — re-arm for the next discharge cycle */
-		vcontact_battery_alert_rearm();
-		return;
-	}
-	if (mv >= thresh) {
-		vcontact_batt_low_count = 0;
-		return;
-	}
-	if (vcontact_batt_latched) {
-		return;
-	}
-	if (++vcontact_batt_low_count < 3) {
-		return;
-	}
-	vcontact_batt_latched = true;
-	char msg[48];
-	snprintf(msg, sizeof(msg), "Battery low: %u mV (alert at %u mV)", mv, thresh);
-	companion_mesh.vcontactNotify(msg);
 }
 
 #if ZEPHCORE_USB_STACK
@@ -1070,10 +973,7 @@ int main(void)
 
 	companion_mesh.setBatteryCallback(get_battery_mv);
 	companion_mesh.setBoard(&zephyr_board);
-	ui_set_battery_provider(get_battery_mv);
-	ui_set_power_source_provider([]() { return zephyr_board.isExternalPowered(); });
-	ui_set_auto_shutdown_mv(companion_mesh.prefs.auto_shutdown_mv);
-	ui_set_shutdown_hook(companion_shutdown_hook);
+	ui_set_battery_provider(get_battery_mv, []() { return zephyr_board.getBattPercent(); });
 	companion_mesh.setRadioReconfigureCallback(radio_reconfigure);
 	companion_mesh.setPinChangeCallback([](uint32_t new_pin) {
 #if IS_ENABLED(CONFIG_BT)
@@ -1106,24 +1006,8 @@ int main(void)
 #endif
 
 	ui_set_node_name(companion_mesh.prefs.node_name);
-	ui_set_radio_params(
-		lora_radio.getActiveFrequencyHz(),
-		lora_radio.getActiveSpreadingFactor(),
-		lora_radio.getActiveBandwidthKHzX10(),
-		lora_radio.getActiveCodingRate(),
-		lora_radio.getConfiguredTxPower(),
-		lora_radio.getNoiseFloor());
-	ui_set_radio_runtime(
-		lora_radio.getActiveSyncWord(),
-		lora_radio.getActivePreambleLength(),
-		lora_radio.isRxDutyCycleEnabled(),
-		lora_radio.isRadioReady(),
-		lora_radio.isInRecvMode(),
-		lora_radio.isTxActive());
-	ui_set_radio_stats(lora_radio.getPacketsRecv(),
-			   lora_radio.getPacketsSent(),
-			   lora_radio.getPacketsRecvErrors());
-	ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
+	ui_push_radio_state(lora_radio);
+	ui_set_battery(zephyr_board.getBattMilliVolts(), zephyr_board.getBattPercent());
 	ui_set_gps_available(gps_is_available());
 	ui_set_gps_enabled(companion_mesh.prefs.gps_enabled != 0);
 	ui_set_ble_enabled(companion_mesh.prefs.ble_disabled != 1);  /* BLE starts advertising at boot */
@@ -1191,13 +1075,7 @@ int main(void)
 			LOG_WRN("extra.sf %u SFs rejected for current SF/BW — side detectors off", n);
 		}
 	}
-	ui_set_radio_runtime(
-		lora_radio.getActiveSyncWord(),
-		lora_radio.getActivePreambleLength(),
-		lora_radio.isRxDutyCycleEnabled(),
-		lora_radio.isRadioReady(),
-		lora_radio.isInRecvMode(),
-		lora_radio.isTxActive());
+	ui_push_radio_state(lora_radio);  /* side detectors changed the runtime state */
 
 	/* ADC multiplier override (0 = devicetree default) */
 	zephyr_board.setAdcMultiplier(companion_mesh.prefs.adc_multiplier);

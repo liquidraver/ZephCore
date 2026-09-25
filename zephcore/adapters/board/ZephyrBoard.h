@@ -14,9 +14,9 @@ public:
 	/* One ADC burst (or fuel-gauge read) serves every caller for
 	 * BATT_CACHE_MS: UI, telemetry, stats, alerts. Any thread. */
 	uint16_t getBattMilliVolts() override;
-	/* The board's discharge curve (or the fuel gauge's state of charge).
-	 * Not a MainBoard method: nothing upstream-shaped needs it. The UIs
-	 * still use a linear 3.0-4.2 V estimate (slice 11). */
+	/* The board's discharge curve (or the fuel gauge's state of charge);
+	 * what both UIs display. Not a MainBoard method: nothing
+	 * upstream-shaped needs it. */
 	uint8_t  getBattPercent();
 	float getMCUTemperature() override;
 	bool setAdcMultiplier(float multiplier) override;

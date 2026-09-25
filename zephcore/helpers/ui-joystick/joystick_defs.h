@@ -69,10 +69,6 @@
 #define kBodyY          14    /* synonym for kContentY */
 #define kLineH          9     /* compact line height */
 
-/* Battery range for percentage calculation */
-#define kBattMinMv      3000
-#define kBattMaxMv      4200
-
 /* Auto off timeout */
 #define AUTO_OFF_MILLIS  30000UL   /* 30 seconds */
 

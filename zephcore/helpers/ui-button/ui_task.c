@@ -203,6 +203,7 @@ static void splash_work_handler(struct k_work *work)
 
 static void schedule_render(void);
 static void schedule_render_auto(void);
+static void set_ble_connected(bool connected);
 
 static void advert_defer_handler(struct k_work *work)
 {
@@ -894,11 +895,11 @@ void ui_notify(enum ui_event event)
 		break;
 
 	case UI_EVENT_BLE_CONNECTED:
-		ui_set_ble_status(true, NULL);
+		set_ble_connected(true);
 		break;
 
 	case UI_EVENT_BLE_DISCONNECTED:
-		ui_set_ble_status(false, NULL);
+		set_ble_connected(false);
 		break;
 
 	default:
@@ -954,15 +955,11 @@ void ui_set_msg_count(uint16_t count)
 #endif
 }
 
-void ui_set_ble_status(bool connected, const char *name)
+static void set_ble_connected(bool connected)
 {
 	struct ui_state *s = get_state();
 
 	s->ble_connected = connected;
-	if (name) {
-		strncpy(s->device_name, name, sizeof(s->device_name) - 1);
-		s->device_name[sizeof(s->device_name) - 1] = '\0';
-	}
 
 	if (ui_initialized) {
 		schedule_render();
@@ -1141,17 +1138,6 @@ void ui_set_node_name(const char *name)
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
 	ui_pages_set_node_name(name);
 #endif
-}
-
-void ui_set_sensor_data(int16_t temp_c10, uint32_t pressure_pa,
-			uint16_t humidity_rh10, uint16_t light_lux)
-{
-	struct ui_state *s = get_state();
-
-	s->temperature_c10 = temp_c10;
-	s->pressure_pa = pressure_pa;
-	s->humidity_rh10 = humidity_rh10;
-	s->light_lux = light_lux;
 }
 
 void ui_set_gps_available(bool available)

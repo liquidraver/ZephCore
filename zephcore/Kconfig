@@ -1125,7 +1125,7 @@ config ZEPHCORE_UI_TIME_SOURCE_FRESH_HOURS
 
 config ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS
 	int "Low-battery auto-shutdown threshold (mV, 0 = disabled)"
-	default 3300 if SOC_SERIES_NRF52
+	default 3200 if SOC_SERIES_NRF52
 	default 0
 	help
 	  Companion only. When the battery falls below this voltage the device

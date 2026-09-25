@@ -197,15 +197,6 @@ extern "C" void ui_notify_packet_sent(void)
 	}
 }
 
-extern "C" void ui_set_ble_status(bool connected, const char *name)
-{
-	(void)name;
-	if (s_task) {
-		s_task->setBLEConnected(connected);
-		s_task->notify();
-	}
-}
-
 extern "C" void ui_set_radio_params(
 	uint32_t freq_hz,
 	uint8_t sf,
@@ -249,10 +240,10 @@ extern "C" bool ui_joystick_try_match_ack(uint32_t ack, uint8_t out_pubkey[6])
 	return true;
 }
 
-extern "C" void ui_set_battery(uint16_t mv, uint8_t /*pct*/)
+extern "C" void ui_set_battery(uint16_t mv, uint8_t pct)
 {
 	if (s_task) {
-		s_task->setCachedBattMilliVolts(mv);
+		s_task->setCachedBattery(mv, pct);
 	}
 }
 
@@ -273,7 +264,6 @@ extern "C" void ui_set_tz(int8_t) {}
 extern "C" void ui_add_recent(const char *, int16_t, uint32_t) {}
 extern "C" void ui_set_node_name(const char *) {}
 extern "C" void ui_clear_recent(void) {}
-extern "C" void ui_set_sensor_data(int16_t, uint32_t, uint16_t, uint16_t) {}
 extern "C" void ui_set_gps_available(bool) {}
 extern "C" void ui_set_gps_enabled(bool) {}
 extern "C" void ui_set_gps_state(uint8_t, uint32_t, uint32_t) {}

@@ -770,10 +770,7 @@ void JoystickUITask::renderLockOverlay()
 	 * doesn't burn power). */
 	char batt_buf[16];
 	if (_cached_batt_mv > 0) {
-		int pct = ((int)_cached_batt_mv - kBattMinMv) * 100 / (kBattMaxMv - kBattMinMv);
-		if (pct < 0) pct = 0;
-		if (pct > 100) pct = 100;
-		snprintf(batt_buf, sizeof(batt_buf), "Batt: %d%%", pct);
+		snprintf(batt_buf, sizeof(batt_buf), "Batt: %u%%", _cached_batt_pct);
 	} else {
 		snprintf(batt_buf, sizeof(batt_buf), "Batt: --");
 	}
@@ -1336,29 +1333,6 @@ bool JoystickUITask::sendComposedMessage(const char *text)
 	return false;
 }
 
-bool JoystickUITask::sendChannelMessage(const char *text)
-{
-	if (!text || !text[0] || _compose_channel_idx < 0 || !_mesh) return false;
-	ChannelDetails ch;
-	if (!_mesh->getChannel(_compose_channel_idx, ch)) return false;
-	uint32_t ts = _rtc ? _rtc->getCurrentTimeUnique() : k_uptime_get_32();
-	return startPendingChannel((uint8_t)_compose_channel_idx, ch, ts, text);
-}
-
-bool JoystickUITask::findContactByName(const char *name, ContactInfo &contact)
-{
-	if (!name || !_mesh) return false;
-	int n = _mesh->getNumContacts();
-	for (int i = 0; i < n; i++) {
-		ContactInfo c;
-		if (_mesh->getContactByIdx(i, c) && strcmp(c.name, name) == 0) {
-			contact = c;
-			return true;
-		}
-	}
-	return false;
-}
-
 /* ===== RepeaterAdmin callbacks ===== */
 void JoystickUITask::onRepeaterAdminLoginResult(const uint8_t *pub_key_prefix,
 		bool success, uint8_t permissions, uint32_t server_time)
@@ -1448,20 +1422,6 @@ int JoystickUITask::getRecentlyHeard(AdvertPath *dest, int max) const
 {
 	auto *cm = static_cast<CompanionMesh *>(_mesh);
 	return cm ? cm->getRecentlyHeard(dest, max) : 0;
-}
-
-bool JoystickUITask::getDiscoverSignal(const uint8_t *pubkey, int8_t &snr_out,
-		uint8_t *path_len_out) const
-{
-	for (int i = 0; i < DISCOVER_SIGNAL_TABLE_SIZE; i++) {
-		if (_discover_signals[i].valid &&
-			memcmp(_discover_signals[i].pubkey, pubkey, PUB_KEY_SIZE) == 0) {
-			snr_out = _discover_signals[i].snr;
-			if (path_len_out) *path_len_out = _discover_signals[i].path_len;
-			return true;
-		}
-	}
-	return false;
 }
 
 void JoystickUITask::clearDiscoverSignals()

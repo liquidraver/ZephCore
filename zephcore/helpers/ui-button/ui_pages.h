@@ -50,7 +50,6 @@ struct ui_state {
 	/* Messages page */
 	uint16_t msg_count;
 	bool     ble_connected;
-	char     device_name[25];
 
 	/* Recently heard */
 	struct {
@@ -99,10 +98,6 @@ struct ui_state {
 	bool     leds_disabled;    /* true = LEDs off */
 
 	/* Sensors page */
-	int16_t  temperature_c10;  /* centi-degrees C */
-	uint32_t pressure_pa;      /* pascals */
-	uint16_t humidity_rh10;    /* 0.1% RH */
-	uint16_t light_lux;        /* lux */
 
 	/* Current page */
 	enum ui_page current_page;

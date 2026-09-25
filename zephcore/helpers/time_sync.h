@@ -43,7 +43,10 @@ static inline enum time_sync_source time_sync_get_source(void)
 
 #endif /* CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK || _BUTTON */
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
+#if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK) || \
+	IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON)
+/* helpers/ui/time_sync.c: the last sync source as text (the joystick UI's
+ * System > Info > Time). */
 const char *time_sync_display_label(void);
 #endif
 

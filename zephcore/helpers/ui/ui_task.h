@@ -71,14 +71,6 @@ void ui_notify(enum ui_event event);
 void ui_set_msg_count(uint16_t count);
 
 /**
- * Update BLE connection status.
- *
- * @param connected  true if BLE peer is connected
- * @param name       BLE device name (can be NULL)
- */
-void ui_set_ble_status(bool connected, const char *name);
-
-/**
  * Update radio parameters for display.
  */
 void ui_set_radio_params(uint32_t freq_hz, uint8_t sf, uint16_t bw_khz_x10,
@@ -207,7 +199,7 @@ void ui_set_offgrid_mode(bool enabled);
  * Register a battery-voltage provider used by ui_refresh_battery().
  * provider() must return millivolts (0 if no battery hardware).
  */
-void ui_set_battery_provider(uint16_t (*provider)(void));
+void ui_set_battery_provider(uint16_t (*mv)(void), uint8_t (*pct)(void));
 
 /**
  * Lazy battery refresh: re-read the ADC only if cached value is stale.
@@ -217,52 +209,12 @@ void ui_set_battery_provider(uint16_t (*provider)(void));
 void ui_refresh_battery(void);
 
 /**
- * Register a power-source provider used by ui_auto_shutdown_check().
- * provider() must return true when the device is externally powered
- * (USB/charger present), false on battery. NULL = always treat as battery.
+ * The low-battery warning screen, just before an auto-shutdown
+ * (app/PowerPolicy.cpp). hold: keep it up 3 s on an OLED (it blanks
+ * the moment power drops; e-paper keeps it anyway); false while the
+ * main loop still has a notice to deliver. Nothing without a display.
  */
-void ui_set_power_source_provider(bool (*provider)(void));
-
-/**
- * Set the runtime low-battery auto-shutdown threshold in millivolts.
- * 0 disables the check. Seeded at boot from prefs (which default to
- * CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) and updated live by the CLI.
- * No-op on builds where the feature is compiled out (non-nRF52).
- */
-void ui_set_auto_shutdown_mv(uint16_t mv);
-
-/* Reason codes passed to the shutdown hook. */
-#define UI_SHUTDOWN_LOW_BATTERY  1
-
-/* Grace period (ms) the poweroff is deferred by when the hook asks for it
- * (an app is connected and a live notice was queued), so the notify→fetch→
- * send round-trip can complete before power is cut. */
-#define UI_SHUTDOWN_GRACE_MS     1000
-
-/**
- * Register a pre-shutdown hook, called from ui_auto_shutdown_check() just
- * before power-off. The companion uses it to report the shutdown to the
- * connected app (v-contact). Return value:
- *   true  = an app is connected and a live notice was queued — defer the
- *           poweroff by UI_SHUTDOWN_GRACE_MS so the app can fetch it.
- *   false = nothing to deliver live (persist to flash instead) — power off
- *           immediately.
- * The hook runs on the main thread and must not block.
- */
-typedef bool (*ui_shutdown_fn)(int reason);
-void ui_set_shutdown_hook(ui_shutdown_fn fn);
-
-/**
- * Low-battery auto-shutdown check (companion only).
- *
- * Call from the periodic housekeeping tick — it self-throttles its own ADC
- * sampling, so calling it every tick is cheap (no extra polling). When
- * CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS is 0 this is a no-op. Otherwise,
- * if the battery is below the threshold AND not externally powered, it shows
- * a brief warning (3 s on OLED, instant-persist on e-paper) and powers off
- * via zephcore_power_off().
- */
-void ui_auto_shutdown_check(void);
+void ui_show_low_battery(bool hold);
 
 /**
  * Drop the battery-refresh freshness timestamp. The next

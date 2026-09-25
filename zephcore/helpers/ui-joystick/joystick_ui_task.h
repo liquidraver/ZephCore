@@ -87,6 +87,8 @@ public:
 
 	/* State accessors for screens */
 	uint16_t getCachedBattMilliVolts() const { return _cached_batt_mv; }
+	/* The board's own percentage (discharge curve or fuel gauge). */
+	uint8_t getCachedBattPercent() const { return _cached_batt_pct; }
 	int getBatteryDisplayMode() const { return _battery_display_mode; }
 	void toggleBatteryDisplayMode() { _battery_display_mode = (_battery_display_mode + 1) % 2; }
 	uint32_t getScreenOffMillis() const { return _screen_off_ms; }
@@ -146,11 +148,7 @@ public:
 	void setComposeChannel(int idx, const char *name);
 	void setComposeContact(const ContactInfo &contact);
 	bool sendComposedMessage(const char *text);
-	bool sendChannelMessage(const char *text);
-	bool findContactByName(const char *name, ContactInfo &contact);
 	int getRecentlyHeard(AdvertPath *dest, int max) const;
-	bool getDiscoverSignal(const uint8_t *pubkey, int8_t &snr_out,
-		uint8_t *path_len_out = nullptr) const;
 	void clearDiscoverSignals();
 	int getDiscoverCount() const;
 	bool getDiscoverByIdx(int idx, uint8_t *pubkey_out, int8_t &snr_out, int8_t &snr_remote_out,
@@ -165,7 +163,7 @@ public:
 	JoystickDisplay &getDisplay() { return _display; }
 
 	/* Battery cache (updated via ui_set_battery from ui_refresh_battery's render-path call) */
-	void setCachedBattMilliVolts(uint16_t mv) { _cached_batt_mv = mv; }
+	void setCachedBattery(uint16_t mv, uint8_t pct) { _cached_batt_mv = mv; _cached_batt_pct = pct; }
 
 	/* Radio stats (fed from main companion loop) */
 	void setNoiseFloor(int16_t nf) { _noise_floor = nf; }
@@ -257,6 +255,7 @@ private:
 
 	/* State */
 	uint16_t _cached_batt_mv;
+	uint8_t _cached_batt_pct = 0;
 	int _battery_display_mode;
 	uint8_t _brightness;
 	bool _wake_on_msg;

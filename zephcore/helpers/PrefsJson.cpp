@@ -135,6 +135,7 @@ protected:
 		def("wake", _p->wake_on_msg);
 		def("scr_off", _p->screen_off_secs);
 		def("auto_off_mv", _p->auto_shutdown_mv);
+		def("aoff_set", _p->auto_shutdown_set);
 		def("vc_en", _p->v_contact_enabled);
 		def("vc_flags", _p->v_contact_flags);
 		def("vbat_mv", _p->v_battery_alert_mv);
@@ -316,9 +317,13 @@ bool companionPrefsFromJson(NodePrefs &p, Stream &in)
 	NodePrefs t = p;
 	CompanionJson j(&t);
 
+	/* Absent keys keep the caller's value: clear the marker first, so a file
+	 * from before it existed is recognised (NodePrefs.h). */
+	t.auto_shutdown_set = 0;
 	if (!j.load(in)) {
 		return false;
 	}
+	auto_shutdown_upgrade(&t);
 	saneRadio(t);
 	sanitizeNodePrefs(&t);
 	p = t;

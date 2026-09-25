@@ -321,18 +321,15 @@ void ui_led_flash_shutdown(void)
 #define UI_BATT_REFRESH_MS  30000
 
 static uint16_t (*s_batt_provider)(void);
+/* The board's own percentage: its discharge curve, or the fuel gauge. */
+static uint8_t (*s_batt_pct_provider)(void);
 static uint32_t s_batt_last_read_ms;
 static bool s_batt_ever_read;
-static bool (*s_power_source_provider)(void);
 
-void ui_set_battery_provider(uint16_t (*provider)(void))
+void ui_set_battery_provider(uint16_t (*mv)(void), uint8_t (*pct)(void))
 {
-	s_batt_provider = provider;
-}
-
-void ui_set_power_source_provider(bool (*provider)(void))
-{
-	s_power_source_provider = provider;
+	s_batt_provider = mv;
+	s_batt_pct_provider = pct;
 }
 
 void ui_refresh_battery(void)
@@ -344,7 +341,8 @@ void ui_refresh_battery(void)
 	if (s_batt_ever_read && (now - s_batt_last_read_ms) < UI_BATT_REFRESH_MS) {
 		return;
 	}
-	ui_set_battery(s_batt_provider(), 0);
+	uint16_t mv = s_batt_provider();
+	ui_set_battery(mv, (mv && s_batt_pct_provider) ? s_batt_pct_provider() : 0);
 	s_batt_last_read_ms = k_uptime_get_32();
 	s_batt_ever_read = true;
 }
@@ -372,54 +370,10 @@ void ui_before_power_off(void)
 #endif
 }
 
-/* ========== Low-battery auto-shutdown ==========
- * Companion only. Driven off the existing housekeeping tick — self-throttled,
- * so there is no dedicated poll. Disabled entirely (compiled out) unless a
- * board sets CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0. */
-#if defined(CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS) && \
-	CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0
-
-/* How often we actually sample the ADC for the shutdown check. The caller
- * fires every housekeeping tick (~5 s); this gate keeps the divider from
- * being energised more than necessary while still catching a sagging cell
- * well before it collapses. */
-#define UI_AUTO_SHUTDOWN_CHECK_MS  30000
-
-/* Consecutive below-threshold readings required before shutdown.
- * 3 hits × 30 s = 90 s confirm window — a single TX-induced sag that
- * lands on a check window won't trigger a false shutdown. */
-#define UI_AUTO_SHUTDOWN_CONFIRM_COUNT  3
-
-/* Runtime threshold (mV); 0 disables. Seeded from the Kconfig default, then
- * overridden at boot from prefs and live via the CLI (ui_set_auto_shutdown_mv). */
-static uint16_t s_auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
-static uint8_t  s_low_count;
-
-void ui_set_auto_shutdown_mv(uint16_t mv)
-{
-	s_auto_shutdown_mv = mv;
-}
-
-/* Pre-shutdown hook + deferred power-off.  When the hook reports an app is
- * connected (live notice queued), the power-off is deferred by a grace period
- * on a work item so the main loop keeps running and delivers the message. */
-static ui_shutdown_fn s_shutdown_hook;
-static bool s_shutting_down;
-
-static void shutdown_work_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	zephcore_power_off();
-}
-static K_WORK_DELAYABLE_DEFINE(s_shutdown_work, shutdown_work_fn);
-
-void ui_set_shutdown_hook(ui_shutdown_fn fn)
-{
-	s_shutdown_hook = fn;
-}
-
+/* ========== Low-battery warning screen ==========
+ * The policy itself is app/PowerPolicy.cpp. */
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-static void auto_shutdown_warn_screen(bool hold)
+void ui_show_low_battery(bool hold)
 {
 	/* Wake the panel (OLED may be blanked by auto-off; EPD is always
 	 * visible). Centre two lines; the message persists on e-paper after
@@ -453,85 +407,12 @@ static void auto_shutdown_warn_screen(bool hold)
 		k_sleep(K_MSEC(3000));
 	}
 }
-#endif /* CONFIG_ZEPHCORE_UI_DISPLAY */
-
-void ui_auto_shutdown_check(void)
-{
-	if (s_shutting_down) {
-		return;  /* power-off already committed (deferred grace running) */
-	}
-	if (!s_batt_provider || s_auto_shutdown_mv == 0) {
-		return;  /* no battery provider, or runtime-disabled */
-	}
-
-	uint32_t now = k_uptime_get_32();
-	static uint32_t next_check_ms;   /* 0 at boot → first tick samples */
-	if (next_check_ms != 0 && (now - next_check_ms) < UI_AUTO_SHUTDOWN_CHECK_MS) {
-		return;
-	}
-	next_check_ms = now;
-
-	uint16_t mv = s_batt_provider();
-	if (mv == 0 || mv >= s_auto_shutdown_mv) {
-		s_low_count = 0;
-		return;  /* no battery hardware / reading, or healthy */
-	}
-
-	/* Don't power off while charging or USB-powered — the reading is the
-	 * cell, not the supply, and yanking power on a bench cable is annoying. */
-	if (s_power_source_provider && s_power_source_provider()) {
-		LOG_INF("auto-shutdown: %u mV below threshold but externally powered", mv);
-		s_low_count = 0;
-		return;
-	}
-
-	s_low_count++;
-	LOG_WRN("auto-shutdown: battery %u mV < %u mV (%u/%u)",
-		mv, s_auto_shutdown_mv, s_low_count, UI_AUTO_SHUTDOWN_CONFIRM_COUNT);
-	if (s_low_count < UI_AUTO_SHUTDOWN_CONFIRM_COUNT) {
-		return;
-	}
-
-	LOG_WRN("auto-shutdown: confirmed — powering off");
-
-	/* Let the app layer report the shutdown. If it queued a live notice to a
-	 * connected app, it returns true and we defer the power-off by a short
-	 * grace so the notify→fetch→send round-trip can finish; otherwise it
-	 * persisted the reason to flash (reported on next boot) and we power off
-	 * now. */
-	bool grace = s_shutdown_hook ? s_shutdown_hook(UI_SHUTDOWN_LOW_BATTERY)
-				     : false;
-	s_shutting_down = true;
-
-#ifdef CONFIG_POWEROFF
-	if (grace) {
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-		auto_shutdown_warn_screen(false);  /* draw, don't block the loop */
-#endif
-		k_work_schedule(&s_shutdown_work, K_MSEC(UI_SHUTDOWN_GRACE_MS));
-		return;  /* main loop keeps running → delivers the notice */
-	}
-
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	auto_shutdown_warn_screen(true);  /* nothing to deliver — 3 s OLED hold */
-#endif
-	zephcore_power_off();
 #else
-	(void)grace;
-#ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	auto_shutdown_warn_screen(true);
-#endif
-	LOG_WRN("auto-shutdown: CONFIG_POWEROFF not enabled — cannot power off");
-#endif
+void ui_show_low_battery(bool hold)
+{
+	ARG_UNUSED(hold);
 }
-
-#else  /* feature disabled (non-nRF52 / threshold default 0) */
-
-void ui_set_auto_shutdown_mv(uint16_t mv) { (void)mv; }
-void ui_auto_shutdown_check(void) { }
-void ui_set_shutdown_hook(ui_shutdown_fn fn) { (void)fn; }
-
-#endif /* CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS > 0 */
+#endif
 
 /* ========== Shared splash logo ==========
  * 128×13 ZephCore wordmark, MSB-first row-major (Adafruit XBM/drawBitmap

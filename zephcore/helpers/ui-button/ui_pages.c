@@ -194,19 +194,6 @@ static const enum ui_page active_pages[] = {
 /* Current index into active_pages[] */
 static int current_page_idx;
 
-/* ========== Helper: Battery Percentage from mV ========== */
-
-static uint8_t calc_battery_pct(uint16_t mv)
-{
-	if (mv >= 4200) {
-		return 100;
-	}
-	if (mv <= 3000) {
-		return 0;
-	}
-	return (uint8_t)((mv - 3000) * 100 / 1200);
-}
-
 /* ========== Helper: local wall clock ==========
  *
  * state.rtc_epoch is ALWAYS UTC.  The timezone offset is applied here, at
@@ -279,9 +266,6 @@ static void render_top_bar(void)
 	if (state.battery_mv > 0) {
 		uint8_t pct = state.battery_pct;
 
-		if (pct == 0) {
-			pct = calc_battery_pct(state.battery_mv);
-		}
 		snprintf(right + pos, sizeof(right) - pos, "%u%%", pct);
 	}
 
@@ -293,9 +277,6 @@ static void render_top_bar(void)
 		if (state.battery_mv > 0) {
 			uint8_t pct = state.battery_pct;
 
-			if (pct == 0) {
-				pct = calc_battery_pct(state.battery_mv);
-			}
 			batt_color = (pct <= 15) ? UI_COLOR_ERROR :
 				     (pct <= 30) ? UI_COLOR_WARN : UI_COLOR_OK;
 		}
@@ -612,8 +593,7 @@ static void render_tiny_title(void)
 
 	if (state.battery_mv > 0) {
 		char buf[8];
-		uint8_t pct = state.battery_pct ? state.battery_pct
-					        : calc_battery_pct(state.battery_mv);
+		uint8_t pct = state.battery_pct;
 
 		snprintf(buf, sizeof(buf), "%u%%", pct);
 		draw_centered(centered_row(1, rows), buf);
@@ -1397,12 +1377,10 @@ static void render_sensors(void)
 
 	/* Battery at bottom */
 	snprintf(buf, sizeof(buf), "Batt: %u%% (%umV)",
-		 state.battery_pct > 0 ? state.battery_pct
-					   : calc_battery_pct(state.battery_mv),
+		 state.battery_pct,
 		 state.battery_mv);
 	if (color) {
-		uint8_t pct = state.battery_pct > 0 ? state.battery_pct
-						    : calc_battery_pct(state.battery_mv);
+		uint8_t pct = state.battery_pct;
 		uint16_t batt_color = (pct <= 15) ? UI_COLOR_ERROR :
 				      (pct <= 30) ? UI_COLOR_WARN : UI_COLOR_OK;
 
@@ -1591,8 +1569,7 @@ static void render_status(void)
 		draw_centered(centered_row(1, 3), buf);
 
 		if (state.battery_mv > 0) {
-			uint8_t pct = state.battery_pct ? state.battery_pct
-						        : calc_battery_pct(state.battery_mv);
+			uint8_t pct = state.battery_pct;
 
 			snprintf(buf, sizeof(buf), "Batt %u%%", pct);
 			draw_centered(centered_row(2, 3), buf);
@@ -1653,9 +1630,6 @@ static void render_status(void)
 	if (state.battery_mv > 0) {
 		uint8_t pct = state.battery_pct;
 
-		if (pct == 0) {
-			pct = calc_battery_pct(state.battery_mv);
-		}
 		snprintf(buf, sizeof(buf), "Batt: %u%% (%umV)", pct, state.battery_mv);
 		if (color) {
 			uint16_t batt_color = (pct <= 15) ? UI_COLOR_ERROR :

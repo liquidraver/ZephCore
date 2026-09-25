@@ -61,6 +61,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 
 /* UI subsystem (display, buttons, buzzer) */
 #include "ui_task.h"
+#include "ui_radio_state.h"
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
 #include "display.h"
 #endif
@@ -467,26 +468,7 @@ static void refresh_ui_radio_state(void)
 		return;
 	}
 
-	ui_set_radio_params(
-		lora_radio.getActiveFrequencyHz(),
-		lora_radio.getActiveSpreadingFactor(),
-		lora_radio.getActiveBandwidthKHzX10(),
-		lora_radio.getActiveCodingRate(),
-		lora_radio.getConfiguredTxPower(),
-		lora_radio.getNoiseFloor());
-
-	ui_set_radio_runtime(
-		lora_radio.getActiveSyncWord(),
-		lora_radio.getActivePreambleLength(),
-		lora_radio.isRxDutyCycleEnabled(),
-		lora_radio.isRadioReady(),
-		lora_radio.isInRecvMode(),
-		lora_radio.isTxActive());
-
-	ui_set_radio_stats(
-		lora_radio.getPacketsRecv(),
-		lora_radio.getPacketsSent(),
-		lora_radio.getPacketsRecvErrors());
+	ui_push_radio_state(lora_radio);
 }
 #endif
 
@@ -814,8 +796,8 @@ int server_main(const ServerRole &role)
 	/* Feed initial UI state from loaded prefs */
 	ui_set_node_name(prefs->node_name);
 	refresh_ui_radio_state();
-	ui_set_battery_provider(get_battery_mv);
-	ui_set_battery(zephyr_board.getBattMilliVolts(), 0);
+	ui_set_battery_provider(get_battery_mv, []() { return zephyr_board.getBattPercent(); });
+	ui_set_battery(zephyr_board.getBattMilliVolts(), zephyr_board.getBattPercent());
 	ui_set_gps_available(gps_is_available());
 
 	/* Defer initial advertisement by 10s — gives GPS time for a quick fix.

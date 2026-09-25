@@ -30,6 +30,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 #include "ui_task.h"
 #include <joystick_ui_hooks.h>
 #include "ui_mesh_actions.h"
+#include "ui_radio_state.h"
 
 /* UI action bit flags — set from input thread, consumed by mesh event loop */
 #define UI_ACTION_FLOOD_ADVERT      BIT(0)
@@ -345,24 +346,7 @@ extern "C" void mesh_housekeeping_ui_refresh(void)
 	ui_set_clock(s_rtc_clock->getCurrentTime());
 	ui_set_tz(s_mesh->prefs.tz_offset);
 
-	ui_set_radio_params(
-		s_lora_radio->getActiveFrequencyHz(),
-		s_lora_radio->getActiveSpreadingFactor(),
-		s_lora_radio->getActiveBandwidthKHzX10(),
-		s_lora_radio->getActiveCodingRate(),
-		s_lora_radio->getConfiguredTxPower(),
-		s_lora_radio->getNoiseFloor());
-	ui_set_radio_runtime(
-		s_lora_radio->getActiveSyncWord(),
-		s_lora_radio->getActivePreambleLength(),
-		s_lora_radio->isRxDutyCycleEnabled(),
-		s_lora_radio->isRadioReady(),
-		s_lora_radio->isInRecvMode(),
-		s_lora_radio->isTxActive());
-	ui_set_radio_stats(
-		s_lora_radio->getPacketsRecv(),
-		s_lora_radio->getPacketsSent(),
-		s_lora_radio->getPacketsRecvErrors());
+	ui_push_radio_state(*s_lora_radio);
 
 	/* Update GPS satellite count even without fix. When GPS is disabled, push
 	 * a zeroed count — gps_enable(false) already zeros the internal count, but

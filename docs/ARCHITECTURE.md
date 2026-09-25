@@ -699,9 +699,18 @@ restart-reason message partially compensates) and bounded by
   threshold + 200 mV (so the alert wins the race against the 90 s shutdown
   confirm window), 3500 mV on boards without auto-shutdown. Alert latches
   once per discharge cycle; re-arms on external power, recovery above
-  threshold + 150 mV, or threshold change. Sampling mirrors
-  `ui_auto_shutdown_check()` (30 s gate, 3-strike confirm) but lives in
-  `main_companion.cpp` so headless builds alert too.
+  threshold + 150 mV, or threshold change.
+
+**Low-battery policy** (`app/PowerPolicy.cpp`, every companion, UI or headless):
+the v-contact alert above and auto-shutdown (`get|set autoshutdown <mV>`, 0 =
+off; default `CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS`, **3200 mV on nRF52**, 0
+elsewhere because ESP32 cannot tell USB power from battery). Both sample every
+30 s on the housekeeping tick, act on the third low reading in a row, skip on
+external power, and treat anything under 2000 mV as "no battery" (a board without
+a cell reads 0). A shutdown with an app connected sends a v-contact notice and
+waits 1 s; otherwise it stores the reason (`Low Voltage`) for the next boot. The
+UI only draws the warning (`ui_show_low_battery()`). A stored 3300 mV (the old
+default) is migrated to 3200 once (`zc.aoff_set`).
 
 ### 6.3 RepeaterMesh
 
@@ -729,6 +738,7 @@ Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
 System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
 GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
 Sensors: `sensor get/set/list` (upstream's `SensorManager` settings: `gps`)
+Companion extras: `get|set autoshutdown`, `get|set v.contact`, `get|set v.batteryalert`, `help`
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
 Time: `clock`, `clock sync`, `time <epoch>`, `set meshtimesync on/off`
 
@@ -857,12 +867,14 @@ frame (a reply to one app also reaches the other).
 
 ### 8.1 Architecture
 
-Event-driven, no dedicated thread. All UI work on Zephyr work queues.
+Event-driven, no dedicated thread.
 
-Two UI frontends share the same plumbing (`helpers/ui/`: display, buzzer, multi-tap input filter, mesh action queue):
+Two UI frontends share the same plumbing (`helpers/ui/`: display, buzzer, multi-tap input filter, mesh action queue, clock-source tag `time_sync.c`, `ui_radio_state.h`, `telemetry_text.cpp`):
 
-- **Button UI** (`helpers/ui-button/`): single-button page cycler — most boards
-- **Joystick UI** (`helpers/ui-joystick/`): 5-way joystick menu UI (Wio Tracker L1)
+- **Button UI** (`helpers/ui-button/`): single-button page cycler — most boards, every role. Renders on the system work queue; changes mesh state only through `ui_mesh_actions` (posted, applied on the main thread).
+- **Joystick UI** (`helpers/ui-joystick/`): 5-way joystick / keypad menu UI, companion only (Wio Tracker L1, Wio L1 1W, GAT562-30S, ThinkNode M9). Keys go through a queue to `JoystickUITask::loop()` **on the main thread**, so its direct `CompanionMesh` calls (through `getMesh()`) are safe. `screens/repeater_admin.cpp` is the remote admin screen.
+
+Battery percentage on both UIs is the board's own (`ZephyrBoard::getBattPercent()`: discharge curve, or the fuel gauge). Low-battery policy is not UI: see `app/PowerPolicy.cpp` (the UI only draws `ui_show_low_battery()`).
 
 ```
 Hardware buttons → Zephyr input subsystem → Longpress filter → Multi-tap filter

@@ -604,6 +604,7 @@ else()
     helpers/ui/ui_mesh_actions.cpp
     app/CompanionMesh.cpp
     app/VContact.cpp
+    app/PowerPolicy.cpp
     # CommonCLI backs the v-contact loopback admin chat (companion_cli_exec in
     # main_companion.cpp), which is NOT gated on the wired-USB stack — so it
     # must be compiled unconditionally. Builds without CONFIG_LOG/COMPANION_USB/
@@ -718,7 +719,7 @@ endif()
 if(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON)
   target_sources(app PRIVATE
     helpers/ui-button/ui_task.c
-    helpers/ui-button/time_sync.c
+    helpers/ui/time_sync.c
   )
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/helpers/ui-button
@@ -733,11 +734,13 @@ endif()
 
 if(CONFIG_ZEPHCORE_UI_DISPLAY AND CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
   target_sources(app PRIVATE
-    helpers/ui-joystick/time_sync.c
+    helpers/ui/time_sync.c
     helpers/ui-joystick/joystick_ui_task.cpp
     helpers/ui-joystick/joystick_ui_hooks.cpp
     helpers/ui-joystick/screens/home.cpp
     helpers/ui-joystick/screens/contacts.cpp
+    helpers/ui-joystick/screens/repeater_admin.cpp
+    helpers/ui/telemetry_text.cpp
     helpers/ui-joystick/screens/messaging.cpp
     helpers/ui-joystick/screens/tools.cpp
     helpers/ui-joystick/screens/system.cpp
