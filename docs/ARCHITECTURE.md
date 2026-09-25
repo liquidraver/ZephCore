@@ -1,6 +1,7 @@
 # ZephCore Architecture Guide
 
 > Comprehensive developer reference for the ZephCore codebase — a Zephyr RTOS port of the Arduino MeshCore LoRa mesh networking firmware.
+> For the system view (layers, rules, threading, upstream policy) start with [DESIGN.md](DESIGN.md); decisions are in [adr/](adr/README.md).
 
 ---
 
