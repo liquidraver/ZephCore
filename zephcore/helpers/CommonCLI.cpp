@@ -202,7 +202,12 @@ static void memStatsLine(int n, char *reply)
 	struct mem_stats_walk w = { n, 0, reply };
 
 	reply[0] = '\0';
-	k_thread_foreach(memStatsThread, &w);
+	/* Unlocked: the callback scans a whole stack for its high-water mark,
+	 * and k_thread_foreach() holds the thread-list spinlock (interrupts off)
+	 * across it -- a few hundred us on nRF52, past the BLE controller's
+	 * 150 us inter-frame deadline: an advertising event asserted
+	 * (lll_adv.c "Radio ISR latency") and rebooted the node. */
+	k_thread_foreach_unlocked(memStatsThread, &w);
 	if (reply[0] != '\0') {
 		return;
 	}

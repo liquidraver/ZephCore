@@ -374,6 +374,54 @@ static void doom_map_init(void)
 		: &level_1[0][0];
 }
 
+static uint32_t isqrt64(uint64_t v)
+{
+	uint64_t r = 0;
+	uint64_t bit = 1ULL << 62;
+
+	while (bit > v) {
+		bit >>= 2;
+	}
+	while (bit) {
+		if (v >= r + bit) {
+			v -= r + bit;
+			r = (r >> 1) + bit;
+		} else {
+			r >>= 1;
+		}
+		bit >>= 2;
+	}
+	return (uint32_t)r;
+}
+
+/* Turn by sin_r (signed) and put the view back on the unit circle.
+ *
+ * The rotation used to be cos = 1 - ROT/8, sin = ROT: a matrix with scale
+ * ~0.993, plus truncation in every fp_mul, so each turn tick shrank dir and
+ * plane. Half a view vector after ~1.3 full turns, 1/16 after ~5: walls read
+ * as ever farther away (the level "stretches for kilometres", steps get
+ * short), and around ten turns 1/ray_dir overflowed int32 in the raycaster
+ * and a zero wall height divided by zero - a usage fault that rebooted the
+ * node. Now: the small-angle cosine, then dir renormalised to exactly unit
+ * length and plane rebuilt perpendicular to it at its 2/3 field of view. */
+static void rotate_view(struct doom_player *p, fixed_t sin_r)
+{
+	fixed_t cos_r = FP_ONE - fp_mul(sin_r, sin_r) / 2;
+	fixed_t dx = fp_mul(p->dir_x, cos_r) - fp_mul(p->dir_y, sin_r);
+	fixed_t dy = fp_mul(p->dir_x, sin_r) + fp_mul(p->dir_y, cos_r);
+	uint32_t len = isqrt64((uint64_t)((int64_t)dx * dx) + (uint64_t)((int64_t)dy * dy));
+
+	if (len == 0) {
+		dx = 0;
+		dy = -FP_ONE;
+		len = FP_ONE;
+	}
+	p->dir_x = (fixed_t)(((int64_t)dx << FP_SHIFT) / len);
+	p->dir_y = (fixed_t)(((int64_t)dy << FP_SHIFT) / len);
+	p->plane_x = -(p->dir_y * 2) / 3;
+	p->plane_y = (p->dir_x * 2) / 3;
+}
+
 static uint8_t doom_map_get(int x, int y)
 {
 	if (x < 0 || x >= MAP_W || y < 0 || y >= MAP_H) {
@@ -648,7 +696,14 @@ static void render_one_sprite(const uint16_t *sprite,
 	int draw_start_x = sprite_screen_x - sprite_h / 2;
 	int draw_end_x   = sprite_screen_x + sprite_h / 2;
 
+	/* Floor for sprites: at 8+ tiles the wall fade (brightness 1) passes one
+	 * dither cell in 16, so the boss, which starts ~11 tiles away in a
+	 * corner, drew as a few dots or nothing while its fireballs hit. Walls
+	 * keep the full fade; sprites keep a silhouette. */
 	int brightness = dist_to_brightness(transform_y);
+	if (brightness < 7) {
+		brightness = 7;
+	}
 
 	for (int sc = draw_start_x; sc < draw_end_x; sc++) {
 		if (sc < 0 || sc >= SCREEN_W) continue;
@@ -756,11 +811,13 @@ static void raycaster_render(void)
 		int map_x = fp_to_int(p->x);
 		int map_y = fp_to_int(p->y);
 
-		fixed_t delta_dist_x = (ray_dir_x == 0)
-			? INT32_MAX
+		/* 1/|ray_dir|, capped: near an axis it exceeds int32 and the DDA
+		 * below adds it up. 1024 tiles is far past any ray in a 16x16 map. */
+		fixed_t delta_dist_x = (fp_abs(ray_dir_x) < (FP_ONE >> 10))
+			? fp_from_int(1024)
 			: fp_abs(fp_div(FP_ONE, ray_dir_x));
-		fixed_t delta_dist_y = (ray_dir_y == 0)
-			? INT32_MAX
+		fixed_t delta_dist_y = (fp_abs(ray_dir_y) < (FP_ONE >> 10))
+			? fp_from_int(1024)
 			: fp_abs(fp_div(FP_ONE, ray_dir_y));
 
 		int step_x, step_y;
@@ -839,6 +896,12 @@ static void raycaster_render(void)
 
 		int line_height = fp_to_int(fp_div(fp_from_int(SCREEN_H),
 						   perp_dist));
+		/* A wall farther than SCREEN_H rounds to 0 lines, and the texture
+		 * row below divides by this: a usage fault (divide by zero) that
+		 * rebooted the node mid-game. */
+		if (line_height < 1) {
+			line_height = 1;
+		}
 
 		int draw_start = (SCREEN_H - line_height) / 2;
 		int draw_end   = draw_start + line_height;
@@ -1192,10 +1255,13 @@ static void game_init(void)
 		.y      = fp_from_int(4) + FP_HALF,
 		.health = 30,
 	};
+	/* x = 11, mirroring the imp: (12,4) is inside the NE wall block, where
+	 * line of sight never reached the demon, so it could not be shot and the
+	 * portal never opened. */
 	game.enemies[1] = (struct doom_enemy){
 		.type   = ENEMY_DEMON,
 		.state  = ESTATE_IDLE,
-		.x      = fp_from_int(12) + FP_HALF,
+		.x      = fp_from_int(11) + FP_HALF,
 		.y      = fp_from_int(4) + FP_HALF,
 		.health = 60,
 	};
@@ -1247,27 +1313,11 @@ static void handle_movement(uint32_t input)
 	}
 
 	if (input & DINPUT_LEFT) {
-		fixed_t old_dx = p->dir_x;
-		fixed_t old_px = p->plane_x;
-		fixed_t cos_r = FP_ONE - (ROT_SPEED / 8);
-		fixed_t sin_r = ROT_SPEED;
-
-		p->dir_x   = fp_mul(old_dx, cos_r) - fp_mul(p->dir_y, sin_r);
-		p->dir_y   = fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
-		p->plane_x = fp_mul(old_px, cos_r) - fp_mul(p->plane_y, sin_r);
-		p->plane_y = fp_mul(old_px, sin_r) + fp_mul(p->plane_y, cos_r);
+		rotate_view(p, ROT_SPEED);
 	}
 
 	if (input & DINPUT_RIGHT) {
-		fixed_t old_dx = p->dir_x;
-		fixed_t old_px = p->plane_x;
-		fixed_t cos_r = FP_ONE - (ROT_SPEED / 8);
-		fixed_t sin_r = ROT_SPEED;
-
-		p->dir_x   = fp_mul(old_dx, cos_r) + fp_mul(p->dir_y, sin_r);
-		p->dir_y   = -fp_mul(old_dx, sin_r) + fp_mul(p->dir_y, cos_r);
-		p->plane_x = fp_mul(old_px, cos_r) + fp_mul(p->plane_y, sin_r);
-		p->plane_y = -fp_mul(old_px, sin_r) + fp_mul(p->plane_y, cos_r);
+		rotate_view(p, -ROT_SPEED);
 	}
 }
 
@@ -1779,7 +1829,9 @@ void doom_game_input(uint16_t code, int32_t value)
 		bit = DINPUT_LEFT;
 		break;
 	case INPUT_KEY_ENTER:
-	case INPUT_KEY_0:
+		/* Not INPUT_KEY_0: on the Wio that is the user button, whose tap is
+		 * the way out (KEY_1 via the multi-tap filter); firing on it too
+		 * shot on every exit. */
 		bit = DINPUT_FIRE;
 		break;
 	default:

@@ -929,6 +929,13 @@ void JoystickUITask::loop()
 
 #ifdef CONFIG_ZEPHCORE_EASTER_EGG_DOOM
 	if (doom_game_is_running()) {
+		/* The game takes the joystick straight from the input callback, so
+		 * no key reaches the paths that normally keep these alive: the UI
+		 * locked itself mid-game and the exit key then went to the lock
+		 * screen (and an auto-off swallowed it as a wake press). Playing is
+		 * activity. */
+		scheduleLockTimer();
+		mc_display_reset_auto_off();
 		_next_refresh = now + 500;
 		if (s_schedule_render_fn) s_schedule_render_fn(500);
 		return;
