@@ -238,3 +238,13 @@ if(EXISTS ${ZEPHCORE_SOURCE_DIR}/patches/modules/loramac-node)
         "loramac-node"
     )
 endif()
+
+# Apply patches to hal_espressif module
+if(EXISTS ${ZEPHCORE_SOURCE_DIR}/patches/modules/hal_espressif)
+    message(STATUS "Applying ZephCore patches to hal_espressif...")
+    zephcore_apply_patches(
+        "${ZEPHCORE_SOURCE_DIR}/patches/modules/hal_espressif"
+        "${ZEPHCORE_MODULES_DIR}/hal/espressif"
+        "hal_espressif"
+    )
+endif()

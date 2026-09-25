@@ -119,7 +119,9 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 
 extern "C" void mesh_ble_set_enabled(bool enable)
 {
+#if IS_ENABLED(CONFIG_BT)
 	zephcore_ble_set_enabled(enable);
+#endif
 	atomic_set(&pending_ble_disabled, enable ? 0 : 1);
 	atomic_or(&pending_ui_actions, UI_ACTION_BLE_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);

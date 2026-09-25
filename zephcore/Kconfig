@@ -1,5 +1,49 @@
 # SPDX-License-Identifier: MIT
 
+# WiFi companion on a PSRAM board: the WiFi heap and the network buffers go to
+# PSRAM, so WiFi and BLE fit together (ZEPHCORE_COMPANION_WIFI). Ahead of
+# Kconfig.zephyr, because a choice takes its first matching default and the
+# driver's own ESP_WIFI_HEAP default is unconditional.
+choice ESP_WIFI_HEAP
+	default ESP_WIFI_HEAP_SPIRAM if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+endchoice
+
+config ESP32_WIFI_NET_ALLOC_SPIRAM
+	default y if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+
+# WiFi companion on an ESP32-S3 without PSRAM: the WiFi heap is the system heap,
+# and Espressif's ADD_SIZE reservation (51 KB for WiFi alone) is sized for its
+# default 10 static / 32 dynamic RX and 32 TX buffers. Bound the buffers and size
+# the heap from measurement instead (72 KB, HEAP_MEM_POOL_SIZE in
+# wifi_companion.conf): measured 2026-09-24 on a XIAO ESP32-S3 built without
+# PSRAM, peak 61.6 KB under devdocs/tools/mem_load.py, and heap exhaustion under
+# a ~10k frames/s flood recovers (devdocs/lld/08-connectivity.md §13). Saves
+# ~12 KB of DRAM, spent on contacts. S3 only: C3/C6 and the classic ESP32 run
+# different BLE controllers with different heap needs, not measured here.
+config HEAP_MEM_POOL_IGNORE_MIN
+	default y if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+
+config ESP32_WIFI_STATIC_RX_BUFFER_NUM
+	default 6 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+
+config ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+
+config ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+
+# Main thread stack. Measured 2026-09-24 (CONFIG_ZEPHCORE_MEM_STATS,
+# devdocs/tools/mem_load.py: fresh BLE pairing + bonded reconnects, protocol
+# golden over BLE and TCP, 8 KB sign, key export/import, flood advert, 120
+# contacts added and dumped): companion peak 3008 B on nRF52 (T1000-E), 3828 B
+# on ESP32-S3 with WiFi. 6144 for the companion (the LoRa-E5 companion already
+# ran 6144); the servers keep 8192 (region CLI, uplink). A conf fragment still
+# overrides (stm32wl_common 6144, observer 4096). Ahead of Kconfig.zephyr so it
+# beats Zephyr's own default.
+config MAIN_STACK_SIZE
+	default 6144 if ZEPHCORE_ROLE_COMPANION
+	default 8192
+
 source "$(ZEPHYR_BASE)/Kconfig.zephyr"
 
 # DT-driven PSRAM auto-enable for ESP32 boards (see Kconfig.psram).
@@ -123,10 +167,9 @@ config ZEPHCORE_COMPANION_USB
 	  Compile and init the USB CDC-ACM companion protocol stack
 	  (ZephyrCompanionUSB / ZephyrUSBCDC) independently of CONFIG_LOG.
 	  The full ~60-opcode binary protocol is available over USB even in
-	  production builds (CONFIG_LOG=n).  USB and BLE arbitrate the active
-	  interface first-come-first-served: CMD_APP_START claims it for USB only
-	  if no BLE session is already active (and is ignored while BLE is live);
-	  on USB unplug the interface is handed back to BLE or released to idle.
+	  production builds (CONFIG_LOG=n).  It is one interface in the
+	  companion's MultiSerialInterface: USB, BLE (and TCP) clients can be
+	  connected at once, and every connected one gets every frame.
 
 	  Enabled by default for all companion builds on platforms that already
 	  have CONFIG_USB_DEVICE_STACK_NEXT=y (all nRF52840 boards).  On
@@ -140,24 +183,27 @@ config ZEPHCORE_COMPANION_USB
 	  there too — but not on repeater/observer/room-server or debug builds,
 	  which keep the port for the console.
 
+DT_CHOSEN_ZEPHCORE_COMPANION_UART := zephcore,companion-uart
+
 config ZEPHCORE_COMPANION_SERIAL
 	bool "Enable plain-UART companion transport"
 	depends on ZEPHCORE_ROLE_COMPANION && !ZEPHCORE_COMPANION_USB
+	default y if !BT && $(dt_chosen_enabled,$(DT_CHOSEN_ZEPHCORE_COMPANION_UART))
 	help
 	  Run the same wired-companion stack (ZephyrCompanionUSB: frame parser,
-	  TX ring, text CLI, BLE-arbitrated interface) over a plain UART instead
-	  of a native-USB CDC-ACM endpoint.  For boards whose USB-C is wired to a
-	  USB-UART bridge rather than the SoC's native USB (e.g. Heltec V3 /
-	  CP2102), or that have no USB device controller at all.
+	  TX ring, text CLI) over a plain UART instead of a native-USB CDC-ACM
+	  endpoint.  For boards whose USB-C is wired to a USB-UART bridge rather
+	  than the SoC's native USB (e.g. Heltec V3 / CP2102), or that have no USB
+	  device controller at all.
 
 	  The board points the transport at its UART with the
-	  `zephcore,companion-uart` chosen node (e.g. = &uart0); that UART must be
-	  dedicated to the companion (console/shell moved off or disabled), since
-	  the protocol stream and a text console cannot share one line.  Coexists
-	  with BLE exactly like the USB backend — same first-come arbitration.
+	  `zephcore,companion-uart` chosen node (e.g. = &uart0); that UART should
+	  be dedicated to the companion (console/shell moved off or disabled),
+	  since the protocol stream and a text console cannot share one line.
+	  It is one interface in the MultiSerialInterface, beside BLE and TCP.
 
-	  Distinct from the legacy SerialCompanionTransport (no-BLE STM32WL path):
-	  this one keeps BLE and adds the text CLI.
+	  On by default for a board without Bluetooth that names the chosen node
+	  (the LoRa-E5 mini): the UART is then its only companion link.
 
 if ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 
@@ -375,64 +421,95 @@ config ZEPHCORE_BLE_DFU
 
 endmenu # BLE Configuration
 
-menu "Linux Companion Transport (native_sim)"
+menu "Companion TCP Transport"
 
 config ZEPHCORE_TRANSPORT_TCP
-	bool "Use TCP socket transport instead of BLE NUS"
+	bool "Companion over a TCP socket"
 	default n
 	help
-	  Replaces the ZephyrBLE adapter with LinuxTCPTransport, exposing
-	  the companion NUS protocol over a TCP socket on Linux SBC builds
-	  (BOARD=native_sim). Auto-enabled by boards/linux_native/linux_common.conf.
+	  Serve the companion protocol over TCP (TcpCompanionTransport), as one
+	  more interface in the MultiSerialInterface beside BLE and USB: the
+	  native-Linux builds (linux_common.conf turns it on) and the WiFi
+	  companion (ZEPHCORE_COMPANION_WIFI selects it).
 
 	  The wire format is MeshCore's SerialWifiInterface framing:
-	  ['<'][len_LSB][len_MSB][NUS payload] app->node and ['>']... node->app.
+	  ['<'][len_LSB][len_MSB][payload] app->node and ['>']... node->app.
 
-config ZEPHCORE_LINUX_TCP_PORT
+config ZEPHCORE_TCP_PORT
 	int "TCP listen port"
 	depends on ZEPHCORE_TRANSPORT_TCP
 	default 5000
 	range 1 65535
 	help
-	  Port the companion TCP transport binds to. Default 5000 matches
-	  the upstream MeshCore Linux companion service so a single mobile
-	  app TCP configuration works against both backends.
+	  Port the companion TCP transport listens on. Default 5000 matches
+	  upstream MeshCore's companion TCP_PORT and its Linux companion service,
+	  so one mobile-app TCP configuration works against every backend.
 
-endmenu # Linux Companion Transport
+config ZEPHCORE_TCP_QUEUE_SIZE
+	int "TCP TX/RX frame queue depth"
+	depends on ZEPHCORE_TRANSPORT_TCP
+	default 8
+	range 4 64
+	help
+	  Frames queued between the TCP socket and the companion, each way.
+	  Smaller than the BLE queues (ZEPHCORE_BLE_QUEUE_SIZE, 24): there is
+	  one TCP client, the socket buffers on both ends absorb bursts, and
+	  the RX side waits for room instead of dropping, so a full queue
+	  pushes back through TCP flow control. 16 frames less each way is
+	  ~5.7 KB of DRAM, which the no-PSRAM WiFi boards spend on contacts.
+
+config ZEPHCORE_COMPANION_WIFI
+	bool "WiFi companion (app over TCP on the saved network)"
+	depends on ZEPHCORE_ROLE_COMPANION && WIFI
+	select ZEPHCORE_TRANSPORT_TCP
+	help
+	  Join the network saved with upstream's wifi.* CLI (set wifi.ssid,
+	  set wifi.pwd, set wifi.enabled; applied on reboot) and serve the
+	  companion protocol over TCP on ZEPHCORE_TCP_PORT, beside BLE and USB:
+	  every connected transport is served (MultiSerialInterface).
+
+	  Turned on by boards/common/wifi_companion.conf, which CMake adds to
+	  companion builds of boards whose zephcore.yml declares
+	  `capabilities: wifi: true` (the ones with the RAM for WiFi and BLE
+	  together).
+
+endmenu # Companion TCP Transport
 
 endif # ZEPHCORE_ROLE_COMPANION
 
 config ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
-	int "Periodic housekeeping interval (ms)"
-	depends on ZEPHCORE_ROLE_COMPANION || ZEPHCORE_ROLE_ROOM_SERVER
+	int "Companion housekeeping interval (ms)"
+	depends on ZEPHCORE_ROLE_COMPANION
 	default 5000
 	range 1000 60000
 	help
-	  Wake interval for noise floor calibration, battery reads, and UI refresh.
+	  Wake interval for the companion's periodic housekeeping: noise floor
+	  calibration, battery reads, UI refresh, and loop()'s own deadlines.
 	  Longer = lower power, less responsive monitoring.
 
-	  Companion and room server only.  Both still run a fixed periodic tick:
-	  the companion's block contains genuine pollers (contact-dump progress,
-	  BLE advertising watchdog) that have no deadline to arm, and the room
-	  server is paced by its own 500 ms push timer regardless.  Repeaters are
-	  deadline-driven instead — see ZEPHCORE_MAINTENANCE_BACKSTOP_MS.
+	  Companion only.  It keeps a fixed periodic tick because its block
+	  contains genuine pollers of external state (contact-dump progress, BLE
+	  advertising watchdog, battery) that have no deadline to arm.  Repeaters
+	  and room servers are deadline-driven instead — see
+	  ZEPHCORE_MAINTENANCE_BACKSTOP_MS.
 
 config ZEPHCORE_MAINTENANCE_BACKSTOP_MS
-	int "Repeater maintenance backstop (ms)"
-	depends on ZEPHCORE_ROLE_REPEATER
+	int "Repeater / room server maintenance backstop (ms)"
+	depends on ZEPHCORE_ROLE_REPEATER || ZEPHCORE_ROLE_ROOM_SERVER
 	default 60000
 	range 15000 600000
 	help
-	  Hard ceiling on how long a repeater will go without a maintenance pass.
+	  Hard ceiling on how long a repeater or room server will go without a
+	  maintenance pass.
 
-	  main_repeater.cpp arms a one-shot wake at the soonest deadline reported
+	  The event loop arms a one-shot wake at the soonest deadline reported
 	  by msUntilNextMaintenance(), then clamps it to this value.  The clamp is
 	  UNCONDITIONAL, so this is a safety net against a deadline that is missed
 	  or mis-reported — not a value that should ever bind in normal operation.
 
 	  MUST stay above the radio measurement interval ("set probe.interval",
 	  default 15 s; ZEPHCORE_NOISE_FLOOR_INTERVAL_MS when probing is off) —
-	  the shortest recurring deadline on an idle repeater.  Set at or below it
+	  the shortest recurring deadline on an idle node.  Set at or below it
 	  and this silently becomes the wake period, reproducing the old fixed 5 s
 	  tick and making the deadline scheduling a no-op.  That is exactly the bug
 	  the original 5000 default shipped with.
@@ -781,6 +858,15 @@ config ZEPHCORE_MEM_STATS
 	  bump.  Stack watermarks need INIT_STACKS (stacks painted at thread
 	  creation), which costs boot time, so leave this off in releases.
 	  Resolve heap addresses to symbols with nm on zephyr.elf.
+
+config ZEPHCORE_LOOP_WAKE_STATS
+	bool "CLI: count event-loop wakes"
+	help
+	  Count every return from the mesh thread's k_event_wait(), in total and
+	  per event bit, and report them with `get loop.wakes`.  For measuring a
+	  role's wake profile (wakes per second = wakes / up), e.g. before and
+	  after a change to its scheduling.  Measure on the release config with
+	  this passed by -D, so debug logging does not add wakes of its own.
 
 config ZEPHCORE_LORA_RETENTION_DEBUG
 	bool "SX126x: verify the warm-start retention list on air"

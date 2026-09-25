@@ -1,7 +1,12 @@
 /*
  * SPDX-License-Identifier: MIT
  * ZephCore BLE Adapter — NUS service, advertising, security, TX/RX
+ *
+ * One companion transport among several: CompanionInterfaces.h wraps it as a
+ * BaseSerialInterface for the MultiSerialInterface. Nothing here knows about
+ * the other transports.
  */
+
 #pragma once
 
 #include <zephyr/kernel.h>
@@ -9,58 +14,48 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Maximum companion transport frame size.
- * +4 over the base 172 to accommodate transport codes (region scoping). */
-#define MAX_FRAME_SIZE  176
+#include "companion_framing.h"  /* MAX_FRAME_SIZE, struct frame, companion_link_cbs */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/* Callbacks from BLE adapter to main */
 struct ble_callbacks {
-	/* RX frame received; runs on system work queue — must not block */
-	void (*on_rx_frame)(const uint8_t *data, uint16_t len);
-	/* TX queue drained */
-	void (*on_tx_idle)(void);
-	/* BLE connected */
-	void (*on_connected)(void);
-	/* BLE disconnected */
-	void (*on_disconnected)(void);
+	/* Frame waiting (zephcore_ble_recv), TX drained, (dis)connected. Raised
+	 * from the BT and system work queue threads: post events only. */
+	struct companion_link_cbs link;
 	/* Buttonless DFU control-point write — defer reboot into the
 	 * bootloader's BLE OTA mode. May be NULL (feature disabled). */
 	void (*on_dfu_request)(void);
 };
 
-enum zephcore_iface {
-	ZEPHCORE_IFACE_NONE,
-	ZEPHCORE_IFACE_BLE,
-	ZEPHCORE_IFACE_USB,
-};
-
 /** Register callbacks and auth handlers. Call before bt_enable(). */
 void zephcore_ble_init(const struct ble_callbacks *cbs);
 
-/** Load settings, build adv data, start advertising. Call from bt_ready(). */
+/** Load settings, build adv data, start advertising if enabled. Call from bt_ready(). */
 void zephcore_ble_start(const char *device_name);
 
 /** Queue a frame for BLE TX. Returns bytes queued, or 0 on failure. */
 size_t zephcore_ble_send(const uint8_t *data, uint16_t len);
 
-/** Enable/disable BLE. Disabling disconnects and stops advertising. */
+/** Take the next received frame into dest (MAX_FRAME_SIZE). Returns its length, 0 if none. */
+size_t zephcore_ble_recv(uint8_t *dest);
+
+/** Enable/disable BLE. Disabling disconnects and stops advertising. Before
+ *  zephcore_ble_start() this only records the wish, which start() honours. */
 void zephcore_ble_set_enabled(bool enable);
 
 /** True if BLE is enabled */
 bool zephcore_ble_is_enabled(void);
 
-/** True if BLE is the active transport and ready to send. */
+/** True when a secured client is connected: frames can be exchanged. */
 bool zephcore_ble_is_active(void);
 
-/** True if BLE has an active connection (regardless of interface state). */
+/** True if BLE has a connection (secured or not). */
 bool zephcore_ble_is_connected(void);
 
-/** True if TX queue is full and overflow retry is active. */
-bool zephcore_ble_is_congested(void);
+/** True while senders should hold off: TX congested, or the queue at its 2/3 high-water mark. */
+bool zephcore_ble_is_write_busy(void);
 
 /** True when every queued frame has been transmitted and link-layer acked:
  *  send queue empty, nothing in flight, no retry or overflow frame held back.
@@ -77,30 +72,6 @@ bool zephcore_ble_is_advertising(void);
 
 void zephcore_ble_set_passkey(uint32_t passkey);
 uint32_t zephcore_ble_get_passkey(void);
-
-/** Get/set active interface (BLE/USB coexistence). Both are thread-safe —
- *  active_iface is mutated from the BLE callback thread and the USB workqueue. */
-enum zephcore_iface zephcore_ble_get_active_iface(void);
-void zephcore_ble_set_active_iface(enum zephcore_iface iface);
-
-/** Atomically claim the active interface for `who` unless the other transport
- *  already owns it. Succeeds (returns true) if the interface is idle or already
- *  held by `who`; fails if a different interface is active. Thread-safe — use
- *  this instead of a get-then-set sequence to avoid a check-then-act race. */
-bool zephcore_ble_iface_try_claim(enum zephcore_iface who);
-
-/** Get recv/send queues for USB path sharing. */
-struct k_msgq *zephcore_ble_get_recv_queue(void);
-struct k_msgq *zephcore_ble_get_send_queue(void);
-
-/** Kick the TX drain work. Call after putting frames in the send queue. */
-void zephcore_ble_kick_tx(void);
-
-/**
- * Disconnect the current BLE connection (if any).
- * Used by USB when it takes over as active interface.
- */
-void zephcore_ble_disconnect(void);
 
 /**
  * Apply deferred connection parameters.

@@ -6,6 +6,7 @@
 #pragma once
 
 #include <helpers/BaseChatMesh.h>
+#include <helpers/BaseSerialInterface.h>
 #include <helpers/MeshTimeSync.h>
 #include <helpers/TransportKeyStore.h>
 #include <ZephyrDataStore.h>
@@ -45,11 +46,6 @@
 #define AUTO_ADD_ROOM_SERVER       (1 << 3)
 #define AUTO_ADD_SENSOR            (1 << 4)
 
-/* Canonical definition is in ZephyrBLE.h */
-#ifndef MAX_FRAME_SIZE
-#define MAX_FRAME_SIZE  176
-#endif
-
 /* 1 header + 32 pubkey + 1 type + 1 flags + 1 path_len + 64 path + 32 name + 4*4 fields */
 #define CONTACT_FRAME_SIZE 148
 
@@ -80,8 +76,6 @@ struct AdvertPath {
 	uint8_t path[MAX_PATH_SIZE];
 };
 
-typedef void (*PushCallback)(uint8_t code, const uint8_t *data, size_t len);
-typedef size_t (*WriteFrameCallback)(const uint8_t *data, size_t len);
 typedef uint16_t (*GetBatteryCallback)(void);
 
 /* preset_changed: freq/bw/sf moved, not just TX power; the adaptive-CAD state
@@ -119,8 +113,8 @@ public:
 	/* One companion-protocol frame from the app; true if handled. */
 	bool handleCmdFrame(const uint8_t *data, size_t len);
 
-	void setPushCallback(PushCallback cb) { _push_cb = cb; }
-	void setWriteFrameCallback(WriteFrameCallback cb) { _write_cb = cb; }
+	/* As upstream: every frame to and from the app goes through `serial` */
+	void startInterface(BaseSerialInterface &serial);
 	void setBatteryCallback(GetBatteryCallback cb) { _batt_cb = cb; }
 	void setRadioReconfigureCallback(RadioReconfigureCallback cb) { _radio_reconfig_cb = cb; }
 	void setPinChangeCallback(PinChangeCallback cb) { _pin_change_cb = cb; }
@@ -281,8 +275,7 @@ protected:
 
 private:
 	ZephyrDataStore *_store;
-	PushCallback _push_cb;
-	WriteFrameCallback _write_cb;
+	BaseSerialInterface *_serial;
 	GetBatteryCallback _batt_cb;
 	RadioReconfigureCallback _radio_reconfig_cb;
 	PinChangeCallback _pin_change_cb;

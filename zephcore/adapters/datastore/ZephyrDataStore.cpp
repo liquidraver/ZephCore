@@ -8,6 +8,10 @@
 
 #include "ZephyrDataStore.h"
 #include "ZephyrFsFormat.h"
+#include "ZephyrFsUtil.h"
+#include "IdentityFile.h"
+#include "PrefsFile.h"
+#include <PrefsCodec.h>
 #include <AdvertDataHelpers.h>   // ADV_TYPE_NONE (transient/anon contacts)
 #include <zephyr/fs/fs.h>
 #include <zephyr/fs/littlefs.h>
@@ -28,93 +32,9 @@ struct BlobRec {
 	uint8_t data[MAX_ADVERT_PKT_LEN];
 };
 
-typedef bool (*AtomicWriteFn)(struct fs_file_t *file, void *ctx);
-
-static bool atomicWriteTempFile(const char *path, AtomicWriteFn write_fn, void *ctx, const char *op_tag)
-{
-	char tmp_path[56];
-	int pl = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
-	if (pl <= 0 || pl >= (int)sizeof(tmp_path)) {
-		LOG_ERR("%s: path too long", op_tag);
-		return false;
-	}
-
-	/* Best-effort cleanup of a leftover temp from an interrupted write.
-	 *
-	 * Guarded by fs_stat rather than unlinking blind: on the normal path the
-	 * file does not exist, fs_unlink() returns -ENOENT, and Zephyr's FS layer
-	 * logs that at ERR level regardless of us ignoring the return.  That put
-	 * an <err> line on the happy path of every atomic save — 23 of them in a
-	 * 90-minute capture, one per save — which is exactly the noise that makes
-	 * a real filesystem error invisible. */
-	struct fs_dirent tmp_ent;
-
-	if (fs_stat(tmp_path, &tmp_ent) == 0) {
-		fs_unlink(tmp_path);
-	}
-
-	struct fs_file_t file;
-	fs_file_t_init(&file);
-	int rc = fs_open(&file, tmp_path, FS_O_CREATE | FS_O_WRITE);
-	if (rc < 0) {
-		LOG_ERR("%s: open %s failed: %d", op_tag, tmp_path, rc);
-		return false;
-	}
-
-	bool write_ok = write_fn(&file, ctx);
-	int sync_rc = fs_sync(&file);
-	fs_close(&file);
-	if (!write_ok || sync_rc < 0) {
-		if (!write_ok) {
-			LOG_ERR("%s: write failed", op_tag);
-		}
-		if (sync_rc < 0) {
-			LOG_ERR("%s: sync failed: %d", op_tag, sync_rc);
-		}
-		fs_unlink(tmp_path);
-		return false;
-	}
-
-	rc = fs_rename(tmp_path, path);
-	if (rc < 0) {
-		LOG_ERR("%s: rename %s -> %s failed: %d", op_tag, tmp_path, path, rc);
-		fs_unlink(tmp_path);
-		return false;
-	}
-	return true;
-}
-
 /* Track mount status - filesystems are automounted via DTS fstab */
 static bool lfs_mounted;
 static bool ext_lfs_mounted;
-
-/* Check if a filesystem is mounted (mount-list lookup, never logs) */
-static bool is_mounted(const char *mount_point)
-{
-	/* Walk the registered mount list rather than calling fs_statvfs().
-	 *
-	 * fs_statvfs() on a path that is not mounted makes Zephyr's FS layer log
-	 * "mount point not found!!" at ERR, which put an <err> line on the happy
-	 * path of every boot: on boards with no external flash (the probe can
-	 * never succeed) and, on boards that do have it, on every boot before the
-	 * deferred-init retry below mounts it.
-	 *
-	 * Deliberately NOT solved by gating the probe on
-	 * DT_NODE_EXISTS(DT_NODELABEL(qspi_lfs)): that would still log on the
-	 * deferred-init path, and it would silently stop detecting /ext on any
-	 * future board that mounts external flash under a different node label.
-	 * fs_readmount() is a pure lookup, logs nothing, and stays correct in
-	 * every one of those permutations. */
-	int index = 0;
-	const char *name = NULL;
-
-	while (fs_readmount(&index, &name) == 0) {
-		if (name != NULL && strcmp(name, mount_point) == 0) {
-			return true;
-		}
-	}
-	return false;
-}
 
 bool ZephyrDataStore::mount()
 {
@@ -123,7 +43,7 @@ bool ZephyrDataStore::mount()
 	}
 
 	/* Check if internal LFS was automounted */
-	if (is_mounted(mountPoint())) {
+	if (zephcore_fs_is_mounted(mountPoint())) {
 		lfs_mounted = true;
 		LOG_INF("Internal LittleFS at %s (automounted)", mountPoint());
 	} else {
@@ -132,7 +52,7 @@ bool ZephyrDataStore::mount()
 	}
 
 	/* Check if external QSPI was automounted */
-	if (is_mounted(extMountPoint())) {
+	if (zephcore_fs_is_mounted(extMountPoint())) {
 		ext_lfs_mounted = true;
 		LOG_INF("External QSPI LittleFS at %s (automounted, 100 blobs)", extMountPoint());
 	} else {
@@ -165,7 +85,7 @@ bool ZephyrDataStore::mount()
 
 		FS_FSTAB_DECLARE_ENTRY(DT_NODELABEL(qspi_lfs));
 		int rc = fs_mount(&FS_FSTAB_ENTRY(DT_NODELABEL(qspi_lfs)));
-		if (is_mounted(extMountPoint())) {
+		if (zephcore_fs_is_mounted(extMountPoint())) {
 			ext_lfs_mounted = true;
 			LOG_INF("External QSPI LittleFS at %s (mounted on retry, rc=%d)",
 				extMountPoint(), rc);
@@ -207,153 +127,57 @@ void ZephyrDataStore::begin()
 	checkAdvBlobFile();
 }
 
-bool ZephyrDataStore::exists(const char *path) const
+static bool copy_writer(struct fs_file_t *dst, void *ctx)
 {
-	struct fs_dirent ent;
-	return fs_stat(path, &ent) == 0;
-}
+	struct fs_file_t *src = static_cast<struct fs_file_t *>(ctx);
+	uint8_t buf[64];
+	ssize_t n;
 
-bool ZephyrDataStore::removeFile(const char *path)
-{
-	/* Idempotent: an absent file is a successful removal.
-	 *
-	 * Guarded by fs_stat rather than unlinking blind because fs_unlink()
-	 * returns -ENOENT for a missing path and Zephyr's FS layer logs that at
-	 * ERR level regardless of us ignoring the return.  Every caller here is
-	 * best-effort cleanup of a file that usually is NOT there, so unguarded
-	 * this puts an <err> line on the happy path of every boot — exactly the
-	 * noise that makes a real filesystem error invisible. */
-	struct fs_dirent entry;
-
-	if (fs_stat(path, &entry) != 0) {
-		return true;
+	while ((n = fs_read(src, buf, sizeof(buf))) > 0) {
+		if (fs_write(dst, buf, n) != n) {
+			return false;
+		}
 	}
-	return fs_unlink(path) == 0;
-}
-
-bool ZephyrDataStore::openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len) const
-{
-	struct fs_file_t file;
-	fs_file_t_init(&file);
-	int rc = fs_open(&file, path, FS_O_READ);
-	if (rc < 0) {
-		return false;
-	}
-	ssize_t n = fs_read(&file, buf, buf_sz);
-	fs_close(&file);
-	if (n < 0) {
-		return false;
-	}
-	out_len = (size_t)n;
-	return true;
-}
-
-struct AtomicReplaceCtx {
-	const uint8_t *buf;
-	size_t len;
-};
-
-static bool atomicReplaceWriter(struct fs_file_t *file, void *ctx)
-{
-	AtomicReplaceCtx *c = static_cast<AtomicReplaceCtx *>(ctx);
-	ssize_t n = fs_write(file, c->buf, c->len);
-	return !(n < 0 || (size_t)n != c->len);
-}
-
-/* Power-safe replace helper used for identity + prefs. */
-bool ZephyrDataStore::atomicReplaceFile(const char *path, const uint8_t *buf, size_t len)
-{
-	AtomicReplaceCtx ctx = {
-		.buf = buf,
-		.len = len,
-	};
-	return atomicWriteTempFile(path, atomicReplaceWriter, &ctx, "atomicReplaceFile");
+	return n == 0;
 }
 
 bool ZephyrDataStore::copyFile(const char *src, const char *dst)
 {
-	char tmp_path[64];
-	int pl = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", dst);
-	if (pl <= 0 || pl >= (int)sizeof(tmp_path)) {
-		return false;
-	}
+	struct fs_file_t src_file;
 
-	/* Guarded for the same reason as atomicWriteTempFile(): a blind unlink of
-	 * a file that is normally absent logs -ENOENT at ERR level from the FS
-	 * layer, on the success path. */
-	struct fs_dirent tmp_ent;
-
-	if (fs_stat(tmp_path, &tmp_ent) == 0) {
-		fs_unlink(tmp_path);
-	}
-
-	struct fs_file_t src_file, dst_file;
 	fs_file_t_init(&src_file);
-	fs_file_t_init(&dst_file);
-
 	if (fs_open(&src_file, src, FS_O_READ) < 0) {
 		return false;
 	}
-
-	if (fs_open(&dst_file, tmp_path, FS_O_CREATE | FS_O_WRITE) < 0) {
-		fs_close(&src_file);
-		return false;
-	}
-
-	uint8_t buf[64];
-	ssize_t n;
-	bool ok = true;
-	while ((n = fs_read(&src_file, buf, sizeof(buf))) > 0) {
-		if (fs_write(&dst_file, buf, n) != n) {
-			ok = false;
-			break;
-		}
-	}
+	bool ok = zephcore_fs_atomic_write(dst, copy_writer, &src_file, "copyFile");
 
 	fs_close(&src_file);
-	if (!ok || n < 0) {
-		fs_close(&dst_file);
-		fs_unlink(tmp_path);
-		return false;
-	}
-
-	int rc = fs_sync(&dst_file);
-	fs_close(&dst_file);
-	if (rc < 0) {
-		fs_unlink(tmp_path);
-		return false;
-	}
-
-	if (fs_rename(tmp_path, dst) < 0) {
-		fs_unlink(tmp_path);
-		return false;
-	}
-	return true;
+	return ok;
 }
 
 void ZephyrDataStore::migrateToExternalFS()
 {
 	/* Migrate contacts from internal to external if not present */
-	if (!exists(EXT_CONTACTS_FILE) && exists(INT_CONTACTS_FILE)) {
+	if (!zephcore_fs_exists(EXT_CONTACTS_FILE) && zephcore_fs_exists(INT_CONTACTS_FILE)) {
 		LOG_INF("Migrating contacts to external storage");
 		if (copyFile(INT_CONTACTS_FILE, EXT_CONTACTS_FILE)) {
-			removeFile(INT_CONTACTS_FILE);
+			zephcore_fs_remove(INT_CONTACTS_FILE);
 		}
 	}
 
 	/* Migrate channels */
-	if (!exists(EXT_CHANNELS_FILE) && exists(INT_CHANNELS_FILE)) {
+	if (!zephcore_fs_exists(EXT_CHANNELS_FILE) && zephcore_fs_exists(INT_CHANNELS_FILE)) {
 		LOG_INF("Migrating channels to QSPI");
 		if (copyFile(INT_CHANNELS_FILE, EXT_CHANNELS_FILE)) {
-			removeFile(INT_CHANNELS_FILE);
+			zephcore_fs_remove(INT_CHANNELS_FILE);
 		}
 	}
 
 	/* Migrate adv_blobs (extend to 100 records) */
-	if (!exists(EXT_ADV_BLOBS_FILE) && exists(INT_ADV_BLOBS_FILE)) {
+	if (!zephcore_fs_exists(EXT_ADV_BLOBS_FILE) && zephcore_fs_exists(INT_ADV_BLOBS_FILE)) {
 		LOG_INF("Migrating adv_blobs to QSPI (20 -> 100 slots)");
 		if (copyFile(INT_ADV_BLOBS_FILE, EXT_ADV_BLOBS_FILE)) {
-			removeFile(INT_ADV_BLOBS_FILE);
+			zephcore_fs_remove(INT_ADV_BLOBS_FILE);
 			struct fs_file_t file;
 			fs_file_t_init(&file);
 			if (fs_open(&file, EXT_ADV_BLOBS_FILE, FS_O_RDWR) == 0) {
@@ -369,21 +193,21 @@ void ZephyrDataStore::migrateToExternalFS()
 	}
 
 	/* Clean up old files on internal if they exist on external */
-	if (exists(EXT_CONTACTS_FILE) && exists(INT_CONTACTS_FILE)) {
-		removeFile(INT_CONTACTS_FILE);
+	if (zephcore_fs_exists(EXT_CONTACTS_FILE) && zephcore_fs_exists(INT_CONTACTS_FILE)) {
+		zephcore_fs_remove(INT_CONTACTS_FILE);
 	}
-	if (exists(EXT_CHANNELS_FILE) && exists(INT_CHANNELS_FILE)) {
-		removeFile(INT_CHANNELS_FILE);
+	if (zephcore_fs_exists(EXT_CHANNELS_FILE) && zephcore_fs_exists(INT_CHANNELS_FILE)) {
+		zephcore_fs_remove(INT_CHANNELS_FILE);
 	}
-	if (exists(EXT_ADV_BLOBS_FILE) && exists(INT_ADV_BLOBS_FILE)) {
-		removeFile(INT_ADV_BLOBS_FILE);
+	if (zephcore_fs_exists(EXT_ADV_BLOBS_FILE) && zephcore_fs_exists(INT_ADV_BLOBS_FILE)) {
+		zephcore_fs_remove(INT_ADV_BLOBS_FILE);
 	}
 }
 
 void ZephyrDataStore::checkAdvBlobFile()
 {
 	const char *path = advBlobsFile();
-	if (exists(path)) {
+	if (zephcore_fs_exists(path)) {
 		return;
 	}
 	BlobRec zeroes;
@@ -419,7 +243,7 @@ bool ZephyrDataStore::formatFileSystem()
 	return mounted;
 }
 
-void ZephyrDataStore::factoryReset()
+bool ZephyrDataStore::factoryReset()
 {
 	LOG_INF("=== FACTORY RESET STARTING ===");
 	if (formatFileSystem()) {
@@ -430,9 +254,10 @@ void ZephyrDataStore::factoryReset()
 		 * push contacts/channels onto internal flash. */
 		writeInitMarker();
 		LOG_INF("=== FACTORY RESET COMPLETE - REBOOT REQUIRED ===");
-	} else {
-		LOG_ERR("=== FACTORY RESET FAILED ===");
+		return true;
 	}
+	LOG_ERR("=== FACTORY RESET FAILED ===");
+	return false;
 }
 
 /* ── First-boot migration ──────────────────────────────────────────── */
@@ -443,7 +268,7 @@ static constexpr const char *ZC_INIT_MARKER = "/lfs/_zc_init";
 
 bool ZephyrDataStore::hasInitMarker() const
 {
-	return exists(ZC_INIT_MARKER);
+	return zephcore_fs_exists(ZC_INIT_MARKER);
 }
 
 void ZephyrDataStore::writeInitMarker()
@@ -457,7 +282,7 @@ void ZephyrDataStore::writeInitMarker()
 
 bool ZephyrDataStore::hasPrefs() const
 {
-	return exists(PREFS_FILE);
+	return zephcore_fs_exists(PREFS_JSON_FILE) || zephcore_fs_exists(PREFS_FILE);
 }
 
 /* Erase only the NVS (BLE bonds) partition — used when upgrading from
@@ -481,15 +306,18 @@ void ZephyrDataStore::formatNVSOnly()
 #endif
 }
 
-/* Returns true if the prefs file was written by Arduino MeshCore.
- * Arduino's layout omits node_lat/node_lon (16 bytes inserted by ZephCore
- * after node_name at offset 36), so freq/sf/bw land at the wrong offsets
- * and produce values outside the physical RF ranges used as the signal. */
-bool ZephyrDataStore::prefsLookLikeArduino() const
+/* True if the legacy prefs file's radio preset (freq/sf/bw at our offsets) is
+ * outside ZC_RADIO_*, i.e. the file is not ours. Upstream's new_prefs has
+ * shared our offsets up to 92 since 2025-02 (lat/lon included), so this is a
+ * plausibility test, not an Arduino detector. A prefs.json is always ours. */
+bool ZephyrDataStore::prefsRadioImplausible() const
 {
+	if (zephcore_fs_exists(PREFS_JSON_FILE)) {
+		return false;
+	}
 	uint8_t buf[72];
 	size_t len = 0;
-	if (!openRead(PREFS_FILE, buf, sizeof(buf), len) || len < 68) {
+	if (!zephcore_fs_read_file(PREFS_FILE, buf, sizeof(buf), &len) || len < 68) {
 		return false;
 	}
 	float freq, bw;
@@ -497,9 +325,6 @@ bool ZephyrDataStore::prefsLookLikeArduino() const
 	memcpy(&freq, &buf[56], sizeof(float));
 	sf = buf[60];
 	memcpy(&bw, &buf[64], sizeof(float));
-	/* The Arduino misread lands at freq≈0 and sf≤1, so the sf test is what
-	 * actually catches it — the frequency range can safely span both RF
-	 * bands without weakening the detection. */
 	return (freq < ZC_RADIO_FREQ_MIN_MHZ || freq > ZC_RADIO_FREQ_MAX_MHZ ||
 	        sf < 5 || sf > 12 ||
 	        bw < ZC_RADIO_BW_MIN_KHZ || bw > ZC_RADIO_BW_MAX_KHZ);
@@ -510,53 +335,51 @@ bool ZephyrDataStore::prefsLookLikeArduino() const
  * path; ≥1.16.2 moved to NVS.  Presence means 0xD0000 has old app code. */
 bool ZephyrDataStore::hasOldSettingsFile() const
 {
-	return exists("/lfs/settings");
+	return zephcore_fs_exists("/lfs/settings");
+}
+
+void ZephyrDataStore::adoptVolume()
+{
+	/* /lfs/_zc_init is written after the first clean boot of ZephCore, so
+	 * this runs once per volume.
+	 *
+	 *  - No prefs, or prefs whose radio preset is implausible (a file in
+	 *    some other layout): format everything, bonds included.
+	 *  - Our prefs plus /lfs/settings: an upgrade from ZephCore <= 1.16.1 on
+	 *    nRF52, whose file-based bond store left old app code where the NVS
+	 *    bond partition now is. Bytes there can pass NVS sector validation
+	 *    and hang settings_load(), so BLE never advertises: erase the NVS
+	 *    only; identity, prefs and contacts stay, the phone re-pairs.
+	 *    (On nRF54L and MG24 /lfs/settings is the live bond store, but a
+	 *    volume that has booted this firmware once has the marker.)
+	 *  - Our prefs, no /lfs/settings: bonds already live in NVS, keep all. */
+	if (hasInitMarker()) {
+		return;
+	}
+	if (!hasPrefs() || prefsRadioImplausible()) {
+		LOG_WRN("First ZephCore boot (%s) - formatting LFS + NVS",
+			hasPrefs() ? "foreign prefs" : "no prefs");
+		formatFileSystem();
+		begin();
+	} else if (hasOldSettingsFile()) {
+		LOG_WRN("Pre-NVS ZephCore upgrade (found /lfs/settings) - erasing NVS");
+		formatNVSOnly();
+	} else {
+		LOG_INF("ZephCore upgrade with valid NVS - skipping format, bonds preserved");
+	}
+	writeInitMarker();
 }
 
 /* ── Identity ──────────────────────────────────────────────────────── */
 
 bool ZephyrDataStore::loadMainIdentity(mesh::LocalIdentity &identity)
 {
-	uint8_t buf[PRV_KEY_SIZE + PUB_KEY_SIZE + 32];
-	size_t len = 0;
-	if (!openRead(MAIN_ID_FILE, buf, sizeof(buf), len) || len < PRV_KEY_SIZE) {
-		return false;
-	}
-	if (identity.readFromStorage(buf, len)) {
-		return true;
-	}
-	if (identity.recoverFromStorage(buf, len)) {
-		/* Deliberately not re-persisted: the file is the only record of what
-		 * went wrong, and re-deriving costs a few ms per boot.  The repeated
-		 * warning is the point — this state should be visible, not papered
-		 * over silently. */
-		LOG_WRN("main identity pub/prv mismatch - advertising the pub its private key owns");
-		return true;
-	}
-
-	/* No layout coheres — the stored pub is not prv·B under any reading, so
-	 * the pair is unusable: adverts would verify nowhere, inbound DMs would
-	 * not decrypt, and CMD_EXPORT_PRIVATE_KEY would hand the app a key that
-	 * contradicts SELF_INFO.  Returning false makes the caller generate a
-	 * fresh identity, so park the bytes first rather than overwriting them —
-	 * the private key may still be extractable by hand. */
-	LOG_ERR("main identity incoherent (%d bytes) - keeping bytes at %s, regenerating",
-		(int)len, MAIN_ID_BAD_FILE);
-	fs_unlink(MAIN_ID_BAD_FILE);
-	if (fs_rename(MAIN_ID_FILE, MAIN_ID_BAD_FILE) < 0) {
-		LOG_ERR("failed to park corrupt identity - regenerating over it");
-	}
-	return false;
+	return zephcore_identity_load(MAIN_ID_FILE, identity);
 }
 
 bool ZephyrDataStore::saveMainIdentity(const mesh::LocalIdentity &identity)
 {
-	uint8_t buf[PRV_KEY_SIZE + PUB_KEY_SIZE + 32];
-	size_t n = identity.writeToStorage(buf, sizeof(buf));
-	if (n == 0) {
-		return false;
-	}
-	return atomicReplaceFile(MAIN_ID_FILE, buf, n);
+	return zephcore_identity_save(MAIN_ID_FILE, identity);
 }
 
 /* ── Shutdown-reason breadcrumb ────────────────────────────────────── */
@@ -564,7 +387,7 @@ bool ZephyrDataStore::saveMainIdentity(const mesh::LocalIdentity &identity)
 void ZephyrDataStore::saveShutdownReason(uint8_t code)
 {
 	/* Best-effort: called at a software power-off, possibly at low battery. */
-	(void)atomicReplaceFile(SHUTDOWN_FILE, &code, 1);
+	(void)zephcore_fs_atomic_replace(SHUTDOWN_FILE, &code, 1, "shutdown marker");
 }
 
 uint8_t ZephyrDataStore::takeShutdownReason()
@@ -582,12 +405,12 @@ uint8_t ZephyrDataStore::takeShutdownReason()
 		return 0;
 	}
 
-	if (openRead(SHUTDOWN_FILE, &code, sizeof(code), len) && len >= 1) {
-		removeFile(SHUTDOWN_FILE);
+	if (zephcore_fs_read_file(SHUTDOWN_FILE, &code, sizeof(code), &len) && len >= 1) {
+		zephcore_fs_remove(SHUTDOWN_FILE);
 		return code;
 	}
 	/* Stray/empty file — clear it so it can't linger. */
-	removeFile(SHUTDOWN_FILE);
+	zephcore_fs_remove(SHUTDOWN_FILE);
 	return 0;
 }
 
@@ -595,441 +418,59 @@ uint8_t ZephyrDataStore::takeShutdownReason()
 
 void ZephyrDataStore::loadPrefs(NodePrefs &prefs)
 {
-	/* Save caller's defaults — restored if the file contains invalid radio
-	 * params (e.g. an Arduino MeshCore new_prefs whose layout diverges from
-	 * ZephCore at the freq/sf/bw offsets due to the inserted lat/lon fields). */
-	NodePrefs saved_defaults = prefs;
-
-	bool prefs_exists = exists(PREFS_FILE);
-	if (!prefs_exists) {
-		LOG_DBG("loadPrefs: no prefs file found, persisting defaults");
-		/* Persist defaults so flash always has a prefs file from boot 1.
-		 * Lets later code (e.g. tempradio revert) trust that flash is
-		 * authoritative without a "first run" special case. */
-		savePrefs(prefs);
+	if (zephcore_prefs_json_load(PREFS_JSON_FILE, prefs, companionPrefsFromJson)) {
 		return;
 	}
+	bool had_json = zephcore_fs_exists(PREFS_JSON_FILE);
 
-	uint8_t buf[256];
+	/* No usable prefs.json: the legacy binary file, read once and migrated.
+	 * It is kept, so firmware from before prefs.json still boots with the
+	 * settings as they were at the upgrade. */
+	if (zephcore_fs_exists(PREFS_FILE)) {
+		if (loadLegacyPrefs(prefs)) {
+			LOG_INF("loadPrefs: %s %s from %s", had_json ? "recovered" : "migrated",
+				PREFS_JSON_FILE, PREFS_FILE);
+		}
+	} else {
+		/* First boot: persist the defaults, so later code (e.g. tempradio
+		 * revert) can trust flash without a "first run" special case. */
+		LOG_DBG("loadPrefs: no prefs file found, persisting defaults");
+	}
+	savePrefs(prefs);
+}
+
+bool ZephyrDataStore::loadLegacyPrefs(NodePrefs &prefs)
+{
+	uint8_t buf[COMPANION_PREFS_SIZE + 48];
 	size_t len = 0;
-	if (!openRead(PREFS_FILE, buf, sizeof(buf), len)) {
-		LOG_ERR("loadPrefs: read failed");
-		return;
+
+	if (!zephcore_fs_read_file(PREFS_FILE, buf, sizeof(buf), &len)) {
+		LOG_ERR("loadPrefs: read of %s failed", PREFS_FILE);
+		return false;
 	}
 	if (len < 90) {
-		/* gps_interval occupies bytes 86-89, so a shorter blob would read
-		 * its top bytes from uninitialized stack — reject rather than load a
-		 * garbage interval. */
-		LOG_ERR("loadPrefs: file too small (%d bytes, need 90)", (int)len);
-		return;
+		LOG_ERR("loadPrefs: %s too small (%d bytes, need 90)", PREFS_FILE, (int)len);
+		return false;
 	}
-	LOG_DBG("loadPrefs: loaded %d bytes from %s", (int)len, PREFS_FILE);
+	if (!companionPrefsDecode(prefs, buf, len)) {
+		float freq, bw;
 
-	size_t off = 0;
-	memcpy(&prefs.airtime_factor, &buf[off], sizeof(float));
-	off += 4;
-	memcpy(prefs.node_name, &buf[off], 32);
-	off += 36;  /* 32 name + 4 pad */
-	memcpy(&prefs.node_lat, &buf[off], sizeof(double));
-	off += 8;
-	memcpy(&prefs.node_lon, &buf[off], sizeof(double));
-	off += 8;
-	memcpy(&prefs.freq, &buf[off], sizeof(float));
-	off += 4;
-	prefs.sf = buf[off++];
-	prefs.cr = buf[off++];
-	/* Offset 62: client_repeat (Arduino-compatible placement) */
-	prefs.client_repeat = buf[off++];
-	prefs.manual_add_contacts = buf[off++];
-	memcpy(&prefs.bw, &buf[off], sizeof(float));
-	off += 4;
-
-	/* Sanity-check core radio params before consuming the rest of the file.
-	 * An Arduino MeshCore new_prefs is layout-incompatible: ZephCore inserts
-	 * node_lat (8) + node_lon (8) after node_name, shifting freq/sf/bw by
-	 * +16 bytes.  The misread values are freq≈0, sf≤1, bw=garbage — all
-	 * outside the physical RF ranges below.  Revert to the caller's defaults
-	 * so the radio starts on the correct channel and the user can pair via
-	 * BLE and reconfigure. */
-	if (prefs.freq < ZC_RADIO_FREQ_MIN_MHZ || prefs.freq > ZC_RADIO_FREQ_MAX_MHZ ||
-	    prefs.sf < 5 || prefs.sf > 12 ||
-	    prefs.bw < ZC_RADIO_BW_MIN_KHZ || prefs.bw > ZC_RADIO_BW_MAX_KHZ) {
-		LOG_WRN("loadPrefs: radio params out of range "
-			"(freq=%.1f sf=%d bw=%.1f) — ignoring prefs (incompatible format?)",
-			(double)prefs.freq, (int)prefs.sf, (double)prefs.bw);
-		prefs = saved_defaults;
-		return;
+		memcpy(&freq, &buf[56], sizeof(freq));
+		memcpy(&bw, &buf[64], sizeof(bw));
+		LOG_WRN("loadPrefs: radio params out of range (freq=%.1f sf=%d bw=%.1f) - "
+			"ignoring %s (incompatible format?)",
+			(double)freq, (int)buf[60], (double)bw, PREFS_FILE);
+		return false;
 	}
-
-	prefs.tx_power_dbm = buf[off++];
-	prefs.telemetry_mode_base = buf[off++];
-	prefs.telemetry_mode_loc = buf[off++];
-	prefs.telemetry_mode_env = buf[off++];
-	memcpy(&prefs.rx_delay_base, &buf[off], sizeof(float));
-	off += 4;
-	prefs.advert_loc_policy = buf[off++];
-	prefs.multi_acks = buf[off++];
-	/* Offset 78: path_hash_mode (Arduino treats as pad — harmless) */
-	prefs.path_hash_mode = buf[off++];
-	off += 1;  /* pad */
-	memcpy(&prefs.ble_pin, &buf[off], sizeof(uint32_t));
-	off += 4;
-	prefs.buzzer_quiet = buf[off++];
-	prefs.gps_enabled = buf[off++];
-	memcpy(&prefs.gps_interval, &buf[off], sizeof(uint32_t));
-	off += 4;
-	prefs.autoadd_config = buf[off++];
-
-	/* Offset 91: autoadd_max_hops (matches Arduino layout) */
-	if (off < len) {
-		prefs.autoadd_max_hops = buf[off++];
-	}
-
-	/* Offset 92: rx_boost (ZephCore extension — Arduino stops at 92 bytes) */
-	if (off < len) {
-		prefs.rx_boost = buf[off++];
-	} else {
-		prefs.rx_boost = 1;  /* Default to boosted for better sensitivity */
-	}
-
-	/* Offset 93: leds_disabled (ZephCore extension) */
-	if (off < len) {
-		prefs.leds_disabled = buf[off++];
-	} else {
-		prefs.leds_disabled = 0;  /* Default: LEDs on */
-	}
-
-	/* Offsets 94-95: RESERVED — formerly apc_enabled / apc_margin (APC,
-	 * removed in 1.16.6). Still consumed so offset 96 onward keeps landing
-	 * where already-deployed nodes wrote it. Values are ignored. */
-	if (off < len) {
-		prefs._reserved_apc_enabled = buf[off++];
-	}
-	if (off < len) {
-		prefs._reserved_apc_margin = buf[off++];
-	}
-
-	/* Offset 96: default_scope_name (31 bytes) — v11 FIRMWARE_VER_CODE */
-	if (off + 31 <= len) {
-		memcpy(prefs.default_scope_name, &buf[off], 31);
-		off += 31;
-	} else {
-		memset(prefs.default_scope_name, 0, sizeof(prefs.default_scope_name));
-	}
-
-	/* Offset 127: default_scope_key (16 bytes) */
-	if (off + 16 <= len) {
-		memcpy(prefs.default_scope_key, &buf[off], 16);
-		off += 16;
-	} else {
-		memset(prefs.default_scope_key, 0, sizeof(prefs.default_scope_key));
-	}
-
-	/* Offset 143: ble_disabled (ZephCore extension) */
-	if (off < len) {
-		prefs.ble_disabled = buf[off++];
-	} else {
-		prefs.ble_disabled = 0;
-	}
-
-	/* Offset 144: display_brightness (ZephCore extension, 0 = default 100%) */
-	if (off < len) {
-		prefs.display_brightness = buf[off++];
-	} else {
-		prefs.display_brightness = 0;
-	}
-
-	/* Offset 145: wake_on_msg (ZephCore extension, 0 = don't wake, 1 = wake on message) */
-	if (off < len) {
-		prefs.wake_on_msg = buf[off++];
-	} else {
-		prefs.wake_on_msg = 1;
-	}
-
-	/* Offset 146: screen_off_secs (ZephCore extension, 2 bytes LE, 0 = Kconfig default) */
-	if (off + 2 <= len) {
-		prefs.screen_off_secs = (uint16_t)buf[off] | ((uint16_t)buf[off + 1] << 8);
-		off += 2;
-	} else {
-		prefs.screen_off_secs = 0;
-	}
-
-	/* Offset 148: auto_shutdown_mv (ZephCore extension, 2 bytes LE).
-	 * Absent in pre-existing files → fall back to the Kconfig default so
-	 * upgrades inherit the board's built-in threshold. */
-	if (off + 2 <= len) {
-		prefs.auto_shutdown_mv = (uint16_t)buf[off] | ((uint16_t)buf[off + 1] << 8);
-		off += 2;
-	} else {
-		prefs.auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
-	}
-
-	/* Offset 150: rx_duty_cycle (ZephCore extension).  Absent in pre-existing
-	 * files → leave the caller's in-RAM default (0 = continuous RX) untouched
-	 * so the no-op past-EOF read can't force it on. */
-	if (off < len) {
-		prefs.rx_duty_cycle = buf[off++];
-		if (prefs.rx_duty_cycle > 1) {
-			prefs.rx_duty_cycle = 0;
-		}
-	}
-
-	/* Offset 151: meshtimesync (ZephCore extension, default 0 = off) */
-	if (off < len) {
-		prefs.meshtimesync = buf[off++];
-		if (prefs.meshtimesync > 1) {
-			prefs.meshtimesync = 0;
-		}
-	}
-
-	/* Offset 152: v_contact_enabled (ZephCore extension, default 1 = on) */
-	if (off < len) {
-		prefs.v_contact_enabled = buf[off++];
-		if (prefs.v_contact_enabled > 1) {
-			prefs.v_contact_enabled = 1;
-		}
-	} else {
-		prefs.v_contact_enabled = 1;
-	}
-
-	/* Offset 153: v_battery_alert_mv (ZephCore extension, 2 bytes LE).
-	 * 0xFFFF sentinel = derive from board auto-shutdown threshold; 0 = off. */
-	if (off + 2 <= len) {
-		prefs.v_battery_alert_mv = (uint16_t)buf[off] | ((uint16_t)buf[off + 1] << 8);
-		off += 2;
-	} else {
-		prefs.v_battery_alert_mv = 0xFFFF;
-	}
-
-	/* Offset 155: cad_auto (ZephCore extension, default 0 = dry-run) */
-	if (off < len) {
-		prefs.cad_auto = buf[off++];
-		if (prefs.cad_auto > 1) {
-			prefs.cad_auto = 0;
-		}
-	}
-
-	/* Offset 156: cad_offset (ZephCore extension, signed, default 0) */
-	if (off < len) {
-		prefs.cad_offset = (int8_t)buf[off++];
-		if (prefs.cad_offset < CAD_OFFSET_MIN || prefs.cad_offset > CAD_OFFSET_MAX) {
-			prefs.cad_offset = 0;
-		}
-	}
-
-	/* Offset 157: probe_interval (ZephCore extension, seconds; 0 = off).
-	 * Absent in pre-existing files → keep the in-RAM default (60). */
-	if (off < len) {
-		prefs.probe_interval = buf[off++];
-		if (prefs.probe_interval != 0 && prefs.probe_interval < 10) {
-			prefs.probe_interval = 10;
-		}
-	}
-
-	/* Offset 158: cad_busycap (ZephCore extension, percent; 0 = off).
-	 * Absent in pre-existing files → keep the in-RAM default (25). */
-	if (off < len) {
-		prefs.cad_busycap = buf[off++];
-		if (prefs.cad_busycap > 90) {
-			prefs.cad_busycap = 90;
-		}
-	}
-
-	/* Offset 159: adc_multiplier (ZephCore extension, float LE, 0 = board
-	 * DT default).  Absent in pre-existing files → keep 0.0 so the DT
-	 * default stays in effect.  Same range guard as the repeater CLI path
-	 * (CommonCLI constrains 0..30000); NaN/garbage resets to default. */
-	if (off + 4 <= len) {
-		memcpy(&prefs.adc_multiplier, &buf[off], sizeof(float));
-		off += 4;
-		if (prefs.adc_multiplier != prefs.adc_multiplier ||
-		    prefs.adc_multiplier < 0.0f || prefs.adc_multiplier > 30000.0f) {
-			prefs.adc_multiplier = 0.0f;
-		}
-	}
-
-	/* Offset 163-165: extra_sf (ZephCore extension, LR2021 side detectors).
-	 * Absent in pre-existing files → stays zeroed = feature off.  Values
-	 * are re-validated by the driver when applied, so a corrupt byte here
-	 * costs a rejected config, not a bad radio state. */
-	for (int i = 0; i < EXTRA_SF_MAX && off < len; i++) {
-		prefs.extra_sf[i] = buf[off++];
-	}
-
-	/* Offset 166: v_contact_flags (ZephCore extension).  Absent in pre-existing
-	 * files → stays 0, which is exactly the old behaviour (no favourite, no
-	 * telemetry permissions). */
-	if (off < len) {
-		prefs.v_contact_flags = buf[off++];
-	}
-
-	/* Offset 167: fem_rxgain (ZephCore extension).  Absent in pre-existing
-	 * files → keeps the caller's initNodePrefs() default of 1, which is the
-	 * behaviour every deployed node already has (the FEM's chip-enable has
-	 * always been asserted for RX). */
-	if (off < len) {
-		prefs.fem_rxgain = buf[off++];
-	}
-
-	/* Offset 168-169: display_rotate / input_rotate (ZephCore extension).
-	 * Absent in pre-existing files → both stay at the initNodePrefs() default
-	 * of 0, i.e. the stock mounting orientation every deployed node runs. */
-	if (off < len) {
-		prefs.display_rotate = buf[off++];
-	}
-	if (off < len) {
-		prefs.input_rotate = buf[off++];
-	}
-
-	/* Offset 170: cad_base (ZephCore extension).  Absent in pre-existing
-	 * files → stays 0, which setCadParams() reads as "no base recorded" and
-	 * leaves the stored offset exactly where it is.  That is the right
-	 * migration: a node upgrading across the table change has no way to know
-	 * which base its offset was learned against, so re-anchoring it would be
-	 * guessing, and the staircase re-converges on its own either way. */
-	if (off < len) {
-		prefs.cad_base = buf[off++];
-	}
-
-	/* Offset 171: tz_offset (ZephCore extension, signed whole hours).
-	 * Absent in pre-existing files → stays 0 = UTC, which is exactly what
-	 * every already-deployed node displays today.  Range is re-checked by
-	 * sanitizeNodePrefs() below. */
-	if (off < len) {
-		prefs.tz_offset = (int8_t)buf[off++];
-	}
-
-	/* Offset 172-173: leds_radio_mode / leds_hb_mode (ZephCore extension).
-	 * Absent in pre-existing files → both stay at the initNodePrefs() defaults
-	 * of 0, and 0 is deliberately the behaviour every already-deployed node has
-	 * (activity LED on transmit, heartbeat with unread indication).  Range is
-	 * re-checked by sanitizeNodePrefs() below. */
-	if (off < len) {
-		prefs.leds_radio_mode = buf[off++];
-	}
-	if (off < len) {
-		prefs.leds_hb_mode = buf[off++];
-	}
-
-	sanitizeNodePrefs(&prefs);
+	return true;
 }
 
 void ZephyrDataStore::savePrefs(const NodePrefs &prefs)
 {
-	uint8_t buf[256];
-	uint8_t pad[8] = {0};
-	size_t off = 0;
-	memcpy(&buf[off], &prefs.airtime_factor, sizeof(float));
-	off += 4;
-	memcpy(&buf[off], prefs.node_name, 32);
-	off += 32;
-	memcpy(&buf[off], pad, 4);
-	off += 4;
-	memcpy(&buf[off], &prefs.node_lat, sizeof(double));
-	off += 8;
-	memcpy(&buf[off], &prefs.node_lon, sizeof(double));
-	off += 8;
-	memcpy(&buf[off], &prefs.freq, sizeof(float));
-	off += 4;
-	buf[off++] = prefs.sf;
-	buf[off++] = prefs.cr;
-	/* Offset 62: client_repeat (Arduino-compatible placement) */
-	buf[off++] = prefs.client_repeat;
-	buf[off++] = prefs.manual_add_contacts;
-	memcpy(&buf[off], &prefs.bw, sizeof(float));
-	off += 4;
-	buf[off++] = prefs.tx_power_dbm;
-	buf[off++] = prefs.telemetry_mode_base;
-	buf[off++] = prefs.telemetry_mode_loc;
-	buf[off++] = prefs.telemetry_mode_env;
-	memcpy(&buf[off], &prefs.rx_delay_base, sizeof(float));
-	off += 4;
-	buf[off++] = prefs.advert_loc_policy;
-	buf[off++] = prefs.multi_acks;
-	/* Offset 78: path_hash_mode (Arduino treats as pad — harmless) */
-	buf[off++] = prefs.path_hash_mode;
-	buf[off++] = 0;  /* pad */
-	memcpy(&buf[off], &prefs.ble_pin, sizeof(uint32_t));
-	off += 4;
-	buf[off++] = prefs.buzzer_quiet;
-	buf[off++] = prefs.gps_enabled;
-	memcpy(&buf[off], &prefs.gps_interval, sizeof(uint32_t));
-	off += 4;
-	buf[off++] = prefs.autoadd_config;
-	/* Offset 91: autoadd_max_hops (matches Arduino layout) */
-	buf[off++] = prefs.autoadd_max_hops;
-	/* Offset 92: rx_boost (ZephCore extension — Arduino ignores) */
-	buf[off++] = prefs.rx_boost;
-	/* Offset 93: leds_disabled (ZephCore extension) */
-	buf[off++] = prefs.leds_disabled;
-	/* Offsets 94-95: RESERVED — formerly apc_enabled / apc_margin (removed
-	 * in 1.16.6). Written back unchanged to hold the layout. */
-	buf[off++] = prefs._reserved_apc_enabled;
-	buf[off++] = prefs._reserved_apc_margin;
-	/* Offset 96: default_scope_name (31 bytes) — v11 FIRMWARE_VER_CODE */
-	memcpy(&buf[off], prefs.default_scope_name, 31);
-	off += 31;
-	/* Offset 127: default_scope_key (16 bytes) */
-	memcpy(&buf[off], prefs.default_scope_key, 16);
-	off += 16;
-	/* Offset 143: ble_disabled (ZephCore extension) */
-	buf[off++] = prefs.ble_disabled;
-	/* Offset 144: display_brightness (ZephCore extension) */
-	buf[off++] = prefs.display_brightness;
-	/* Offset 145: wake_on_msg (ZephCore extension) */
-	buf[off++] = prefs.wake_on_msg;
-	/* Offset 146: screen_off_secs (ZephCore extension, 2 bytes LE) */
-	buf[off++] = prefs.screen_off_secs & 0xFF;
-	buf[off++] = (prefs.screen_off_secs >> 8) & 0xFF;
-	/* Offset 148: auto_shutdown_mv (ZephCore extension, 2 bytes LE) */
-	buf[off++] = prefs.auto_shutdown_mv & 0xFF;
-	buf[off++] = (prefs.auto_shutdown_mv >> 8) & 0xFF;
-	/* Offset 150: rx_duty_cycle (ZephCore extension) */
-	buf[off++] = prefs.rx_duty_cycle;
-	/* Offset 151: meshtimesync (ZephCore extension) */
-	buf[off++] = prefs.meshtimesync;
-	/* Offset 152: v_contact_enabled (ZephCore extension) */
-	buf[off++] = prefs.v_contact_enabled;
-	/* Offset 153: v_battery_alert_mv (ZephCore extension, 2 bytes LE) */
-	buf[off++] = prefs.v_battery_alert_mv & 0xFF;
-	buf[off++] = (prefs.v_battery_alert_mv >> 8) & 0xFF;
-	/* Offset 155: cad_auto (ZephCore extension) */
-	buf[off++] = prefs.cad_auto;
-	/* Offset 156: cad_offset (ZephCore extension, signed) */
-	buf[off++] = (uint8_t)prefs.cad_offset;
-	/* Offset 157: probe_interval (ZephCore extension, seconds) */
-	buf[off++] = prefs.probe_interval;
-	/* Offset 158: cad_busycap (ZephCore extension, percent) */
-	buf[off++] = prefs.cad_busycap;
-	/* Offset 159: adc_multiplier (ZephCore extension, float LE, 0 = board
-	 * DT default).  Was applied at boot but never serialized before this
-	 * field existed — battery calibration silently reset every reboot. */
-	memcpy(&buf[off], &prefs.adc_multiplier, sizeof(float));
-	off += 4;
-	/* Offset 163-165: extra_sf (ZephCore extension, LR2021 side detectors) */
-	memcpy(&buf[off], prefs.extra_sf, EXTRA_SF_MAX);
-	off += EXTRA_SF_MAX;
-	/* Offset 166: v_contact_flags (ZephCore extension) */
-	buf[off++] = prefs.v_contact_flags;
-	/* Offset 167: fem_rxgain (ZephCore extension, external FEM LNA in RX) */
-	buf[off++] = prefs.fem_rxgain;
-	/* Offset 168-169: display_rotate / input_rotate (ZephCore extension) */
-	buf[off++] = prefs.display_rotate;
-	buf[off++] = prefs.input_rotate;
-	/* Offset 170: cad_base (ZephCore extension, family base detPeak the
-	 * cad_offset above was learned against) */
-	buf[off++] = prefs.cad_base;
-	/* Offset 171: tz_offset (ZephCore extension, signed whole hours from UTC,
-	 * display only — the stored clock is always UTC) */
-	buf[off++] = (uint8_t)prefs.tz_offset;
-	/* Offset 172-173: leds_radio_mode / leds_hb_mode (ZephCore extension). */
-	buf[off++] = prefs.leds_radio_mode;
-	buf[off++] = prefs.leds_hb_mode;
-	/* Total: 174 bytes */
+	bool ok = zephcore_prefs_json_save(PREFS_JSON_FILE, prefs, companionPrefsToJson);
 
-	bool ok = atomicReplaceFile(PREFS_FILE, buf, off);
-	LOG_DBG("savePrefs: wrote %s, ok=%d (%d bytes), name='%.16s'",
-		PREFS_FILE, ok ? 1 : 0, (int)off, prefs.node_name);
+	LOG_DBG("savePrefs: wrote %s, ok=%d, name='%.16s'", PREFS_JSON_FILE, ok ? 1 : 0,
+		prefs.node_name);
 }
 
 /* ── Contacts: contacts3 (152B records, Arduino-compatible) ────────── */
@@ -1085,7 +526,7 @@ void ZephyrDataStore::loadContacts(DataStoreHost *host)
 	 * fs_open() on a missing path is logged at ERR by Zephyr's FS layer no
 	 * matter how gracefully we handle the return.  The open below is kept as
 	 * the real error path (a file that exists but cannot be opened). */
-	if (!exists(path)) {
+	if (!zephcore_fs_exists(path)) {
 		LOG_DBG("loadContacts: no contacts file found");
 		return;
 	}
@@ -1127,7 +568,7 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 	/* Atomic replace ONLY where there is external flash — deliberately, and
 	 * not to be "fixed" later.
 	 *
-	 * atomicWriteTempFile() needs room for a second full copy before the
+	 * zephcore_fs_atomic_write() needs room for a second full copy before the
 	 * rename.  contacts3 is by far the largest store here (152 B per record,
 	 * ~47 KB at 313 contacts) and internal /lfs on these boards is 128 KB
 	 * total, shared with identity, prefs and channels2.  Two copies would sit
@@ -1178,7 +619,7 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 			ContactsWriterCtx *cctx = static_cast<ContactsWriterCtx *>(arg);
 			return (*cctx->fn)(dst);
 		};
-		write_ok = atomicWriteTempFile(path, atomic_contacts_writer, &ctx, "saveContacts");
+		write_ok = zephcore_fs_atomic_write(path, atomic_contacts_writer, &ctx, "saveContacts");
 	} else {
 		/* Overwrite in place, then truncate — never unlink first.
 		 *
@@ -1242,7 +683,7 @@ void ZephyrDataStore::loadChannels(DataStoreHost *host)
 	/* Probe first — same reason as loadContacts(): absent until a channel is
 	 * configured, and a missing-path fs_open() is logged at ERR by the FS
 	 * layer regardless of us handling it. */
-	if (!exists(path)) {
+	if (!zephcore_fs_exists(path)) {
 		return;
 	}
 
@@ -1300,7 +741,7 @@ void ZephyrDataStore::saveChannels(DataStoreHost *host)
 		}
 		return true;
 	};
-	if (!atomicWriteTempFile(path, channels_writer, &ctx, "saveChannels")) {
+	if (!zephcore_fs_atomic_write(path, channels_writer, &ctx, "saveChannels")) {
 		return;
 	}
 	LOG_INF("saveChannels: saved %u channels to %s", channel_idx, path);

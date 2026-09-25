@@ -1,0 +1,49 @@
+ESP32 Wi-Fi: never block the Wi-Fi task in the station/AP RX callback.
+
+eth_esp32_rx() / wifi_esp32_ap_iface_rx() run on the Wi-Fi task and waited
+up to 100 ms for a net buffer. Under unicast traffic the node answers (ICMP
+port unreachable at 200 frames/s is enough), the RX thread is slowed by those
+sends, the RX pool runs dry, every further frame costs the Wi-Fi task 100 ms,
+the Wi-Fi heap fills with queued frames and transmit allocation fails with
+-ENOBUFS: a livelock the LAN's background traffic sustains until reboot
+(companion answered nothing over Wi-Fi, BLE/USB unaffected). ESP-IDF's own
+netif glue drops the frame when no buffer is free; K_NO_WAIT does the same.
+
+Found and bench-verified 2026-09-24 on a XIAO ESP32-S3 companion
+(devdocs/lld/08-connectivity.md, "Wi-Fi flood wedge"). Not fixed on Zephyr
+main as of 15723416fdd (2026-09-24).
+
+diff --git a/drivers/wifi/esp32/src/esp_wifi_drv.c b/drivers/wifi/esp32/src/esp_wifi_drv.c
+index 1744959e0c8..02f00683b60 100644
+--- a/drivers/wifi/esp32/src/esp_wifi_drv.c
++++ b/drivers/wifi/esp32/src/esp_wifi_drv.c
+@@ -325,7 +325,17 @@ static esp_err_t eth_esp32_rx(void *buffer, uint16_t len, void *eb)
+ {
+ 	struct net_pkt *pkt;
+ 
+-	pkt = net_pkt_rx_alloc_with_buffer(esp32_wifi_iface, len, NET_AF_UNSPEC, 0, K_MSEC(100));
++	/* ZephCore: never block here. This runs on the Wi-Fi task, so waiting
++	 * for a net buffer (was K_MSEC(100)) stalls the Wi-Fi task itself while
++	 * it holds received frames in the Wi-Fi heap. Under unicast traffic the
++	 * node answers (e.g. ICMP port unreachable at 200 frames/s), the RX
++	 * thread is slowed by those sends, the RX pool runs dry, every frame
++	 * then costs the Wi-Fi task 100 ms, the Wi-Fi heap fills with queued
++	 * frames and transmit allocation fails (-ENOBUFS): a livelock that
++	 * the LAN's background traffic sustains until reboot. ESP-IDF's own
++	 * netif glue drops the frame when no buffer is free; so do we.
++	 */
++	pkt = net_pkt_rx_alloc_with_buffer(esp32_wifi_iface, len, NET_AF_UNSPEC, 0, K_NO_WAIT);
+ 	if (pkt == NULL) {
+ 		LOG_ERR("Failed to allocate net buffer");
+ 		esp_wifi_internal_free_rx_buffer(eb);
+@@ -379,8 +389,9 @@ static esp_err_t wifi_esp32_ap_iface_rx(void *buffer, uint16_t len, void *eb)
+ {
+ 	struct net_pkt *pkt;
+ 
++	/* ZephCore: see eth_esp32_rx(). */
+ 	pkt = net_pkt_rx_alloc_with_buffer(esp32_wifi_iface_ap, len,
+-					   NET_AF_UNSPEC, 0, K_MSEC(100));
++					   NET_AF_UNSPEC, 0, K_NO_WAIT);
+ 	if (pkt == NULL) {
+ 		esp_wifi_internal_free_rx_buffer(eb);
+ 		LOG_ERR("Failed to get net buffer");

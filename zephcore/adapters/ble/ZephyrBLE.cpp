@@ -32,6 +32,8 @@ LOG_MODULE_REGISTER(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
 #include <zephyr/sys/byteorder.h>
 
 #include "ZephyrBLE.h"
+#include "ble_internal.h"
+#include "frame_txq.h"
 
 /* ========== Constants ========== */
 
@@ -49,25 +51,12 @@ LOG_MODULE_REGISTER(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
 /* TX timeout watchdog - reset ble_tx_in_progress if callback never fires */
 #define BLE_TX_TIMEOUT_MS 2000
 
-/* Congestion overflow retry interval — when the TX queue is full, the
- * stuck frame retries at this cadence.  Slow enough to not hammer the
- * BLE stack when the link is marginal, fast enough to recover quickly. */
-#define BLE_TX_OVERFLOW_RETRY_MS 250
 
-/* App push notifications are 0x80+; protocol response packets are < 0x80. */
-#define PUSH_CODE_BASE 0x80
 
 /* Advertising intervals (Apple Accessory Design Guidelines §5.5) */
 #define BT_ADV_FAST_INTERVAL     32            /* 20ms in 0.625ms units */
 #define BT_ADV_FAST_DURATION_MS  (60 * 1000)  /* fast window after boot/disconnect */
 #define BT_ADV_INTERVAL          CONFIG_ZEPHCORE_BLE_ADV_SLOW_INTERVAL
-
-/* ========== Frame type for queues ========== */
-
-struct frame {
-	uint16_t len;
-	uint8_t buf[MAX_FRAME_SIZE];
-};
 
 /* ========== Static state ========== */
 
@@ -79,6 +68,15 @@ static bool conn_params_pending;
 /* Callbacks to main */
 static const struct ble_callbacks *ble_cbs;
 
+#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_DFU)
+void zephcore_ble_dfu_request(void)
+{
+	if (ble_cbs && ble_cbs->on_dfu_request) {
+		ble_cbs->on_dfu_request();
+	}
+}
+#endif
+
 /* Advertising data */
 static char device_name[DEVICE_NAME_MAX];
 static const uint8_t ad_flags = BT_LE_AD_GENERAL | BT_LE_AD_NO_BREDR;
@@ -89,30 +87,15 @@ static struct bt_data sd[1];
 static size_t ad_len;
 static size_t sd_len;
 
-/* Queues — ISR-safe, no mutex needed */
+/* Queues — ISR-safe, no mutex needed. The send queue is driven through
+ * ble_txq: congestion, the overflow slot and the lossless rule (frame_txq.h). */
 K_MSGQ_DEFINE(ble_send_queue, sizeof(struct frame), FRAME_QUEUE_SIZE, 4);
 K_MSGQ_DEFINE(ble_recv_queue, sizeof(struct frame), FRAME_QUEUE_SIZE, 4);
+static struct frame_txq ble_txq;
 
 /* TX retry buffer - used when BLE returns -ENOMEM/-EAGAIN */
 static struct frame tx_retry_frame;
 static bool tx_retry_pending = false;
-
-/* TX congestion control — flow-control mechanism for queue-full conditions.
- *
- * When the TX queue is full, instead of blocking or dropping:
- *   1. Set ble_tx_congested flag → callers (contact iteration, etc.) stop sending
- *   2. Save the stuck frame to overflow_frame → retried every 250ms
- *   3. When queue drains below low water mark (1/3) → clear congestion
- *   4. On disconnect → clear everything
- *
- * Water marks (with default FRAME_QUEUE_SIZE=12):
- *   - Contact iteration pauses:  2/3 = 8 frames (high water)
- *   - Congestion mode enters:    12/12 = full
- *   - Congestion mode clears:    1/3 = 4 frames (low water)
- */
-static bool ble_tx_congested;
-static struct frame overflow_frame;
-static bool overflow_pending;
 
 /* Connection state */
 static struct bt_conn *current_conn;
@@ -121,279 +104,6 @@ static bool ble_tx_ready = false;
 static bool ble_tx_in_progress = false;
 static int64_t ble_tx_start_time = 0;
 
-#if IS_ENABLED(CONFIG_BT_GATT_SERVICE_CHANGED)
-/* Bump when static BT_GATT_SERVICE_DEFINE layout or registration order changes.
- * 1 = pre-2cf4b97 (dfu_svc before secure_nus_svc)
- * 2 = secure_nus_svc_dfu after secure_nus_svc (+ packet/revision chars) */
-#define ZEPHCORE_GATT_LAYOUT_VERSION 2
-
-/* Delay before sending Service Changed after L2 security is established.
- * On a fresh pairing, pairing_complete() fires within this window and marks the
- * peer current, so only genuine bonded reconnects with a stale layout get an SC.
- * The delay also gives the peer time to subscribe to the Service Changed CCC. */
-#define GATT_SC_INDICATE_DELAY_MS 1000
-
-static bool gatt_sc_ind_in_flight;
-static const struct bt_gatt_attr *gatt_sc_value_attr;
-static struct bt_gatt_indicate_params gatt_sc_ind_params;
-static uint16_t gatt_sc_ind_range[2];
-
-static void gatt_peer_settings_key(char *key, size_t key_len, const bt_addr_le_t *addr)
-{
-	char addr_str[BT_ADDR_LE_STR_LEN];
-
-	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
-	snprintk(key, key_len, "ble/gatt_peer/%s", addr_str);
-}
-
-static int gatt_peer_layout_load(const bt_addr_le_t *addr, uint8_t *ver_out)
-{
-#if IS_ENABLED(CONFIG_SETTINGS)
-	char key[64];
-	ssize_t len;
-
-	gatt_peer_settings_key(key, sizeof(key), addr);
-	len = settings_load_one(key, ver_out, sizeof(*ver_out));
-	if (len == (ssize_t)sizeof(*ver_out)) {
-		return 0;
-	}
-#endif
-	return -ENOENT;
-}
-
-static int gatt_peer_layout_save(const bt_addr_le_t *addr, uint8_t ver)
-{
-#if IS_ENABLED(CONFIG_SETTINGS)
-	char key[64];
-	int err;
-
-	gatt_peer_settings_key(key, sizeof(key), addr);
-	err = settings_save_one(key, &ver, sizeof(ver));
-	return err;
-#else
-	ARG_UNUSED(addr);
-	ARG_UNUSED(ver);
-	return -ENOTSUP;
-#endif
-}
-
-static void gatt_peer_layout_delete(const bt_addr_le_t *addr)
-{
-#if IS_ENABLED(CONFIG_SETTINGS)
-	char key[64];
-
-	gatt_peer_settings_key(key, sizeof(key), addr);
-	settings_delete(key);
-#else
-	ARG_UNUSED(addr);
-#endif
-}
-
-static int gatt_global_layout_save(uint8_t ver)
-{
-#if IS_ENABLED(CONFIG_SETTINGS)
-	return settings_save_one("ble/gatt_layout", &ver, sizeof(ver));
-#else
-	ARG_UNUSED(ver);
-	return -ENOTSUP;
-#endif
-}
-
-struct gatt_layout_bond_ctx {
-	int count;
-};
-
-static void gatt_layout_count_bonds(const struct bt_bond_info *info, void *user_data)
-{
-	struct gatt_layout_bond_ctx *ctx =
-		static_cast<struct gatt_layout_bond_ctx *>(user_data);
-
-	ARG_UNUSED(info);
-	ctx->count++;
-}
-
-static void gatt_layout_check_after_settings_load(void)
-{
-#if IS_ENABLED(CONFIG_SETTINGS)
-	struct gatt_layout_bond_ctx bond_ctx = { 0 };
-	uint8_t global;
-	uint8_t prev;
-	ssize_t len;
-
-	bt_foreach_bond(BT_ID_DEFAULT, gatt_layout_count_bonds, &bond_ctx);
-
-	len = settings_load_one("ble/gatt_layout", &global, sizeof(global));
-	if (len != (ssize_t)sizeof(global)) {
-		if (bond_ctx.count == 0) {
-			/* Fresh device — no stale phone caches to fix. */
-			if (gatt_global_layout_save(ZEPHCORE_GATT_LAYOUT_VERSION) == 0) {
-				LOG_DBG("GATT layout v%u seeded (no bonds)",
-					ZEPHCORE_GATT_LAYOUT_VERSION);
-			}
-			return;
-		}
-
-		prev = 1; /* bonded before layout tracking existed */
-	} else {
-		prev = global;
-	}
-
-	if (prev != ZEPHCORE_GATT_LAYOUT_VERSION) {
-		LOG_INF("GATT layout v%u -> v%u (per-peer SC on connect)",
-			prev, ZEPHCORE_GATT_LAYOUT_VERSION);
-		if (gatt_global_layout_save(ZEPHCORE_GATT_LAYOUT_VERSION) != 0) {
-			LOG_WRN("GATT layout global version save failed");
-		}
-	}
-#endif
-}
-
-static uint8_t gatt_sc_find_value_attr(const struct bt_gatt_attr *attr, uint16_t handle,
-				       void *user_data)
-{
-	ARG_UNUSED(handle);
-	ARG_UNUSED(user_data);
-
-	if (!bt_uuid_cmp(attr->uuid, BT_UUID_GATT_CHRC)) {
-		const struct bt_gatt_chrc *chrc =
-			static_cast<const struct bt_gatt_chrc *>(attr->user_data);
-
-		if (!bt_uuid_cmp(chrc->uuid, BT_UUID_GATT_SC)) {
-			gatt_sc_value_attr = bt_gatt_attr_next(attr);
-			return BT_GATT_ITER_STOP;
-		}
-	}
-
-	return BT_GATT_ITER_CONTINUE;
-}
-
-static void gatt_sc_indicate_cb(struct bt_conn *conn, struct bt_gatt_indicate_params *params,
-				uint8_t err)
-{
-	const bt_addr_le_t *addr = bt_conn_get_dst(conn);
-
-	ARG_UNUSED(params);
-
-	gatt_sc_ind_in_flight = false;
-
-	if (err) {
-		LOG_WRN("Service Changed indicate failed: 0x%02x (will retry)", err);
-		return;
-	}
-
-	if (gatt_peer_layout_save(addr, ZEPHCORE_GATT_LAYOUT_VERSION) != 0) {
-		LOG_WRN("GATT peer layout save failed (will retry on reconnect)");
-		return;
-	}
-
-	LOG_INF("GATT layout v%u: Service Changed confirmed", ZEPHCORE_GATT_LAYOUT_VERSION);
-}
-
-static void gatt_peer_mark_current_no_sc(const bt_addr_le_t *addr)
-{
-	if (gatt_peer_layout_save(addr, ZEPHCORE_GATT_LAYOUT_VERSION) != 0) {
-		LOG_WRN("GATT peer layout save failed");
-		return;
-	}
-
-	LOG_DBG("GATT layout v%u: peer marked current (no SC needed)", ZEPHCORE_GATT_LAYOUT_VERSION);
-}
-
-static void maybe_indicate_service_changed(struct bt_conn *conn)
-{
-	const bt_addr_le_t *addr = bt_conn_get_dst(conn);
-	uint8_t peer_ver;
-	int err;
-
-	if (gatt_sc_ind_in_flight) {
-		return;
-	}
-
-	if (gatt_peer_layout_load(addr, &peer_ver) == 0 &&
-	    peer_ver == ZEPHCORE_GATT_LAYOUT_VERSION) {
-		return;
-	}
-
-	if (!gatt_sc_value_attr) {
-		bt_gatt_foreach_attr(0x0001, 0xffff, gatt_sc_find_value_attr, NULL);
-		if (!gatt_sc_value_attr) {
-			LOG_ERR("Service Changed characteristic not found");
-			return;
-		}
-	}
-
-	gatt_sc_ind_range[0] = sys_cpu_to_le16(0x0001);
-	gatt_sc_ind_range[1] = sys_cpu_to_le16(0xffff);
-
-	memset(&gatt_sc_ind_params, 0, sizeof(gatt_sc_ind_params));
-	gatt_sc_ind_params.attr = gatt_sc_value_attr;
-	gatt_sc_ind_params.func = gatt_sc_indicate_cb;
-	gatt_sc_ind_params.data = gatt_sc_ind_range;
-	gatt_sc_ind_params.len = sizeof(gatt_sc_ind_range);
-
-	err = bt_gatt_indicate(conn, &gatt_sc_ind_params);
-	if (err) {
-		LOG_WRN("Service Changed indicate err %d (will retry)", err);
-		return;
-	}
-
-	gatt_sc_ind_in_flight = true;
-	LOG_INF("GATT layout migration: Service Changed indicated");
-}
-
-/* Deferred from security_changed() — see GATT_SC_INDICATE_DELAY_MS. Runs on the
- * single active connection (BT_MAX_CONN=1); cancelled on disconnect. */
-static void gatt_sc_work_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-
-	if (current_conn) {
-		maybe_indicate_service_changed(current_conn);
-	}
-}
-static K_WORK_DELAYABLE_DEFINE(gatt_sc_work, gatt_sc_work_fn);
-#endif /* CONFIG_BT_GATT_SERVICE_CHANGED */
-
-/* Active interface tracking */
-static enum zephcore_iface active_iface = ZEPHCORE_IFACE_NONE;
-
-/* active_iface is mutated from two threads — the Bluetooth callback thread
- * (connect / security / pairing / disconnect) and the USB workqueue
- * (CMD_APP_START / DTR drop).  This mutex makes the check-then-act claim and
- * release sequences atomic so the two transports can never both believe they
- * own the interface (or lose a write to it). */
-K_MUTEX_DEFINE(ble_iface_lock);
-
-/* Atomically claim the interface for `who` iff it is currently idle.
- * Returns true only if this call performed the NONE -> who transition. */
-static bool iface_claim_if_idle(enum zephcore_iface who)
-{
-	k_mutex_lock(&ble_iface_lock, K_FOREVER);
-	bool claimed = (active_iface == ZEPHCORE_IFACE_NONE);
-	if (claimed) {
-		active_iface = who;
-	}
-	k_mutex_unlock(&ble_iface_lock);
-	return claimed;
-}
-
-/* Atomically release the interface if `who` currently owns it. */
-static void iface_release(enum zephcore_iface who)
-{
-	k_mutex_lock(&ble_iface_lock, K_FOREVER);
-	if (active_iface == who) {
-		active_iface = ZEPHCORE_IFACE_NONE;
-	}
-	k_mutex_unlock(&ble_iface_lock);
-}
-
-/* Claim the active interface for BLE, but only if nothing else owns it.
- * First-come-first-served: a live USB session must not be evicted by BLE
- * connecting/pairing in the background.  Returns true if BLE now owns it. */
-static bool ble_claim_iface_if_idle(void)
-{
-	return iface_claim_if_idle(ZEPHCORE_IFACE_BLE);
-}
 
 /* DLE tracking — set after successful DLE request to avoid double-request */
 static bool dle_requested;
@@ -423,20 +133,14 @@ static bool adv_running;
 /* Administrative BLE state */
 static bool ble_enabled = true;
 
+/* zephcore_ble_start() has run: advertising can be started or stopped */
+static bool ble_started;
 
 /* Runtime BLE passkey */
 static uint32_t ble_passkey = CONFIG_ZEPHCORE_BLE_PASSKEY;
 
 /* NUS TX characteristic attribute — resolved at init, avoids hard-coded offset */
 static const struct bt_gatt_attr *nus_tx_attr;
-
-static bool is_lossless_protocol_frame(const uint8_t *data, uint16_t len)
-{
-	if (!data || len == 0) {
-		return false;
-	}
-	return data[0] < PUSH_CODE_BASE;
-}
 
 /* ========== Forward declarations ========== */
 
@@ -477,130 +181,13 @@ BT_GATT_SERVICE_DEFINE(secure_nus_svc,
 		NULL, secure_nus_rx_write, NULL),
 );
 
-#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_DFU)
-/* ========== Legacy Nordic/Adafruit buttonless DFU service ==========
- *
- * Mirrors Adafruit BLEDfu (Arduino MeshCore >=1.15.0) so the same DFU tools
- * interoperate: a paired phone writes 0x01 to the control point and the device
- * resets into the bootloader's BLE OTA mode. We use the *unbonded* OTA reset
- * (GPREGRET 0xA8, same as `start ota`): the bootloader comes up as a fresh DFU
- * target and the tool re-scans for it (the legacy buttonless flow). Adafruit's
- * 0xB1 bonded-resume path needs SoftDevice peer-data enrollment we can't
- * replicate on Zephyr, so the phone makes a fresh connection to the bootloader.
- *
- * The service exposes the FULL legacy DFU shape Adafruit ships (not just the
- * control point): iOS's LegacyDFUService treats the DFU Packet (1532) char as
- * a *required* characteristic — discovery fails (DFU "instantly fails") without
- * it — and reads the DFU Revision (1534 = 0x0001 "app mode") to classify the
- * device as an application that supports the buttonless jump (missing → the app
- * can't identify the device → shows it nameless). Packet is a no-op here: the
- * real image upload happens in the bootloader, not the running app. All three
- * chars sit behind AUTHEN, matching the Arduino companion's service-wide MITM
- * floor (`bledfu.setPermission(SECMODE_ENC_WITH_MITM, ...)`); a bonded phone's
- * DFU app reuses the OS-level bond, an unpaired stranger is rejected.
- *
- * NOTE on the service symbol name: Zephyr registers static GATT services in
- * the order ld's SORT_BY_NAME emits them — i.e. alphabetically by the symbol
- * passed to BT_GATT_SERVICE_DEFINE. This service MUST sort *after*
- * `secure_nus_svc` so the NUS attribute handles stay fixed; otherwise every
- * NUS handle shifts and bonded phones with cached handles get ATT 0x03
- * (Write Not Permitted) on the NUS RX write. Hence the `secure_nus_svc_dfu`
- * name (a string sorts before its own extensions, so NUS keeps the low range).
- */
-static struct bt_uuid_128 dfu_svc_uuid = BT_UUID_INIT_128(
-	BT_UUID_128_ENCODE(0x00001530, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
-static struct bt_uuid_128 dfu_ctrl_uuid = BT_UUID_INIT_128(
-	BT_UUID_128_ENCODE(0x00001531, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
-static struct bt_uuid_128 dfu_packet_uuid = BT_UUID_INIT_128(
-	BT_UUID_128_ENCODE(0x00001532, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
-static struct bt_uuid_128 dfu_revision_uuid = BT_UUID_INIT_128(
-	BT_UUID_128_ENCODE(0x00001534, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
-
-/* DFU Revision = 0x0001 (DFU_REV_APPMODE), little-endian — tells the DFU app
- * "this is an application that supports the buttonless jump to bootloader". */
-static const uint8_t dfu_revision[2] = { 0x01, 0x00 };
-
-static void dfu_jump_work_fn(struct k_work *work);
-static K_WORK_DELAYABLE_DEFINE(dfu_jump_work, dfu_jump_work_fn);
-
-static void dfu_jump_work_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-	if (ble_cbs && ble_cbs->on_dfu_request) {
-		ble_cbs->on_dfu_request();  /* sets GPREGRET + resets; never returns */
-	}
-}
-
-static ssize_t dfu_ctrl_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-			      const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
-{
-	ARG_UNUSED(conn);
-	ARG_UNUSED(attr);
-	ARG_UNUSED(offset);
-	ARG_UNUSED(flags);
-	/* Adafruit BLEDfu jump command: first byte 0x01 (1-2 byte write). */
-	if (len >= 1 && ((const uint8_t *)buf)[0] == 0x01) {
-		LOG_INF("buttonless DFU requested - rebooting to BLE OTA");
-		/* Defer so the ATT write response flushes and the DFU tool can
-		 * arm its disconnect/rescan before we reset. */
-		k_work_schedule(&dfu_jump_work, K_MSEC(250));
-	}
-	return len;
-}
-
-static void dfu_ctrl_ccc_changed(const struct bt_gatt_attr *attr, uint16_t value)
-{
-	ARG_UNUSED(attr);
-	ARG_UNUSED(value);
-}
-
-/* DFU Packet — present only so the DFU library's characteristic discovery
- * succeeds; the actual image transfer happens in the bootloader, not here. */
-static ssize_t dfu_packet_write(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-				const void *buf, uint16_t len, uint16_t offset, uint8_t flags)
-{
-	ARG_UNUSED(conn);
-	ARG_UNUSED(attr);
-	ARG_UNUSED(buf);
-	ARG_UNUSED(offset);
-	ARG_UNUSED(flags);
-	return len;  /* no-op in app mode */
-}
-
-static ssize_t dfu_revision_read(struct bt_conn *conn, const struct bt_gatt_attr *attr,
-				 void *buf, uint16_t len, uint16_t offset)
-{
-	return bt_gatt_attr_read(conn, attr, buf, len, offset,
-				 dfu_revision, sizeof(dfu_revision));
-}
-
-BT_GATT_SERVICE_DEFINE(secure_nus_svc_dfu,
-	BT_GATT_PRIMARY_SERVICE(&dfu_svc_uuid),
-	BT_GATT_CHARACTERISTIC(&dfu_ctrl_uuid.uuid,
-		BT_GATT_CHRC_WRITE | BT_GATT_CHRC_NOTIFY,
-		BT_GATT_PERM_WRITE_AUTHEN,
-		NULL, dfu_ctrl_write, NULL),
-	BT_GATT_CCC(dfu_ctrl_ccc_changed,
-		BT_GATT_PERM_READ_AUTHEN | BT_GATT_PERM_WRITE_AUTHEN),
-	BT_GATT_CHARACTERISTIC(&dfu_packet_uuid.uuid,
-		BT_GATT_CHRC_WRITE_WITHOUT_RESP,
-		BT_GATT_PERM_WRITE_AUTHEN,
-		NULL, dfu_packet_write, NULL),
-	BT_GATT_CHARACTERISTIC(&dfu_revision_uuid.uuid,
-		BT_GATT_CHRC_READ,
-		BT_GATT_PERM_READ_AUTHEN,
-		dfu_revision_read, NULL, NULL),
-);
-#endif /* CONFIG_ZEPHCORE_BLE_DFU */
 
 /* ========== Work items ========== */
 
 static void tx_drain_work_fn(struct k_work *work);
-static void overflow_retry_work_fn(struct k_work *work);
 static void adv_slow_work_fn(struct k_work *work);
 
 K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
-K_WORK_DELAYABLE_DEFINE(overflow_retry_work, overflow_retry_work_fn);
 K_WORK_DELAYABLE_DEFINE(adv_slow_work, adv_slow_work_fn);
 
 /* ========== Unpaired-connection timeout ==========
@@ -749,15 +336,6 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	}
 	LOG_INF("connected: %s", addr);
 
-	/* Reject BLE connections while USB is the active transport.
-	 * The user connected via BLE expecting to exchange messages, but
-	 * USB owns the interface — they would get nothing and be confused. */
-	if (active_iface == ZEPHCORE_IFACE_USB) {
-		LOG_INF("connected: USB active — rejecting BLE connection from %s", addr);
-		bt_conn_disconnect(conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-		return;
-	}
-
 	current_conn = bt_conn_ref(conn);
 
 	/* Zephyr stops advertising internally when the conn slot is consumed
@@ -790,8 +368,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	 * CONFIG_BT_SMP and CONFIG_BT_BONDABLE are enabled. */
 
 	/* Notify main of BLE connection */
-	if (ble_cbs && ble_cbs->on_connected) {
-		ble_cbs->on_connected();
+	if (ble_cbs && ble_cbs->link.on_connected) {
+		ble_cbs->link.on_connected();
 	}
 }
 
@@ -814,27 +392,20 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	ble_tx_ready = false;
 	conn_params_pending = false;
 
-	/* Clear interface state if BLE was active */
-	iface_release(ZEPHCORE_IFACE_BLE);
-
 	/* Clear queues, retry state, and congestion */
-	k_msgq_purge(&ble_send_queue);
+	frame_txq_reset(&ble_txq);
 	k_msgq_purge(&ble_recv_queue);
 	tx_retry_pending = false;
-	overflow_pending = false;
-	ble_tx_congested = false;
 
 	k_work_cancel_delayable(&tx_drain_work);
-	k_work_cancel_delayable(&overflow_retry_work);
 
 #if IS_ENABLED(CONFIG_BT_GATT_SERVICE_CHANGED)
-	k_work_cancel_delayable(&gatt_sc_work);
-	gatt_sc_ind_in_flight = false;
+	ble_gatt_layout_disconnected();
 #endif
 
 	/* Notify main of BLE disconnection */
-	if (ble_cbs && ble_cbs->on_disconnected) {
-		ble_cbs->on_disconnected();
+	if (ble_cbs && ble_cbs->link.on_disconnected) {
+		ble_cbs->link.on_disconnected();
 	}
 }
 
@@ -872,7 +443,6 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	if (level >= BT_SECURITY_L2 && !ble_tx_ready) {
 		LOG_INF("security established, enabling TX");
 		ble_tx_ready = true;
-		ble_claim_iface_if_idle();
 
 		/* If CCC was already subscribed (bonded reconnect — phone writes
 		 * CCC before security_changed fires), kick TX now.  On fresh
@@ -889,7 +459,7 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 		 * Service Changed forces rediscovery without breaking the bond.
 		 * Deferred so a fresh pairing (pairing_complete marks the peer
 		 * current) doesn't trigger a needless SC. */
-		k_work_reschedule(&gatt_sc_work, K_MSEC(GATT_SC_INDICATE_DELAY_MS));
+		ble_gatt_layout_security_ready(conn);
 #endif
 #if defined(CONFIG_BT_USER_DATA_LEN_UPDATE)
 		/* Fallback DLE request — if le_phy_updated() already sent it,
@@ -1016,16 +586,9 @@ static void pairing_complete(struct bt_conn *conn, bool bonded)
 #if IS_ENABLED(CONFIG_BT_GATT_SERVICE_CHANGED)
 	/* Fresh pairing always does full GATT discovery — no Service Changed needed. */
 	if (bonded) {
-		gatt_peer_mark_current_no_sc(bt_conn_get_dst(conn));
+		ble_gatt_layout_paired(bt_conn_get_dst(conn));
 	}
 #endif
-
-	if (ble_claim_iface_if_idle()) {
-		LOG_INF("pairing complete, activating BLE interface");
-	} else {
-		LOG_INF("pairing complete, %s already active — BLE paired but not promoted",
-			active_iface == ZEPHCORE_IFACE_USB ? "USB" : "BLE");
-	}
 }
 
 static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
@@ -1041,7 +604,7 @@ static void pairing_failed(struct bt_conn *conn, enum bt_security_err reason)
 static void bond_deleted(uint8_t id, const bt_addr_le_t *peer)
 {
 	ARG_UNUSED(id);
-	gatt_peer_layout_delete(peer);
+	ble_gatt_layout_bond_deleted(peer);
 }
 #endif
 
@@ -1053,37 +616,6 @@ static struct bt_conn_auth_info_cb auth_info_cb = {
 #endif
 };
 
-/* ========== TX congestion overflow retry ========== */
-
-static void overflow_retry_work_fn(struct k_work *work)
-{
-	ARG_UNUSED(work);
-
-	if (!overflow_pending) {
-		return;
-	}
-
-	/* Abandon overflow if connection is gone */
-	if (!current_conn || active_iface == ZEPHCORE_IFACE_NONE) {
-		overflow_pending = false;
-		ble_tx_congested = false;
-		LOG_INF("overflow cleared (disconnected)");
-		return;
-	}
-
-	if (k_msgq_put(&ble_send_queue, &overflow_frame, K_NO_WAIT) == 0) {
-		overflow_pending = false;
-		LOG_DBG("overflow frame queued hdr=0x%02x, kicking drain",
-			overflow_frame.buf[0]);
-		kick_tx_drain();
-		/* Congestion flag cleared by tx_drain at low water mark */
-	} else {
-		/* Still full — retry at reduced rate */
-		LOG_DBG("overflow retry: queue still full, retry in 250ms");
-		k_work_schedule(&overflow_retry_work, K_MSEC(BLE_TX_OVERFLOW_RETRY_MS));
-	}
-}
-
 /* ========== TX drain work ========== */
 
 static void kick_tx_drain(void)
@@ -1091,22 +623,17 @@ static void kick_tx_drain(void)
 	k_work_schedule(&tx_drain_work, K_NO_WAIT);
 }
 
+/* The txq abandons its parked push when this goes false */
+static bool ble_link_up(void)
+{
+	return current_conn != NULL;
+}
+
 static void tx_drain_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 	struct frame f;
 	int err;
-
-	/* USB TX path is handled in main — only BLE TX here */
-	if (active_iface == ZEPHCORE_IFACE_USB) {
-		/* Let main handle USB TX — just signal tx_idle if queue empty */
-		if (k_msgq_num_used_get(&ble_send_queue) == 0) {
-			if (ble_cbs && ble_cbs->on_tx_idle) {
-				ble_cbs->on_tx_idle();
-			}
-		}
-		return;
-	}
 
 	/*
 	 * BLE TX path - Event-driven (like Arduino's HVN_TX_COMPLETE)
@@ -1170,29 +697,13 @@ static void tx_drain_work_fn(struct k_work *work)
 		}
 	}
 
-	/* Get next frame from queue */
-	if (k_msgq_get(&ble_send_queue, &f, K_NO_WAIT) != 0) {
-		/* TX queue empty — clear congestion and signal idle */
-		if (ble_tx_congested) {
-			ble_tx_congested = false;
-			LOG_INF("tx_drain: congestion cleared (queue empty)");
-		}
-		if (ble_cbs && ble_cbs->on_tx_idle) {
-			ble_cbs->on_tx_idle();
+	/* Get next frame from queue (the txq clears congestion at 1/3 and empty) */
+	if (frame_txq_get(&ble_txq, &f) != 0) {
+		if (ble_cbs && ble_cbs->link.on_tx_idle) {
+			ble_cbs->link.on_tx_idle();
 		}
 		bt_conn_unref(conn);
 		return;
-	}
-
-	/* Clear congestion at low water mark (1/3 of queue) — gives headroom
-	 * before hitting full again.  Hysteresis: ON at full, OFF at 1/3. */
-	if (ble_tx_congested) {
-		uint32_t used = k_msgq_num_used_get(&ble_send_queue);
-		if (used <= FRAME_QUEUE_SIZE / 3) {
-			ble_tx_congested = false;
-			LOG_INF("tx_drain: congestion cleared (queue=%u/%u)",
-				used, (unsigned)FRAME_QUEUE_SIZE);
-		}
 	}
 
 	LOG_DBG("tx_drain[BLE]: sending len=%u hdr=0x%02x queue=%u",
@@ -1264,9 +775,16 @@ static ssize_t secure_nus_rx_write(struct bt_conn *conn, const struct bt_gatt_at
 
 	LOG_DBG("NUS RX: len=%u cmd=0x%02x", len, cmd);
 
-	/* Notify main via callback */
-	if (ble_cbs && ble_cbs->on_rx_frame) {
-		ble_cbs->on_rx_frame(data, len);
+	struct frame f;
+
+	f.len = len;
+	memcpy(f.buf, data, len);
+	if (k_msgq_put(&ble_recv_queue, &f, K_NO_WAIT) != 0) {
+		LOG_WRN("recv queue full");
+		return len;
+	}
+	if (ble_cbs && ble_cbs->link.on_rx) {
+		ble_cbs->link.on_rx();
 	}
 
 	return len;
@@ -1333,6 +851,8 @@ static void start_fast_adv(void)
 void zephcore_ble_init(const struct ble_callbacks *cbs)
 {
 	ble_cbs = cbs;
+	frame_txq_init(&ble_txq, &ble_send_queue, FRAME_QUEUE_SIZE, "ble",
+		       ble_link_up, kick_tx_drain);
 
 	/* Resolve NUS TX characteristic attribute once — avoids hard-coded
 	 * array offset in secure_nus_send(). attrs[2] = TX char value
@@ -1353,94 +873,46 @@ void zephcore_ble_start(const char *name)
 		 * No app-side seeding needed. */
 		settings_load();
 #if IS_ENABLED(CONFIG_BT_GATT_SERVICE_CHANGED)
-		gatt_layout_check_after_settings_load();
+		ble_gatt_layout_check_after_settings_load();
 #endif
 	}
 
 	build_device_name_and_adv(name);
-	LOG_DBG("init complete, starting adv");
-	start_fast_adv();
+	ble_started = true;
+	if (ble_enabled) {
+		LOG_DBG("init complete, starting adv");
+		start_fast_adv();
+	}
 }
 
 size_t zephcore_ble_send(const uint8_t *data, uint16_t len)
 {
-	if (len == 0 || len > MAX_FRAME_SIZE) {
-		LOG_WRN("invalid len=%u", (unsigned)len);
-		return 0;
-	}
-
-	/* Don't queue frames if no active transport */
-	if (active_iface == ZEPHCORE_IFACE_BLE && !current_conn) {
+	/* Nothing is queued without a connection */
+	if (!current_conn) {
 		LOG_DBG("no BLE conn, dropping len=%u hdr=0x%02x",
-			(unsigned)len, data[0]);
+			(unsigned)len, len ? data[0] : 0);
 		return 0;
 	}
-	if (active_iface == ZEPHCORE_IFACE_NONE) {
-		LOG_DBG("no active iface, dropping len=%u hdr=0x%02x",
-			(unsigned)len, data[0]);
-		return 0;
-	}
+	return frame_txq_put(&ble_txq, data, len);
+}
 
+size_t zephcore_ble_recv(uint8_t *dest)
+{
 	struct frame f;
-	f.len = len;
-	memcpy(f.buf, data, len);
 
-	if (k_msgq_put(&ble_send_queue, &f, K_NO_WAIT) != 0) {
-		/* Queue full — enter congestion mode.
-		 *
-		 * Instead of blocking (would stall LoRa) or dropping (loses
-		 * frames), we signal congestion so all senders stop, then
-		 * save this frame and retry at a reduced 250ms cadence until
-		 * the queue drains or the connection drops.
-		 *
-		 * Callers check zephcore_ble_is_congested() and hold off:
-		 *   - contact iteration (run_contact_iteration): pauses iteration
-		 *   - main thread (sendPush): pushes are best-effort signals,
-		 *     actual message data is safe in the offline queue
-		 */
-		if (!ble_tx_congested) {
-			LOG_WRN("TX queue full (%u/%u), entering congestion",
-				k_msgq_num_used_get(&ble_send_queue),
-				(unsigned)FRAME_QUEUE_SIZE);
-			ble_tx_congested = true;
-		}
-
-		/* Protocol response frames are lossless. If queue is full, report
-		 * failure so the caller can retry instead of overflow replacement. */
-		if (is_lossless_protocol_frame(data, len)) {
-			LOG_DBG("TX queue full for lossless protocol frame hdr=0x%02x, retry later", data[0]);
-			return 0;
-		}
-
-		/* Save to overflow — retried at 250ms intervals.
-		 * If overflow is already occupied, drop the new frame rather
-		 * than clobber the buffered one.  Only MSG_WAITING / PATH_UPDATED
-		 * / CONTACTS_FULL are truly idempotent; most other push codes
-		 * (ADVERT, SEND_CONFIRMED, RAW_DATA, telemetry/status responses,
-		 * etc.) carry per-event data, so silent replacement = data loss.
-		 * Chat messages are unaffected — message bytes live in the
-		 * CompanionMesh offline queue and ride the lossless response
-		 * path (data[0] < 0x80) on sync. */
-		if (overflow_pending) {
-			LOG_WRN("overflow full, dropping push hdr=0x%02x", data[0]);
-			return 0;
-		}
-		overflow_frame = f;
-		overflow_pending = true;
-		k_work_schedule(&overflow_retry_work, K_MSEC(BLE_TX_OVERFLOW_RETRY_MS));
-		return len;  /* Accepted into overflow — will be retried */
+	if (k_msgq_get(&ble_recv_queue, &f, K_NO_WAIT) != 0) {
+		return 0;
 	}
-
-	LOG_DBG("queued len=%u hdr=0x%02x queue=%u",
-		(unsigned)len, data[0], k_msgq_num_used_get(&ble_send_queue));
-
-	kick_tx_drain();
-	return len;
+	memcpy(dest, f.buf, f.len);
+	return f.len;
 }
 
 void zephcore_ble_set_enabled(bool enable)
 {
 	ble_enabled = enable;
+	if (!ble_started) {
+		return;  /* zephcore_ble_start() honours it */
+	}
 	if (!enable) {
 		/* Disconnect current connection if any */
 		if (current_conn) {
@@ -1461,6 +933,7 @@ void zephcore_ble_set_enabled(bool enable)
 		LOG_INF("BLE enabled");
 	}
 }
+
 bool zephcore_ble_is_enabled(void)
 {
 	return ble_enabled;
@@ -1468,7 +941,7 @@ bool zephcore_ble_is_enabled(void)
 
 bool zephcore_ble_is_active(void)
 {
-	return active_iface == ZEPHCORE_IFACE_BLE && current_conn != NULL && ble_tx_ready;
+	return current_conn != NULL && ble_tx_ready;
 }
 
 bool zephcore_ble_is_connected(void)
@@ -1476,9 +949,9 @@ bool zephcore_ble_is_connected(void)
 	return current_conn != NULL;
 }
 
-bool zephcore_ble_is_congested(void)
+bool zephcore_ble_is_write_busy(void)
 {
-	return ble_tx_congested;
+	return frame_txq_busy(&ble_txq);
 }
 
 bool zephcore_ble_tx_idle(void)
@@ -1487,10 +960,9 @@ bool zephcore_ble_tx_idle(void)
 	if (!current_conn) {
 		return true;
 	}
-	return k_msgq_num_used_get(&ble_send_queue) == 0 &&
+	return frame_txq_empty(&ble_txq) &&
 	       !ble_tx_in_progress &&
-	       !tx_retry_pending &&
-	       !overflow_pending;
+	       !tx_retry_pending;
 }
 
 bool zephcore_ble_is_advertising(void)
@@ -1511,54 +983,6 @@ void zephcore_ble_set_passkey(uint32_t passkey)
 uint32_t zephcore_ble_get_passkey(void)
 {
 	return ble_passkey;
-}
-
-enum zephcore_iface zephcore_ble_get_active_iface(void)
-{
-	k_mutex_lock(&ble_iface_lock, K_FOREVER);
-	enum zephcore_iface iface = active_iface;
-	k_mutex_unlock(&ble_iface_lock);
-	return iface;
-}
-
-void zephcore_ble_set_active_iface(enum zephcore_iface iface)
-{
-	k_mutex_lock(&ble_iface_lock, K_FOREVER);
-	active_iface = iface;
-	k_mutex_unlock(&ble_iface_lock);
-}
-
-bool zephcore_ble_iface_try_claim(enum zephcore_iface who)
-{
-	k_mutex_lock(&ble_iface_lock, K_FOREVER);
-	bool ok = (active_iface == ZEPHCORE_IFACE_NONE || active_iface == who);
-	if (ok) {
-		active_iface = who;
-	}
-	k_mutex_unlock(&ble_iface_lock);
-	return ok;
-}
-
-struct k_msgq *zephcore_ble_get_recv_queue(void)
-{
-	return &ble_recv_queue;
-}
-
-struct k_msgq *zephcore_ble_get_send_queue(void)
-{
-	return &ble_send_queue;
-}
-
-void zephcore_ble_kick_tx(void)
-{
-	kick_tx_drain();
-}
-
-void zephcore_ble_disconnect(void)
-{
-	if (current_conn) {
-		bt_conn_disconnect(current_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
-	}
 }
 
 void zephcore_ble_update_name(const char *new_name)

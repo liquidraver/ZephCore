@@ -7,7 +7,7 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 **Sources:**
 - `helpers/CommonCLI.cpp` — common commands shared by all roles
 - `app/RepeaterMesh.cpp` — repeater-specific commands (`setperm`, `get acl`, `region`, `discover.neighbors`)
-- `app/RepeaterRegionCLI.cpp` / `app/RoomServerRegionCLI.cpp` — the `region` sub-CLI
+- `helpers/CommonCLI.cpp` `handleRegionCmd()` — the `region` sub-CLI (as upstream); the `region load` line reader stays in each role
 - `app/RepeaterUplink.cpp` — `get`/`set uplink.*` (ESP32 uplink builds only)
 - `app/RoomServerMesh.cpp` — room-server-specific commands (`room.post`)
 
@@ -60,7 +60,7 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 |---------|-------------|
 | `neighbors` | Display current neighbor list |
 | `neighbor.remove <pubkey_hex>` | Remove a neighbor entry by its public key. A prefix is accepted — the hex is truncated to at most 32 bytes and matched at whatever length you give. **Repeater only in effect:** `RoomServerMesh` does not override `removeNeighbor`, so on a room server this replies `OK` and does nothing. |
-| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes. Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. Not implemented on room servers. |
+| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes; responses are collected for 60 s (as upstream `bf9c6cb5`). Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. Not implemented on room servers. |
 
 ---
 
@@ -71,7 +71,7 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 | `password <new_password>` | Set the admin password (**max 15 characters**) |
 | `setperm <perms_hex> <pubkey_hex>` | Set ACL permissions for a node (app format: 2-char hex perms first) |
 | `setperm <pubkey_hex> <perms_dec>` | Set ACL permissions for a node (Arduino format: pubkey first, decimal perms) |
-| `get acl` | *(USB only)* List all ACL entries with permissions and public keys |
+| `get acl` | *(USB only)* List all ACL entries, as upstream: `ACL:` then one `<perms hex> <public key hex>` line per entry, printed straight to the console (the `  -> ` reply line is empty). Guest entries (permissions 0) are skipped. |
 
 > **Password length:** admin and guest passwords are capped at **15 characters** (16-byte storage incl. NUL; same limit as Arduino MeshCore). The login-send path silently truncates anything longer, so a password >15 chars will never authenticate. Applies to `set guest.password` as well.
 
@@ -235,6 +235,20 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 
 ---
 
+## Companion WiFi (`CONFIG_ZEPHCORE_COMPANION_WIFI`)
+
+Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: true` (the PSRAM ESP32-S3 boards, plus Heltec V3, Wireless Tracker and the two C6 boards with fewer contacts) join a WiFi network and serve the companion protocol over TCP on port 5000, beside BLE and USB. Upstream's commands and replies; every change applies on the next reboot. Reachable over USB, from the app's CLI and, as upstream, over the air from a contact with remote CLI permission — including `get wifi.pwd`.
+
+| Command | Description |
+|---------|-------------|
+| `set wifi.ssid <name>` | Network to join (up to 32 characters; spaces allowed) |
+| `set wifi.pwd <password>` | Its password (up to 63 characters; empty = open network) |
+| `get wifi.ssid` / `get wifi.pwd` | The saved values (`(not set)` for no SSID) |
+| `set wifi.enabled <0\|1>` / `get wifi.enabled` | Join the saved network at boot (default 1; nothing happens until an SSID is set) |
+| `set wifi.clear` | Forget SSID and password |
+| `get wifi.status` | `connected` once the link is up and DHCP has an address, else `disconnected` |
+| `get wifi.ip` | The address the app connects to (`(not connected)` otherwise) |
+
 ## `get` — Read Configuration
 
 | Command | Returns |
@@ -281,6 +295,7 @@ All `set uplink.*` changes are saved immediately and only applied after reboot.
 | `get gps diag` | What the last GPS module-configuration attempt did — which path ran, bytes sent, and tracked satellites per constellation. See **GPS configuration diagnostics** in the GPS section for the field reference |
 | `get meshtimesync` | Mesh time-sync state + live dry-run: on/off, eligible voter count, votes for/against, consensus skew and radius, would-be verdict (`ok`/`in-band`/`step±N`/`abstain (reason)`/`hold (reason)`; a recent clock set — manual or GPS — shows as `hold (suppressed)`, and a backward step a forward-only role would refuse is annotated `(skipped: forward-only)`), step counters, suppression countdown, and a per-sender evidence table (`prefix hops count skew E`, `E` = counted toward the verdict above). Entries that count print first, so a size-capped reply never hides the ones that explain the summary; if the table doesn't fully fit, a trailing `+N more` shows how many were left out. Sensing runs even while off, so this works as a dry-run before enabling. Over remote admin the reply is truncated to the packet size (summary always fits); the full table needs the USB CLI. |
 | `get probe.interval` | Seconds between periodic radio measurements (noise-floor sample + CAD probe). 0 = CAD probing off |
+| `get loop.wakes` | Debug builds only (`CONFIG_ZEPHCORE_LOOP_WAKE_STATS`, on in `debug.conf`). Event-loop wakes since boot: `wakes=N up=Ss` then a count per event bit (`bN=`, the role's `MESH_EVENT_*` bit numbers; one wake can carry several bits). Wakes per second = wakes / up. Read it twice and take the difference to measure a window. |
 | `get dc.restarts` | Duty-cycle re-arm counter — RxTimeout re-arms **plus** parked-RX watchdog recoveries, sharing one total. **Read it as a rate: divide by uptime.** A bare count is not interpretable, and the two sources it merges cost very differently. An RxTimeout re-arm is ~7 ms of deaf time (the `Calibrate(ALL)` gap in the driver's `restart_rx`) after which the chip returns to duty cycle immediately — packets, not power. A watchdog recovery means the chip sat parked in *full RX* for one to two watchdog periods (`2·(preamble+8)` symbols, floored at 250 ms) — power, not packets, since parked RX still receives. The counter cannot tell you which, so read the worst case. **Measured normal: ~250/hr on a high site at SF8/BW 62.5** (one every ~14 s), where the worst case — every event a park — costs about 3.5% of the duty cycle's savings. Nothing to act on below roughly **2000/hr**; above that the parked-RX share starts eating a meaningful fraction of the saving and it becomes worth splitting the counter to find out. A high rate means the preamble detector is tripping without a decodable packet following, which on an elevated site is usually distant marginal traffic rather than interference — cross-check `get cad.stats`, whose adaptive detPeak offset rises independently in a genuinely busy RF environment. Reset by `clear stats`. |
 | `get cad` | Always `on` — ZephCore performs CAD/LBT unconditionally and has no enable knob. Kept as a boolean reply for Arduino MeshCore app compatibility; the real status lives in `get cad.stats`. |
 | `get cad.auto` | Whether the adaptive-CAD staircase is acting on probe statistics (`on`/`off`). Set with `set cad.auto`. |

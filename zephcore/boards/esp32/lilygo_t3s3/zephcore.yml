@@ -1,5 +1,7 @@
 # ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
 target: lilygo_t3s3/esp32s3/procpu
+capabilities:
+  wifi: true
 release:
   roles: [companion, repeater]
 # Catalog: MeshCore splits this board by radio -- "(SX126x)" and "(SX127x)" are

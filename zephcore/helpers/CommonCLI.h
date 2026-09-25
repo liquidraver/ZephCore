@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * CommonCLI - Common CLI command handlers for repeaters
+ * CommonCLI - the text CLI shared by every role
  */
 
 #pragma once
@@ -10,17 +10,16 @@
 #include <mesh/MeshCore.h>
 #include <helpers/IdentityStore.h>
 #include <helpers/ClientACL.h>
+#include <helpers/RegionMap.h>
 #include "NodePrefs.h"
 
 class MeshTimeSync;
 
-/* CLI reply buffer size — callers must provide at least this many bytes */
+/* A local caller's reply buffer (sender_timestamp 0) */
 #define CLI_REPLY_SIZE 256
 
-/* Remote-admin replies ride in the caller's LoRa packet buffer:
- * RepeaterMesh/RoomServerMesh onPeerDataRecv declare temp[5 + this] with the
- * reply text at offset 5. Handlers that can exceed this must self-limit
- * whenever sender_timestamp != 0 (0 marks the local USB CLI). */
+/* A remote reply rides in the caller's packet buffer, temp[5 + this] with the
+ * text at offset 5; see replyCap(). */
 #define CLI_REMOTE_REPLY_SIZE 161
 
 /* Deferred reboot types */
@@ -43,30 +42,23 @@ public:
 	virtual void eraseLogFile() = 0;
 	virtual void dumpLogFile() = 0;
 	virtual void setTxPower(int8_t power_dbm) = 0;
-	/* Apply RX boosted gain live; returns false when the radio has no
-	 * RX boost feature (upstream PR #2844 semantics). */
+	/* The radio knobs below return false when the radio lacks the feature. */
 	virtual bool setRxBoostedGain(bool enable) { (void)enable; return false; }
-	/* Gate an external FEM/LNA in the RX direction, live.  Same semantics:
-	 * false means the radio driver has no such knob.  On a supported radio
-	 * whose board has no FEM wired it returns true and does nothing. */
+	/* External FEM/LNA in RX. True and a no-op on a supporting radio whose
+	 * board has no FEM wired. */
 	virtual bool setFemRxGain(bool enable) { (void)enable; return false; }
-	/* Configure LR2021 side detectors (multi-SF receive); num = 0 disables.
-	 * Returns false when the radio has no side detectors, or when the set
-	 * violates a chip constraint — the driver is the validator. */
+	/* LR2021 multi-SF receive; num 0 disables. The driver validates the set. */
 	virtual bool configSideDetectors(const uint8_t* sfs, uint8_t num) {
 		(void)sfs; (void)num; return false;
 	}
-	/* Repeater-specific — default replies keep companion builds clean.
-	 * Repeater overrides all four; companions get "not available". */
+	/* Repeater only; other roles answer "not available". */
 	virtual void formatNeighborsReply(char* reply)      { strcpy(reply, "not available"); }
 	virtual void removeNeighbor(const uint8_t* pubkey, int key_len) {
 		(void)pubkey; (void)key_len;
 	}
-	/* True when the companion transport has nothing left to deliver: TX queue
-	 * drained AND no delivery-ack still held back.  Reboot-class commands poll
-	 * this before resetting so the reply and its ack are not cut off by the
-	 * reset they just scheduled.  Default true — the repeater's LoRa reply is
-	 * covered by the fixed pre-reboot delay instead. */
+	/* Reboot-class commands wait for this so the reply (and a companion's held
+	 * delivery ack) is not cut off by the reset. The server roles rely on the
+	 * fixed pre-reboot delay. */
 	virtual bool transportTxIdle() { return true; }
 	virtual void formatStatsReply(char* reply)           { strcpy(reply, "not available"); }
 	virtual void formatRadioStatsReply(char* reply)      { strcpy(reply, "not available"); }
@@ -75,10 +67,14 @@ public:
 	virtual void saveIdentity(const mesh::LocalIdentity& new_id) = 0;
 	virtual void clearStats() = 0;
 	virtual void applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) = 0;
-	/* Freeze the live radio on the given (old) params via radio override so the
-	 * caller can mutate _prefs to new values, savePrefs(), and have any later
-	 * savePrefs() call write the new values without clobbering the running radio.
-	 * No-op if an override is already active (tempradio takes precedence). */
+
+	/* Region CLI hooks, as upstream: `region load` starts a multi-line load in
+	 * the role, `region save` / `region default` persist through it. */
+	virtual void startRegionsLoad() {}
+	virtual bool saveRegions() { return false; }
+	virtual void onDefaultRegionChanged(const RegionEntry* r) { (void)r; }
+	/* Keep the live radio on these (old) params through an override while
+	 * _prefs takes the new ones for the next boot. No-op under tempradio. */
 	virtual void freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) { (void)freq; (void)bw; (void)sf; (void)cr; }
 
 	// Adaptive contention window
@@ -92,8 +88,8 @@ public:
 
 	// Adaptive CAD (LBT detPeak calibration)
 	virtual int formatCadStatus(char* buf, int cap) { (void)buf; (void)cap; return 0; }
-	/* Carrier frequency error accumulated from received packets; 0 = this
-	 * radio cannot measure it (only the LR2021 does today). */
+	/* Carrier frequency error of received packets; 0 = not measurable (only
+	 * the LR2021 measures it). */
 	virtual int formatFreqErrorStatus(char* buf, int cap) { (void)buf; (void)cap; return 0; }
 	virtual void applyCadPrefs() {}
 	virtual void resetCadStats() {}
@@ -107,8 +103,7 @@ public:
 	virtual bool setGpsEnabled(bool enabled) { return false; }
 	virtual bool isGpsEnabled() const { return false; }
 	virtual void formatGpsStatsReply(char* reply) { strcpy(reply, "off"); }
-	/* Role default for "set gps duty default". Companion default (300s); the
-	 * repeater/room overrides return ZEPHCORE_REPEATER_GPS_INTERVAL_SEC. */
+	/* "set gps duty default"; the server roles override it. */
 	virtual uint32_t getDefaultGpsIntervalSec() const { return CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC; }
 	virtual int getNumSensorSettings() const { return 0; }
 	virtual const char* getSensorSettingName(int idx) const { return nullptr; }
@@ -118,29 +113,26 @@ public:
 };
 
 class CommonCLI {
-	/* Members ordered to match constructor initialization order */
 	mesh::MainBoard* _board;
 	mesh::RTCClock* _rtc;
-	ClientACL* _acl;
+	RegionMap* _region_map;  /* nullptr on the companion: no region CLI */
+	ClientACL* _acl;         /* nullptr on the companion (it has no clients) */
 	NodePrefs* _prefs;
 	CommonCLICallbacks* _callbacks;
 	char tmp[PRV_KEY_SIZE * 2 + 4];
 
-	/* Deferred reboot - lets LoRa reply be sent before rebooting */
+	/* Deferred reboot, so the reply goes out first */
 	struct k_work_delayable _reboot_work;
 	uint8_t _pending_reboot;
-	/* Uptime (ms) past which the reboot goes ahead even if the transport is
-	 * still busy — a stalled or dropped link must not wedge the reset. */
+	/* Uptime (ms) after which the reboot goes ahead even if the transport is
+	 * still busy: a stalled link must not wedge the reset. */
 	int64_t _reboot_deadline_ms;
 	static void rebootWorkHandler(struct k_work *work);
 
-	/* Bytes the caller already consumed at the head of the reply buffer before
-	 * handing it to us — see setReplyHeaderUsed(). */
-	uint8_t _reply_hdr_used;
+	uint8_t _reply_hdr_used;  /* see setReplyHeaderUsed() */
 
-	/* Space a handler may write at `reply`, terminator included.  Local USB
-	 * gets the full buffer; a remote reply rides in the caller's packet buffer
-	 * and must also leave room for whatever the caller wrote ahead of us. */
+	/* Bytes a handler may write at `reply`, terminator included: the whole
+	 * local buffer, or what is left of a remote one after the caller's header. */
 	size_t replyCap(uint32_t sender_timestamp) const {
 		return (sender_timestamp == 0) ? CLI_REPLY_SIZE
 					       : (CLI_REMOTE_REPLY_SIZE - _reply_hdr_used);
@@ -149,30 +141,30 @@ class CommonCLI {
 	mesh::RTCClock* getRTCClock() { return _rtc; }
 	void savePrefs();
 	void scheduleReboot(uint8_t type);
+	bool handleRadioCmd(uint32_t sender_timestamp, const char* command, char* reply);
+	void handleGetCmd(uint32_t sender_timestamp, const char* command, char* reply);
+	void handleSetCmd(uint32_t sender_timestamp, const char* command, char* reply);
+	void handleRegionCmd(uint32_t sender_timestamp, char* command, char* reply);
+	void handleRegionCmdCopy(uint32_t sender_timestamp, const char* command, char* reply);
 
 public:
-	CommonCLI(mesh::MainBoard& board, mesh::RTCClock& rtc, ClientACL& acl,
+	CommonCLI(mesh::MainBoard& board, mesh::RTCClock& rtc, RegionMap* region_map, ClientACL* acl,
 		  NodePrefs* prefs, CommonCLICallbacks* callbacks)
-		: _board(&board), _rtc(&rtc), _acl(&acl), _prefs(prefs), _callbacks(callbacks),
+		: _board(&board), _rtc(&rtc), _region_map(region_map), _acl(acl), _prefs(prefs), _callbacks(callbacks),
 		  _pending_reboot(REBOOT_NONE), _reboot_deadline_ms(0), _reply_hdr_used(0)
 	{
 		k_work_init_delayable(&_reboot_work, rebootWorkHandler);
 	}
 
-	/* Roles that strip the `XX|` request-tag prefix echo those 3 bytes into the
-	 * head of the reply buffer and advance `reply` past them before calling us.
-	 * Their buffer is still only 5 + CLI_REMOTE_REPLY_SIZE, so the self-limiting
-	 * handlers have to subtract what was already written or they overrun it.
-	 * Call this on EVERY dispatch, with 0 when no prefix was stripped. */
+	/* Bytes of the reply buffer the caller already used (a reflected "xx|"
+	 * prefix). Set on every dispatch, 0 when none. */
 	void setReplyHeaderUsed(uint8_t n) { _reply_hdr_used = n; }
 
 	void handleCommand(uint32_t sender_timestamp, const char* command, char* reply);
 	uint8_t buildAdvertData(uint8_t node_type, uint8_t* app_data);
 
-	/* Full adaptive-CAD reset: the learned detPeak offset, the probe statistics
-	 * that justified it, and the recorded base anchor, all dropped together.
-	 * Public so the companion's app-driven radio change (CMD_SET_RADIO_PARAMS,
-	 * which applies live rather than at reboot) can reach the same code path
-	 * instead of open-coding it.  See the definition for `preset_pending`. */
+	/* Drop the learned CAD offset, its probe statistics and base anchor
+	 * together. Public for the companion's live radio change. See the
+	 * definition for `preset_pending`. */
 	void resetCadState(bool preset_pending);
 };

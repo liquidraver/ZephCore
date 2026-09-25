@@ -4,3 +4,5 @@
 #   release: {roles: [companion, repeater]}
 #   catalog: {device: "Elecrow ThinkNode M9", maker: elecrow}
 target: thinknode_m9/esp32s3/procpu
+capabilities:
+  wifi: true

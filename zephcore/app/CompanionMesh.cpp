@@ -14,7 +14,9 @@
 #include <zephyr/sys/reboot.h>
 #include <ZephyrSensorManager.h>
 #include <adapters/sensors/SimpleLPP.h>
+#if IS_ENABLED(CONFIG_BT)
 #include <adapters/ble/ZephyrBLE.h>
+#endif
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <helpers/time_sync.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
@@ -64,8 +66,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	ZephyrDataStore &store)
 	: BaseChatMesh(radio, ms, rng, rtc, mgr, tables), _store(&store)
 {
-	_push_cb = nullptr;
-	_write_cb = nullptr;
+	_serial = nullptr;
 	_batt_cb = nullptr;
 	_radio_reconfig_cb = nullptr;
 	_pin_change_cb = nullptr;
@@ -319,13 +320,16 @@ void CompanionMesh::flushDirtyChannels()
 	}
 }
 
+void CompanionMesh::startInterface(BaseSerialInterface &serial)
+{
+	_serial = &serial;
+	serial.enable();
+}
+
 bool CompanionMesh::writeFrame(const uint8_t *data, size_t len)
 {
 	LOG_DBG("RSP: 0x%02x len=%u", data[0], (unsigned)len);
-	if (_write_cb) {
-		return _write_cb(data, len) == len;
-	}
-	return false;
+	return _serial && _serial->writeFrame(data, len) == len;
 }
 
 void CompanionMesh::writeOKFrame()
@@ -350,14 +354,25 @@ void CompanionMesh::sendPacketSent(uint8_t result, uint32_t tag, uint32_t est_ti
 	writeFrame(rsp, sizeof(rsp));
 }
 
+/* [push_code][data...], only while an app is listening (pushes are lossy) */
 void CompanionMesh::sendPush(uint8_t code, const uint8_t *data, size_t len)
 {
-	LOG_DBG("sendPush: code=0x%02x len=%u _push_cb=%s", code, (unsigned)len, _push_cb ? "set" : "NULL");
-	if (_push_cb) {
-		_push_cb(code, data, len);
-	} else {
-		LOG_WRN("sendPush: _push_cb is NULL, push lost!");
+	if (!_serial || !_serial->isConnected()) {
+		return;
 	}
+
+	uint8_t frame[MAX_FRAME_SIZE];
+
+	if (1 + len > MAX_FRAME_SIZE) {
+		LOG_WRN("push 0x%02x: data too long %u", code, (unsigned)len);
+		len = MAX_FRAME_SIZE - 1;
+	}
+	frame[0] = code;
+	if (len > 0 && data != nullptr) {
+		memcpy(&frame[1], data, len);
+	}
+	LOG_DBG("sendPush: code=0x%02x len=%u", code, (unsigned)(1 + len));
+	writeFrame(frame, 1 + len);
 }
 
 size_t CompanionMesh::serializeContact(uint8_t *buf, const ContactInfo &c, uint8_t header)
@@ -2233,8 +2248,10 @@ bool CompanionMesh::handleCmdSetAdvertName(const uint8_t *data, size_t len)
 		memcpy(prefs.node_name, &data[1], nlen);
 		prefs.node_name[nlen] = '\0';
 		_store->savePrefs(prefs);
+#if IS_ENABLED(CONFIG_BT)
 		/* Push the new name to BLE so scanners see it without a reboot. */
 		zephcore_ble_update_name(prefs.node_name);
+#endif
 		/* v-contact name tracks the node name — update the app's copy. */
 		vcontactPushAdvert();
 	}
@@ -2523,7 +2540,9 @@ bool CompanionMesh::handleCmdSyncNextMessage(const uint8_t *data, size_t len)
 		/* Initial sync is done — safe to apply deferred
 		 * connection parameters now without disrupting
 		 * channel/contact/message throughput. */
+#if IS_ENABLED(CONFIG_BT)
 		zephcore_ble_conn_params_ready();
+#endif
 
 		/* Full initial sync (contacts + messages) complete: stop
 		 * suppressing v-contact notice prompts. Any notice queued during

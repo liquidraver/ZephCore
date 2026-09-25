@@ -1,5 +1,7 @@
 # ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
 target: heltec_wifi_lora32_v4_r8/esp32s3/procpu
+capabilities:
+  wifi: true
 # No light_sleep capability on purpose: the wiring qualifies (DIO1=GPIO14,
 # NSS=GPIO8, RESET=GPIO12, button on gpio0) but CONFIG_PM was never validated on
 # this board. Declare it once pm_esp32.conf's three checks pass on hardware.

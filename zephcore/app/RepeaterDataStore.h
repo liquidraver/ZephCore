@@ -3,8 +3,8 @@
  * RepeaterDataStore - Filesystem storage for repeater
  *
  * Uses /lfs/repeater/ prefix to keep data separate from companion, so the
- * two prefs layouts (301 B here, 163 B there, different field order) can
- * never be read through each other.
+ * two prefs layouts (311 B here, 272 B there, different field order; see
+ * helpers/PrefsCodec.h) can never be read through each other.
  *
  * The roles are NOT interchangeable: booting a repeater onto a companion
  * volume formats it, and vice versa.  They are different kinds of node, and
@@ -37,11 +37,9 @@ public:
 	bool loadPrefs(NodePrefs& prefs);
 	bool savePrefs(const NodePrefs& prefs);
 
-	/* ACL management - paths passed to ClientACL */
-	const char* getAclPath() const;
-
-	/* Region management - paths passed to RegionMap */
-	const char* getRegionsPath() const;
+	/* The /lfs/repeater directory as a FILESYSTEM, for the storage code ported
+	 * from upstream (ClientACL, RegionMap), which names files from its root. */
+	FILESYSTEM* getFS() { return &_fs; }
 
 	/* Factory reset - erase all repeater data */
 	bool formatFileSystem();
@@ -58,5 +56,9 @@ public:
 
 private:
 	bool _initialized;
+	/* Legacy binary prefs (PrefsCodec): read once to migrate, then kept for
+	 * firmware from before prefs.json. */
+	bool loadLegacyPrefs(const char* path, NodePrefs& prefs);
 	static constexpr const char* BASE_PATH = "/lfs/repeater";
+	ZephyrFS _fs{BASE_PATH};
 };

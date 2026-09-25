@@ -50,20 +50,18 @@ public:
 	uint32_t getStorageUsedKb() const;
 	uint32_t getStorageTotalKb() const;
 
-	/* Factory reset - delete all stored data */
-	void factoryReset();
+	/* Factory reset: erase every storage region, keep the volume marked as
+	 * ours so the next boot does not format it again. */
+	bool factoryReset();
+
+	/* First boot of ZephCore on this volume: format a foreign one, repair
+	 * an old bond store. Must run before bt_enable(). */
+	void adoptVolume();
 
 	/* Check if external QSPI flash is available */
 	bool hasExternalStorage() const { return _has_ext_fs; }
 	uint32_t getExternalStorageKb() const;
 
-	/* First-boot migration helpers — see formatNVSOnly() in .cpp */
-	bool hasInitMarker() const;
-	void writeInitMarker();
-	void formatNVSOnly();
-	bool hasPrefs() const;
-	bool prefsLookLikeArduino() const;
-	bool hasOldSettingsFile() const;
 
 	static bool mount();
 	static void unmount();
@@ -73,11 +71,11 @@ public:
 private:
 	/* Internal flash (always available) - identity, prefs */
 	static constexpr const char *MNT_POINT = "/lfs";
+	static constexpr const char *PREFS_JSON_FILE = "/lfs/prefs.json";
+	/* Legacy binary prefs (PrefsCodec): read once to migrate, then kept for
+	 * firmware from before prefs.json. */
 	static constexpr const char *PREFS_FILE = "/lfs/new_prefs";
 	static constexpr const char *MAIN_ID_FILE = "/lfs/_main.id";
-	/* Where an identity that parses under no known layout is parked before
-	 * a fresh one is generated over the top — see loadMainIdentity(). */
-	static constexpr const char *MAIN_ID_BAD_FILE = "/lfs/_main.id.bad";
 	static constexpr const char *SHUTDOWN_FILE = "/lfs/shutdn";
 
 	/* External QSPI flash (optional) - contacts, channels, blobs */
@@ -101,10 +99,13 @@ private:
 	int maxBlobRecs() const { return _has_ext_fs ? 100 : 20; }
 
 	void checkAdvBlobFile();
+	bool loadLegacyPrefs(NodePrefs &prefs);
+	bool hasInitMarker() const;
+	void writeInitMarker();
+	void formatNVSOnly();
+	bool hasPrefs() const;
+	bool prefsRadioImplausible() const;
+	bool hasOldSettingsFile() const;
 	void migrateToExternalFS();
-	bool openRead(const char *path, uint8_t *buf, size_t buf_sz, size_t &out_len) const;
-	bool atomicReplaceFile(const char *path, const uint8_t *buf, size_t len);
-	bool exists(const char *path) const;
-	bool removeFile(const char *path);
 	bool copyFile(const char *src, const char *dst);
 };

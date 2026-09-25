@@ -253,7 +253,7 @@ The binary prints its PTY path and TCP listen port at startup. Logs go to stderr
 Use the MeshCore companion app's **"Connect via WiFi"** (TCP/Network) mode:
 
 - **Host:** the SBC's IP address
-- **Port:** `5000` (default; configurable via `CONFIG_ZEPHCORE_LINUX_TCP_PORT`)
+- **Port:** `5000` (default; configurable via `CONFIG_ZEPHCORE_TCP_PORT`)
 
 Wire format: **MeshCore SerialWifiInterface framing** (matches ESP32 Arduino reference in `src/helpers/esp32/SerialWifiInterface.cpp`):
 - App → Node: `['<' (0x3C)][length_LSB][length_MSB][NUS payload...]`
@@ -455,7 +455,7 @@ The host adapter requires the GPIO V2 uAPI (kernel ≥ 5.10, late 2020). All cur
 Another service (Flask, Docker registry, AirPlay…) has port 5000. Override:
 
 ```bash
-west build … -- -DCONFIG_ZEPHCORE_LINUX_TCP_PORT=15000
+west build … -- -DCONFIG_ZEPHCORE_TCP_PORT=15000
 ```
 
 ### "TCP companion client disconnected" loops
@@ -529,7 +529,7 @@ Another instance of the binary is already running, or you killed the last one wi
 │   • SX1262 driver (unchanged)               │
 │   • New spi_native_linux driver       ──┐   │
 │   • New gpio_native_linux driver      ──┤   │
-│   • LinuxTCPTransport (replaces BLE)  ──┤   │
+│   • TcpCompanionTransport (companion) ──┤   │
 └──────────────────────────────────────────┼──┘
                                            │
                               host syscalls + zsock_*
@@ -565,7 +565,7 @@ All native-Linux board files live under **`boards/linux_native/`**:
 
 > These are `EXTRA_CONF_FILE` **presets**, not Zephyr boards — you still build with
 > `-b native_sim … -DEXTRA_CONF_FILE="boards/linux_native/<device>.conf"`, not `-b <device>`.
-- `adapters/transport/LinuxTCPTransport.c` — TCP companion transport
+- `adapters/transport/TcpCompanionTransport.c` — TCP companion transport (an interface in the `MultiSerialInterface`)
 - `adapters/transport/linux_native_setup.c` — forces real-time clock mode at boot (bakes in `--rt`)
 - `patches/zephyr-new/drivers/spi/spi_native_linux*` — spidev SPI driver
 - `patches/zephyr-new/drivers/gpio/gpio_native_linux*` — GPIO driver (kernel GPIO V2 chardev ioctls, no libgpiod)
@@ -588,7 +588,7 @@ End-to-end verified under WSL Ubuntu 24.04 (gcc 13.3):
 - ✅ `native_sim/native/64` builds clean → `build/zephyr/zephcore_native_linux.exe` (~4.3 MB ELF).
 - ✅ Binary runs. Zephyr OS boots, mesh event loop starts.
 - ✅ `spi_native_linux` driver loads and attempts to open `/dev/spidev0.0` (fails in WSL: no SPI hardware).
-- ✅ `LinuxTCPTransport` listens on port 5000.
+- ✅ `TcpCompanionTransport` listens on port 5000.
 - ✅ TCP client connect/disconnect works; `SerialWifiInterface` (`<`/`>` + 2-byte LE length) framing parses correctly.
 - ✅ **End-to-end on real Femtofox hardware (2026-06-02):** radio RX, CAD (LBT), and TX all working; companion app connects and meshes; settings persist across restarts. (Required fixing two bugs in the native GPIO driver — see "Known caveats" below.)
 - ✅ **End-to-end on real Raspberry Pi Zero 2 W + RAK6421/RAK13300 hardware (2026-06-03):** SX1262 init, SPI with spidev hardware CS (CE0), DIO3 TCXO, DIO2 RF switch, and over-the-air RX/TX all confirmed. (Required dropping the GPIO chip-select from the Pi overlays — CE0 is owned by the kernel SPI controller; see the `Failed to request line 8` troubleshooting entry.)

@@ -1,14 +1,12 @@
 /*
  * SPDX-License-Identifier: MIT
- * Shared MeshCore companion serial framing — used by the non-BLE companion
- * transports (LinuxTCPTransport.c, SerialCompanionTransport.c).
+ * What every companion transport shares: the frame unit, the serial framing,
+ * the lossless/lossy split, and the callbacks a transport raises to main.
  *
- * Wire format (MeshCore ArduinoSerialInterface):
+ * Wire format of the byte-stream transports (MeshCore ArduinoSerialInterface /
+ * SerialWifiInterface):
  *   App  -> Node:  '<' (0x3C) | len_LSB | len_MSB | payload...
  *   Node -> App:   '>' (0x3E) | len_LSB | len_MSB | payload...
- *
- * `struct frame` is the unit stored in the ble_send_queue/ble_recv_queue; its
- * layout must match what main_companion.cpp puts on those queues (len + buf).
  */
 
 #pragma once
@@ -17,7 +15,9 @@
 #include <stdbool.h>
 #include <stddef.h>
 
-#include "ZephyrBLE.h"   /* MAX_FRAME_SIZE */
+/* Same value as upstream's BaseSerialInterface.h (+4 over 172 for transport
+ * codes), so the two definitions never disagree. */
+#define MAX_FRAME_SIZE  176   // +4 for transport codes (region scoping)
 
 #define COMPANION_FRAME_RX_SYNC '<'
 #define COMPANION_FRAME_TX_SYNC '>'
@@ -36,3 +36,20 @@ static inline bool companion_is_lossless_protocol_frame(const uint8_t *data,
 {
 	return data != NULL && len > 0 && data[0] < COMPANION_PUSH_CODE_BASE;
 }
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Raised by a transport, from its own thread or work queue: they must only
+ * post events. main supplies one set for every transport. */
+struct companion_link_cbs {
+	void (*on_rx)(void);            /* a frame is waiting in the transport's recv queue */
+	void (*on_tx_idle)(void);       /* the transport's TX has drained */
+	void (*on_connected)(void);     /* a client can now be reached */
+	void (*on_disconnected)(void);  /* that client went away */
+};
+
+#ifdef __cplusplus
+}
+#endif

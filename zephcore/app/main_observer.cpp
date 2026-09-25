@@ -40,6 +40,7 @@ LOG_MODULE_REGISTER(zephcore_observer_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #include <ZephyrMQTTPublisher.h>
 #include "observer_creds.h"
 #include <helpers/boot_prefs.h>
+#include <src/mesh_events.h>
 
 /* ========== LED (optional) ========== */
 
@@ -51,10 +52,9 @@ static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 
 /* ========== Event loop bits ========== */
 
-#define MESH_EVENT_LORA_RX     BIT(0)
-#define MESH_EVENT_CLI_RX      BIT(1)
-#define MESH_EVENT_STATUS      BIT(2)
-#define MESH_EVENT_MQTT_CONNECT BIT(3)  /* MQTT (re)connected — publish status+self-advert on main */
+/* The shared bits are in mesh_events.h; these are the observer's own. */
+#define MESH_EVENT_STATUS       BIT(MESH_EVENT_ROLE_BASE)      /* 300 s status publish */
+#define MESH_EVENT_MQTT_CONNECT BIT(MESH_EVENT_ROLE_BASE + 1)  /* MQTT (re)connected — publish status+self-advert on main */
 #define MESH_EVENT_ALL       (MESH_EVENT_LORA_RX | MESH_EVENT_CLI_RX | MESH_EVENT_STATUS | MESH_EVENT_MQTT_CONNECT)
 
 static struct k_event mesh_events;
@@ -354,8 +354,8 @@ int main(void)
 	NodePrefs *prefs = observer_mesh.getNodePrefs();
 	/* "Observer" is deliberately NOT in this list: it is a name a user can set,
 	 * and regenerating it here made `set name Observer` silently revert on every
-	 * reboot.  "Repeater" is the name the shared store writes on first boot, so
-	 * it still counts as unset. */
+	 * reboot.  "Repeater" is the name the shared store wrote on first boot
+	 * until 2026-09, so it still counts as unset. */
 	if (strlen(prefs->node_name) == 0 ||
 	    strcmp(prefs->node_name, "Repeater") == 0) {
 		/* Use first 4 bytes of pubkey for uniqueness */
@@ -392,7 +392,7 @@ int main(void)
 	print_banner();
 
 	/* Start WiFi (non-blocking — MQTT thread waits for WIFI_READY_BIT) */
-	zc_wifi_station_start(&s_creds, time_sync_cb);
+	zc_wifi_station_start(s_creds.wifi_ssid, s_creds.wifi_psk, time_sync_cb);
 
 	/* Start MQTT publisher thread */
 	char client_id[64];

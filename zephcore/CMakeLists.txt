@@ -205,6 +205,16 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
         message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
     endif()
 
+    # WiFi companion (app over TCP beside BLE and USB) on boards whose
+    # zephcore.yml declares `capabilities: wifi: true`: the ones with the RAM
+    # for WiFi and BLE together. Companion only; the servers' WiFi is the
+    # uplink / OTA, configured separately.
+    if(ZEPHCORE_BUILD_ROLE STREQUAL "companion" AND ZEPHCORE_BOARD_WIFI
+       AND NOT "wifi_companion" IN_LIST _user_conf_names)
+        zephcore_add_conf(${_zc}/wifi_companion.conf)
+        message(STATUS "  WiFi companion: auto-enabled (board declares wifi)")
+    endif()
+
     # USB CDC-ACM companion transport on S3 boards whose board.overlay includes
     # esp32s3_usb_otg.dtsi (that include declares the cdc_acm_uart node the USB
     # companion call sites are compiled behind — see ZEPHCORE_USB_STACK in
@@ -319,6 +329,7 @@ target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}
   ${CMAKE_CURRENT_SOURCE_DIR}/helpers
+  ${CMAKE_CURRENT_SOURCE_DIR}/helpers/compat
   ${CMAKE_CURRENT_SOURCE_DIR}/app
   ${CMAKE_CURRENT_SOURCE_DIR}/lib/monocypher
   ${CMAKE_CURRENT_SOURCE_DIR}/adapters/board
@@ -363,10 +374,17 @@ target_sources(app PRIVATE
   helpers/buzzer_gate.c
   # QSPI bring-up probe. Self-stubs unless CONFIG_ZEPHCORE_QSPI_RDID_PROBE.
   helpers/qspi_probe.c
-  # Factory format of every storage region. Compiled for all roles: the
-  # companion builds ZephyrDataStore, the other three build
-  # RepeaterDataStore, and both call into this.
+  # Storage shared by every role's store (the companion builds
+  # ZephyrDataStore, the other three RepeaterDataStore): factory format,
+  # power-safe replace and non-logging probes, the identity file, and the
+  # prefs byte codecs.
   adapters/datastore/ZephyrFsFormat.c
+  adapters/datastore/ZephyrFsUtil.c
+  adapters/datastore/IdentityFile.cpp
+  adapters/datastore/PrefsFile.cpp
+  helpers/PrefsCodec.cpp
+  helpers/PrefsJson.cpp
+  helpers/ConfigSerializer.cpp
 )
 
 # Boot-time hardware-RTC auto-discovery (compact raw-I2C). Always compiled so
@@ -492,23 +510,25 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     target_sources(app PRIVATE
       src/main_repeater.cpp
       app/RepeaterMesh.cpp
-      app/RepeaterRegionCLI.cpp
     )
   else()
     message(STATUS "ZephCore Role: ROOM SERVER")
     target_sources(app PRIVATE
       src/main_room_server.cpp
       app/RoomServerMesh.cpp
-      app/RoomServerRegionCLI.cpp
     )
   endif()
-  # Shared by both server roles: persistence under /lfs/repeater/, client ACL,
-  # region filtering, transport keys, and the text CLI.
+  # Shared by both server roles: the composition root (USB CLI, event loop,
+  # boot), persistence under /lfs/repeater/, client ACL, region filtering,
+  # transport keys, and the text CLI.
   target_sources(app PRIVATE
+    src/server_main_common.cpp
     app/RepeaterDataStore.cpp
     helpers/ClientACL.cpp
     helpers/RegionMap.cpp
     helpers/TransportKeyStore.cpp
+    helpers/compat/SHA256.cpp
+    helpers/compat/ZephyrFS.cpp
     helpers/CommonCLI.cpp
   )
   # Headless build (e.g. native-Linux SBC): no display/buttons/buzzer, so the
@@ -575,6 +595,8 @@ else()
     adapters/datastore/ZephyrDataStore.cpp
     helpers/BaseChatMesh.cpp
     helpers/TransportKeyStore.cpp
+    helpers/compat/SHA256.cpp
+    helpers/compat/ZephyrFS.cpp
     helpers/ui/ui_mesh_actions.cpp
     app/CompanionMesh.cpp
     app/VContact.cpp
@@ -584,27 +606,41 @@ else()
     # COMPANION_SERIAL (e.g. plain ESP32/S3 companions) failed to link otherwise.
     helpers/CommonCLI.cpp
   )
-  # Companion transport: TCP socket on native Linux, serial (UART) on boards
-  # with no Bluetooth controller (e.g. STM32WL), BLE NUS everywhere else.
+  # Companion transports: main_companion.cpp registers every one the build
+  # has in upstream's MultiSerialInterface — BLE NUS when there is a
+  # controller, TCP (native Linux, WiFi companion), and the wired link below.
+  target_sources(app PRIVATE adapters/transport/frame_txq.c)
+  if(CONFIG_BT)
+    message(STATUS "ZephCore Companion Transport: BLE NUS")
+    target_sources(app PRIVATE adapters/ble/ZephyrBLE.cpp)
+    if(CONFIG_BT_GATT_SERVICE_CHANGED)
+      target_sources(app PRIVATE adapters/ble/ble_gatt_layout.cpp)
+    endif()
+    if(CONFIG_ZEPHCORE_BLE_DFU)
+      target_sources(app PRIVATE adapters/ble/ble_dfu.cpp)
+    endif()
+  endif()
   if(CONFIG_ZEPHCORE_TRANSPORT_TCP)
-    message(STATUS "ZephCore Companion Transport: TCP (Linux)")
-    target_sources(app PRIVATE adapters/transport/LinuxTCPTransport.c)
-    # Headless Linux build: no display/buttons/buzzer source files are
-    # compiled, but companion code calls ui_* unconditionally. Weak no-op
-    # stubs satisfy the link.
+    message(STATUS "ZephCore Companion Transport: TCP")
+    target_sources(app PRIVATE adapters/transport/TcpCompanionTransport.c)
+  endif()
+  if(CONFIG_ZEPHCORE_COMPANION_WIFI)
+    target_sources(app PRIVATE
+      app/CompanionWifi.cpp
+      adapters/wifi/ZephyrWiFiStation.c
+    )
+    target_include_directories(app PRIVATE
+      ${CMAKE_CURRENT_SOURCE_DIR}/adapters/wifi
+    )
+  endif()
+  # Headless build (e.g. native Linux): no display/buttons/buzzer source files
+  # are compiled, but companion code calls ui_* unconditionally. Weak no-op
+  # stubs satisfy the link.
+  if(NOT CONFIG_ZEPHCORE_UI_DESIGN_BUTTON AND NOT CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
     target_sources(app PRIVATE helpers/ui/ui_headless_stubs.c)
     target_include_directories(app PRIVATE
       ${CMAKE_CURRENT_SOURCE_DIR}/helpers/ui
     )
-  elseif(NOT CONFIG_BT)
-    # No BLE controller (STM32WL) — companion speaks MeshCore serial framing
-    # over the chosen console UART. SerialCompanionTransport.c is a full
-    # drop-in zephcore_ble_* provider, just like LinuxTCPTransport.c.
-    message(STATUS "ZephCore Companion Transport: Serial (UART)")
-    target_sources(app PRIVATE adapters/transport/SerialCompanionTransport.c)
-  else()
-    message(STATUS "ZephCore Companion Transport: BLE NUS")
-    target_sources(app PRIVATE adapters/ble/ZephyrBLE.cpp)
   endif()
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/adapters/transport

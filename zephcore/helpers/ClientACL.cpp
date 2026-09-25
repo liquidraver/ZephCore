@@ -1,179 +1,153 @@
-/*
- * SPDX-License-Identifier: MIT
- * ClientACL - Access Control List for repeater clients
- */
-
 #include "ClientACL.h"
-#include <zephyr/fs/fs.h>
-#include <zephyr/logging/log.h>
 
-LOG_MODULE_REGISTER(zephcore_acl, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
+// ZEPHCORE: our ACL file is <root>/acl, not /s_contacts (kept for existing installs).
+#define ACL_FILE  "/acl"
 
-void ClientACL::load(const char* path, const mesh::LocalIdentity& self_id) {
-	_path = path;
-	num_clients = 0;
-
-	struct fs_file_t file;
-	fs_file_t_init(&file);
-
-	if (fs_open(&file, path, FS_O_READ) < 0) {
-		LOG_DBG("No ACL file at %s", path);
-		return;
-	}
-
-	bool full = false;
-	while (!full) {
-		ClientInfo c;
-		uint8_t pub_key[32];
-		uint8_t unused[2];
-
-		c.clear();
-
-		bool success = (fs_read(&file, pub_key, 32) == 32);
-		success = success && (fs_read(&file, &c.permissions, 1) == 1);
-		success = success && (fs_read(&file, &c.extra.room.sync_since, 4) == 4);
-		success = success && (fs_read(&file, unused, 2) == 2);
-		success = success && (fs_read(&file, &c.out_path_len, 1) == 1);
-		success = success && (fs_read(&file, c.out_path, 64) == 64);
-		success = success && (fs_read(&file, c.shared_secret, PUB_KEY_SIZE) == PUB_KEY_SIZE);
-
-		if (!success) break;  // EOF
-
-		/* out_path_len is the one byte in this file that steers routing, and
-		 * it is used without a later bounds check: anything that is not
-		 * OUT_PATH_UNKNOWN is taken as a usable path.  A value with the
-		 * reserved hash size 4 (0xC0-0xFE) passes that test, then copyPath()
-		 * rejects the encoding inside sendDirect() and the reply leaves as a
-		 * zero-hop direct -- undeliverable, and never retried, because the
-		 * repeater considers the request answered.  Fall back to "unknown",
-		 * which costs one flooded reply and re-learns the real path. */
-		if (c.out_path_len != OUT_PATH_UNKNOWN &&
-		    !mesh::Packet::isValidPathLen(c.out_path_len)) {
-			LOG_WRN("load: client %d has invalid out_path_len 0x%02x, discarding path",
-				num_clients, c.out_path_len);
-			c.out_path_len = OUT_PATH_UNKNOWN;
-		}
-
-		c.id = mesh::Identity(pub_key);
-		self_id.calcSharedSecret(c.shared_secret, pub_key);  // recalculate in case key changed
-
-		if (num_clients < MAX_CLIENTS) {
-			clients[num_clients++] = c;
-		} else {
-			full = true;
-		}
-	}
-	fs_close(&file);
-	LOG_INF("Loaded %d clients from %s", num_clients, path);
+static File openWrite(FILESYSTEM* _fs, const char* filename) {
+  #if defined(NRF52_PLATFORM) || defined(STM32_PLATFORM)
+    _fs->remove(filename);
+    return _fs->open(filename, FILE_O_WRITE);
+  #elif defined(RP2040_PLATFORM)
+    return _fs->open(filename, "w");
+  #else
+    return _fs->open(filename, "w", true);
+  #endif
 }
 
-void ClientACL::save(const char* path, bool (*filter)(ClientInfo*)) {
-	_path = path;
+void ClientACL::load(FILESYSTEM* fs, const mesh::LocalIdentity& self_id) {
+  _fs = fs;
+  num_clients = 0;
+  if (_fs->exists(ACL_FILE)) {
+  #if defined(RP2040_PLATFORM)
+    File file = _fs->open(ACL_FILE, "r");
+  #else
+    File file = _fs->open(ACL_FILE);
+  #endif
+    if (file) {
+      bool full = false;
+      while (!full) {
+        ClientInfo c;
+        uint8_t pub_key[32];
+        uint8_t unused[2];
 
-	// Remove old file first (LittleFS doesn't overwrite well)
-	fs_unlink(path);
+        c.clear();  // ZEPHCORE: was memset
 
-	struct fs_file_t file;
-	fs_file_t_init(&file);
+        bool success = (file.read(pub_key, 32) == 32);
+        success = success && (file.read((uint8_t *) &c.permissions, 1) == 1);
+        success = success && (file.read((uint8_t *) &c.extra.room.sync_since, 4) == 4);
+        success = success && (file.read(unused, 2) == 2);
+        success = success && (file.read((uint8_t *)&c.out_path_len, 1) == 1);
+        success = success && (file.read(c.out_path, 64) == 64);
+        success = success && (file.read(c.shared_secret, PUB_KEY_SIZE) == PUB_KEY_SIZE); // will be recalculated below
 
-	if (fs_open(&file, path, FS_O_CREATE | FS_O_WRITE) < 0) {
-		LOG_ERR("Failed to open %s for write", path);
-		return;
-	}
+        if (!success) break; // EOF
 
-	uint8_t unused[2] = {0, 0};
-	int saved = 0;
+        // ZEPHCORE: a reserved-hash-size out_path_len (0xC0-0xFE) would pass as a
+        // usable path, then be rejected in sendDirect(), and the reply would go out
+        // zero-hop and never be retried. Fall back to unknown: one flooded reply.
+        if (c.out_path_len != OUT_PATH_UNKNOWN && !mesh::Packet::isValidPathLen(c.out_path_len)) {
+          c.out_path_len = OUT_PATH_UNKNOWN;
+        }
 
-	for (int i = 0; i < num_clients; i++) {
-		auto c = &clients[i];
-		if (c->permissions == 0 || (filter && !filter(c))) continue;  // skip deleted or filtered
+        c.id = mesh::Identity(pub_key);
+        self_id.calcSharedSecret(c.shared_secret, pub_key);  // recalculate shared secrets in case our private key changed
+        if (num_clients < MAX_CLIENTS) {
+          clients[num_clients++] = c;
+        } else {
+          full = true;
+        }
+      }
+      file.close();
+    }
+  }
+}
 
-		bool success = (fs_write(&file, c->id.pub_key, 32) == 32);
-		success = success && (fs_write(&file, &c->permissions, 1) == 1);
-		success = success && (fs_write(&file, &c->extra.room.sync_since, 4) == 4);
-		success = success && (fs_write(&file, unused, 2) == 2);
-		success = success && (fs_write(&file, &c->out_path_len, 1) == 1);
-		success = success && (fs_write(&file, c->out_path, 64) == 64);
-		success = success && (fs_write(&file, c->shared_secret, PUB_KEY_SIZE) == PUB_KEY_SIZE);
+void ClientACL::save(FILESYSTEM* fs, bool (*filter)(ClientInfo*)) {
+  _fs = fs;
+  File file = openWrite(_fs, ACL_FILE);
+  if (file) {
+    uint8_t unused[2];
+    memset(unused, 0, sizeof(unused));
 
-		if (!success) {
-			LOG_ERR("Write failed at client %d", i);
-			break;
-		}
-		saved++;
-	}
-	fs_close(&file);
-	LOG_INF("Saved %d clients to %s", saved, path);
+    for (int i = 0; i < num_clients; i++) {
+      auto c = &clients[i];
+      if (c->permissions == 0 || (filter && !filter(c))) continue;    // skip deleted entries, or by filter function
+
+      bool success = (file.write(c->id.pub_key, 32) == 32);
+      success = success && (file.write((uint8_t *) &c->permissions, 1) == 1);
+      success = success && (file.write((uint8_t *) &c->extra.room.sync_since, 4) == 4);
+      success = success && (file.write(unused, 2) == 2);
+      success = success && (file.write((uint8_t *)&c->out_path_len, 1) == 1);
+      success = success && (file.write(c->out_path, 64) == 64);
+      success = success && (file.write(c->shared_secret, PUB_KEY_SIZE) == PUB_KEY_SIZE);
+
+      if (!success) break; // write failed
+    }
+    file.close();
+  }
 }
 
 bool ClientACL::clear() {
-	if (_path) {
-		fs_unlink(_path);
-	}
-	for (int i = 0; i < MAX_CLIENTS; i++) {
-		clients[i].clear();
-	}
-	num_clients = 0;
-	return true;
+  if (!_fs) return false; // no filesystem, nothing to clear
+  if (_fs->exists(ACL_FILE)) {
+    _fs->remove(ACL_FILE);
+  }
+  for (int i = 0; i < MAX_CLIENTS; i++) clients[i].clear();  // ZEPHCORE: was memset
+  num_clients = 0;
+  return true;
 }
 
 ClientInfo* ClientACL::getClient(const uint8_t* pubkey, int key_len) {
-	for (int i = 0; i < num_clients; i++) {
-		if (memcmp(pubkey, clients[i].id.pub_key, key_len) == 0) {
-			return &clients[i];  // found
-		}
-	}
-	return nullptr;  // not found
+  for (int i = 0; i < num_clients; i++) {
+    if (memcmp(pubkey, clients[i].id.pub_key, key_len) == 0) return &clients[i];  // already known
+  }
+  return NULL;  // not found
 }
 
 ClientInfo* ClientACL::putClient(const mesh::Identity& id, uint8_t init_perms) {
-	uint32_t min_time = 0xFFFFFFFF;
-	ClientInfo* oldest = &clients[MAX_CLIENTS - 1];
+  uint32_t min_time = 0xFFFFFFFF;
+  ClientInfo* oldest = &clients[MAX_CLIENTS - 1];
+  for (int i = 0; i < num_clients; i++) {
+    if (id.matches(clients[i].id)) return &clients[i];  // already known
+    if (!clients[i].isAdmin() && clients[i].last_activity < min_time) {
+      oldest = &clients[i];
+      min_time = oldest->last_activity;
+    }
+  }
 
-	for (int i = 0; i < num_clients; i++) {
-		if (id.matches(clients[i].id)) {
-			return &clients[i];  // already known
-		}
-		if (!clients[i].isAdmin() && clients[i].last_activity < min_time) {
-			oldest = &clients[i];
-			min_time = oldest->last_activity;
-		}
-	}
-
-	ClientInfo* c;
-	if (num_clients < MAX_CLIENTS) {
-		c = &clients[num_clients++];
-	} else {
-		c = oldest;  // evict least active contact
-	}
-	c->clear();
-	c->permissions = init_perms;
-	c->id = id;
-	c->out_path_len = OUT_PATH_UNKNOWN;  // initially out_path is unknown
-	return c;
+  ClientInfo* c;
+  if (num_clients < MAX_CLIENTS) {
+    c = &clients[num_clients++];
+  } else {
+    c = oldest;  // evict least active contact
+  }
+  c->clear();  // ZEPHCORE: was memset
+  c->permissions = init_perms;
+  c->id = id;
+  c->out_path_len = OUT_PATH_UNKNOWN;
+  return c;
 }
 
 bool ClientACL::applyPermissions(const mesh::LocalIdentity& self_id, const uint8_t* pubkey, int key_len, uint8_t perms) {
-	ClientInfo* c;
-	if ((perms & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST) {
-		// guest role is not persisted in contacts
-		c = getClient(pubkey, key_len);
-		if (c == nullptr) return false;  // partial pubkey not found
+  ClientInfo* c;
+  if ((perms & PERM_ACL_ROLE_MASK) == PERM_ACL_GUEST) {  // guest role is not persisted in contacts
+    c = getClient(pubkey, key_len);
+    if (c == NULL) return false;   // partial pubkey not found
 
-		num_clients--;  // delete from contacts[]
-		int i = c - clients;
-		while (i < num_clients) {
-			clients[i] = clients[i + 1];
-			i++;
-		}
-	} else {
-		if (key_len < PUB_KEY_SIZE) return false;  // need complete pubkey when adding/modifying
+    num_clients--;   // delete from contacts[]
+    int i = c - clients;
+    while (i < num_clients) {
+      clients[i] = clients[i + 1];
+      i++;
+    }
+  } else {
+    if (key_len < PUB_KEY_SIZE) return false;   // need complete pubkey when adding/modifying
 
-		mesh::Identity id(pubkey);
-		c = putClient(id, 0);
+    mesh::Identity id(pubkey);
+    c = putClient(id, 0);
 
-		c->permissions = perms;  // update their permissions
-		self_id.calcSharedSecret(c->shared_secret, pubkey);
-	}
-	return true;
+    c->permissions = perms;  // update their permissions
+    self_id.calcSharedSecret(c->shared_secret, pubkey);
+  }
+  return true;
 }

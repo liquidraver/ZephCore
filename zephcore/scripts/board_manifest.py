@@ -8,6 +8,7 @@ native-Linux preset boards/linux_native/<preset>.conf carries a sibling
 
     target: rak4631                  # REQUIRED  west -b string, with qualifiers
     capabilities:
+      wifi: true                     # WiFi companion: RAM for WiFi + BLE together
       light_sleep: true              # DIO1 on an RTC-wake-capable GPIO AND
                                      # validated on hardware (ESP32 repeaters)
     release:                         # absent = not published (bring-up)
@@ -27,9 +28,9 @@ native-Linux preset boards/linux_native/<preset>.conf carries a sibling
       cross_compile: /usr/bin/arm-linux-gnueabihf-
 
 Readers:
-  - zephcore/CMakeLists.txt reads capabilities.light_sleep with a line match
-    (it runs before Zephyr has set up Python), so `check` enforces the literal
-    two-space-indented `  light_sleep: true|false` form.
+  - cmake/zephcore_board.cmake reads the capabilities with a line match (it
+    runs before Zephyr has set up Python), so `check` enforces the literal
+    two-space-indented `  <capability>: true|false` form.
   - build.sh:  board_manifest.py matrix <nrf|nrf54l|mg24|stm32wl|esp32|linux> [companions|repeaters]
   - gen_provider_catalog.py imports load_boards().
   - docs:      board_manifest.py docs  (rewrites the generated lists in docs/supported_boards.md)
@@ -49,7 +50,7 @@ PLATFORM_DIRS = {"nrf52840": "nrf52", "nrf54l": "nrf54l", "esp32": "esp32",
                  "mg24": "mg24", "stm32wl": "stm32wl"}
 ROLES = ("companion", "repeater", "room_server", "observer")
 KEYS = {"target", "capabilities", "release", "catalog", "linux"}
-CAPS = {"light_sleep"}
+CAPS = {"light_sleep", "wifi"}
 CATALOG_KEYS = {"device", "maker", "new", "img", "own_img", "subtitle"}
 CAP_LINE = re.compile(r"^  (\w+): (true|false)\s*$", re.M)
 

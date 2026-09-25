@@ -198,9 +198,11 @@ STM32WL caveats — different from every other ZephCore platform:
   `CONFIG_BT=n`. The console/CLI and the companion protocol both run over
   **USART1**, bridged to USB-C by the onboard USB-UART chip.
 - **Repeater** uses the USART CLI (add `repeater.conf`). The **companion** speaks
-  MeshCore serial framing over the same UART via `SerialCompanionTransport.c`
-  (a drop-in `zephcore_ble_*` provider, auto-selected because `CONFIG_BT=n`) —
-  no BLE pairing, the official serial client connects directly.
+  MeshCore serial framing over the same UART through the wired companion
+  transport (`ZephyrCompanionUSB.cpp`, UART backend: the board's
+  `zephcore,companion-uart` chosen node selects `CONFIG_ZEPHCORE_COMPANION_SERIAL`
+  when there is no Bluetooth) — no BLE pairing, the official serial client
+  connects directly, and a terminal gets the text CLI.
 - **RAM-bound, not flash-bound:** 64KB SRAM. The companion's contact/queue
   arrays are capped hard in `board.conf` (`MAX_CONTACTS=24`, `OFFLINE_QUEUE_SIZE=8`).
   AES tables live in ROM (`MBEDTLS_AES_ROM_TABLES`) to reclaim ~8KB SRAM.

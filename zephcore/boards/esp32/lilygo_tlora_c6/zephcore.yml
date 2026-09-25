@@ -1,5 +1,7 @@
 # ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
 target: lilygo_tlora_c6/esp32c6/hpcore
+capabilities:
+  wifi: true
 release:
   roles: [companion, repeater]
 catalog:

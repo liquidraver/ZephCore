@@ -1,10 +1,6 @@
-/*
- * SPDX-License-Identifier: MIT
- * ClientACL - Access Control List for repeater clients
- */
-
 #pragma once
 
+//#include <Arduino.h>   // needed for PlatformIO
 #include <mesh/Mesh.h>
 #include <helpers/IdentityStore.h>
 
@@ -17,72 +13,77 @@
 #define OUT_PATH_UNKNOWN  0xFF
 
 struct ClientInfo {
-	mesh::Identity id;
-	uint8_t permissions;
-	uint8_t out_path_len;
-	uint8_t out_path[MAX_PATH_SIZE];
-	uint8_t shared_secret[PUB_KEY_SIZE];
-	uint32_t last_timestamp;   // by THEIR clock (transient)
-	uint32_t last_activity;    // by OUR clock (transient)
-	union {
-		struct {
-			uint32_t sync_since;       // sync messages SINCE this timestamp (by OUR clock)
-			uint32_t pending_ack;
-			uint32_t push_post_timestamp;
-			unsigned long ack_timeout;
-			uint8_t push_failures;
-		} room;
-	} extra;
+  mesh::Identity id;
+  uint8_t permissions;
+  uint8_t out_path_len;
+  uint8_t out_path[MAX_PATH_SIZE];
+  uint8_t shared_secret[PUB_KEY_SIZE];
+  uint32_t last_timestamp;   // by THEIR clock  (transient)
+  uint32_t last_activity;    // by OUR clock    (transient)
+  union  {
+    struct {
+      uint32_t sync_since;  // sync messages SINCE this timestamp (by OUR clock)
+      uint32_t pending_ack;
+      uint32_t push_post_timestamp;
+      unsigned long ack_timeout;
+      uint8_t  push_failures;
+    } room;
+#if 0  // ZEPHCORE: no sensor role; dropping it saves 20+ bytes of RAM per client
+    struct {
+      uint32_t expiry_timestamp;  // epoch seconds
+      uint32_t push_tag;
+      uint16_t scope_region_id;  // scope to use when sending telemetry to this client/subscriber
+      uint8_t  min_deltas_len;
+      uint8_t  min_deltas[14];  // LPP encoded
+      uint8_t  prev_telem[14];  // LPP encoded
+    } sensor;
+#endif
+  } extra;
 
-	bool isAdmin() const { return (permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_ADMIN; }
+  bool isAdmin() const { return (permissions & PERM_ACL_ROLE_MASK) == PERM_ACL_ADMIN; }
 
-	/* Clear all fields properly */
-	void clear() {
-		id = mesh::Identity();
-		permissions = 0;
-		/* NOT 0 -- that is a valid path_len meaning "zero-hop direct", so a
-		 * cleared slot would claim a usable route and every reply to that
-		 * client would go out DIRECT with an empty path, reaching only its
-		 * immediate neighbours.  Silent: the sender believes it answered.
-		 * putClient() happens to overwrite this today, so nothing currently
-		 * observes the 0; the correct default belongs here regardless. */
-		out_path_len = OUT_PATH_UNKNOWN;
-		memset(out_path, 0, sizeof(out_path));
-		memset(shared_secret, 0, sizeof(shared_secret));
-		last_timestamp = 0;
-		last_activity = 0;
-		memset(&extra, 0, sizeof(extra));
-	}
+  // ZEPHCORE: stands in for upstream's memset (Identity has a ctor, so memset
+  // trips -Wclass-memaccess). out_path_len is OUT_PATH_UNKNOWN, not 0: 0 is a
+  // valid "zero-hop direct" path, so a cleared slot would claim a usable route.
+  void clear() {
+    id = mesh::Identity();
+    permissions = 0;
+    out_path_len = OUT_PATH_UNKNOWN;
+    memset(out_path, 0, sizeof(out_path));
+    memset(shared_secret, 0, sizeof(shared_secret));
+    last_timestamp = 0;
+    last_activity = 0;
+    memset(&extra, 0, sizeof(extra));
+  }
 };
 
+// ZEPHCORE: table size from Kconfig.
+#ifdef CONFIG_ZEPHCORE_MAX_CLIENTS
+  #define MAX_CLIENTS  CONFIG_ZEPHCORE_MAX_CLIENTS
+#endif
+
 #ifndef MAX_CLIENTS
-	#ifdef CONFIG_ZEPHCORE_MAX_CLIENTS
-		#define MAX_CLIENTS  CONFIG_ZEPHCORE_MAX_CLIENTS
-	#else
-		#define MAX_CLIENTS  32
-	#endif
+  #define MAX_CLIENTS           32
 #endif
 
 class ClientACL {
-	const char* _path;
-	ClientInfo clients[MAX_CLIENTS];
-	int num_clients;
+  FILESYSTEM* _fs;
+  ClientInfo clients[MAX_CLIENTS];
+  int num_clients;
 
 public:
-	ClientACL() : _path(nullptr), num_clients(0) {
-		for (int i = 0; i < MAX_CLIENTS; i++) {
-			clients[i].clear();
-		}
-	}
+  ClientACL() {
+    for (int i = 0; i < MAX_CLIENTS; i++) clients[i].clear();  // ZEPHCORE: was memset
+    num_clients = 0;
+  }
+  void load(FILESYSTEM* _fs, const mesh::LocalIdentity& self_id);
+  void save(FILESYSTEM* _fs, bool (*filter)(ClientInfo*)=NULL);
+  bool clear();
 
-	void load(const char* path, const mesh::LocalIdentity& self_id);
-	void save(const char* path, bool (*filter)(ClientInfo*) = nullptr);
-	bool clear();
+  ClientInfo* getClient(const uint8_t* pubkey, int key_len);
+  ClientInfo* putClient(const mesh::Identity& id, uint8_t init_perms);
+  bool applyPermissions(const mesh::LocalIdentity& self_id, const uint8_t* pubkey, int key_len, uint8_t perms);
 
-	ClientInfo* getClient(const uint8_t* pubkey, int key_len);
-	ClientInfo* putClient(const mesh::Identity& id, uint8_t init_perms);
-	bool applyPermissions(const mesh::LocalIdentity& self_id, const uint8_t* pubkey, int key_len, uint8_t perms);
-
-	int getNumClients() const { return num_clients; }
-	ClientInfo* getClientByIdx(int idx) { return &clients[idx]; }
+  int getNumClients() const { return num_clients; }
+  ClientInfo* getClientByIdx(int idx) { return &clients[idx]; }
 };

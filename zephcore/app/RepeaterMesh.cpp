@@ -1,10 +1,9 @@
-/*
- * SPDX-License-Identifier: MIT
- * RepeaterMesh - LoRa mesh repeater implementation
- */
-
 #include "RepeaterMesh.h"
+//#include <algorithm>  // ZEPHCORE: not in Zephyr's minimal C++, see simple_sort
+
+// ZEPHCORE: platform includes and helpers.
 #include <mesh/Utils.h>
+#include <Serial.h>
 #include <helpers/AdvertDataHelpers.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/MeshcoreJson.h>
@@ -30,21 +29,21 @@
 
 /* Helper to get radio driver for stats — uses LoRaRadio (works for SX126x and LR1110) */
 static inline mesh::LoRaRadio& getRadioDriver(mesh::Radio* radio) {
-	return *static_cast<mesh::LoRaRadio*>(radio);
+  return *static_cast<mesh::LoRaRadio*>(radio);
 }
 
 /* Simple sort helper since <algorithm> is not available in Zephyr minimal C++ */
 template<typename T, typename Comparator>
 static void simple_sort(T* arr, int count, Comparator cmp) {
-	for (int i = 0; i < count - 1; i++) {
-		for (int j = i + 1; j < count; j++) {
-			if (cmp(arr[j], arr[i])) {
-				T temp = arr[i];
-				arr[i] = arr[j];
-				arr[j] = temp;
-			}
-		}
-	}
+  for (int i = 0; i < count - 1; i++) {
+    for (int j = i + 1; j < count; j++) {
+      if (cmp(arr[j], arr[i])) {
+        T temp = arr[i];
+        arr[i] = arr[j];
+        arr[j] = temp;
+      }
+    }
+  }
 }
 
 LOG_MODULE_REGISTER(zephcore_repeater, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
@@ -57,1532 +56,1703 @@ static RepeaterMesh *s_uplink_mesh;
 static atomic_t s_uplink_sntp_pending;
 static void uplink_time_sync_cb(uint32_t unix_ts)
 {
-	if (s_uplink_mesh) {
-		s_uplink_mesh->getRTCClock()->setCurrentTime(unix_ts);
-		atomic_set(&s_uplink_sntp_pending, 1);
-		/* Wake the main loop rather than waiting for its next deadline. */
-		s_uplink_mesh->notifyWake();
-	}
+  if (s_uplink_mesh) {
+    s_uplink_mesh->getRTCClock()->setCurrentTime(unix_ts);
+    atomic_set(&s_uplink_sntp_pending, 1);
+    /* Wake the main loop rather than waiting for its next deadline. */
+    s_uplink_mesh->notifyWake();
+  }
 }
 #endif
 
-/* Protocol constants */
+/* Helper: futureMillis */
+static inline unsigned long futureMillis(uint32_t delta_ms) {
+  return k_uptime_get() + delta_ms;
+}
+
+static inline bool millisHasNowPassed(unsigned long target) {
+  return (int64_t)k_uptime_get() >= (int64_t)target;
+}
+
+static void radio_set_tx_power(uint8_t power_dbm) {
+  /* TX power is configured as part of lora_config() in radio_set_params
+   * The Zephyr LoRa driver doesn't have a separate lora_set_tx_power API.
+   * Instead, we log that TX power setting is requested. The actual power
+   * is set in the board defconfig via CONFIG_LORA_TX_POWER. */
+  LOG_INF("TX power %d dBm requested (configured via board defconfig)", power_dbm);
+}
+
+// ZEPHCORE: upstream's variant-global rtc_clock is the mesh's own clock here.
+#define rtc_clock (*getRTCClock())
+
+/* ------------------------------ Config -------------------------------- */
+
+#ifndef LORA_FREQ
+  #define LORA_FREQ 915.0
+#endif
+#ifndef LORA_BW
+  #define LORA_BW 250
+#endif
+#ifndef LORA_SF
+  #define LORA_SF 10
+#endif
+#ifndef LORA_CR
+  #define LORA_CR 5
+#endif
+#ifndef LORA_TX_POWER
+  #define LORA_TX_POWER 20
+#endif
+
+#ifndef ADVERT_NAME
+  #define ADVERT_NAME "repeater"
+#endif
+#ifndef ADVERT_LAT
+  #define ADVERT_LAT 0.0
+#endif
+#ifndef ADVERT_LON
+  #define ADVERT_LON 0.0
+#endif
+
+#ifndef ADMIN_PASSWORD
+  #define ADMIN_PASSWORD "password"
+#endif
+
+#ifndef SERVER_RESPONSE_DELAY
+  #define SERVER_RESPONSE_DELAY 300
+#endif
+
+#ifndef TXT_ACK_DELAY
+  #define TXT_ACK_DELAY 200
+#endif
+
 #define FIRMWARE_VER_LEVEL       2
 
-#define REQ_TYPE_GET_STATUS         0x01
+#define REQ_TYPE_GET_STATUS         0x01 // same as _GET_STATS
 #define REQ_TYPE_KEEP_ALIVE         0x02
 #define REQ_TYPE_GET_TELEMETRY_DATA 0x03
 #define REQ_TYPE_GET_ACCESS_LIST    0x05
 #define REQ_TYPE_GET_NEIGHBOURS     0x06
-#define REQ_TYPE_GET_OWNER_INFO     0x07
+#define REQ_TYPE_GET_OWNER_INFO     0x07     // FIRMWARE_VER_LEVEL >= 2
 
-#define RESP_SERVER_LOGIN_OK        0
+#define RESP_SERVER_LOGIN_OK        0 // response to ANON_REQ
 
 #define ANON_REQ_TYPE_REGIONS      0x01
 #define ANON_REQ_TYPE_OWNER        0x02
-#define ANON_REQ_TYPE_BASIC        0x03
+#define ANON_REQ_TYPE_BASIC        0x03   // just remote clock
 
 #define CLI_REPLY_DELAY_MILLIS      600
-#define LAZY_CONTACTS_WRITE_DELAY   5000
-#define SERVER_RESPONSE_DELAY       300
-#define TXT_ACK_DELAY               200
 
-/* Helper: futureMillis */
-static inline unsigned long futureMillis(uint32_t delta_ms) {
-	return k_uptime_get() + delta_ms;
-}
+#define LAZY_CONTACTS_WRITE_DELAY    5000
 
-static inline bool millisHasNowPassed(unsigned long target) {
-	return (int64_t)k_uptime_get() >= (int64_t)target;
-}
+void RepeaterMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
+#if MAX_NEIGHBOURS // check if neighbours enabled
+  // find existing neighbour, else use least recently updated
+  uint32_t oldest_timestamp = 0xFFFFFFFF;
+  NeighbourInfo *neighbour = &neighbours[0];
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    // if neighbour already known, we should update it
+    if (id.matches(neighbours[i].id)) {
+      neighbour = &neighbours[i];
+      break;
+    }
 
-static void radio_set_tx_power(uint8_t power_dbm) {
-	/* TX power is configured as part of lora_config() in radio_set_params
-	 * The Zephyr LoRa driver doesn't have a separate lora_set_tx_power API.
-	 * Instead, we log that TX power setting is requested. The actual power
-	 * is set in the board defconfig via CONFIG_LORA_TX_POWER. */
-	LOG_INF("TX power %d dBm requested (configured via board defconfig)", power_dbm);
-}
+    // otherwise we should update the least recently updated neighbour
+    if (neighbours[i].heard_timestamp < oldest_timestamp) {
+      neighbour = &neighbours[i];
+      oldest_timestamp = neighbour->heard_timestamp;
+    }
+  }
 
-void RepeaterMesh::putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr) {
-#if MAX_NEIGHBOURS > 0
-	uint32_t oldest_timestamp = 0xFFFFFFFF;
-	NeighbourInfo* neighbour = &neighbours[0];
-
-	for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-		if (id.matches(neighbours[i].id)) {
-			neighbour = &neighbours[i];
-			break;
-		}
-		if (neighbours[i].heard_timestamp < oldest_timestamp) {
-			neighbour = &neighbours[i];
-			oldest_timestamp = neighbour->heard_timestamp;
-		}
-	}
-
-	neighbour->id = id;
-	neighbour->advert_timestamp = timestamp;
-	neighbour->heard_timestamp = getRTCClock()->getCurrentTime();
-	neighbour->snr = (int8_t)(snr * 4);
+  // update neighbour info
+  neighbour->id = id;
+  neighbour->advert_timestamp = timestamp;
+  neighbour->heard_timestamp = getRTCClock()->getCurrentTime();
+  neighbour->snr = (int8_t)(snr * 4);
 #endif
 }
 
+// ZEPHCORE: ours. Login bookkeeping differs (see body).
 uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t* secret, uint32_t sender_timestamp, const uint8_t* data, bool is_flood) {
-	ClientInfo* client = nullptr;
+  ClientInfo* client = nullptr;
 
-	if (data[0] == 0) {
-		client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
-	}
+  if (data[0] == 0) {
+    client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
+  }
 
-	if (client == nullptr) {
-		uint8_t perms;
+  if (client == nullptr) {
+    uint8_t perms;
 
-		/* Constant-time comparison: zero-pad BOTH the received password and
-		 * the stored passwords into cleared buffers (copying only up to the
-		 * NUL) before comparing full-width. Don't trust the stored buffer to
-		 * be zero-padded: a password set over a longer previous value via the
-		 * CLI leaves trailing garbage past the NUL (and such garbage may
-		 * already be persisted in flash on upgraded devices). Comparing the
-		 * raw stored buffer full-width would then fail to match a correct
-		 * password. Compare both unconditionally so timing is identical for
-		 * any wrong password regardless of which (admin/guest) it most
-		 * resembles. */
-		uint8_t received[sizeof(_prefs.password)] = {0};
-		uint8_t admin_pw[sizeof(_prefs.password)] = {0};
-		uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
-		size_t r_len = strnlen((const char *)data, sizeof(received) - 1);
-		memcpy(received, data, r_len);
-		memcpy(admin_pw, _prefs.password, strnlen(_prefs.password, sizeof(admin_pw) - 1));
-		memcpy(guest_pw, _prefs.guest_password, strnlen(_prefs.guest_password, sizeof(guest_pw) - 1));
+    /* Constant-time comparison: zero-pad BOTH the received password and
+     * the stored passwords into cleared buffers (copying only up to the
+     * NUL) before comparing full-width. Don't trust the stored buffer to
+     * be zero-padded: a password set over a longer previous value via the
+     * CLI leaves trailing garbage past the NUL (and such garbage may
+     * already be persisted in flash on upgraded devices). Comparing the
+     * raw stored buffer full-width would then fail to match a correct
+     * password. Compare both unconditionally so timing is identical for
+     * any wrong password regardless of which (admin/guest) it most
+     * resembles. */
+    uint8_t received[sizeof(_prefs.password)] = {0};
+    uint8_t admin_pw[sizeof(_prefs.password)] = {0};
+    uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
+    size_t r_len = strnlen((const char *)data, sizeof(received) - 1);
+    memcpy(received, data, r_len);
+    memcpy(admin_pw, _prefs.password, strnlen(_prefs.password, sizeof(admin_pw) - 1));
+    memcpy(guest_pw, _prefs.guest_password, strnlen(_prefs.guest_password, sizeof(guest_pw) - 1));
 
-		bool admin_match = mesh::Utils::constantTimeEqual(received,
-								  admin_pw,
-								  sizeof(received));
-		bool guest_match = mesh::Utils::constantTimeEqual(received,
-								  guest_pw,
-								  sizeof(received));
+    bool admin_match = mesh::Utils::constantTimeEqual(received,
+                  admin_pw,
+                  sizeof(received));
+    bool guest_match = mesh::Utils::constantTimeEqual(received,
+                  guest_pw,
+                  sizeof(received));
 
-		/* An empty stored guest password means OPEN GUEST ACCESS on a repeater,
-		 * deliberately, matching Arduino MeshCore: its NodePrefs default is
-		 * guest_password[0] = 0 (src/helpers/CommonCLI.h) and
-		 * examples/simple_repeater/MyMesh.cpp compares with a plain strcmp, so a
-		 * blank submitted password logs in as guest. Only a blank submission
-		 * matches -- a wrong non-blank password still fails, because both
-		 * buffers are zero-padded and compared full-width.
-		 *
-		 * This is deliberately NOT what RoomServerMesh.cpp does, and the two
-		 * must not be "made consistent". There an empty guest password disables
-		 * guest access, because on a room server that password is what gates
-		 * posting and an accidentally open room is a real hole (the 2026-07-30
-		 * finding: every ZephCore room server shipped open). Arduino closes the
-		 * same hole from the other side, by defaulting the room server's
-		 * guest_password to ROOM_PASSWORD rather than leaving it empty.
-		 *
-		 * The blast radius on a repeater is small by construction:
-		 * PERM_ACL_GUEST cannot run CLI commands -- the PAYLOAD_TYPE_TXT_MSG
-		 * path in onPeerDataRecv() requires isAdmin() -- and cannot read the
-		 * access list (REQ_TYPE_GET_ACCESS_LIST likewise). A guest gets login
-		 * plus status/telemetry. Set a guest password to close it. */
+    /* An empty stored guest password means OPEN GUEST ACCESS on a repeater,
+     * deliberately, matching Arduino MeshCore: its NodePrefs default is
+     * guest_password[0] = 0 (src/helpers/CommonCLI.h) and
+     * examples/simple_repeater/MyMesh.cpp compares with a plain strcmp, so a
+     * blank submitted password logs in as guest. Only a blank submission
+     * matches -- a wrong non-blank password still fails, because both
+     * buffers are zero-padded and compared full-width.
+     *
+     * This is deliberately NOT what RoomServerMesh.cpp does, and the two
+     * must not be "made consistent". There an empty guest password disables
+     * guest access, because on a room server that password is what gates
+     * posting and an accidentally open room is a real hole (the 2026-07-30
+     * finding: every ZephCore room server shipped open). Arduino closes the
+     * same hole from the other side, by defaulting the room server's
+     * guest_password to ROOM_PASSWORD rather than leaving it empty.
+     *
+     * The blast radius on a repeater is small by construction:
+     * PERM_ACL_GUEST cannot run CLI commands -- the PAYLOAD_TYPE_TXT_MSG
+     * path in onPeerDataRecv() requires isAdmin() -- and cannot read the
+     * access list (REQ_TYPE_GET_ACCESS_LIST likewise). A guest gets login
+     * plus status/telemetry. Set a guest password to close it. */
 
-		if (admin_match) {
-			perms = PERM_ACL_ADMIN;
-		} else if (guest_match) {
-			perms = PERM_ACL_GUEST;
-		} else {
-			/* Apply global failed-login rate limit. The check itself is
-			 * unconditional regardless of admin/guest path so its timing
-			 * doesn't leak which credential the attempt was closer to. */
-			if (!login_fail_limiter.allow(getRTCClock()->getCurrentTime())) {
-				LOG_WRN("Login rate-limited (failed attempts exceeded)");
-			} else {
-				LOG_WRN("Invalid password");
-			}
-			return 0;
-		}
+    if (admin_match) {
+      perms = PERM_ACL_ADMIN;
+    } else if (guest_match) {
+      perms = PERM_ACL_GUEST;
+    } else {
+      /* Apply global failed-login rate limit. The check itself is
+       * unconditional regardless of admin/guest path so its timing
+       * doesn't leak which credential the attempt was closer to. */
+      if (!login_fail_limiter.allow(getRTCClock()->getCurrentTime())) {
+        LOG_WRN("Login rate-limited (failed attempts exceeded)");
+      } else {
+        LOG_WRN("Invalid password");
+      }
+      return 0;
+    }
 
-		client = acl.putClient(sender, 0);
-		if (sender_timestamp <= client->last_timestamp) {
-			LOG_WRN("Possible login replay attack!");
-			return 0;
-		}
+    client = acl.putClient(sender, 0);
+    if (sender_timestamp <= client->last_timestamp) {
+      LOG_WRN("Possible login replay attack!");
+      return 0;
+    }
 
-		LOG_INF("Login success");
-		client->last_timestamp = sender_timestamp;
-		client->last_activity = getRTCClock()->getCurrentTime();
-		/* Role assignment only ever escalates. putClient() hands back the
-		 * existing entry for a known pubkey, so writing the role bits
-		 * unconditionally lets a later guest login on a key that already holds
-		 * admin silently strip those rights — the operator is then locked out
-		 * of their own repeater with no way back in over the air. Revoking
-		 * admin is a deliberate act and belongs to the CLI. */
-		if (!client->isAdmin()) {
-			client->permissions &= ~0x03;
-			client->permissions |= perms;
-		}
-		memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
+    LOG_INF("Login success");
+    client->last_timestamp = sender_timestamp;
+    client->last_activity = getRTCClock()->getCurrentTime();
+    /* Role assignment only ever escalates. putClient() hands back the
+     * existing entry for a known pubkey, so writing the role bits
+     * unconditionally lets a later guest login on a key that already holds
+     * admin silently strip those rights — the operator is then locked out
+     * of their own repeater with no way back in over the air. Revoking
+     * admin is a deliberate act and belongs to the CLI. */
+    if (!client->isAdmin()) {
+      client->permissions &= ~0x03;
+      client->permissions |= perms;
+    }
+    memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
 
-		if (client->isAdmin()) {
-			/* Flush admin sessions now instead of leaving them on the lazy
-			 * timer. The entry carries the shared secret this session's
-			 * traffic is encrypted with; if power is lost before the timer
-			 * fires, the client keeps a secret the repeater no longer knows
-			 * and every later request decrypts to nothing, which presents as
-			 * a wrong password or an unreachable node. A repeater is the
-			 * device most likely to lose power unattended, so the few
-			 * milliseconds are worth it. save() writes the whole ACL, so any
-			 * other pending changes go out with it. */
-			if (_store) {
-				acl.save(_store->getAclPath());
-				dirty_contacts_expiry = 0;
-			} else if (!dirty_contacts_expiry) {
-				dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
-			}
-		}
-	}
+    if (client->isAdmin()) {
+      /* Flush admin sessions now instead of leaving them on the lazy
+       * timer. The entry carries the shared secret this session's
+       * traffic is encrypted with; if power is lost before the timer
+       * fires, the client keeps a secret the repeater no longer knows
+       * and every later request decrypts to nothing, which presents as
+       * a wrong password or an unreachable node. A repeater is the
+       * device most likely to lose power unattended, so the few
+       * milliseconds are worth it. save() writes the whole ACL, so any
+       * other pending changes go out with it. */
+      if (_store) {
+        acl.save(_store->getFS());
+        dirty_contacts_expiry = 0;
+      } else if (!dirty_contacts_expiry) {
+        dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+      }
+    }
+  }
 
-	if (is_flood) {
-		client->out_path_len = OUT_PATH_UNKNOWN;
-	}
+  if (is_flood) {
+    client->out_path_len = OUT_PATH_UNKNOWN;
+  }
 
-	uint32_t now = getRTCClock()->getCurrentTimeUnique();
-	memcpy(reply_data, &now, 4);
-	reply_data[4] = RESP_SERVER_LOGIN_OK;
-	reply_data[5] = 0;
-	reply_data[6] = client->isAdmin() ? 1 : 0;
-	reply_data[7] = client->permissions;
-	getRNG()->random(&reply_data[8], 4);
-	reply_data[12] = FIRMWARE_VER_LEVEL;
+  uint32_t now = getRTCClock()->getCurrentTimeUnique();
+  memcpy(reply_data, &now, 4);
+  reply_data[4] = RESP_SERVER_LOGIN_OK;
+  reply_data[5] = 0;
+  reply_data[6] = client->isAdmin() ? 1 : 0;
+  reply_data[7] = client->permissions;
+  getRNG()->random(&reply_data[8], 4);
+  reply_data[12] = FIRMWARE_VER_LEVEL;
 
-	return 13;
+  return 13;
 }
 
+// ZEPHCORE: ours. Reply path bounded by the bytes actually received.
 uint8_t RepeaterMesh::handleAnonRegionsReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
-	if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-		if (data_len < 1) return 0;
-		reply_path_len = *data++;
-		data_len--;
-		/* data is anon-req-supplied; bound copy with remaining data_len.
-		 * If the claimed path is longer than the bytes provided, copyPath
-		 * rejects (returns 0) and leaves reply_path stale — fall back to a
-		 * flood reply instead of emitting a corrupt direct path (F2).
-		 * path_len == 0 is a valid zero-hop direct reply, so don't treat
-		 * its (also-0) return as a rejection. */
-		if (reply_path_len != 0 &&
-		    mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
-			reply_path_len = OUT_PATH_UNKNOWN;
-		}
+  if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+    if (data_len < 1) return 0;
+    reply_path_len = *data++;
+    data_len--;
+    /* data is anon-req-supplied; bound copy with remaining data_len.
+     * If the claimed path is longer than the bytes provided, copyPath
+     * rejects (returns 0) and leaves reply_path stale — fall back to a
+     * flood reply instead of emitting a corrupt direct path (F2).
+     * path_len == 0 is a valid zero-hop direct reply, so don't treat
+     * its (also-0) return as a rejection. */
+    if (reply_path_len != 0 &&
+        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+      reply_path_len = OUT_PATH_UNKNOWN;
+    }
 
-		memcpy(reply_data, &sender_timestamp, 4);
-		uint32_t now = getRTCClock()->getCurrentTime();
-		memcpy(&reply_data[4], &now, 4);
+    memcpy(reply_data, &sender_timestamp, 4);
+    uint32_t now = getRTCClock()->getCurrentTime();
+    memcpy(&reply_data[4], &now, 4);
 
-		return 8 + region_map.exportNamesTo((char*)&reply_data[8], sizeof(reply_data) - 12, REGION_DENY_FLOOD);
-	}
-	return 0;
+    return 8 + region_map.exportNamesTo((char*)&reply_data[8], sizeof(reply_data) - 12, REGION_DENY_FLOOD);
+  }
+  return 0;
 }
 
+// ZEPHCORE: ours. Reply path bounded by the bytes actually received.
 uint8_t RepeaterMesh::handleAnonOwnerReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
-	if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-		if (data_len < 1) return 0;
-		reply_path_len = *data++;
-		data_len--;
-		/* data is anon-req-supplied; bound copy with remaining data_len.
-		 * If the claimed path is longer than the bytes provided, copyPath
-		 * rejects (returns 0) and leaves reply_path stale — fall back to a
-		 * flood reply instead of emitting a corrupt direct path (F2).
-		 * path_len == 0 is a valid zero-hop direct reply, so don't treat
-		 * its (also-0) return as a rejection. */
-		if (reply_path_len != 0 &&
-		    mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
-			reply_path_len = OUT_PATH_UNKNOWN;
-		}
+  if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+    if (data_len < 1) return 0;
+    reply_path_len = *data++;
+    data_len--;
+    /* data is anon-req-supplied; bound copy with remaining data_len.
+     * If the claimed path is longer than the bytes provided, copyPath
+     * rejects (returns 0) and leaves reply_path stale — fall back to a
+     * flood reply instead of emitting a corrupt direct path (F2).
+     * path_len == 0 is a valid zero-hop direct reply, so don't treat
+     * its (also-0) return as a rejection. */
+    if (reply_path_len != 0 &&
+        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+      reply_path_len = OUT_PATH_UNKNOWN;
+    }
 
-		memcpy(reply_data, &sender_timestamp, 4);
-		uint32_t now = getRTCClock()->getCurrentTime();
-		memcpy(&reply_data[4], &now, 4);
-		sprintf((char*)&reply_data[8], "%s\n%s", _prefs.node_name, _prefs.owner_info);
+    memcpy(reply_data, &sender_timestamp, 4);
+    uint32_t now = getRTCClock()->getCurrentTime();
+    memcpy(&reply_data[4], &now, 4);
+    sprintf((char*)&reply_data[8], "%s\n%s", _prefs.node_name, _prefs.owner_info);
 
-		return 8 + strlen((char*)&reply_data[8]);
-	}
-	return 0;
+    return 8 + strlen((char*)&reply_data[8]);
+  }
+  return 0;
 }
 
+// ZEPHCORE: ours. Reply path bounded by the bytes actually received.
 uint8_t RepeaterMesh::handleAnonClockReq(const mesh::Identity& sender, uint32_t sender_timestamp, const uint8_t* data, size_t data_len) {
-	if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
-		if (data_len < 1) return 0;
-		reply_path_len = *data++;
-		data_len--;
-		/* data is anon-req-supplied; bound copy with remaining data_len.
-		 * If the claimed path is longer than the bytes provided, copyPath
-		 * rejects (returns 0) and leaves reply_path stale — fall back to a
-		 * flood reply instead of emitting a corrupt direct path (F2).
-		 * path_len == 0 is a valid zero-hop direct reply, so don't treat
-		 * its (also-0) return as a rejection. */
-		if (reply_path_len != 0 &&
-		    mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
-			reply_path_len = OUT_PATH_UNKNOWN;
-		}
+  if (anon_limiter.allow(getRTCClock()->getCurrentTime())) {
+    if (data_len < 1) return 0;
+    reply_path_len = *data++;
+    data_len--;
+    /* data is anon-req-supplied; bound copy with remaining data_len.
+     * If the claimed path is longer than the bytes provided, copyPath
+     * rejects (returns 0) and leaves reply_path stale — fall back to a
+     * flood reply instead of emitting a corrupt direct path (F2).
+     * path_len == 0 is a valid zero-hop direct reply, so don't treat
+     * its (also-0) return as a rejection. */
+    if (reply_path_len != 0 &&
+        mesh::Packet::copyPath(reply_path, data, data_len, reply_path_len) == 0) {
+      reply_path_len = OUT_PATH_UNKNOWN;
+    }
 
-		memcpy(reply_data, &sender_timestamp, 4);
-		uint32_t now = getRTCClock()->getCurrentTime();
-		memcpy(&reply_data[4], &now, 4);
-		reply_data[8] = 0;  // features
-		if (_prefs.disable_fwd) {
-			reply_data[8] |= 0x80;
-		}
-		return 9;
-	}
-	return 0;
+    memcpy(reply_data, &sender_timestamp, 4);
+    uint32_t now = getRTCClock()->getCurrentTime();
+    memcpy(&reply_data[4], &now, 4);
+    reply_data[8] = 0;  // features
+    if (_prefs.disable_fwd) {
+      reply_data[8] |= 0x80;
+    }
+    return 9;
+  }
+  return 0;
 }
 
+// ZEPHCORE: ours. ZephCore telemetry, stats and ACL paging.
 int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, uint8_t* payload, size_t payload_len) {
-	memcpy(reply_data, &sender_timestamp, 4);
+  memcpy(reply_data, &sender_timestamp, 4);
 
-	if (payload[0] == REQ_TYPE_GET_STATUS) {
-		auto& radio_driver = getRadioDriver(_radio);
-		RepeaterStats stats;
-		stats.batt_milli_volts = _board.getBattMilliVolts();
-		stats.curr_tx_queue_len = _mgr->getOutboundTotal();
-		stats.noise_floor = (int16_t)_radio->getNoiseFloor();
-		stats.last_rssi = (int16_t)radio_driver.getLastRSSI();
-		stats.n_packets_recv = radio_driver.getPacketsRecv();
-		stats.n_packets_sent = radio_driver.getPacketsSent();
-		stats.total_air_time_secs = getTotalAirTime() / 1000;
-		stats.total_up_time_secs = uptime_millis / 1000;
-		stats.n_sent_flood = getNumSentFlood();
-		stats.n_sent_direct = getNumSentDirect();
-		stats.n_recv_flood = getNumRecvFlood();
-		stats.n_recv_direct = getNumRecvDirect();
-		stats.err_events = _err_flags;
-		stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
-		stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
-		stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
-		stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
-		stats.n_recv_errors = radio_driver.getPacketsRecvErrors();
-		memcpy(&reply_data[4], &stats, sizeof(stats));
-		return 4 + sizeof(stats);
-	}
+  if (payload[0] == REQ_TYPE_GET_STATUS) {
+    auto& radio_driver = getRadioDriver(_radio);
+    RepeaterStats stats;
+    stats.batt_milli_volts = _board.getBattMilliVolts();
+    stats.curr_tx_queue_len = _mgr->getOutboundTotal();
+    stats.noise_floor = (int16_t)_radio->getNoiseFloor();
+    stats.last_rssi = (int16_t)radio_driver.getLastRSSI();
+    stats.n_packets_recv = radio_driver.getPacketsRecv();
+    stats.n_packets_sent = radio_driver.getPacketsSent();
+    stats.total_air_time_secs = getTotalAirTime() / 1000;
+    stats.total_up_time_secs = uptime_millis / 1000;
+    stats.n_sent_flood = getNumSentFlood();
+    stats.n_sent_direct = getNumSentDirect();
+    stats.n_recv_flood = getNumRecvFlood();
+    stats.n_recv_direct = getNumRecvDirect();
+    stats.err_events = _err_flags;
+    stats.last_snr = (int16_t)(radio_driver.getLastSNR() * 4);
+    stats.n_direct_dups = ((SimpleMeshTables *)getTables())->getNumDirectDups();
+    stats.n_flood_dups = ((SimpleMeshTables *)getTables())->getNumFloodDups();
+    stats.total_rx_air_time_secs = getReceiveAirTime() / 1000;
+    stats.n_recv_errors = radio_driver.getPacketsRecvErrors();
+    memcpy(&reply_data[4], &stats, sizeof(stats));
+    return 4 + sizeof(stats);
+  }
 
-	if (payload[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
-		/* CayenneLPP telemetry response using SimpleLPP encoder */
-		SimpleLPP lpp(&reply_data[4], sizeof(reply_data) - 4);
+  if (payload[0] == REQ_TYPE_GET_TELEMETRY_DATA) {
+    /* CayenneLPP telemetry response using SimpleLPP encoder */
+    SimpleLPP lpp(&reply_data[4], sizeof(reply_data) - 4);
 
-		/* Battery voltage — channel 1 = TELEM_CHANNEL_SELF (matches Arduino) */
-		const uint8_t CH_SELF = 1;
-		uint16_t batt_mv = _board.getBattMilliVolts();
-		lpp.addVoltage(CH_SELF, batt_mv / 1000.0f);
+    /* Battery voltage — channel 1 = TELEM_CHANNEL_SELF (matches Arduino) */
+    const uint8_t CH_SELF = 1;
+    uint16_t batt_mv = _board.getBattMilliVolts();
+    lpp.addVoltage(CH_SELF, batt_mv / 1000.0f);
 
-		/* Environment sensors — prefer external, fallback to MCU die temp */
-		struct env_data env;
-		if (env_sensors_read(&env) == 0) {
-			if (env.has_temperature) {
-				lpp.addTemperature(CH_SELF, env.temperature_c);
-			} else if (env.has_mcu_temperature) {
-				lpp.addTemperature(CH_SELF, env.mcu_temperature_c);
-			} else {
-				/* Last resort: MCU temp from board API */
-				float mcu_temp = _board.getMCUTemperature();
-				if (!isnan(mcu_temp)) {
-					lpp.addTemperature(CH_SELF, mcu_temp);
-				}
-			}
-			if (env.has_humidity) {
-				lpp.addRelativeHumidity(CH_SELF, env.humidity_pct);
-			}
-			if (env.has_pressure) {
-				lpp.addBarometricPressure(CH_SELF, env.pressure_hpa);
-			}
-			if (env.has_luminosity) {
-				lpp.addLuminosity(CH_SELF, env.luminosity);
-			}
-		} else {
-			/* No env sensors at all — try MCU temp directly */
-			float mcu_temp = _board.getMCUTemperature();
-			if (!isnan(mcu_temp)) {
-				lpp.addTemperature(CH_SELF, mcu_temp);
-			}
-		}
+    /* Environment sensors — prefer external, fallback to MCU die temp */
+    struct env_data env;
+    if (env_sensors_read(&env) == 0) {
+      if (env.has_temperature) {
+        lpp.addTemperature(CH_SELF, env.temperature_c);
+      } else if (env.has_mcu_temperature) {
+        lpp.addTemperature(CH_SELF, env.mcu_temperature_c);
+      } else {
+        /* Last resort: MCU temp from board API */
+        float mcu_temp = _board.getMCUTemperature();
+        if (!isnan(mcu_temp)) {
+          lpp.addTemperature(CH_SELF, mcu_temp);
+        }
+      }
+      if (env.has_humidity) {
+        lpp.addRelativeHumidity(CH_SELF, env.humidity_pct);
+      }
+      if (env.has_pressure) {
+        lpp.addBarometricPressure(CH_SELF, env.pressure_hpa);
+      }
+      if (env.has_luminosity) {
+        lpp.addLuminosity(CH_SELF, env.luminosity);
+      }
+    } else {
+      /* No env sensors at all — try MCU temp directly */
+      float mcu_temp = _board.getMCUTemperature();
+      if (!isnan(mcu_temp)) {
+        lpp.addTemperature(CH_SELF, mcu_temp);
+      }
+    }
 
-		/* Power monitors (INA219/INA3221/ina2xx) */
-		if (power_sensors_available()) {
-			struct power_data pwr;
-			if (power_sensors_read(&pwr) == 0) {
-				uint8_t ch = CH_SELF + 1;
-				for (int j = 0; j < pwr.num_channels; j++) {
-					if (pwr.channels[j].valid) {
-						lpp.addVoltage(ch, pwr.channels[j].voltage_v);
-						lpp.addCurrent(ch, pwr.channels[j].current_a);
-						lpp.addPower(ch, pwr.channels[j].power_w);
-						ch++;
-					}
-				}
-			}
-		}
+    /* Power monitors (INA219/INA3221/ina2xx) */
+    if (power_sensors_available()) {
+      struct power_data pwr;
+      if (power_sensors_read(&pwr) == 0) {
+        uint8_t ch = CH_SELF + 1;
+        for (int j = 0; j < pwr.num_channels; j++) {
+          if (pwr.channels[j].valid) {
+            lpp.addVoltage(ch, pwr.channels[j].voltage_v);
+            lpp.addCurrent(ch, pwr.channels[j].current_a);
+            lpp.addPower(ch, pwr.channels[j].power_w);
+            ch++;
+          }
+        }
+      }
+    }
 
-		/* GPS precise position — admin-only, and only via telemetry, never
-		 * adverts. Guests get the rest of the LPP payload but no position:
-		 * adverts already publish the operator-set prefs coordinates, so
-		 * there is no reason to hand a guest login the live fix as well. */
-		if (sender->isAdmin()) {
-			struct gps_position gpos;
-			if (gps_get_last_known_position(&gpos)) {
-				lpp.addGPS(CH_SELF,
-				    (float)(gpos.latitude_ndeg / 1e9),
-				    (float)(gpos.longitude_ndeg / 1e9),
-				    gpos.altitude_mm / 1000.0f);
-			}
+    /* GPS precise position — admin-only, and only via telemetry, never
+     * adverts. Guests get the rest of the LPP payload but no position:
+     * adverts already publish the operator-set prefs coordinates, so
+     * there is no reason to hand a guest login the live fix as well. */
+    if (sender->isAdmin()) {
+      struct gps_position gpos;
+      if (gps_get_last_known_position(&gpos)) {
+        lpp.addGPS(CH_SELF,
+            (float)(gpos.latitude_ndeg / 1e9),
+            (float)(gpos.longitude_ndeg / 1e9),
+            gpos.altitude_mm / 1000.0f);
+      }
 
-			/* Wake GPS / extend acquire window so the next telemetry poll has
-			 * a fresher fix. In repeater mode GPS is normally off between the
-			 * 48h time-sync cycles — this opportunistically rearms acquire
-			 * when someone actually cares about our position. No-op if GPS
-			 * is disabled in prefs. Gated with the position itself so a guest
-			 * can't hold the GPS awake by polling. */
-			if (gps_is_available() && gps_is_enabled()) {
-				gps_request_fresh_fix();
-			}
-		}
+      /* Wake GPS / extend acquire window so the next telemetry poll has
+       * a fresher fix. In repeater mode GPS is normally off between the
+       * 48h time-sync cycles — this opportunistically rearms acquire
+       * when someone actually cares about our position. No-op if GPS
+       * is disabled in prefs. Gated with the position itself so a guest
+       * can't hold the GPS awake by polling. */
+      if (gps_is_available() && gps_is_enabled()) {
+        gps_request_fresh_fix();
+      }
+    }
 
-		return 4 + lpp.getSize();
-	}
+    return 4 + lpp.getSize();
+  }
 
-	if (payload[0] == REQ_TYPE_GET_ACCESS_LIST && sender->isAdmin()) {
-		uint8_t res1 = payload[1];
-		uint8_t res2 = payload[2];
-		if (res1 == 0 && res2 == 0) {
-			uint8_t ofs = 4;
-			for (int i = 0; i < acl.getNumClients() && (size_t)(ofs + 7) <= sizeof(reply_data) - 4; i++) {
-				auto c = acl.getClientByIdx(i);
-				if (c->permissions == 0) continue;
-				memcpy(&reply_data[ofs], c->id.pub_key, 6);
-				ofs += 6;
-				reply_data[ofs++] = c->permissions;
-			}
-			return ofs;
-		}
-	}
+  if (payload[0] == REQ_TYPE_GET_ACCESS_LIST && sender->isAdmin()) {
+    uint8_t res1 = payload[1];
+    uint8_t res2 = payload[2];
+    if (res1 == 0 && res2 == 0) {
+      uint8_t ofs = 4;
+      for (int i = 0; i < acl.getNumClients() && (size_t)(ofs + 7) <= sizeof(reply_data) - 4; i++) {
+        auto c = acl.getClientByIdx(i);
+        if (c->permissions == 0) continue;
+        memcpy(&reply_data[ofs], c->id.pub_key, 6);
+        ofs += 6;
+        reply_data[ofs++] = c->permissions;
+      }
+      return ofs;
+    }
+  }
 
-	if (payload[0] == REQ_TYPE_GET_NEIGHBOURS) {
+  if (payload[0] == REQ_TYPE_GET_NEIGHBOURS) {
 #if MAX_NEIGHBOURS > 0
-		uint8_t request_version = payload[1];
-		if (request_version == 0) {
-			int reply_offset = 4;
-			uint8_t count = payload[2];
-			uint16_t offset;
-			memcpy(&offset, &payload[3], 2);
-			uint8_t order_by = payload[5];
-			uint8_t pubkey_prefix_length = payload[6];
+    uint8_t request_version = payload[1];
+    if (request_version == 0) {
+      int reply_offset = 4;
+      uint8_t count = payload[2];
+      uint16_t offset;
+      memcpy(&offset, &payload[3], 2);
+      uint8_t order_by = payload[5];
+      uint8_t pubkey_prefix_length = payload[6];
 
-			if (pubkey_prefix_length > PUB_KEY_SIZE) {
-				pubkey_prefix_length = PUB_KEY_SIZE;
-			}
+      if (pubkey_prefix_length > PUB_KEY_SIZE) {
+        pubkey_prefix_length = PUB_KEY_SIZE;
+      }
 
-			// Create sorted copy
-			int16_t neighbours_count = 0;
-			NeighbourInfo* sorted_neighbours[MAX_NEIGHBOURS];
-			for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-				if (neighbours[i].heard_timestamp > 0) {
-					sorted_neighbours[neighbours_count++] = &neighbours[i];
-				}
-			}
+      // Create sorted copy
+      int16_t neighbours_count = 0;
+      NeighbourInfo* sorted_neighbours[MAX_NEIGHBOURS];
+      for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+        if (neighbours[i].heard_timestamp > 0) {
+          sorted_neighbours[neighbours_count++] = &neighbours[i];
+        }
+      }
 
-			// Sort
-			if (order_by == 0) {
-				simple_sort(sorted_neighbours, (int)neighbours_count,
-				    [](const NeighbourInfo* a, const NeighbourInfo* b) {
-					return a->heard_timestamp > b->heard_timestamp;
-				    });
-			} else if (order_by == 1) {
-				simple_sort(sorted_neighbours, (int)neighbours_count,
-				    [](const NeighbourInfo* a, const NeighbourInfo* b) {
-					return a->heard_timestamp < b->heard_timestamp;
-				    });
-			} else if (order_by == 2) {
-				simple_sort(sorted_neighbours, (int)neighbours_count,
-				    [](const NeighbourInfo* a, const NeighbourInfo* b) {
-					return a->snr > b->snr;
-				    });
-			} else if (order_by == 3) {
-				simple_sort(sorted_neighbours, (int)neighbours_count,
-				    [](const NeighbourInfo* a, const NeighbourInfo* b) {
-					return a->snr < b->snr;
-				    });
-			}
+      // Sort
+      if (order_by == 0) {
+        simple_sort(sorted_neighbours, (int)neighbours_count,
+            [](const NeighbourInfo* a, const NeighbourInfo* b) {
+          return a->heard_timestamp > b->heard_timestamp;
+            });
+      } else if (order_by == 1) {
+        simple_sort(sorted_neighbours, (int)neighbours_count,
+            [](const NeighbourInfo* a, const NeighbourInfo* b) {
+          return a->heard_timestamp < b->heard_timestamp;
+            });
+      } else if (order_by == 2) {
+        simple_sort(sorted_neighbours, (int)neighbours_count,
+            [](const NeighbourInfo* a, const NeighbourInfo* b) {
+          return a->snr > b->snr;
+            });
+      } else if (order_by == 3) {
+        simple_sort(sorted_neighbours, (int)neighbours_count,
+            [](const NeighbourInfo* a, const NeighbourInfo* b) {
+          return a->snr < b->snr;
+            });
+      }
 
-			// Build results
-			int results_count = 0;
-			int results_offset = 0;
-			uint8_t results_buffer[130];
-			for (int index = 0; index < count && index + offset < neighbours_count; index++) {
-				int entry_size = pubkey_prefix_length + 4 + 1;
-				if (results_offset + entry_size > (int)sizeof(results_buffer)) break;
+      // Build results
+      int results_count = 0;
+      int results_offset = 0;
+      uint8_t results_buffer[130];
+      for (int index = 0; index < count && index + offset < neighbours_count; index++) {
+        int entry_size = pubkey_prefix_length + 4 + 1;
+        if (results_offset + entry_size > (int)sizeof(results_buffer)) break;
 
-				auto neighbour = sorted_neighbours[index + offset];
-				uint32_t heard_seconds_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
-				memcpy(&results_buffer[results_offset], neighbour->id.pub_key, pubkey_prefix_length);
-				results_offset += pubkey_prefix_length;
-				memcpy(&results_buffer[results_offset], &heard_seconds_ago, 4);
-				results_offset += 4;
-				memcpy(&results_buffer[results_offset], &neighbour->snr, 1);
-				results_offset += 1;
-				results_count++;
-			}
+        auto neighbour = sorted_neighbours[index + offset];
+        uint32_t heard_seconds_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
+        memcpy(&results_buffer[results_offset], neighbour->id.pub_key, pubkey_prefix_length);
+        results_offset += pubkey_prefix_length;
+        memcpy(&results_buffer[results_offset], &heard_seconds_ago, 4);
+        results_offset += 4;
+        memcpy(&results_buffer[results_offset], &neighbour->snr, 1);
+        results_offset += 1;
+        results_count++;
+      }
 
-			memcpy(&reply_data[reply_offset], &neighbours_count, 2);
-			reply_offset += 2;
-			memcpy(&reply_data[reply_offset], &results_count, 2);
-			reply_offset += 2;
-			memcpy(&reply_data[reply_offset], results_buffer, results_offset);
-			reply_offset += results_offset;
+      memcpy(&reply_data[reply_offset], &neighbours_count, 2);
+      reply_offset += 2;
+      memcpy(&reply_data[reply_offset], &results_count, 2);
+      reply_offset += 2;
+      memcpy(&reply_data[reply_offset], results_buffer, results_offset);
+      reply_offset += results_offset;
 
-			return reply_offset;
-		}
+      return reply_offset;
+    }
 #endif
-	}
+  }
 
-	if (payload[0] == REQ_TYPE_GET_OWNER_INFO) {
-		sprintf((char*)&reply_data[4], "%s\n%s\n%s", FIRMWARE_VERSION, _prefs.node_name, _prefs.owner_info);
-		return 4 + strlen((char*)&reply_data[4]);
-	}
+  if (payload[0] == REQ_TYPE_GET_OWNER_INFO) {
+    sprintf((char*)&reply_data[4], "%s\n%s\n%s", FIRMWARE_VERSION, _prefs.node_name, _prefs.owner_info);
+    return 4 + strlen((char*)&reply_data[4]);
+  }
 
-	return 0;
+  return 0;
 }
 
-mesh::Packet* RepeaterMesh::createSelfAdvert() {
-	uint8_t app_data[MAX_ADVERT_DATA_SIZE];
-	uint8_t app_data_len = _cli.buildAdvertData(ADV_TYPE_REPEATER, app_data);
-	return createAdvert(self_id, app_data, app_data_len);
+mesh::Packet *RepeaterMesh::createSelfAdvert() {
+  uint8_t app_data[MAX_ADVERT_DATA_SIZE];
+  uint8_t app_data_len = _cli.buildAdvertData(ADV_TYPE_REPEATER, app_data);
+
+  return createAdvert(self_id, app_data, app_data_len);
 }
 
-static uint8_t max_loop_minimal[]  = { 0, /* 1-byte */  4, /* 2-byte */  2, /* 3-byte */  1 };
+// ZEPHCORE: no openAppend() here: no log file on flash
+
+static uint8_t max_loop_minimal[] =  { 0, /* 1-byte */  4, /* 2-byte */  2, /* 3-byte */  1 };
 static uint8_t max_loop_moderate[] = { 0, /* 1-byte */  2, /* 2-byte */  1, /* 3-byte */  1 };
-static uint8_t max_loop_strict[]   = { 0, /* 1-byte */  1, /* 2-byte */  1, /* 3-byte */  1 };
+static uint8_t max_loop_strict[] =   { 0, /* 1-byte */  1, /* 2-byte */  1, /* 3-byte */  1 };
 
 bool RepeaterMesh::isLooped(const mesh::Packet* packet, const uint8_t max_counters[]) {
-	uint8_t hash_size = packet->getPathHashSize();
-	uint8_t hash_count = packet->getPathHashCount();
-	uint8_t n = 0;
-	const uint8_t* path = packet->path;
-	while (hash_count > 0) {
-		if (self_id.isHashMatch(path, hash_size)) n++;
-		hash_count--;
-		path += hash_size;
-	}
-	return n >= max_counters[hash_size];
+  uint8_t hash_size = packet->getPathHashSize();
+  uint8_t hash_count = packet->getPathHashCount();
+  uint8_t n = 0;
+  const uint8_t* path = packet->path;
+  while (hash_count > 0) {      // count how many times this node is already in the path
+    if (self_id.isHashMatch(path, hash_size)) n++;
+    hash_count--;
+    path += hash_size;
+  }
+  return n >= max_counters[hash_size];
 }
 
-void RepeaterMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size) {
-	if (scope.isNull()) {
-		sendFlood(pkt, delay_millis, path_hash_size);
-	} else {
-		uint16_t codes[2];
-		codes[0] = scope.calcTransportCode(pkt);
-		codes[1] = 0;  // REVISIT: set to 'home' Region, for sender/return region?
-		sendFlood(pkt, codes, delay_millis, path_hash_size);
-	}
-}
-
+// ZEPHCORE: ours. An explicit unscoped-flood flag instead of isWildcard() (UPSTREAM_TRACKER fad11c90).
 void RepeaterMesh::sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, uint8_t path_hash_size) {
-	TransportKey req_scope;
-	bool req_scope_known = recv_pkt_region != nullptr && !recv_pkt_region->isWildcard()
-						&& region_map.getTransportKeysFor(*recv_pkt_region, &req_scope, 1) > 0;
+  TransportKey req_scope;
+  bool req_scope_known = recv_pkt_region != nullptr && !recv_pkt_region->isWildcard()
+            && region_map.getTransportKeysFor(*recv_pkt_region, &req_scope, 1) > 0;
 
-	switch (mesh::chooseReplyScope(req_scope_known, recv_pkt_unscoped_flood, !default_scope.isNull())) {
-	case mesh::REPLY_SCOPE_REQUEST:
-		sendFloodScoped(req_scope, packet, delay_millis, path_hash_size);  // same scope as the request
-		break;
-	case mesh::REPLY_SCOPE_DEFAULT:
-		// requester's scope is unknown: a DIRECT request (no transport codes), or a
-		// code that matched no Region. Un-scoped would be dropped at hop 0 by every
-		// repeater running flood.max.unscoped=0.
-		sendFloodScoped(default_scope, packet, delay_millis, path_hash_size);
-		break;
-	case mesh::REPLY_SCOPE_NONE:
-		sendFlood(packet, delay_millis, path_hash_size);  // send un-scoped
-		break;
-	}
+  switch (mesh::chooseReplyScope(req_scope_known, recv_pkt_unscoped_flood, !default_scope.isNull())) {
+  case mesh::REPLY_SCOPE_REQUEST:
+    sendFloodScoped(req_scope, packet, delay_millis, path_hash_size);  // same scope as the request
+    break;
+  case mesh::REPLY_SCOPE_DEFAULT:
+    // requester's scope is unknown: a DIRECT request (no transport codes), or a
+    // code that matched no Region. Un-scoped would be dropped at hop 0 by every
+    // repeater running flood.max.unscoped=0.
+    sendFloodScoped(default_scope, packet, delay_millis, path_hash_size);
+    break;
+  case mesh::REPLY_SCOPE_NONE:
+    sendFlood(packet, delay_millis, path_hash_size);  // send un-scoped
+    break;
+  }
 }
 
-bool RepeaterMesh::allowPacketForward(const mesh::Packet* packet) {
-	if (_prefs.disable_fwd) return false;
-	if (packet->isRouteFlood()
-	    && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped,
-					     _prefs.flood_max_advert)) {
-		return false;
-	}
-	if (packet->isRouteFlood() && recv_pkt_region == nullptr) return false;
-	if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
-		const uint8_t* maximums;
-		if (_prefs.loop_detect == LOOP_DETECT_MINIMAL) {
-			maximums = max_loop_minimal;
-		} else if (_prefs.loop_detect == LOOP_DETECT_MODERATE) {
-			maximums = max_loop_moderate;
-		} else {
-			maximums = max_loop_strict;
-		}
-		if (isLooped(packet, maximums)) {
-			MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
-			return false;
-		}
-	}
-	return true;
+bool RepeaterMesh::allowPacketForward(const mesh::Packet *packet) {
+  if (_prefs.disable_fwd) return false;
+  if (packet->isRouteFlood()
+      && mesh::isFloodHopLimitExceeded(packet, _prefs.flood_max, _prefs.flood_max_unscoped, _prefs.flood_max_advert)) {
+    return false;
+  }
+  if (packet->isRouteFlood() && recv_pkt_region == NULL) {
+    MESH_DEBUG_PRINTLN("allowPacketForward: unknown transport code, or wildcard not allowed for FLOOD packet");
+    return false;
+  }
+  if (packet->isRouteFlood() && _prefs.loop_detect != LOOP_DETECT_OFF) {
+    const uint8_t* maximums;
+    if (_prefs.loop_detect == LOOP_DETECT_MINIMAL) {
+      maximums = max_loop_minimal;
+    } else if (_prefs.loop_detect == LOOP_DETECT_MODERATE) {
+      maximums = max_loop_moderate;
+    } else {
+      maximums = max_loop_strict;
+    }
+    if (isLooped(packet, maximums)) {
+      MESH_DEBUG_PRINTLN("allowPacketForward: FLOOD packet loop detected!");
+      return false;
+    }
+  }
+  return true;
 }
 
+// ZEPHCORE: ours. Zephyr clock formatting.
 const char* RepeaterMesh::getLogDateTime() {
-	static char tmp[48];
-	uint32_t now = getRTCClock()->getCurrentTime();
-	/* Match Arduino format: "HH:MM:SS - D/M/YYYY U" */
-	time_t t = (time_t)now;
-	struct tm* tm = gmtime(&t);
-	if (tm) {
-		snprintf(tmp, sizeof(tmp), "%02d:%02d:%02d - %d/%d/%d U",
-			tm->tm_hour, tm->tm_min, tm->tm_sec,
-			tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900);
-	} else {
-		snprintf(tmp, sizeof(tmp), "%u", now);
-	}
-	return tmp;
+  static char tmp[48];
+  uint32_t now = getRTCClock()->getCurrentTime();
+  /* Match Arduino format: "HH:MM:SS - D/M/YYYY U" */
+  time_t t = (time_t)now;
+  struct tm* tm = gmtime(&t);
+  if (tm) {
+    snprintf(tmp, sizeof(tmp), "%02d:%02d:%02d - %d/%d/%d U",
+      tm->tm_hour, tm->tm_min, tm->tm_sec,
+      tm->tm_mday, tm->tm_mon + 1, tm->tm_year + 1900);
+  } else {
+    snprintf(tmp, sizeof(tmp), "%u", now);
+  }
+  return tmp;
 }
 
+// ZEPHCORE: ours. Packet logging through helpers/PacketLog.h.
 void RepeaterMesh::logRxRaw(float snr, float rssi, const uint8_t raw[], int len) {
 #if IS_ENABLED(CONFIG_ZEPHCORE_PACKET_LOGGING)
-	/* Arduino-compatible RAW packet hex dump */
-	static char hex_buf[MAX_TRANS_UNIT * 2 + 1];
-	mesh::Utils::toHex(hex_buf, raw, len);
-	printk("%s RAW: %s\n", getLogDateTime(), hex_buf);
+  /* Arduino-compatible RAW packet hex dump */
+  static char hex_buf[MAX_TRANS_UNIT * 2 + 1];
+  mesh::Utils::toHex(hex_buf, raw, len);
+  printk("%s RAW: %s\n", getLogDateTime(), hex_buf);
 #endif
-	(void)snr;
-	(void)rssi;
+  (void)snr;
+  (void)rssi;
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	_uplink_last_rssi = rssi;
-	_uplink_last_raw_len = len <= (int)sizeof(_uplink_last_raw) ? len : (int)sizeof(_uplink_last_raw);
-	if (_uplink_last_raw_len > 0) {
-		memcpy(_uplink_last_raw, raw, _uplink_last_raw_len);
-	}
+  _uplink_last_rssi = rssi;
+  _uplink_last_raw_len = len <= (int)sizeof(_uplink_last_raw) ? len : (int)sizeof(_uplink_last_raw);
+  if (_uplink_last_raw_len > 0) {
+    memcpy(_uplink_last_raw, raw, _uplink_last_raw_len);
+  }
 #endif
 }
 
+// ZEPHCORE: ours. Packet logging through helpers/PacketLog.h.
 void RepeaterMesh::logRx(mesh::Packet* pkt, int len, float score) {
-	packet_log_rx(getLogDateTime(), pkt, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
-	if (_logging) {
-		LOG_INF("RX len=%d type=%d route=%s payload_len=%d SNR=%d RSSI=%d",
-			len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
-			pkt->payload_len, (int)_radio->getLastSNR(), (int)_radio->getLastRSSI());
-	}
+  packet_log_rx(getLogDateTime(), pkt, _radio->getLastRSSI(), score, _radio->getEstAirtimeFor(len));
+  if (_logging) {
+    LOG_INF("RX len=%d type=%d route=%s payload_len=%d SNR=%d RSSI=%d",
+      len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
+      pkt->payload_len, (int)_radio->getLastSNR(), (int)_radio->getLastRSSI());
+  }
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	_uplink_last_score = score;
-	publishUplinkPacket(pkt);
+  _uplink_last_score = score;
+  publishUplinkPacket(pkt);
 #endif
 }
 
+// ZEPHCORE: ours. Packet logging through helpers/PacketLog.h.
 void RepeaterMesh::logTx(mesh::Packet* pkt, int len) {
-	packet_log_tx(getLogDateTime(), pkt);
-	if (_logging) {
-		LOG_INF("TX len=%d type=%d route=%s payload_len=%d",
-			len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
-			pkt->payload_len);
-	}
+  packet_log_tx(getLogDateTime(), pkt);
+  if (_logging) {
+    LOG_INF("TX len=%d type=%d route=%s payload_len=%d",
+      len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
+      pkt->payload_len);
+  }
 }
 
+// ZEPHCORE: ours. Packet logging through helpers/PacketLog.h.
 void RepeaterMesh::logTxFail(mesh::Packet* pkt, int len) {
-	if (_logging) {
-		LOG_WRN("TX FAIL len=%d type=%d route=%s payload_len=%d",
-			len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
-			pkt->payload_len);
-	}
+  if (_logging) {
+    LOG_WRN("TX FAIL len=%d type=%d route=%s payload_len=%d",
+      len, pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
+      pkt->payload_len);
+  }
 }
 
+// ZEPHCORE: no calcRxDelay() here: rx delay is replaced by the adaptive contention window
+
+// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-	return computeAdaptiveFloodDelay(packet);
+  return computeAdaptiveFloodDelay(packet);
 }
-
+// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-	return computeAdaptiveDirectDelay(packet);
+  return computeAdaptiveDirectDelay(packet);
 }
 
+// ZEPHCORE: ours. Also records whether the packet was an unscoped flood.
 mesh::DispatcherAction RepeaterMesh::onRecvPacket(mesh::Packet* pkt) {
-	// Determine the request packet's region so sendFloodReply() can echo the same
-	// scope. Runs for every packet (not just floods) so recv_pkt_region is cleared
-	// for direct packets instead of inheriting the last flood's region.
-	recv_pkt_unscoped_flood = (pkt->getRouteType() == ROUTE_TYPE_FLOOD);
-	if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
-		recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
-	} else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
-		if (region_map.getWildcard().flags & REGION_DENY_FLOOD) {
-			recv_pkt_region = nullptr;
-		} else {
-			recv_pkt_region = &region_map.getWildcard();
-		}
-	} else {
-		recv_pkt_region = nullptr;
-	}
-	return Mesh::onRecvPacket(pkt);
+  // Determine the request packet's region so sendFloodReply() can echo the same
+  // scope. Runs for every packet (not just floods) so recv_pkt_region is cleared
+  // for direct packets instead of inheriting the last flood's region.
+  recv_pkt_unscoped_flood = (pkt->getRouteType() == ROUTE_TYPE_FLOOD);
+  if (pkt->getRouteType() == ROUTE_TYPE_TRANSPORT_FLOOD) {
+    recv_pkt_region = region_map.findMatch(pkt, REGION_DENY_FLOOD);
+  } else if (pkt->getRouteType() == ROUTE_TYPE_FLOOD) {
+    if (region_map.getWildcard().flags & REGION_DENY_FLOOD) {
+      recv_pkt_region = nullptr;
+    } else {
+      recv_pkt_region = &region_map.getWildcard();
+    }
+  } else {
+    recv_pkt_region = nullptr;
+  }
+  return Mesh::onRecvPacket(pkt);
 }
 
+// ZEPHCORE: ours. Bounded request parsing.
 void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) {
-	if (packet->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
-		uint32_t timestamp;
-		memcpy(&timestamp, data, 4);
+  if (packet->getPayloadType() == PAYLOAD_TYPE_ANON_REQ) {
+    uint32_t timestamp;
+    memcpy(&timestamp, data, 4);
 
-		data[len] = 0;
-		uint8_t reply_len;
+    data[len] = 0;
+    uint8_t reply_len;
 
-		reply_path_len = OUT_PATH_UNKNOWN;
-		if (data[4] == 0 || data[4] >= ' ') {
-			reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
-		} else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
-			reply_len = handleAnonRegionsReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
-		} else if (data[4] == ANON_REQ_TYPE_OWNER && packet->isRouteDirect()) {
-			reply_len = handleAnonOwnerReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
-		} else if (data[4] == ANON_REQ_TYPE_BASIC && packet->isRouteDirect()) {
-			reply_len = handleAnonClockReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
-		} else {
-			reply_len = 0;
-		}
+    reply_path_len = OUT_PATH_UNKNOWN;
+    if (data[4] == 0 || data[4] >= ' ') {
+      reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
+    } else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
+      reply_len = handleAnonRegionsReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
+    } else if (data[4] == ANON_REQ_TYPE_OWNER && packet->isRouteDirect()) {
+      reply_len = handleAnonOwnerReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
+    } else if (data[4] == ANON_REQ_TYPE_BASIC && packet->isRouteDirect()) {
+      reply_len = handleAnonClockReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
+    } else {
+      reply_len = 0;
+    }
 
-		if (reply_len == 0) return;
+    if (reply_len == 0) return;
 
-		/* A DIRECT request that supplied no reply path can still be answered
-		 * along the out_path already stored for this client, as
-		 * onPeerDataRecv() does for REQ. Flooding it instead is both wasteful
-		 * and — under flood.max.unscoped=0 — silently undeliverable. */
-		ClientInfo* client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
-		bool have_out_path = client != nullptr && client->out_path_len != OUT_PATH_UNKNOWN;
+    /* A DIRECT request that supplied no reply path can still be answered
+     * along the out_path already stored for this client, as
+     * onPeerDataRecv() does for REQ. Flooding it instead is both wasteful
+     * and — under flood.max.unscoped=0 — silently undeliverable. */
+    ClientInfo* client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
+    bool have_out_path = client != nullptr && client->out_path_len != OUT_PATH_UNKNOWN;
 
-		switch (mesh::chooseReplyRoute(packet->isRouteFlood(),
-					       reply_path_len != OUT_PATH_UNKNOWN, have_out_path)) {
-		case mesh::REPLY_ROUTE_PATH_RETURN: {
-			// let this sender know the path TO here, so they can use sendDirect() later
-			mesh::Packet* path = createPathReturn(sender, secret, packet->path, packet->path_len,
-							      PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
-			if (path) sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
-			break;
-		}
-		case mesh::REPLY_ROUTE_DIRECT_SUPPLIED: {
-			mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
-			if (reply) sendDirect(reply, reply_path, reply_path_len, SERVER_RESPONSE_DELAY);
-			break;
-		}
-		case mesh::REPLY_ROUTE_DIRECT_OUT_PATH: {
-			mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
-			if (reply) sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
-			break;
-		}
-		case mesh::REPLY_ROUTE_FLOOD: {
-			mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
-			if (reply) sendFloodReply(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
-			break;
-		}
-		}
-	}
+    switch (mesh::chooseReplyRoute(packet->isRouteFlood(),
+                 reply_path_len != OUT_PATH_UNKNOWN, have_out_path)) {
+    case mesh::REPLY_ROUTE_PATH_RETURN: {
+      // let this sender know the path TO here, so they can use sendDirect() later
+      mesh::Packet* path = createPathReturn(sender, secret, packet->path, packet->path_len,
+                    PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
+      if (path) sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+      break;
+    }
+    case mesh::REPLY_ROUTE_DIRECT_SUPPLIED: {
+      mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
+      if (reply) sendDirect(reply, reply_path, reply_path_len, SERVER_RESPONSE_DELAY);
+      break;
+    }
+    case mesh::REPLY_ROUTE_DIRECT_OUT_PATH: {
+      mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
+      if (reply) sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
+      break;
+    }
+    case mesh::REPLY_ROUTE_FLOOD: {
+      mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, sender, secret, reply_data, reply_len);
+      if (reply) sendFloodReply(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+      break;
+    }
+    }
+  }
 }
 
-int RepeaterMesh::searchPeersByHash(const uint8_t* hash) {
-	int n = 0;
-	for (int i = 0; i < acl.getNumClients(); i++) {
-		if (acl.getClientByIdx(i)->id.isHashMatch(hash)) {
-			matching_peer_indexes[n++] = i;
-		}
-	}
-	return n;
+int RepeaterMesh::searchPeersByHash(const uint8_t *hash) {
+  int n = 0;
+  for (int i = 0; i < acl.getNumClients(); i++) {
+    if (acl.getClientByIdx(i)->id.isHashMatch(hash)) {
+      matching_peer_indexes[n++] = i; // store the INDEXES of matching contacts (for subsequent 'peer' methods)
+    }
+  }
+  return n;
 }
 
-void RepeaterMesh::getPeerSharedSecret(uint8_t* dest_secret, int peer_idx) {
-	int i = matching_peer_indexes[peer_idx];
-	if (i >= 0 && i < acl.getNumClients()) {
-		memcpy(dest_secret, acl.getClientByIdx(i)->shared_secret, PUB_KEY_SIZE);
-	}
+void RepeaterMesh::getPeerSharedSecret(uint8_t *dest_secret, int peer_idx) {
+  int i = matching_peer_indexes[peer_idx];
+  if (i >= 0 && i < acl.getNumClients()) {
+    // lookup pre-calculated shared_secret
+    memcpy(dest_secret, acl.getClientByIdx(i)->shared_secret, PUB_KEY_SIZE);
+  } else {
+    MESH_DEBUG_PRINTLN("getPeerSharedSecret: Invalid peer idx: %d", i);
+  }
 }
 
-static bool isShare(const mesh::Packet* packet) {
-	if (packet->hasTransportCodes()) {
-		return packet->transport_codes[0] == 0 && packet->transport_codes[1] == 0;
-	}
-	return false;
+static bool isShare(const mesh::Packet *packet) {
+  if (packet->hasTransportCodes()) {
+    return packet->transport_codes[0] == 0 && packet->transport_codes[1] == 0;  // codes { 0, 0 } means 'send to nowhere'
+  }
+  return false;
 }
 
+// ZEPHCORE: ours. Feeds the mesh time sync.
 void RepeaterMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, uint32_t timestamp,
-				const uint8_t* app_data, size_t app_data_len) {
-	mesh::Mesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
+        const uint8_t* app_data, size_t app_data_len) {
+  mesh::Mesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
 
-	/* Signature already verified by mesh::Mesh before this hook fires.
-	 * Skip share rebroadcasts — they replay stale stored adverts and would
-	 * churn the original sender's tenure. */
-	if (!isShare(packet)) {
-		_timesync.onAdvertHeard(id.pub_key, timestamp, packet->getPathHashCount(),
-					(uint32_t)(k_uptime_get() / 1000));
-	}
+  /* Signature already verified by mesh::Mesh before this hook fires.
+   * Skip share rebroadcasts — they replay stale stored adverts and would
+   * churn the original sender's tenure. */
+  if (!isShare(packet)) {
+    _timesync.onAdvertHeard(id.pub_key, timestamp, packet->getPathHashCount(),
+          (uint32_t)(k_uptime_get() / 1000));
+  }
 
-	if (packet->getPathHashCount() == 0 && !isShare(packet)) {
-		AdvertDataParser parser(app_data, app_data_len);
-		if (parser.isValid() && parser.getType() == ADV_TYPE_REPEATER) {
-			putNeighbour(id, timestamp, packet->getSNR());
-		}
-	}
+  if (packet->getPathHashCount() == 0 && !isShare(packet)) {
+    AdvertDataParser parser(app_data, app_data_len);
+    if (parser.isValid() && parser.getType() == ADV_TYPE_REPEATER) {
+      putNeighbour(id, timestamp, packet->getSNR());
+    }
+  }
 }
 
-void RepeaterMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender_idx,
-				  const uint8_t* secret, uint8_t* data, size_t len) {
-	int i = matching_peer_indexes[sender_idx];
-	if (i < 0 || i >= acl.getNumClients()) {
-		LOG_WRN("onPeerDataRecv: invalid peer idx: %d", i);
-		return;
-	}
-	ClientInfo* client = acl.getClientByIdx(i);
+void RepeaterMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender_idx, const uint8_t *secret,
+                            uint8_t *data, size_t len) {
+  int i = matching_peer_indexes[sender_idx];
+  if (i < 0 || i >= acl.getNumClients()) { // get from our known_clients table (sender SHOULD already be known in this context)
+    MESH_DEBUG_PRINTLN("onPeerDataRecv: invalid peer idx: %d", i);
+    return;
+  }
+  ClientInfo* client = acl.getClientByIdx(i);
 
-	if (type == PAYLOAD_TYPE_REQ) {
-		uint32_t timestamp;
-		memcpy(&timestamp, data, 4);
+  if (type == PAYLOAD_TYPE_REQ) { // request (from a Known admin client!)
+    uint32_t timestamp;
+    memcpy(&timestamp, data, 4);
 
-		if (timestamp > client->last_timestamp) {
-			int reply_len = handleRequest(client, timestamp, &data[4], len - 4);
-			if (reply_len == 0) return;
+    if (timestamp > client->last_timestamp) { // prevent replay attacks
+      int reply_len = handleRequest(client, timestamp, &data[4], len - 4);
+      if (reply_len == 0) return; // invalid command
 
-			client->last_timestamp = timestamp;
-			client->last_activity = getRTCClock()->getCurrentTime();
+      client->last_timestamp = timestamp;
+      client->last_activity = getRTCClock()->getCurrentTime();
 
-			if (packet->isRouteFlood()) {
-				mesh::Packet* path = createPathReturn(client->id, secret, packet->path, packet->path_len,
-								      PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
-				if (path) sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
-			} else {
-				mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_RESPONSE, client->id, secret, reply_data, reply_len);
-				if (reply) {
-					if (client->out_path_len != OUT_PATH_UNKNOWN) {
-						sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
-					} else {
-						sendFloodReply(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
-					}
-				}
-			}
-		} else {
-			LOG_DBG("onPeerDataRecv: possible replay attack");
-		}
-	} else if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && client->isAdmin()) {
-		uint32_t sender_timestamp;
-		memcpy(&sender_timestamp, data, 4);
-		uint8_t flags = (data[4] >> 2);
+      if (packet->isRouteFlood()) {
+        // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the response
+        mesh::Packet *path = createPathReturn(client->id, secret, packet->path, packet->path_len,
+                                              PAYLOAD_TYPE_RESPONSE, reply_data, reply_len);
+        if (path) sendFloodReply(path, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+      } else {
+        mesh::Packet *reply =
+            createDatagram(PAYLOAD_TYPE_RESPONSE, client->id, secret, reply_data, reply_len);
+        if (reply) {
+          if (client->out_path_len != OUT_PATH_UNKNOWN) { // we have an out_path, so send DIRECT
+            sendDirect(reply, client->out_path, client->out_path_len, SERVER_RESPONSE_DELAY);
+          } else {
+            sendFloodReply(reply, SERVER_RESPONSE_DELAY, packet->getPathHashSize());
+          }
+        }
+      }
+    } else {
+      MESH_DEBUG_PRINTLN("onPeerDataRecv: possible replay attack detected");
+    }
+  } else if (type == PAYLOAD_TYPE_TXT_MSG && len > 5 && client->isAdmin()) { // a CLI command
+    uint32_t sender_timestamp;
+    memcpy(&sender_timestamp, data, 4); // timestamp (by sender's RTC clock - which could be wrong)
+    uint8_t flags = (data[4] >> 2);        // message attempt number, and other flags
 
-		/* TXT_TYPE_CLI_COMMAND (v1.18+) is handled exactly like TXT_TYPE_CLI_DATA
-		 * here: both reach this block only behind client->isAdmin(), and both
-		 * are covered by the monotonic sender_timestamp / is_retry gates below. */
-		if (!(flags == TXT_TYPE_PLAIN || flags == TXT_TYPE_CLI_DATA ||
-		      flags == TXT_TYPE_CLI_COMMAND)) {
-			LOG_DBG("onPeerDataRecv: unsupported text type: flags=%02x", flags);
-		} else if (sender_timestamp >= client->last_timestamp) {
-			bool is_retry = (sender_timestamp == client->last_timestamp);
-			client->last_timestamp = sender_timestamp;
-			client->last_activity = getRTCClock()->getCurrentTime();
+    if (!(flags == TXT_TYPE_PLAIN || flags == TXT_TYPE_CLI_DATA || flags == TXT_TYPE_CLI_COMMAND)) {
+      MESH_DEBUG_PRINTLN("onPeerDataRecv: unsupported text type received: flags=%02x", (uint32_t)flags);
+    } else if (sender_timestamp >= client->last_timestamp) { // prevent replay attacks
+      bool is_retry = (sender_timestamp == client->last_timestamp);
+      client->last_timestamp = sender_timestamp;
+      client->last_activity = getRTCClock()->getCurrentTime();
 
-			data[len] = 0;
+      // len can be > original length, but 'text' will be padded with zeroes
+      data[len] = 0; // need to make a C string again, with null terminator
 
-			if (flags == TXT_TYPE_PLAIN) {
-				uint32_t ack_hash;
-				mesh::Utils::sha256((uint8_t*)&ack_hash, 4, data, 5 + strlen((char*)&data[5]),
-						   client->id.pub_key, PUB_KEY_SIZE);
-				mesh::Packet* ack = createAck(ack_hash);
-				if (ack) {
-					if (client->out_path_len == OUT_PATH_UNKNOWN) {
-						sendFloodReply(ack, TXT_ACK_DELAY, packet->getPathHashSize());
-					} else {
-						sendDirect(ack, client->out_path, client->out_path_len, TXT_ACK_DELAY);
-					}
-				}
-			}
+      if (flags == TXT_TYPE_PLAIN) { // for legacy CLI, send Acks
+        uint32_t ack_hash; // calc truncated hash of the message timestamp + text + sender pub_key, to prove
+                           // to sender that we got it
+        mesh::Utils::sha256((uint8_t *)&ack_hash, 4, data, 5 + strlen((char *)&data[5]), client->id.pub_key,
+                            PUB_KEY_SIZE);
 
-			uint8_t temp[5 + CLI_REMOTE_REPLY_SIZE];
-			char* command = (char*)&data[5];
-			char* reply = (char*)&temp[5];
-			if (is_retry) {
-				*reply = 0;
-			} else {
-				handleCommand(sender_timestamp, command, reply);
-			}
+        mesh::Packet *ack = createAck(ack_hash);
+        if (ack) {
+          if (client->out_path_len == OUT_PATH_UNKNOWN) {
+            sendFloodReply(ack, TXT_ACK_DELAY, packet->getPathHashSize());
+          } else {
+            sendDirect(ack, client->out_path, client->out_path_len, TXT_ACK_DELAY);
+          }
+        }
+      }
 
-			int text_len = strlen(reply);
-			if (text_len > 0) {
-				uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
-				if (timestamp == sender_timestamp) timestamp++;
-				memcpy(temp, &timestamp, 4);
-				temp[4] = (TXT_TYPE_CLI_DATA << 2);
+      uint8_t temp[166];
+      char *command = (char *)&data[5];
+      char *reply = (char *)&temp[5];
+      if (is_retry) {
+        *reply = 0;
+      } else {
+        handleCommand(sender_timestamp, command, reply);
+      }
+      int text_len = strlen(reply);
+      if (text_len > 0) {
+        uint32_t timestamp = getRTCClock()->getCurrentTimeUnique();
+        if (timestamp == sender_timestamp) {
+          // WORKAROUND: the two timestamps need to be different, in the CLI view
+          timestamp++;
+        }
+        memcpy(temp, &timestamp, 4);        // mostly an extra blob to help make packet_hash unique
+        temp[4] = (TXT_TYPE_CLI_DATA << 2); // NOTE: legacy was: TXT_TYPE_PLAIN
 
-				auto reply_pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, secret, temp, 5 + text_len);
-				if (reply_pkt) {
-					if (client->out_path_len == OUT_PATH_UNKNOWN) {
-						sendFloodReply(reply_pkt, CLI_REPLY_DELAY_MILLIS, packet->getPathHashSize());
-					} else {
-						sendDirect(reply_pkt, client->out_path, client->out_path_len, CLI_REPLY_DELAY_MILLIS);
-					}
-				}
-			}
-		} else {
-			LOG_DBG("onPeerDataRecv: possible replay attack");
-		}
-	}
+        auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, secret, temp, 5 + text_len);
+        if (reply) {
+          if (client->out_path_len == OUT_PATH_UNKNOWN) {
+            sendFloodReply(reply, CLI_REPLY_DELAY_MILLIS, packet->getPathHashSize());
+          } else {
+            sendDirect(reply, client->out_path, client->out_path_len, CLI_REPLY_DELAY_MILLIS);
+          }
+        }
+      }
+    } else {
+      MESH_DEBUG_PRINTLN("onPeerDataRecv: possible replay attack detected");
+    }
+  }
 }
 
-bool RepeaterMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret,
-				  uint8_t* path, uint8_t path_len, uint8_t extra_type,
-				  uint8_t* extra, uint8_t extra_len) {
-	int i = matching_peer_indexes[sender_idx];
-	if (i >= 0 && i < acl.getNumClients()) {
-		LOG_DBG("PATH to client, path_len=%d", path_len);
-		auto client = acl.getClientByIdx(i);
-		/* path source bounded by upstream packet parser; client->out_path
-		 * is MAX_PATH_SIZE-sized. */
-		client->out_path_len = mesh::Packet::copyPath(client->out_path, path, MAX_PATH_SIZE, path_len);
-		client->last_activity = getRTCClock()->getCurrentTime();
-	}
-	return false;
+bool RepeaterMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const uint8_t *secret, uint8_t *path,
+                            uint8_t path_len, uint8_t extra_type, uint8_t *extra, uint8_t extra_len) {
+  // TODO: prevent replay attacks
+  int i = matching_peer_indexes[sender_idx];
+
+  if (i >= 0 && i < acl.getNumClients()) { // get from our known_clients table (sender SHOULD already be known in this context)
+    MESH_DEBUG_PRINTLN("PATH to client, path_len=%d", (uint32_t)path_len);
+    auto client = acl.getClientByIdx(i);
+
+    // store a copy of path, for sendDirect()
+    client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len);
+    client->last_activity = getRTCClock()->getCurrentTime();
+  } else {
+    MESH_DEBUG_PRINTLN("onPeerPathRecv: invalid peer idx: %d", i);
+  }
+
+  // NOTE: no reciprocal path send!!
+  return false;
 }
+
+#define CTL_TYPE_NODE_DISCOVER_REQ   0x80
+#define CTL_TYPE_NODE_DISCOVER_RESP  0x90
 
 void RepeaterMesh::onControlDataRecv(mesh::Packet* packet) {
-	uint8_t type = packet->payload[0] & 0xF0;
-	if (type == CTL_TYPE_NODE_DISCOVER_REQ && packet->payload_len >= 6 &&
-	    !_prefs.disable_fwd && discover_limiter.allow(getRTCClock()->getCurrentTime())) {
-		int i = 1;
-		uint8_t filter = packet->payload[i++];
-		uint32_t tag;
-		memcpy(&tag, &packet->payload[i], 4);
-		i += 4;
-		uint32_t since = 0;
-		if (packet->payload_len >= i + 4) {
-			memcpy(&since, &packet->payload[i], 4);
-			i += 4;
-		}
+  uint8_t type = packet->payload[0] & 0xF0;    // just test upper 4 bits
+  if (type == CTL_TYPE_NODE_DISCOVER_REQ && packet->payload_len >= 6
+      && !_prefs.disable_fwd && discover_limiter.allow(rtc_clock.getCurrentTime())
+  ) {
+    int i = 1;
+    uint8_t  filter = packet->payload[i++];
+    uint32_t tag;
+    memcpy(&tag, &packet->payload[i], 4); i += 4;
+    uint32_t since;
+    if (packet->payload_len >= i+4) {   // optional since field
+      memcpy(&since, &packet->payload[i], 4); i += 4;
+    } else {
+      since = 0;
+    }
 
-		if ((filter & (1 << ADV_TYPE_REPEATER)) != 0 && _prefs.discovery_mod_timestamp >= since) {
-			bool prefix_only = packet->payload[0] & 1;
-			uint8_t data[6 + PUB_KEY_SIZE];
-			data[0] = CTL_TYPE_NODE_DISCOVER_RESP | ADV_TYPE_REPEATER;
-			data[1] = packet->_snr;
-			memcpy(&data[2], &tag, 4);
-			memcpy(&data[6], self_id.pub_key, PUB_KEY_SIZE);
-			auto resp = createControlData(data, prefix_only ? 6 + 8 : 6 + PUB_KEY_SIZE);
-			if (resp) {
-				sendZeroHop(resp, getRetransmitDelay(resp) * 4);
-			}
-		}
-	} else if (type == CTL_TYPE_NODE_DISCOVER_RESP && packet->payload_len >= 6) {
-		uint8_t node_type = packet->payload[0] & 0x0F;
-		if (node_type != ADV_TYPE_REPEATER) return;
-		if (packet->payload_len < 6 + PUB_KEY_SIZE) return;
+    if ((filter & (1 << ADV_TYPE_REPEATER)) != 0 && _prefs.discovery_mod_timestamp >= since) {
+      bool prefix_only = packet->payload[0] & 1;
+      uint8_t data[6 + PUB_KEY_SIZE];
+      data[0] = CTL_TYPE_NODE_DISCOVER_RESP | ADV_TYPE_REPEATER;   // low 4-bits for node type
+      data[1] = packet->_snr;   // let sender know the inbound SNR ( x 4)
+      memcpy(&data[2], &tag, 4);     // include tag from request, for client to match to
+      memcpy(&data[6], self_id.pub_key, PUB_KEY_SIZE);
+      auto resp = createControlData(data, prefix_only ? 6 + 8 : 6 + PUB_KEY_SIZE);
+      if (resp) {
+        sendZeroHop(resp, getRetransmitDelay(resp)*4);  // apply random delay (widened x4), as multiple nodes can respond to this
+      }
+    }
+  } else if (type == CTL_TYPE_NODE_DISCOVER_RESP && packet->payload_len >= 6) {
+    uint8_t node_type = packet->payload[0] & 0x0F;
+    if (node_type != ADV_TYPE_REPEATER) {
+      return;
+    }
+    if (packet->payload_len < 6 + PUB_KEY_SIZE) {
+      MESH_DEBUG_PRINTLN("onControlDataRecv: DISCOVER_RESP pubkey too short: %d", (uint32_t)packet->payload_len);
+      return;
+    }
 
-		/* Only accept responses matching our pending discover tag */
-		if (pending_discover_tag == 0 || millisHasNowPassed(pending_discover_until)) {
-			pending_discover_tag = 0;
-			return;
-		}
-		uint32_t tag;
-		memcpy(&tag, &packet->payload[2], 4);
-		if (tag != pending_discover_tag) return;
+    if (pending_discover_tag == 0 || millisHasNowPassed(pending_discover_until)) {
+      pending_discover_tag = 0;
+      return;
+    }
+    uint32_t tag;
+    memcpy(&tag, &packet->payload[2], 4);
+    if (tag != pending_discover_tag) {
+      return;
+    }
 
-		mesh::Identity id(&packet->payload[6]);
-		if (id.matches(self_id)) return;
-		putNeighbour(id, getRTCClock()->getCurrentTime(), packet->getSNR());
-	}
+    mesh::Identity id(&packet->payload[6]);
+    if (id.matches(self_id)) {
+      return;
+    }
+    putNeighbour(id, rtc_clock.getCurrentTime(), packet->getSNR());
+  }
 }
 
 void RepeaterMesh::sendNodeDiscoverReq() {
-	uint8_t data[10];
-	data[0] = CTL_TYPE_NODE_DISCOVER_REQ;  // prefix_only=0
-	data[1] = (1 << ADV_TYPE_REPEATER);
-	getRNG()->random(&data[2], 4);  // tag
-	memcpy(&pending_discover_tag, &data[2], 4);
-	pending_discover_until = futureMillis(30000);
-	uint32_t since = 0;
-	memcpy(&data[6], &since, 4);
+  uint8_t data[10];
+  data[0] = CTL_TYPE_NODE_DISCOVER_REQ; // prefix_only=0
+  data[1] = (1 << ADV_TYPE_REPEATER);
+  getRNG()->random(&data[2], 4); // tag
+  memcpy(&pending_discover_tag, &data[2], 4);
+  pending_discover_until = futureMillis(60000);
+  uint32_t since = 0;
+  memcpy(&data[6], &since, 4);
 
-	auto pkt = createControlData(data, sizeof(data));
-	if (pkt) {
-		sendZeroHop(pkt);
-	}
+  auto pkt = createControlData(data, sizeof(data));
+  if (pkt) {
+    sendZeroHop(pkt);
+  }
 }
 
+// ZEPHCORE: ours. Zephyr datastore and ZephCore members.
 RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::MillisecondClock& ms,
-			   mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables)
-	: mesh::Mesh(radio, ms, rng, rtc, *new StaticPoolPacketManager(), tables),
-	  _board(board),
-	  _cli(board, rtc, acl, &_prefs, this),
-	  region_map(key_store), temp_map(key_store),
-	  discover_limiter(4, 120),
-	  anon_limiter(4, 180),
-	  /* Failed-login rate limit: 4 wrong-password attempts per 180s. Matches
-	   * anon_limiter's shape so legitimate operators don't notice; brute-force
-	   * attempts hit the cap quickly and trip the LOG_WRN below. Global rate
-	   * (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
-	   * Phase 4 (mitigation for upstream MeshCore#2556). */
-	  login_fail_limiter(4, 180) {
+         mesh::RNG& rng, mesh::RTCClock& rtc, mesh::MeshTables& tables)
+  : mesh::Mesh(radio, ms, rng, rtc, *new StaticPoolPacketManager(), tables),
+    _board(board),
+    _cli(board, rtc, &region_map, &acl, &_prefs, this),
+    region_map(key_store), temp_map(key_store),
+    discover_limiter(4, 120),
+    anon_limiter(4, 180),
+    /* Failed-login rate limit: 4 wrong-password attempts per 180s. Matches
+     * anon_limiter's shape so legitimate operators don't notice; brute-force
+     * attempts hit the cap quickly and trip the LOG_WRN below. Global rate
+     * (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
+     * Phase 4 (mitigation for upstream MeshCore#2556). */
+    login_fail_limiter(4, 180) {
 
-	_store = nullptr;
-	last_millis = 0;
-	uptime_millis = 0;
-	next_local_advert = next_flood_advert = 0;
-	dirty_contacts_expiry = 0;
-	set_radio_at = revert_radio_at = 0;
-	_logging = false;
-	region_load_active = false;
-	recv_pkt_region = nullptr;
-	recv_pkt_unscoped_flood = false;
-	memset(default_scope.key, 0, sizeof(default_scope.key));
-	pending_discover_tag = 0;
-	pending_discover_until = 0;
+  _store = nullptr;
+  last_millis = 0;
+  uptime_millis = 0;
+  next_local_advert = next_flood_advert = 0;
+  dirty_contacts_expiry = 0;
+  set_radio_at = revert_radio_at = 0;
+  _logging = false;
+  region_load_active = false;
+  recv_pkt_region = nullptr;
+  recv_pkt_unscoped_flood = false;
+  memset(default_scope.key, 0, sizeof(default_scope.key));
+  pending_discover_tag = 0;
+  pending_discover_until = 0;
 
 #if MAX_NEIGHBOURS > 0
-	for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-		neighbours[i].clear();
-	}
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    neighbours[i].clear();
+  }
 #endif
 
-	initNodePrefs(&_prefs);
-	strcpy(_prefs.node_name, "Repeater");
-	_prefs.advert_loc_policy = ADVERT_LOC_PREFS;  // Repeaters always advertise prefs coordinates
-	_prefs.loop_detect = LOOP_DETECT_MODERATE;
-	/* path_hash_mode = 1 moved into initNodePrefs() -- it is the default for
-	 * every role, and a default listed only at one call site is invisible to
-	 * the others (the companion never got it). */
+  initNodePrefs(&_prefs);
+  strcpy(_prefs.node_name, "Repeater");
+  _prefs.advert_loc_policy = ADVERT_LOC_PREFS;  // Repeaters always advertise prefs coordinates
+  _prefs.loop_detect = LOOP_DETECT_MODERATE;
+  _prefs.gps_interval = CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC;  // ZEPHCORE: 48 h, a fix for time sync
+  /* path_hash_mode = 1 moved into initNodePrefs() -- it is the default for
+   * every role, and a default listed only at one call site is invisible to
+   * the others (the companion never got it). */
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	memset(&_uplink_creds, 0, sizeof(_uplink_creds));
-	observer_creds_init(&_uplink_creds);
-	_uplink_reboot_required = false;
-	memset(_uplink_pubkey_hex, 0, sizeof(_uplink_pubkey_hex));
-	memset(_uplink_packets_topic, 0, sizeof(_uplink_packets_topic));
-	memset(_uplink_status_topic, 0, sizeof(_uplink_status_topic));
-	_uplink_last_score = 0.0f;
-	_uplink_last_rssi = 0.0f;
-	_uplink_last_raw_len = 0;
-	_uplink_next_status_at = 0;
-	atomic_set(&_uplink_connect_pending, 0);
+  memset(&_uplink_creds, 0, sizeof(_uplink_creds));
+  observer_creds_init(&_uplink_creds);
+  _uplink_reboot_required = false;
+  memset(_uplink_pubkey_hex, 0, sizeof(_uplink_pubkey_hex));
+  memset(_uplink_packets_topic, 0, sizeof(_uplink_packets_topic));
+  memset(_uplink_status_topic, 0, sizeof(_uplink_status_topic));
+  _uplink_last_score = 0.0f;
+  _uplink_last_rssi = 0.0f;
+  _uplink_last_raw_len = 0;
+  _uplink_next_status_at = 0;
+  atomic_set(&_uplink_connect_pending, 0);
 #endif
 }
 
+// ZEPHCORE: ours. Zephyr storage and radio setup.
 void RepeaterMesh::begin(RepeaterDataStore* store) {
-	_store = store;
+  _store = store;
 
-	/* Prefs and identity are loaded by the caller (main_repeater.cpp) before
-	 * begin() — the radio reads freq/bw/sf/cr through _prefs during
-	 * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
-	mesh::Mesh::begin();
-	_contention.setBackoffMultiplier(_prefs.backoff_multiplier);
-	acl.load(_store->getAclPath(), self_id);
-	region_map.load(_store->getRegionsPath());
+  /* Prefs and identity are loaded by the caller (main_repeater.cpp) before
+   * begin() — the radio reads freq/bw/sf/cr through _prefs during
+   * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
+  mesh::Mesh::begin();
+  _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
+  acl.load(_store->getFS(), self_id);
+  region_map.load(_store->getFS());
 
-	// establish default-scope from persisted default region (if any)
-	{
-		RegionEntry* r = region_map.getDefaultRegion();
-		if (r) {
-			region_map.getTransportKeysFor(*r, &default_scope, 1);
-		}
-	}
+  // establish default-scope from persisted default region (if any)
+  {
+    RegionEntry* r = region_map.getDefaultRegion();
+    if (r) {
+      region_map.getTransportKeysFor(*r, &default_scope, 1);
+    }
+  }
 
-	updateAdvertTimer();
-	updateFloodAdvertTimer();
+  updateAdvertTimer();
+  updateFloodAdvertTimer();
 
-	_board.setAdcMultiplier(_prefs.adc_multiplier);
+  _board.setAdcMultiplier(_prefs.adc_multiplier);
 
-	LOG_INF("RepeaterMesh started: %s (freq=%.2f bw=%.0f sf=%d cr=%d)",
-		_prefs.node_name, (double)_prefs.freq, (double)_prefs.bw, _prefs.sf, _prefs.cr);
+  LOG_INF("RepeaterMesh started: %s (freq=%.2f bw=%.0f sf=%d cr=%d)",
+    _prefs.node_name, (double)_prefs.freq, (double)_prefs.bw, _prefs.sf, _prefs.cr);
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	observer_creds_load(&_uplink_creds, _store->getBasePath());
-	mesh::Utils::toHex(_uplink_pubkey_hex, self_id.pub_key, PUB_KEY_SIZE);
-	_uplink_pubkey_hex[PUB_KEY_SIZE * 2] = '\0';
+  observer_creds_load(&_uplink_creds, _store->getBasePath());
+  mesh::Utils::toHex(_uplink_pubkey_hex, self_id.pub_key, PUB_KEY_SIZE);
+  _uplink_pubkey_hex[PUB_KEY_SIZE * 2] = '\0';
 
-	const char *iata = _uplink_creds.mqtt_iata[0] ? _uplink_creds.mqtt_iata : "XXX";
-	snprintf(_uplink_packets_topic, sizeof(_uplink_packets_topic),
-		 "meshcore/%s/%s/packets", iata, _uplink_pubkey_hex);
-	snprintf(_uplink_status_topic, sizeof(_uplink_status_topic),
-		 "meshcore/%s/%s/status", iata, _uplink_pubkey_hex);
+  const char *iata = _uplink_creds.mqtt_iata[0] ? _uplink_creds.mqtt_iata : "XXX";
+  snprintf(_uplink_packets_topic, sizeof(_uplink_packets_topic),
+     "meshcore/%s/%s/packets", iata, _uplink_pubkey_hex);
+  snprintf(_uplink_status_topic, sizeof(_uplink_status_topic),
+     "meshcore/%s/%s/status", iata, _uplink_pubkey_hex);
 
-	if (isUplinkEnabled() && _uplink_creds.wifi_ssid[0] && _uplink_creds.mqtt_host[0]) {
-		s_uplink_mesh = this;
-		zc_wifi_station_start(&_uplink_creds, uplink_time_sync_cb);
-		mqtt_publisher_start(&_uplink_creds, _prefs.node_name,
-				     _uplink_status_topic, _uplink_packets_topic);
-		mqtt_publisher_set_connect_cb([]() {
-		    /* Runs on the MQTT publisher thread — DON'T publish here. It would
-		     * race the main-thread producer on the publisher's staging buffer
-		     * and toggle the battery-ADC regulator off-main. Defer to the main
-		     * loop via an atomic flag drained in maintenanceLoop(). */
-		    if (s_uplink_mesh) {
-			atomic_set(&s_uplink_mesh->_uplink_connect_pending, 1);
-			/* Wake the main loop so "online" publishes immediately.
-			 * Without this the flag waits for whatever deadline fires
-			 * next — up to UPLINK_STATUS_INTERVAL_MS (5 min) on an idle
-			 * repeater, since maintenance no longer ticks every 5 s. */
-			s_uplink_mesh->notifyWake();
-		    }
-		});
-		_uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
-		LOG_INF("Repeater uplink active: %s", _uplink_packets_topic);
-	} else {
-		LOG_INF("Repeater uplink inactive");
-	}
+  if (isUplinkEnabled() && _uplink_creds.wifi_ssid[0] && _uplink_creds.mqtt_host[0]) {
+    s_uplink_mesh = this;
+    zc_wifi_station_start(_uplink_creds.wifi_ssid, _uplink_creds.wifi_psk, uplink_time_sync_cb);
+    mqtt_publisher_start(&_uplink_creds, _prefs.node_name,
+             _uplink_status_topic, _uplink_packets_topic);
+    mqtt_publisher_set_connect_cb([]() {
+        /* Runs on the MQTT publisher thread — DON'T publish here. It would
+         * race the main-thread producer on the publisher's staging buffer
+         * and toggle the battery-ADC regulator off-main. Defer to the main
+         * loop via an atomic flag drained in maintenanceLoop(). */
+        if (s_uplink_mesh) {
+      atomic_set(&s_uplink_mesh->_uplink_connect_pending, 1);
+      /* Wake the main loop so "online" publishes immediately.
+       * Without this the flag waits for whatever deadline fires
+       * next — up to UPLINK_STATUS_INTERVAL_MS (5 min) on an idle
+       * repeater, since maintenance no longer ticks every 5 s. */
+      s_uplink_mesh->notifyWake();
+        }
+    });
+    _uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
+    LOG_INF("Repeater uplink active: %s", _uplink_packets_topic);
+  } else {
+    LOG_INF("Repeater uplink inactive");
+  }
 #endif
 }
 
-double RepeaterMesh::getNodeLat() const {
-	struct gps_position pos;
-	if (gps_get_last_known_position(&pos)) {
-		return pos.latitude_ndeg / 1e9;
-	}
-	return _prefs.node_lat;
-}
-
-double RepeaterMesh::getNodeLon() const {
-	struct gps_position pos;
-	if (gps_get_last_known_position(&pos)) {
-		return pos.longitude_ndeg / 1e9;
-	}
-	return _prefs.node_lon;
-}
-
-bool RepeaterMesh::setGpsEnabled(bool enabled) {
-	if (!gps_is_available()) return false;
-	gps_enable(enabled);
-	return true;
-}
-
-bool RepeaterMesh::isGpsEnabled() const {
-	return gps_is_enabled();
-}
-
-void RepeaterMesh::formatGpsStatsReply(char* reply) {
-	if (!gps_is_enabled()) {
-		strcpy(reply, "off");
-		return;
-	}
-
-	struct gps_state_info gsi;
-	gps_get_state_info(&gsi);
-
-	static const char* const state_str[] = { "off", "standby", "acquiring" };
-	const char* state = gsi.state < 3 ? state_str[gsi.state] : "unknown";
-
-	struct gps_position pos;
-	bool has_pos = gps_get_last_known_position(&pos);
-
-	if (has_pos) {
-		snprintf(reply, CLI_REPLY_SIZE,
-		    "on state=%s sats=%u fix=%us ago lat=%.6f lon=%.6f",
-		    state, gsi.satellites, gsi.last_fix_age_s,
-		    pos.latitude_ndeg / 1e9, pos.longitude_ndeg / 1e9);
-	} else if (gsi.next_search_s > 0) {
-		snprintf(reply, CLI_REPLY_SIZE,
-		    "on state=%s sats=%u no fix next=%us",
-		    state, gsi.satellites, gsi.next_search_s);
-	} else {
-		snprintf(reply, CLI_REPLY_SIZE,
-		    "on state=%s sats=%u no fix",
-		    state, gsi.satellites);
-	}
-
-	/* Per-constellation tally is deliberately NOT appended here — "get gps"
-	 * has to fit a LoRa reply. It lives in "get gps diag" instead. */
-}
-
-void RepeaterMesh::savePrefs() {
-	if (_store) {
-		_store->savePrefs(_prefs);
-	}
+void RepeaterMesh::sendFloodScoped(const TransportKey& scope, mesh::Packet* pkt, uint32_t delay_millis, uint8_t path_hash_size) {
+  if (scope.isNull()) {
+    sendFlood(pkt, delay_millis, path_hash_size);
+  } else {
+    uint16_t codes[2];
+    codes[0] = scope.calcTransportCode(pkt);
+    codes[1] = 0;  // REVISIT: set to 'home' Region, for sender/return region?
+    sendFlood(pkt, codes, delay_millis, path_hash_size);
+  }
 }
 
 void RepeaterMesh::applyTempRadioParams(float freq, float bw, uint8_t sf, uint8_t cr, int timeout_mins) {
-	set_radio_at = futureMillis(2000);
-	pending_freq = freq;
-	pending_bw = bw;
-	pending_sf = sf;
-	pending_cr = cr;
-	revert_radio_at = futureMillis(2000 + timeout_mins * 60 * 1000);
+  set_radio_at = futureMillis(2000); // give CLI reply some time to be sent back, before applying temp radio params
+  pending_freq = freq;
+  pending_bw = bw;
+  pending_sf = sf;
+  pending_cr = cr;
+
+  revert_radio_at = futureMillis(2000 + timeout_mins * 60 * 1000); // schedule when to revert radio params
 }
 
-void RepeaterMesh::freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) {
-	auto& radio = getRadioDriver(_radio);
-	if (!radio.hasRadioOverride()) {
-		/* Holds the radio on the preset it is ALREADY running while _prefs
-		 * move ahead of it, so the learned CAD offset still applies — see
-		 * setRadioOverride(). */
-		radio.setRadioOverride(freq, bw, sf, cr, /*visiting_new_preset=*/false);
-	}
-}
-
+// ZEPHCORE: ours. Zephyr storage.
 bool RepeaterMesh::formatFileSystem() {
-	if (_store) {
-		return _store->formatFileSystem();
-	}
-	return false;
+  if (_store) {
+    return _store->formatFileSystem();
+  }
+  return false;
 }
 
 void RepeaterMesh::sendSelfAdvertisement(int delay_millis, bool flood) {
-	mesh::Packet* pkt = createSelfAdvert();
-	if (pkt) {
-		if (flood) {
-			sendFloodScoped(default_scope, pkt, delay_millis, _prefs.path_hash_mode + 1);
-		} else {
-			sendZeroHop(pkt, delay_millis);
-		}
-	} else {
-		LOG_ERR("Unable to create advertisement packet");
-	}
+  mesh::Packet *pkt = createSelfAdvert();
+  if (pkt) {
+    if (flood) {
+      sendFloodScoped(default_scope, pkt, delay_millis, _prefs.path_hash_mode + 1);
+    } else {
+      sendZeroHop(pkt, delay_millis);
+    }
+  } else {
+    MESH_DEBUG_PRINTLN("ERROR: unable to create advertisement packet!");
+  }
 }
 
 void RepeaterMesh::updateAdvertTimer() {
-	if (_prefs.advert_interval > 0) {
-		next_local_advert = futureMillis(((uint32_t)_prefs.advert_interval) * 2 * 60 * 1000);
-	} else {
-		next_local_advert = 0;
-	}
+  if (_prefs.advert_interval > 0) { // schedule local advert timer
+    next_local_advert = futureMillis(((uint32_t)_prefs.advert_interval) * 2 * 60 * 1000);
+  } else {
+    next_local_advert = 0; // stop the timer
+  }
 }
 
 void RepeaterMesh::updateFloodAdvertTimer() {
-	if (_prefs.flood_advert_interval > 0) {
-		next_flood_advert = futureMillis(((uint32_t)_prefs.flood_advert_interval) * 60 * 60 * 1000);
-	} else {
-		next_flood_advert = 0;
-	}
+  if (_prefs.flood_advert_interval > 0) { // schedule flood advert timer
+    next_flood_advert = futureMillis(((uint32_t)_prefs.flood_advert_interval) * 60 * 60 * 1000);
+  } else {
+    next_flood_advert = 0; // stop the timer
+  }
+}
+
+// ZEPHCORE: ours. No log file.
+void RepeaterMesh::dumpLogFile() {
+  // Logging to file not implemented in Zephyr version
+  LOG_INF("Log dump not implemented");
+}
+
+// ZEPHCORE: ours. No runtime TX-power API.
+void RepeaterMesh::setTxPower(int8_t power_dbm) {
+  radio_set_tx_power(power_dbm);
+}
+
+// ZEPHCORE: ours. Through the LoRa adapter.
+bool RepeaterMesh::setRxBoostedGain(bool enable) {
+  return getRadioDriver(_radio).setRxBoost(enable);
+}
+
+#if 1  // ZEPHCORE: every radio family (was USE_LR2021); non-LR2021 adapters report unsupported
+// ZEPHCORE: ours. Through the LoRa adapter.
+bool RepeaterMesh::configSideDetectors(const uint8_t* sfs, uint8_t num) {
+  return getRadioDriver(_radio).configSideDetectors(sfs, num);
+}
+#endif
+
+// ZEPHCORE: ours. No <algorithm>; insertion sort.
+void RepeaterMesh::formatNeighborsReply(char* reply) {
+  char* dp = reply;
+
+#if MAX_NEIGHBOURS > 0
+  int16_t neighbours_count = 0;
+  NeighbourInfo* sorted_neighbours[MAX_NEIGHBOURS];
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    if (neighbours[i].heard_timestamp > 0) {
+      sorted_neighbours[neighbours_count++] = &neighbours[i];
+    }
+  }
+
+  simple_sort(sorted_neighbours, (int)neighbours_count,
+      [](const NeighbourInfo* a, const NeighbourInfo* b) {
+    return a->heard_timestamp > b->heard_timestamp;
+      });
+
+  for (int i = 0; i < neighbours_count && dp - reply < 134; i++) {
+    NeighbourInfo* neighbour = sorted_neighbours[i];
+
+    if (i > 0) *dp++ = '\n';
+
+    char hex[10];
+    mesh::Utils::toHex(hex, neighbour->id.pub_key, 4);
+
+    uint32_t secs_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
+    sprintf(dp, "%s:%u:%d", hex, secs_ago, neighbour->snr);
+    while (*dp) dp++;
+  }
+#endif
+
+  if (dp == reply) {
+    strcpy(dp, "-none-");
+    dp += 6;
+  }
+  *dp = 0;
+}
+
+// ZEPHCORE: ours. NeighbourInfo::clear().
+void RepeaterMesh::removeNeighbor(const uint8_t* pubkey, int key_len) {
+#if MAX_NEIGHBOURS > 0
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    if (memcmp(neighbours[i].id.pub_key, pubkey, key_len) == 0) {
+      neighbours[i].clear();
+    }
+  }
+#endif
+}
+
+void RepeaterMesh::startRegionsLoad() {
+  temp_map.resetFrom(region_map);   // rebuild regions in a temp instance
+  memset(load_stack, 0, sizeof(load_stack));
+  load_stack[0] = &temp_map.getWildcard();
+  region_load_active = true;
+}
+
+// ZEPHCORE: ours. Through RepeaterDataStore.
+bool RepeaterMesh::saveRegions() {
+  return region_map.save(_store->getFS());
+}
+
+void RepeaterMesh::onDefaultRegionChanged(const RegionEntry* r) {
+  if (r) {
+    region_map.getTransportKeysFor(*r, &default_scope, 1);
+  } else {
+    memset(default_scope.key, 0, sizeof(default_scope.key));
+  }
+}
+
+// ZEPHCORE: ours. Our board handle.
+void RepeaterMesh::formatStatsReply(char* reply) {
+  StatsFormatHelper::formatCoreStats(reply, _board, *_ms, _err_flags, _mgr);
+}
+
+// ZEPHCORE: ours. StatsFormatHelper over the LoRa adapter.
+void RepeaterMesh::formatRadioStatsReply(char* reply) {
+  auto& radio_driver = getRadioDriver(_radio);
+  StatsFormatHelper::formatRadioStats(reply, _radio, radio_driver, getTotalAirTime(), getReceiveAirTime());
+}
+
+// ZEPHCORE: ours. StatsFormatHelper over the LoRa adapter.
+void RepeaterMesh::formatPacketStatsReply(char* reply) {
+  auto& radio_driver = getRadioDriver(_radio);
+  StatsFormatHelper::formatPacketStats(reply, radio_driver, getNumSentFlood(), getNumSentDirect(),
+               getNumRecvFlood(), getNumRecvDirect());
+}
+
+// ZEPHCORE: ours. Through RepeaterDataStore.
+void RepeaterMesh::saveIdentity(const mesh::LocalIdentity& new_id) {
+  if (_store) {
+    _store->saveIdentity(new_id);
+  }
+}
+
+// ZEPHCORE: ours. Also clears the radio adapter counters.
+void RepeaterMesh::clearStats() {
+  auto& radio_driver = getRadioDriver(_radio);
+  radio_driver.resetStats();
+  radio_driver.resetDutyCycleTimeoutRestarts();
+  resetStats();
+  ((SimpleMeshTables *)getTables())->resetStats();
+}
+
+// ZEPHCORE: ours. Reply-header budget, blank lines, uplink and neighbour CLI.
+void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
+  if (region_load_active) {
+    handleRegionLoadLine(sender_timestamp, command, reply);
+    return;
+  }
+
+  /* Blank line: nothing to run.  The USB reader forwards these (see
+   * cli_rx_work_fn) because `region load` commits on one -- which is
+   * handled above, before this returns. */
+  if (StrHelper::isBlank(command)) { reply[0] = 0; return; }
+
+  while (*command == ' ') command++;
+
+  uint8_t hdr_used = 0;
+  if (strlen(command) > 4 && command[2] == '|') {
+    memcpy(reply, command, 3);
+    reply += 3;
+    command += 3;
+    hdr_used = 3;
+  }
+  /* Tell the shared CLI how much of the caller's buffer is already spent, so
+   * the self-limiting handlers do not write past temp[5 + CLI_REMOTE_REPLY_SIZE].
+   * Set unconditionally: a stale value would shrink the next reply. */
+  _cli.setReplyHeaderUsed(hdr_used);
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+  if (handleUplinkCommand(command, reply)) {
+    return;
+  }
+#endif
+
+  // ACL commands - supports BOTH formats for app compatibility:
+  //   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)
+  //   MeshCore App: setperm {permissions} {pubkey-hex}  (perms is short 2-char hex, pubkey is long)
+  // Detection: if first part is <= 2 chars, it's permissions; otherwise it's pubkey
+  if (memcmp(command, "setperm ", 8) == 0) {
+    char* first = &command[8];
+    char* sp = strchr(first, ' ');
+    if (sp == nullptr) {
+      strcpy(reply, "Err - bad params");
+    } else {
+      *sp++ = 0;  // null terminate first part
+      char* second = sp;
+
+      // Detect format: if first part is short (1-2 chars), it's permissions
+      int first_len = strlen(first);
+      char* hex;
+      uint8_t perms;
+
+      if (first_len <= 2) {
+        // App format: setperm {perms} {pubkey}
+        perms = (uint8_t)strtol(first, nullptr, 16);
+        hex = second;
+      } else {
+        // Arduino format: setperm {pubkey} {perms}
+        hex = first;
+        perms = (uint8_t)atoi(second);
+      }
+
+      uint8_t pubkey[PUB_KEY_SIZE];
+      int hex_len = strlen(hex);
+      if (hex_len > PUB_KEY_SIZE * 2) hex_len = PUB_KEY_SIZE * 2;
+      if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
+        if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
+          if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+          strcpy(reply, "OK");
+        } else {
+          strcpy(reply, "Err - invalid params");
+        }
+      } else {
+        strcpy(reply, "Err - bad pubkey");
+      }
+    }
+  } else if (sender_timestamp == 0 && strcmp(command, "get acl") == 0) {
+    Serial.println("ACL:");
+    for (int i = 0; i < acl.getNumClients(); i++) {
+      auto c = acl.getClientByIdx(i);
+      if (c->permissions == 0) continue;  // skip deleted (or guest) entries
+
+      Serial.printf("%02X ", c->permissions);
+      mesh::Utils::printHex(Serial, c->id.pub_key, PUB_KEY_SIZE);
+      Serial.printf("\n");
+    }
+    reply[0] = 0;
+  } else if (memcmp(command, "discover.neighbors", 18) == 0) {
+    const char* sub = command + 18;
+    while (*sub == ' ') sub++;
+    if (*sub != 0) {
+      strcpy(reply, "Err - discover.neighbors has no options");
+    } else {
+      sendNodeDiscoverReq();
+      strcpy(reply, "OK - Discover sent");
+    }
+  } else {
+    _cli.handleCommand(sender_timestamp, command, reply);
+  }
+}
+
+// ZEPHCORE: ours. Deadline-driven maintenance.
+void RepeaterMesh::loop() {
+  mesh::Mesh::loop();
+
+  if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
+    mesh::Packet* pkt = createSelfAdvert();
+    if (pkt) sendFloodScoped(default_scope, pkt, (uint32_t)0, _prefs.path_hash_mode + 1);
+    updateFloodAdvertTimer();
+    updateAdvertTimer();
+  } else if (next_local_advert && millisHasNowPassed(next_local_advert)) {
+    mesh::Packet* pkt = createSelfAdvert();
+    if (pkt) sendZeroHop(pkt);
+    updateAdvertTimer();
+  }
+
+  if (set_radio_at && millisHasNowPassed(set_radio_at)) {
+    set_radio_at = 0;
+    getRadioDriver(_radio).setRadioOverride(pending_freq, pending_bw, pending_sf, pending_cr);
+    LOG_INF("Temp radio params applied");
+  }
+
+  if (revert_radio_at && millisHasNowPassed(revert_radio_at)) {
+    revert_radio_at = 0;
+    getRadioDriver(_radio).clearRadioOverride();
+    LOG_INF("Radio params restored");
+  }
+
+  if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {
+    acl.save(_store->getFS());
+    dirty_contacts_expiry = 0;
+  }
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
+  /* MQTT (re)connected — publish the initial "online" status here on the main
+   * thread (the CONNACK callback only sets this flag, off-main). */
+  if (atomic_cas(&_uplink_connect_pending, 1, 0)) {
+    publishUplinkStatus("online");
+  }
+  if (_uplink_next_status_at && millisHasNowPassed(_uplink_next_status_at)) {
+    publishUplinkStatus("online");
+    _uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
+  }
+  if (atomic_cas(&s_uplink_sntp_pending, 1, 0)) {
+    /* SNTP set the clock (trusted) — arm suppression + drift envelope. */
+    _timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
+  }
+#endif
+
+  timeSyncTick();
+
+  uint32_t now = k_uptime_get();
+  uptime_millis += now - last_millis;
+  last_millis = now;
+}
+
+// ZEPHCORE: no hasPendingWork(). Upstream's main.cpp gates sleep on it; our
+// event loop sleeps in k_event_wait() and wakes on deadlines (lld/07b).
+
+
+/* ---- ZEPHCORE: methods upstream does not have ---- */
+
+double RepeaterMesh::getNodeLat() const {
+  struct gps_position pos;
+  if (gps_get_last_known_position(&pos)) {
+    return pos.latitude_ndeg / 1e9;
+  }
+  return _prefs.node_lat;
+}
+
+double RepeaterMesh::getNodeLon() const {
+  struct gps_position pos;
+  if (gps_get_last_known_position(&pos)) {
+    return pos.longitude_ndeg / 1e9;
+  }
+  return _prefs.node_lon;
+}
+
+bool RepeaterMesh::setGpsEnabled(bool enabled) {
+  if (!gps_is_available()) return false;
+  gps_enable(enabled);
+  return true;
+}
+
+bool RepeaterMesh::isGpsEnabled() const {
+  return gps_is_enabled();
+}
+
+void RepeaterMesh::formatGpsStatsReply(char* reply) {
+  if (!gps_is_enabled()) {
+    strcpy(reply, "off");
+    return;
+  }
+
+  struct gps_state_info gsi;
+  gps_get_state_info(&gsi);
+
+  static const char* const state_str[] = { "off", "standby", "acquiring" };
+  const char* state = gsi.state < 3 ? state_str[gsi.state] : "unknown";
+
+  struct gps_position pos;
+  bool has_pos = gps_get_last_known_position(&pos);
+
+  if (has_pos) {
+    snprintf(reply, CLI_REPLY_SIZE,
+        "on state=%s sats=%u fix=%us ago lat=%.6f lon=%.6f",
+        state, gsi.satellites, gsi.last_fix_age_s,
+        pos.latitude_ndeg / 1e9, pos.longitude_ndeg / 1e9);
+  } else if (gsi.next_search_s > 0) {
+    snprintf(reply, CLI_REPLY_SIZE,
+        "on state=%s sats=%u no fix next=%us",
+        state, gsi.satellites, gsi.next_search_s);
+  } else {
+    snprintf(reply, CLI_REPLY_SIZE,
+        "on state=%s sats=%u no fix",
+        state, gsi.satellites);
+  }
+
+  /* Per-constellation tally is deliberately NOT appended here — "get gps"
+   * has to fit a LoRa reply. It lives in "get gps diag" instead. */
+}
+
+void RepeaterMesh::savePrefs() {
+  if (_store) {
+    _store->savePrefs(_prefs);
+  }
+}
+
+void RepeaterMesh::freezeRadioParams(float freq, float bw, uint8_t sf, uint8_t cr) {
+  auto& radio = getRadioDriver(_radio);
+  if (!radio.hasRadioOverride()) {
+    /* Holds the radio on the preset it is ALREADY running while _prefs
+     * move ahead of it, so the learned CAD offset still applies — see
+     * setRadioOverride(). */
+    radio.setRadioOverride(freq, bw, sf, cr, /*visiting_new_preset=*/false);
+  }
 }
 
 void RepeaterMesh::eraseLogFile() {
-	// Logging to file not implemented in Zephyr version
-	LOG_INF("Log erased");
-}
-
-void RepeaterMesh::dumpLogFile() {
-	// Logging to file not implemented in Zephyr version
-	LOG_INF("Log dump not implemented");
-}
-
-void RepeaterMesh::setTxPower(int8_t power_dbm) {
-	radio_set_tx_power(power_dbm);
-}
-
-bool RepeaterMesh::setRxBoostedGain(bool enable) {
-	return getRadioDriver(_radio).setRxBoost(enable);
+  // Logging to file not implemented in Zephyr version
+  LOG_INF("Log erased");
 }
 
 bool RepeaterMesh::setFemRxGain(bool enable) {
-	return getRadioDriver(_radio).setFemRxEnable(enable);
-}
-
-bool RepeaterMesh::configSideDetectors(const uint8_t* sfs, uint8_t num) {
-	return getRadioDriver(_radio).configSideDetectors(sfs, num);
-}
-
-void RepeaterMesh::formatNeighborsReply(char* reply) {
-	char* dp = reply;
-
-#if MAX_NEIGHBOURS > 0
-	int16_t neighbours_count = 0;
-	NeighbourInfo* sorted_neighbours[MAX_NEIGHBOURS];
-	for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-		if (neighbours[i].heard_timestamp > 0) {
-			sorted_neighbours[neighbours_count++] = &neighbours[i];
-		}
-	}
-
-	simple_sort(sorted_neighbours, (int)neighbours_count,
-	    [](const NeighbourInfo* a, const NeighbourInfo* b) {
-		return a->heard_timestamp > b->heard_timestamp;
-	    });
-
-	for (int i = 0; i < neighbours_count && dp - reply < 134; i++) {
-		NeighbourInfo* neighbour = sorted_neighbours[i];
-
-		if (i > 0) *dp++ = '\n';
-
-		char hex[10];
-		mesh::Utils::toHex(hex, neighbour->id.pub_key, 4);
-
-		uint32_t secs_ago = getRTCClock()->getCurrentTime() - neighbour->heard_timestamp;
-		sprintf(dp, "%s:%u:%d", hex, secs_ago, neighbour->snr);
-		while (*dp) dp++;
-	}
-#endif
-
-	if (dp == reply) {
-		strcpy(dp, "-none-");
-		dp += 6;
-	}
-	*dp = 0;
-}
-
-void RepeaterMesh::removeNeighbor(const uint8_t* pubkey, int key_len) {
-#if MAX_NEIGHBOURS > 0
-	for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-		if (memcmp(neighbours[i].id.pub_key, pubkey, key_len) == 0) {
-			neighbours[i].clear();
-		}
-	}
-#endif
-}
-
-void RepeaterMesh::formatStatsReply(char* reply) {
-	StatsFormatHelper::formatCoreStats(reply, _board, *_ms, _err_flags, _mgr);
-}
-
-void RepeaterMesh::formatRadioStatsReply(char* reply) {
-	auto& radio_driver = getRadioDriver(_radio);
-	StatsFormatHelper::formatRadioStats(reply, _radio, radio_driver, getTotalAirTime(), getReceiveAirTime());
-}
-
-void RepeaterMesh::formatPacketStatsReply(char* reply) {
-	auto& radio_driver = getRadioDriver(_radio);
-	StatsFormatHelper::formatPacketStats(reply, radio_driver, getNumSentFlood(), getNumSentDirect(),
-					     getNumRecvFlood(), getNumRecvDirect());
-}
-
-void RepeaterMesh::saveIdentity(const mesh::LocalIdentity& new_id) {
-	if (_store) {
-		_store->saveIdentity(new_id);
-	}
-}
-
-void RepeaterMesh::clearStats() {
-	auto& radio_driver = getRadioDriver(_radio);
-	radio_driver.resetStats();
-	radio_driver.resetDutyCycleTimeoutRestarts();
-	resetStats();
-	((SimpleMeshTables *)getTables())->resetStats();
+  return getRadioDriver(_radio).setFemRxEnable(enable);
 }
 
 uint32_t RepeaterMesh::getDutyCycleTimeoutRestarts() const {
-	return getRadioDriver(_radio).getDutyCycleTimeoutRestarts();
+  return getRadioDriver(_radio).getDutyCycleTimeoutRestarts();
 }
 
 void RepeaterMesh::resetDutyCycleTimeoutRestarts() {
-	getRadioDriver(_radio).resetDutyCycleTimeoutRestarts();
+  getRadioDriver(_radio).resetDutyCycleTimeoutRestarts();
 }
 
-/* Region-def CLI (handleRegionLoadLine / handleRegionCommand) and its static
- * parser helpers live in app/RepeaterRegionCLI.cpp. */
+/* A continuation line during `region load` (started by startRegionsLoad()). */
+void RepeaterMesh::handleRegionLoadLine(uint32_t sender_timestamp, char* command, char* reply) {
+  if (StrHelper::isBlank(command)) {
+    region_map = temp_map;
+    region_load_active = false;
+    sprintf(reply, "OK - loaded %d regions", region_map.getCount());
+  } else {
+    char* np = command;
+    while (*np == ' ') np++;
+    int indent = np - command;
 
-void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char* reply) {
-	if (region_load_active) {
-		handleRegionLoadLine(sender_timestamp, command, reply);
-		return;
-	}
+    /* An unindented, name-like line is a typed command, not a region row:
+     * real rows are indent >= 1 (load_stack[0] is the wildcard), and the
+     * one unindented line a client legitimately sends is the exported
+     * wildcard header "*", whose '*' is not a name char.  Without this,
+     * `region load` is only escapable by a blank line -- which the USB
+     * reader discards (main_repeater.cpp) and a dead remote-admin client
+     * never sends, stranding the CLI until a reboot.  Abort without
+     * committing temp_map and run the command.  Must come BEFORE the
+     * name-terminator write below, which would truncate `set foo 1` to
+     * `set`. */
+    if (indent == 0 && RegionMap::is_name_char((uint8_t)*np)) {
+      region_load_active = false;
+      handleCommand(sender_timestamp, command, reply);
+      return;
+    }
 
-	/* Blank line: nothing to run.  The USB reader forwards these (see
-	 * cli_rx_work_fn) because `region load` commits on one -- which is
-	 * handled above, before this returns. */
-	if (StrHelper::isBlank(command)) { reply[0] = 0; return; }
+    char* ep = np;
+    while (RegionMap::is_name_char(*ep)) ep++;
+    if (*ep) { *ep++ = 0; }
 
-	while (*command == ' ') command++;
+    while (*ep && *ep != 'F') ep++;
 
-	uint8_t hdr_used = 0;
-	if (strlen(command) > 4 && command[2] == '|') {
-		memcpy(reply, command, 3);
-		reply += 3;
-		command += 3;
-		hdr_used = 3;
-	}
-	/* Tell the shared CLI how much of the caller's buffer is already spent, so
-	 * the self-limiting handlers do not write past temp[5 + CLI_REMOTE_REPLY_SIZE].
-	 * Set unconditionally: a stale value would shrink the next reply. */
-	_cli.setReplyHeaderUsed(hdr_used);
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	if (handleUplinkCommand(command, reply)) {
-		return;
-	}
-#endif
-
-	// ACL commands - supports BOTH formats for app compatibility:
-	//   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)
-	//   MeshCore App: setperm {permissions} {pubkey-hex}  (perms is short 2-char hex, pubkey is long)
-	// Detection: if first part is <= 2 chars, it's permissions; otherwise it's pubkey
-	if (memcmp(command, "setperm ", 8) == 0) {
-		char* first = &command[8];
-		char* sp = strchr(first, ' ');
-		if (sp == nullptr) {
-			strcpy(reply, "Err - bad params");
-		} else {
-			*sp++ = 0;  // null terminate first part
-			char* second = sp;
-
-			// Detect format: if first part is short (1-2 chars), it's permissions
-			int first_len = strlen(first);
-			char* hex;
-			uint8_t perms;
-
-			if (first_len <= 2) {
-				// App format: setperm {perms} {pubkey}
-				perms = (uint8_t)strtol(first, nullptr, 16);
-				hex = second;
-			} else {
-				// Arduino format: setperm {pubkey} {perms}
-				hex = first;
-				perms = (uint8_t)atoi(second);
-			}
-
-			uint8_t pubkey[PUB_KEY_SIZE];
-			int hex_len = strlen(hex);
-			if (hex_len > PUB_KEY_SIZE * 2) hex_len = PUB_KEY_SIZE * 2;
-			if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
-				if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
-					if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
-					strcpy(reply, "OK");
-				} else {
-					strcpy(reply, "Err - invalid params");
-				}
-			} else {
-				strcpy(reply, "Err - bad pubkey");
-			}
-		}
-	} else if (sender_timestamp == 0 && strcmp(command, "get acl") == 0) {
-		LOG_INF("ACL:");
-		for (int i = 0; i < acl.getNumClients(); i++) {
-			auto c = acl.getClientByIdx(i);
-			if (c->permissions == 0) continue;
-			char hex[PUB_KEY_SIZE * 2 + 1];
-			mesh::Utils::toHex(hex, c->id.pub_key, PUB_KEY_SIZE);
-			LOG_INF("  %02X %s", c->permissions, hex);
-		}
-		reply[0] = 0;
-	} else if (memcmp(command, "region", 6) == 0) {
-		handleRegionCommand(command, reply);
-	} else if (memcmp(command, "discover.neighbors", 18) == 0) {
-		const char* sub = command + 18;
-		while (*sub == ' ') sub++;
-		if (*sub != 0) {
-			strcpy(reply, "Err - discover.neighbors has no options");
-		} else {
-			sendNodeDiscoverReq();
-			strcpy(reply, "OK - Discover sent");
-		}
-	} else {
-		_cli.handleCommand(sender_timestamp, command, reply);
-	}
-}
-
-/* MQTT uplink methods (saveUplinkCreds / handleUplinkCommand /
- * publishUplinkPacket / publishUplinkStatus) live in app/RepeaterUplink.cpp,
- * compiled only when CONFIG_ZEPHCORE_REPEATER_UPLINK && CONFIG_MQTT_LIB.
- * The uplink init (WiFi/MQTT start + topic strings) stays in begin() above. */
-
-void RepeaterMesh::loop() {
-	mesh::Mesh::loop();
-
-	if (next_flood_advert && millisHasNowPassed(next_flood_advert)) {
-		mesh::Packet* pkt = createSelfAdvert();
-		if (pkt) sendFloodScoped(default_scope, pkt, (uint32_t)0, _prefs.path_hash_mode + 1);
-		updateFloodAdvertTimer();
-		updateAdvertTimer();
-	} else if (next_local_advert && millisHasNowPassed(next_local_advert)) {
-		mesh::Packet* pkt = createSelfAdvert();
-		if (pkt) sendZeroHop(pkt);
-		updateAdvertTimer();
-	}
-
-	if (set_radio_at && millisHasNowPassed(set_radio_at)) {
-		set_radio_at = 0;
-		getRadioDriver(_radio).setRadioOverride(pending_freq, pending_bw, pending_sf, pending_cr);
-		LOG_INF("Temp radio params applied");
-	}
-
-	if (revert_radio_at && millisHasNowPassed(revert_radio_at)) {
-		revert_radio_at = 0;
-		getRadioDriver(_radio).clearRadioOverride();
-		LOG_INF("Radio params restored");
-	}
-
-	if (dirty_contacts_expiry && millisHasNowPassed(dirty_contacts_expiry)) {
-		acl.save(_store->getAclPath());
-		dirty_contacts_expiry = 0;
-	}
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	/* MQTT (re)connected — publish the initial "online" status here on the main
-	 * thread (the CONNACK callback only sets this flag, off-main). */
-	if (atomic_cas(&_uplink_connect_pending, 1, 0)) {
-		publishUplinkStatus("online");
-	}
-	if (_uplink_next_status_at && millisHasNowPassed(_uplink_next_status_at)) {
-		publishUplinkStatus("online");
-		_uplink_next_status_at = futureMillis(UPLINK_STATUS_INTERVAL_MS);
-	}
-	if (atomic_cas(&s_uplink_sntp_pending, 1, 0)) {
-		/* SNTP set the clock (trusted) — arm suppression + drift envelope. */
-		_timesync.noteManualSync((uint32_t)(k_uptime_get() / 1000));
-	}
-#endif
-
-	timeSyncTick();
-
-	uint32_t now = k_uptime_get();
-	uptime_millis += now - last_millis;
-	last_millis = now;
+    if (indent > 0 && indent < 8 && strlen(np) > 0) {
+      auto parent = load_stack[indent - 1];
+      if (parent) {
+        auto old = region_map.findByName(np);
+        auto nw = temp_map.putRegion(np, parent->id, old ? old->id : 0);
+        if (nw) {
+          nw->flags = old ? old->flags : (*ep == 'F' ? 0 : REGION_DENY_FLOOD);
+          load_stack[indent] = nw;
+        }
+      }
+    }
+    reply[0] = 0;
+  }
 }
 
 uint32_t RepeaterMesh::msUntilNextMaintenance() {
-	uint32_t now = (uint32_t)_ms->getMillis();
-	uint32_t next = mesh::Mesh::msUntilNextMaintenance();
+  uint32_t now = (uint32_t)_ms->getMillis();
+  uint32_t next = mesh::Mesh::msUntilNextMaintenance();
 
-	/* Advert timers.  0 means "disabled" for both — flood defaults to 47 h,
-	 * periodic local advert is off unless configured. */
-	if (next_flood_advert) {
-		next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_flood_advert));
-	}
-	if (next_local_advert) {
-		next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_local_advert));
-	}
+  /* Advert timers.  0 means "disabled" for both — flood defaults to 47 h,
+   * periodic local advert is off unless configured. */
+  if (next_flood_advert) {
+    next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_flood_advert));
+  }
+  if (next_local_advert) {
+    next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, next_local_advert));
+  }
 
-	/* Temporary radio params: apply, then revert. Both CLI-armed, both 0 when idle. */
-	if (set_radio_at) {
-		next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, set_radio_at));
-	}
-	if (revert_radio_at) {
-		next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, revert_radio_at));
-	}
+  /* Temporary radio params: apply, then revert. Both CLI-armed, both 0 when idle. */
+  if (set_radio_at) {
+    next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, set_radio_at));
+  }
+  if (revert_radio_at) {
+    next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, revert_radio_at));
+  }
 
-	/* Deferred ACL write-back. */
-	if (dirty_contacts_expiry) {
-		next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, dirty_contacts_expiry));
-	}
+  /* Deferred ACL write-back. */
+  if (dirty_contacts_expiry) {
+    next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, dirty_contacts_expiry));
+  }
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
-	if (_uplink_next_status_at) {
-		next = mesh::maintenanceSooner(next,
-					       mesh::maintenanceUntil(now, _uplink_next_status_at));
-	}
+  if (_uplink_next_status_at) {
+    next = mesh::maintenanceSooner(next,
+                 mesh::maintenanceUntil(now, _uplink_next_status_at));
+  }
 #endif
 
-	/* Mesh time sync evaluates at most every 15 min, and only when enabled. */
-	if (_prefs.meshtimesync) {
-		next = mesh::maintenanceSooner(
-		    next, _timesync.msUntilNextEval((uint32_t)(k_uptime_get() / 1000)));
-	}
+  /* Mesh time sync evaluates at most every 15 min, and only when enabled. */
+  if (_prefs.meshtimesync) {
+    next = mesh::maintenanceSooner(
+        next, _timesync.msUntilNextEval((uint32_t)(k_uptime_get() / 1000)));
+  }
 
-	return next;
+  return next;
 }
 
 void RepeaterMesh::timeSyncTick() {
-	if (!_prefs.meshtimesync) return;
-	if (!_timesync.runTick(*getRTCClock())) return;
+  if (!_prefs.meshtimesync) return;
+  if (!_timesync.runTick(*getRTCClock())) return;
 
-	/* Step applied — wall-clock-anchored bookkeeping must move with it, or a
-	 * backward step underflows the unsigned "seconds ago" math. 0 = unset
-	 * sentinel. */
-	int64_t delta = _timesync.lastStepDelta();
+  /* Step applied — wall-clock-anchored bookkeeping must move with it, or a
+   * backward step underflows the unsigned "seconds ago" math. 0 = unset
+   * sentinel. */
+  int64_t delta = _timesync.lastStepDelta();
 #if MAX_NEIGHBOURS > 0
-	for (int i = 0; i < MAX_NEIGHBOURS; i++) {
-		if (neighbours[i].heard_timestamp == 0) continue;
-		int64_t shifted = (int64_t)neighbours[i].heard_timestamp + delta;
-		neighbours[i].heard_timestamp = (shifted > 0) ? (uint32_t)shifted : 1;
-	}
+  for (int i = 0; i < MAX_NEIGHBOURS; i++) {
+    if (neighbours[i].heard_timestamp == 0) continue;
+    int64_t shifted = (int64_t)neighbours[i].heard_timestamp + delta;
+    neighbours[i].heard_timestamp = (shifted > 0) ? (uint32_t)shifted : 1;
+  }
 #endif
-	for (int i = 0; i < acl.getNumClients(); i++) {
-		ClientInfo* c = acl.getClientByIdx(i);
-		if (c->last_activity == 0) continue;
-		int64_t shifted = (int64_t)c->last_activity + delta;
-		c->last_activity = (shifted > 0) ? (uint32_t)shifted : 1;
-	}
-	/* A backward step would otherwise wedge these shut until wall-clock
-	 * catch-up. */
-	discover_limiter.reset();
-	anon_limiter.reset();
-	login_fail_limiter.reset();
-}
-
-bool RepeaterMesh::hasPendingWork() const {
-	return _mgr->getOutboundTotal() > 0;
+  for (int i = 0; i < acl.getNumClients(); i++) {
+    ClientInfo* c = acl.getClientByIdx(i);
+    if (c->last_activity == 0) continue;
+    int64_t shifted = (int64_t)c->last_activity + delta;
+    c->last_activity = (shifted > 0) ? (uint32_t)shifted : 1;
+  }
+  /* A backward step would otherwise wedge these shut until wall-clock
+   * catch-up. */
+  discover_limiter.reset();
+  anon_limiter.reset();
+  login_fail_limiter.reset();
 }

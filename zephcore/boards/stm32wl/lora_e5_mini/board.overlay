@@ -66,3 +66,12 @@
 
 /* LittleFS auto-mount at /lfs (defines the &lfs fstab node) */
 #include "../../common/filesystem.dtsi"
+
+/* The companion link: the app talks to the node over USART1, bridged to USB-C
+ * by the onboard USB-UART chip (no Bluetooth, no native USB). Selects
+ * CONFIG_ZEPHCORE_COMPANION_SERIAL. */
+/ {
+	chosen {
+		zephcore,companion-uart = &usart1;
+	};
+};

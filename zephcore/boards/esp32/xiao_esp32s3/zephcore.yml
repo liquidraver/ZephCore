@@ -1,5 +1,7 @@
 # ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
 target: xiao_esp32s3/esp32s3/procpu
+capabilities:
+  wifi: true
 release:
   roles: [companion, repeater]
 catalog:

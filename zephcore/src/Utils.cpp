@@ -255,6 +255,16 @@ void Utils::toHex(char *dest, const uint8_t *src, size_t len)
 	*dest = 0;
 }
 
+void Utils::printHex(Stream &s, const uint8_t *src, size_t len)
+{
+	while (len > 0) {
+		uint8_t b = *src++;
+		s.print(hex_chars[b >> 4]);
+		s.print(hex_chars[b & 0x0F]);
+		len--;
+	}
+}
+
 bool Utils::fromHex(uint8_t *dest, int dest_size, const char *src_hex)
 {
 	size_t len = strlen(src_hex);

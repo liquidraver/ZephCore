@@ -142,8 +142,8 @@ struct NodePrefs {
 	uint8_t rx_duty_cycle;          // 1 = RX duty cycle, 0 = continuous RX
 	/* RESERVED — formerly apc_enabled / apc_margin (Adaptive Power Control,
 	 * removed in 1.16.6). These two bytes are still read and written at their
-	 * original offsets in all three prefs serializers (companion new_prefs 94/95,
-	 * repeater prefs 292/293, RepeaterDataStore) because every field after them
+	 * original offsets in both prefs layouts (companion new_prefs 94/95, server
+	 * prefs 292/293; helpers/PrefsCodec.cpp) because every field after them
 	 * is positional: dropping them would shift the rest of the layout and make
 	 * every already-deployed node misparse its saved prefs on upgrade.
 	 * Do not reuse for a new setting — an upgraded node still has the old APC
@@ -240,6 +240,12 @@ struct NodePrefs {
 	 * upper bits are telemetry permissions.  Kept here so a toggle survives
 	 * reconnects and reboots instead of being echoed back as 0. */
 	uint8_t v_contact_flags;
+	/* The WiFi companion's network (upstream's wifi_ssid / wifi_pwd /
+	 * wifi_enabled). Stored by every companion build, WiFi or not, so moving
+	 * between firmware never drops a saved network. */
+	char wifi_ssid[33];
+	char wifi_pwd[64];
+	uint8_t wifi_enabled;           // 1 = join wifi_ssid when set (upstream default)
 };
 
 /* Range guards for prefs that came off flash.
@@ -252,7 +258,7 @@ struct NodePrefs {
  * fixed-size blocks with no terminator in the file format, so an unterminated
  * one runs every later %s off the end of the struct.
  *
- * Called at the end of each role's loadPrefs().  Fields whose whole range is
+ * Called by both prefs decoders (PrefsCodec.cpp).  Fields whose whole range is
  * legal (autoadd_config bitmask, discovery_mod_timestamp, the v_contact_*
  * sentinels) are deliberately left alone. */
 template <typename T>
@@ -282,6 +288,9 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->guest_password[sizeof(p->guest_password) - 1] = '\0';
 	p->owner_info[sizeof(p->owner_info) - 1] = '\0';
 	p->default_scope_name[sizeof(p->default_scope_name) - 1] = '\0';
+	p->wifi_ssid[sizeof(p->wifi_ssid) - 1] = '\0';
+	p->wifi_pwd[sizeof(p->wifi_pwd) - 1] = '\0';
+	p->wifi_enabled = saneBool(p->wifi_enabled, (uint8_t)1);
 
 	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, 9.0f, 9.0f);
 	p->rx_delay_base  = sanePrefFloat(p->rx_delay_base, 0.0f, 3600.0f, 0.0f);
@@ -450,12 +459,13 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->input_rotate = 0;          // Default OFF — joystick axes as the board wires them
 	prefs->v_contact_enabled = 1;     // Default ON — v-contact loopback admin chat (companion)
 	prefs->v_battery_alert_mv = 0xFFFF; // Sentinel: derive from board auto-shutdown threshold
+	prefs->wifi_enabled = 1;          // as upstream: WiFi still stays off until an SSID is set
 	/* Companion-only feature, and main_companion.cpp used to assign this by
 	 * hand right after calling us — so no node ever ran without it.  It lives
 	 * here now because a default listed only at one call site is invisible to
 	 * every other caller of initNodePrefs(), which is the exact drift that
 	 * zeroed probe_interval and cad_auto in the past.  Matches what
-	 * loadPrefs()'s absent-field fallback and sanitizeNodePrefs() already use.
+	 * sanitizeNodePrefs() already uses.
 	 * 0 means disabled and is a legal stored value, so sanitize passes it
 	 * through untouched — this default only applies to a fresh prefs struct. */
 #ifdef CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS

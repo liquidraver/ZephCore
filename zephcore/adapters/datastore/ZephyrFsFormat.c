@@ -4,6 +4,7 @@
  */
 
 #include "ZephyrFsFormat.h"
+#include "ZephyrFsUtil.h"
 
 #include <zephyr/devicetree.h>
 #include <zephyr/fs/fs.h>
@@ -18,13 +19,6 @@ LOG_MODULE_REGISTER(zephcore_fs_format, CONFIG_ZEPHCORE_DATASTORE_LOG_LEVEL);
 /* fs_mount() can return 0 having mounted nothing useful, and a remount that
  * silently failed would leave the caller reporting a healthy store over an
  * unmounted volume.  Ask the VFS instead of trusting the return code. */
-static bool is_mounted(const char *mount_point)
-{
-	struct fs_statvfs stat;
-
-	return fs_statvfs(mount_point, &stat) == 0;
-}
-
 static void flatten(uint8_t id, const char *tag)
 {
 	const struct flash_area *fap;
@@ -82,7 +76,7 @@ bool zephcore_fs_format_all(bool *out_ext_mounted)
 
 	/* Remount: littlefs_mount() auto-formats blank flash, then mounts. */
 	int rc = fs_mount(&FS_FSTAB_ENTRY(DT_NODELABEL(lfs)));
-	bool mounted = is_mounted(LFS_MNT_POINT);
+	bool mounted = zephcore_fs_is_mounted(LFS_MNT_POINT);
 
 	if (mounted) {
 		LOG_INF("format: %s remounted (rc=%d)", LFS_MNT_POINT, rc);
@@ -100,7 +94,7 @@ bool zephcore_fs_format_all(bool *out_ext_mounted)
 	 * /ext on the next boot ("Migrating contacts to external storage"). */
 	{
 		int ext_rc = fs_mount(&FS_FSTAB_ENTRY(DT_NODELABEL(qspi_lfs)));
-		bool ext_mounted = is_mounted(EXT_MNT_POINT);
+		bool ext_mounted = zephcore_fs_is_mounted(EXT_MNT_POINT);
 
 		if (ext_mounted) {
 			LOG_INF("format: %s remounted (rc=%d)", EXT_MNT_POINT, ext_rc);

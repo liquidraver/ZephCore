@@ -2,8 +2,9 @@
  * SPDX-License-Identifier: MIT
  * ZephCore USB CDC Companion Transport
  *
- * V3-framed USB CDC for companion mode. Extracted from main_companion.cpp.
- * Only compiled when CONFIG_LOG is enabled (debug builds).
+ * V3-framed companion link over USB CDC or a plain UART, with the text CLI.
+ * One transport among several: CompanionInterfaces.h wraps it as a
+ * BaseSerialInterface for the MultiSerialInterface.
  *
  * USBD lifecycle + 1200-baud DFU detection + DTR state tracking live in
  * the shared ZephyrUSBCDC module; this file just runs the V3 frame parser
@@ -19,17 +20,14 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_usb, CONFIG_ZEPHCORE_USB_LOG_LEVEL);
 
-#include <ZephyrBLE.h>
-#include <app/CompanionMesh.h>
-
 #include "ZephyrCompanionUSB.h"
 #include "ZephyrUSBCDC.h"
-
-/* MAX_FRAME_SIZE defined in CompanionMesh.h */
+#include "companion_framing.h"
 
 #define USB_RING_BUF_SIZE     512     /* USB RX ring buffer size */
 #define USB_TX_RING_BUF_SIZE  2048    /* USB TX ring buffer (~13 contact frames of headroom) */
 #define USB_FRAME_TIMEOUT_MS  2000    /* Partial frame timeout - reset parser after 2s of no completion */
+#define USB_RECV_QUEUE_DEPTH  4       /* complete frames waiting for the main thread */
 
 /* Companion serial framing (MeshCore ArduinoSerialInterface):
  *   app  → device:  '<' len_lo len_hi <payload...>
@@ -58,8 +56,7 @@ enum usb_rx_state {
  * cdc-acm-uart, so existing native-USB and nRF builds resolve identically.
  *
  * COMPANION_HAS_DTR is true only for the CDC backend — a plain UART has no DTR
- * line, so session end there is protocol-driven (CMD_APP_START), exactly like
- * the legacy SerialCompanionTransport. */
+ * line, so a session there, once started, lasts until reboot. */
 #if DT_HAS_CHOSEN(zephcore_companion_uart)
 #  define COMPANION_UART_DEV    DEVICE_DT_GET(DT_CHOSEN(zephcore_companion_uart))
 #  define COMPANION_HAS_DTR     DT_NODE_HAS_COMPAT(DT_CHOSEN(zephcore_companion_uart), zephyr_cdc_acm_uart)
@@ -87,25 +84,24 @@ static uint32_t usb_frame_start_time;  /* Timestamp of sync byte for current fra
 /* TX side: interrupt-driven so the contact pump gets real backpressure +
  * a "drained" event (the USB analogue of BLE's notify-complete) instead of a
  * fixed delay. write_frame queues whole frames here under usb_tx_lock; the TX
- * ISR drains into the CDC FIFO and fires s_tx_drain_cb when the ring empties. */
+ * ISR drains into the CDC FIFO and raises on_tx_idle when the ring empties. */
 static uint8_t usb_tx_ring_buf_data[USB_TX_RING_BUF_SIZE];
 static struct ring_buf usb_tx_ring_buf;
 static struct k_spinlock usb_tx_lock;
 
-/* Main-thread wake for assembled binary frames (set by init).  The byte
- * assembly below runs on sysworkq, but V3-protocol parsing must happen on the
- * main thread (handleCmdFrame mutates mesh state shared with loop()), so
- * we post this event instead of running the parser here. */
-static struct k_event *s_mesh_events;
-static uint32_t s_mesh_event_ble_rx;
+/* Callbacks to main (set by init): frame waiting, TX drained, session
+ * start/end.  The byte assembly below runs on sysworkq, but V3-protocol
+ * parsing must happen on the main thread (handleCmdFrame mutates mesh state
+ * shared with loop()), so a complete frame is queued and on_rx posts the
+ * event instead of running the parser here. */
+static const struct companion_link_cbs *s_link;
 
-/* Session start/end callbacks (mirror BLE on_connected / on_disconnected),
- * set by main. start fires on first-frame claim, end on DTR drop. */
-static void (*s_session_start_cb)(void);
-static void (*s_session_end_cb)(void);
+/* Complete binary frames, drained by zephcore_usb_companion_recv() */
+K_MSGQ_DEFINE(usb_recv_queue, sizeof(struct frame), USB_RECV_QUEUE_DEPTH, 4);
 
-/* TX-drained callback (mirrors BLE on_tx_idle) — re-kicks the contact pump. */
-static void (*s_tx_drain_cb)(void);
+/* A session starts on the first traffic after open (a binary frame or a CLI
+ * line) and ends when the host drops DTR. */
+static bool usb_session_active;
 
 /* CLI text line callback — fired when a complete line arrives in text mode. */
 static void (*s_cli_line_cb)(const char *line);
@@ -120,10 +116,10 @@ static uint8_t usb_text_len;
 #define USB_CLI_BANNER "\r\n=== ZephCore Companion ===\r\n"
 static bool usb_text_banner_sent;
 
-/* True when the USB interface was claimed by the text CLI (not a binary V3
- * companion app). While set, main suppresses binary frame/push output to USB so
- * the serial console only ever sees text. Set on the claiming transition, reset
- * when the session ends. */
+/* True when the session was opened by the text CLI (not a binary V3 companion
+ * app). While set the session reports not connected, so no binary frame or
+ * push reaches the serial console. Set when the session starts, reset when it
+ * ends. */
 static bool usb_session_is_text;
 
 /* Echo text-mode bytes back via the interrupt-driven TX ring (NOT uart_poll_out,
@@ -185,45 +181,31 @@ static void usb_uart_isr(const struct device *dev, void *user_data)
 			}
 			k_spin_unlock(&usb_tx_lock, key);
 
-			if (empty && s_tx_drain_cb) {
+			if (empty && s_link && s_link->on_tx_idle) {
 				/* Channel idle — let the pump queue the next batch. */
-				s_tx_drain_cb();
+				s_link->on_tx_idle();
 			}
 		}
 	}
 }
 
-/* Claim the interface for USB on the first inbound traffic of a session —
- * a binary frame or a complete CLI line — mirroring BLE, which claims on
- * connect. The official client opens with CMD_DEVICE_QUERY (0x16), not
- * CMD_APP_START, so the claim is gated on any first traffic, not a specific
- * opcode. Returns true when USB owns the interface and the caller should
- * process the input; false while a BLE session holds it. */
-static bool usb_claim_active(uint8_t log_tag, bool is_text)
+/* Start a session on its first inbound traffic — a binary frame or a complete
+ * CLI line. The official client opens with CMD_DEVICE_QUERY (0x16), not
+ * CMD_APP_START, so any first traffic starts it. Other transports (BLE, WiFi)
+ * may be live at the same time: every connected one is served. */
+static void usb_session_begin(uint8_t log_tag, bool is_text)
 {
-	if (zephcore_ble_get_active_iface() != ZEPHCORE_IFACE_USB) {
-		/* try_claim succeeds when idle or already USB (reconnect) and fails
-		 * only while a BLE session is live, so USB can't steal it — and the
-		 * compare-and-set can't race a concurrent BLE claim. */
-		if (zephcore_ble_iface_try_claim(ZEPHCORE_IFACE_USB)) {
-			/* Record session kind on the claiming transition so main can
-			 * suppress binary output for a text-CLI session. */
-			usb_session_is_text = is_text;
-			zephcore_ble_set_enabled(false);
-			LOG_INF("usb_rx: first traffic 0x%02x → IFACE_USB (%s)", log_tag,
-				is_text ? "text" : "binary");
-			/* New USB session — mirror BLE's on-connect UI notification
-			 * (Arduino shows "connected" for serial transports too). Fires
-			 * once per session: try_claim only returns true on NONE→USB. */
-			if (s_session_start_cb) {
-				s_session_start_cb();
-			}
-		} else {
-			LOG_INF("usb_rx: traffic 0x%02x ignored, BLE is active", log_tag);
-			return false;
-		}
+	if (usb_session_active) {
+		return;
 	}
-	return true;
+	usb_session_active = true;
+	usb_session_is_text = is_text;
+	LOG_INF("usb_rx: first traffic 0x%02x, session started (%s)", log_tag,
+		is_text ? "text" : "binary");
+	/* Arduino shows "connected" for serial transports too */
+	if (s_link && s_link->on_connected) {
+		s_link->on_connected();
+	}
 }
 
 /* USB RX work - parses V3 frames from ring buffer */
@@ -258,15 +240,12 @@ static void usb_rx_work_fn(struct k_work *work)
 				usb_rx_st = USB_RX_LEN_LO;
 				usb_frame_start_time = k_uptime_get_32();
 			} else if (byte >= 0x20 && byte <= 0x7E) {
-				/* Printable ASCII. Enter text CLI mode only when the
-				 * interface is idle, or we're already in a text session
-				 * (subsequent command lines). Never during a BLE session,
-				 * nor a binary USB companion session — an official client's
-				 * bytes must not be parsed as CLI. The iface read is
-				 * side-effect-free; the claim happens later, on Enter. */
-				enum zephcore_iface ifc = zephcore_ble_get_active_iface();
-				if (ifc == ZEPHCORE_IFACE_NONE ||
-				    (ifc == ZEPHCORE_IFACE_USB && usb_session_is_text)) {
+				/* Printable ASCII. Enter text CLI mode only before a
+				 * session starts, or in a text session (subsequent command
+				 * lines). Never in a binary session — an official client's
+				 * bytes must not be parsed as CLI. The session starts
+				 * later, on Enter. */
+				if (!usb_session_active || usb_session_is_text) {
 					/* Arm the inactivity watchdog so a stray byte resyncs
 					 * to IDLE on its own. */
 					usb_text_len = 0;
@@ -280,7 +259,7 @@ static void usb_rx_work_fn(struct k_work *work)
 					}
 					usb_cli_echo((const char *)&byte, 1);
 				}
-				/* else: printable but iface busy/binary — ignore */
+				/* else: printable in a binary session — ignore */
 			}
 			/* else: ignore control bytes / noise */
 			break;
@@ -289,14 +268,15 @@ static void usb_rx_work_fn(struct k_work *work)
 			/* Any text byte is activity — refresh the inactivity watchdog. */
 			usb_frame_start_time = k_uptime_get_32();
 			if (byte == '\n' || byte == '\r') {
-				/* Line complete — dispatch if non-empty. Claim USB first
-				 * (refused while BLE owns the session) so a CLI command can't
-				 * mutate state out from under an active BLE app. The reply
-				 * (companion_cli_dispatch) emits its own leading CRLF, so the
-				 * Enter keystroke itself is not echoed — matching the repeater. */
+				/* Line complete — dispatch if non-empty. The command runs
+				 * on the main thread (companion_cli_dispatch queues it), so it
+				 * is safe beside a live BLE or WiFi app. The reply emits its
+				 * own leading CRLF, so the Enter keystroke itself is not
+				 * echoed — matching the repeater. */
 				if (usb_text_len > 0) {
 					usb_text_line[usb_text_len] = '\0';
-					if (usb_claim_active((uint8_t)usb_text_line[0], true) && s_cli_line_cb) {
+					usb_session_begin((uint8_t)usb_text_line[0], true);
+					if (s_cli_line_cb) {
 						s_cli_line_cb(usb_text_line);
 					}
 				}
@@ -340,19 +320,19 @@ static void usb_rx_work_fn(struct k_work *work)
 
 				LOG_DBG("usb_rx: frame complete len=%u hdr=0x%02x", payload_len, payload[0]);
 
-				/* Claim USB (refused while BLE owns the session), then process. */
-				if (usb_claim_active(payload[0], false)) {
-					struct {
-						uint16_t len;
-						uint8_t buf[MAX_FRAME_SIZE];
-					} f;
-					f.len = payload_len;
-					memcpy(f.buf, payload, payload_len);
-					/* Queue the frame and wake the main thread to parse it
-					 * (parsing on sysworkq would race loop()). */
-					if (k_msgq_put(zephcore_ble_get_recv_queue(), &f, K_NO_WAIT) == 0) {
-						k_event_post(s_mesh_events, s_mesh_event_ble_rx);
+				usb_session_begin(payload[0], false);
+				struct frame f;
+
+				f.len = payload_len;
+				memcpy(f.buf, payload, payload_len);
+				/* Queue the frame and wake the main thread to parse it
+				 * (parsing on sysworkq would race loop()). */
+				if (k_msgq_put(&usb_recv_queue, &f, K_NO_WAIT) == 0) {
+					if (s_link && s_link->on_rx) {
+						s_link->on_rx();
 					}
+				} else {
+					LOG_WRN("usb_rx: recv queue full, frame 0x%02x dropped", payload[0]);
 				}
 
 				/* Reset for next frame */
@@ -375,30 +355,9 @@ static void on_dtr_change(bool dtr_active)
 		return;
 	}
 	LOG_INF("usb_dtr: DTR dropped, USB disconnected");
-	/* While USB owns the interface, BLE claims are rejected (see connected()),
-	 * so this thread is the only writer of active_iface here — the get/set
-	 * pair below needs no extra locking beyond the thread-safe accessors. */
-	if (zephcore_ble_get_active_iface() == ZEPHCORE_IFACE_USB) {
-		/* A USB companion session is ending — run the same per-session
-		 * cleanup BLE does on disconnect (cancel contact iteration and
-		 * message sync, free the sign buffer). Without this, stale sync
-		 * state carries into the next session and an in-flight sign op
-		 * leaks its 8KB buffer. */
-		if (s_session_end_cb) {
-			s_session_end_cb();
-		}
-		if (zephcore_ble_is_connected()) {
-			/* BLE client is physically connected — hand off to it. */
-			zephcore_ble_set_active_iface(ZEPHCORE_IFACE_BLE);
-			LOG_INF("usb_dtr: → IFACE_BLE (BLE was connected)");
-		} else {
-			/* Nobody connected — go idle and restart advertising
-			 * so the phone can find the companion again. */
-			zephcore_ble_set_active_iface(ZEPHCORE_IFACE_NONE);
-			zephcore_ble_set_enabled(true);
-			LOG_INF("usb_dtr: → IFACE_NONE, BLE advertising restarted");
-		}
-	}
+	bool was_active = usb_session_active;
+
+	usb_session_active = false;
 	ring_buf_reset(&usb_ring_buf);
 	usb_rx_st = USB_RX_IDLE;
 	usb_frame_len = 0;
@@ -406,12 +365,19 @@ static void on_dtr_change(bool dtr_active)
 	usb_text_len = 0;
 	usb_text_banner_sent = false;  /* re-banner the next text session */
 	usb_session_is_text = false;
+	k_msgq_purge(&usb_recv_queue);
 
 	/* Discard any pending TX from the closed session. */
 	uart_irq_tx_disable(usb_dev);
 	k_spinlock_key_t key = k_spin_lock(&usb_tx_lock);
 	ring_buf_reset(&usb_tx_ring_buf);
 	k_spin_unlock(&usb_tx_lock, key);
+
+	/* The session is over: main runs its per-session cleanup (contact dump,
+	 * sync, sign buffer) once no other transport is still connected. */
+	if (was_active && s_link && s_link->on_disconnected) {
+		s_link->on_disconnected();
+	}
 }
 #endif /* COMPANION_HAS_DTR */
 
@@ -476,43 +442,33 @@ bool zephcore_usb_companion_tx_has_space(size_t payload_len)
 	return ok;
 }
 
-void zephcore_usb_companion_reset_rx(void)
+size_t zephcore_usb_companion_recv(uint8_t *dest)
 {
-	ring_buf_reset(&usb_ring_buf);
-	usb_rx_st = USB_RX_IDLE;
-	usb_frame_len = 0;
-	usb_rx_idx = 0;
-	usb_text_len = 0;
-	usb_text_banner_sent = false;
-	usb_session_is_text = false;
+	struct frame f;
 
-	/* Drop any half-sent TX too — the session it belonged to is gone. */
-	if (usb_dev) {
-		uart_irq_tx_disable(usb_dev);
+	if (k_msgq_get(&usb_recv_queue, &f, K_NO_WAIT) != 0) {
+		return 0;
 	}
-	k_spinlock_key_t key = k_spin_lock(&usb_tx_lock);
-	ring_buf_reset(&usb_tx_ring_buf);
-	k_spin_unlock(&usb_tx_lock, key);
+	memcpy(dest, f.buf, f.len);
+	return f.len;
+}
+
+bool zephcore_usb_companion_is_connected(void)
+{
+	return usb_session_active && !usb_session_is_text;
+}
+
+/* Only a connected session is ever busy: MultiSerialInterface asks every
+ * enabled transport, and this one is always enabled. */
+bool zephcore_usb_companion_is_write_busy(void)
+{
+	return zephcore_usb_companion_is_connected() &&
+	       !zephcore_usb_companion_tx_has_space(MAX_FRAME_SIZE);
 }
 
 bool zephcore_usb_companion_is_text_session(void)
 {
 	return usb_session_is_text;
-}
-
-void zephcore_usb_companion_set_session_start_cb(void (*cb)(void))
-{
-	s_session_start_cb = cb;
-}
-
-void zephcore_usb_companion_set_session_end_cb(void (*cb)(void))
-{
-	s_session_end_cb = cb;
-}
-
-void zephcore_usb_companion_set_tx_drain_cb(void (*cb)(void))
-{
-	s_tx_drain_cb = cb;
 }
 
 void zephcore_usb_companion_set_cli_line_cb(void (*cb)(const char *line))
@@ -531,14 +487,9 @@ void zephcore_usb_companion_write_text(const char *text, size_t len)
 	uart_irq_tx_enable(usb_dev);
 }
 
-void zephcore_usb_companion_init(struct k_event *mesh_events,
-				 uint32_t mesh_event_ble_rx,
-				 void *board)
+void zephcore_usb_companion_init(const struct companion_link_cbs *link)
 {
-	ARG_UNUSED(board);
-
-	s_mesh_events = mesh_events;
-	s_mesh_event_ble_rx = mesh_event_ble_rx;
+	s_link = link;
 
 	/* COMPANION_UART_DEV resolves to the chosen `zephcore,companion-uart` node,
 	 * or the sole cdc-acm-uart for back-compat (see the backend block above).

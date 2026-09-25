@@ -10,7 +10,6 @@
  */
 
 #include "ZephyrWiFiStation.h"
-#include "observer_creds.h"
 #include "../../helpers/pm_sleep_guard.h"
 
 #include <zephyr/kernel.h>
@@ -18,7 +17,10 @@
 #include <zephyr/net/net_event.h>
 #include <zephyr/net/net_mgmt.h>
 #include <zephyr/net/wifi_mgmt.h>
+#include <zephyr/net/net_ip.h>
+#if IS_ENABLED(CONFIG_SNTP)
 #include <zephyr/net/sntp.h>
+#endif
 #include <zephyr/logging/log.h>
 
 #include <string.h>
@@ -32,7 +34,8 @@ K_EVENT_DEFINE(g_wifi_events);
 
 /* ========== Module state ========== */
 
-static const struct ObserverCreds *s_creds;
+static const char *s_ssid;
+static const char *s_psk;
 static void (*s_time_sync_cb)(uint32_t unix_ts);
 
 /* Protect link-up vs. SNTP state */
@@ -51,6 +54,7 @@ static struct net_mgmt_event_callback ipv4_cb;
 
 static void do_sntp_and_signal(void)
 {
+#if IS_ENABLED(CONFIG_SNTP)
 	struct sntp_time ts;
 	int rc = sntp_simple("pool.ntp.org", 8000, &ts);
 	if (rc == 0) {
@@ -61,6 +65,7 @@ static void do_sntp_and_signal(void)
 	} else {
 		LOG_WRN("SNTP failed (rc=%d) — continuing without time sync", rc);
 	}
+#endif
 
 	s_wifi_ready = true;
 	k_event_post(&g_wifi_events, WIFI_READY_BIT);
@@ -97,7 +102,7 @@ static void wifi_event_handler(struct net_mgmt_event_callback *cb,
 		int reason = 0;
 #endif
 		if (success) {
-			LOG_INF("WiFi link up (SSID: %s)", s_creds ? s_creds->wifi_ssid : "?");
+			LOG_INF("WiFi link up (SSID: %s)", s_ssid ? s_ssid : "?");
 			s_wifi_link_up = true;
 			/* Disable power save — WIFI_PS_MIN_MODEM (default) sleeps between
 			 * DTIM beacons, which delays ACKs and causes the MQTT broker's TCP
@@ -138,7 +143,7 @@ static void connect_work_fn(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	if (!s_creds || s_creds->wifi_ssid[0] == '\0') {
+	if (!s_ssid || s_ssid[0] == '\0') {
 		LOG_WRN("No WiFi SSID configured — set with: set wifi.ssid <name>");
 		return;
 	}
@@ -150,22 +155,22 @@ static void connect_work_fn(struct k_work *work)
 	}
 
 	struct wifi_connect_req_params params = {
-		.ssid        = (const uint8_t *)s_creds->wifi_ssid,
-		.ssid_length = (uint8_t)strlen(s_creds->wifi_ssid),
+		.ssid        = (const uint8_t *)s_ssid,
+		.ssid_length = (uint8_t)strlen(s_ssid),
 		.channel     = WIFI_CHANNEL_ANY,
 		.band        = WIFI_FREQ_BAND_UNKNOWN,
 		.mfp         = WIFI_MFP_OPTIONAL,
 	};
 
-	if (s_creds->wifi_psk[0] != '\0') {
-		params.psk        = (const uint8_t *)s_creds->wifi_psk;
-		params.psk_length = (uint8_t)strlen(s_creds->wifi_psk);
+	if (s_psk && s_psk[0] != '\0') {
+		params.psk        = (const uint8_t *)s_psk;
+		params.psk_length = (uint8_t)strlen(s_psk);
 		params.security   = WIFI_SECURITY_TYPE_PSK;
 	} else {
 		params.security = WIFI_SECURITY_TYPE_NONE;
 	}
 
-	LOG_INF("Connecting to WiFi: %s", s_creds->wifi_ssid);
+	LOG_INF("Connecting to WiFi: %s", s_ssid);
 	int rc = net_mgmt(NET_REQUEST_WIFI_CONNECT, iface, &params, sizeof(params));
 	if (rc < 0 && rc != -EALREADY) {
 		LOG_ERR("WiFi connect request failed: %d — retry in 10s", rc);
@@ -175,10 +180,11 @@ static void connect_work_fn(struct k_work *work)
 
 /* ========== Public API ========== */
 
-void zc_wifi_station_start(const struct ObserverCreds *creds,
+void zc_wifi_station_start(const char *ssid, const char *psk,
 			void (*time_sync_cb)(uint32_t unix_ts))
 {
-	s_creds        = creds;
+	s_ssid         = ssid;
+	s_psk          = psk;
 	s_time_sync_cb = time_sync_cb;
 	s_wifi_link_up = false;
 	s_wifi_ready   = false;
@@ -227,5 +233,28 @@ bool zc_wifi_station_is_connected(void)
 
 const char *zc_wifi_station_ssid(void)
 {
-	return (s_creds && s_creds->wifi_ssid[0]) ? s_creds->wifi_ssid : "";
+	return (s_ssid && s_ssid[0]) ? s_ssid : "";
+}
+
+bool zc_wifi_station_ip(char *buf, size_t len)
+{
+	struct net_if *iface = net_if_get_default();
+
+	if (!iface || !s_wifi_link_up) {
+		return false;
+	}
+
+	struct net_if_ipv4 *ipv4 = iface->config.ip.ipv4;
+
+	if (!ipv4) {
+		return false;
+	}
+	for (int i = 0; i < NET_IF_MAX_IPV4_ADDR; i++) {
+		struct net_if_addr *a = &ipv4->unicast[i].ipv4;
+
+		if (a->is_used && a->addr_state == NET_ADDR_PREFERRED) {
+			return net_addr_ntop(NET_AF_INET, &a->address.in_addr, buf, len) != NULL;
+		}
+	}
+	return false;
 }

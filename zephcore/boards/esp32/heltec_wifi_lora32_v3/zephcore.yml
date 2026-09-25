@@ -1,6 +1,7 @@
 # ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
 target: heltec_wifi_lora32_v3/esp32s3/procpu
 capabilities:
+  wifi: true
   light_sleep: true
 release:
   roles: [companion, repeater]
