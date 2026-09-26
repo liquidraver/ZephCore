@@ -12,10 +12,37 @@
 
 #include <stdio.h>
 
+#if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+#include <esp_system.h>
+#endif
+
 LOG_MODULE_REGISTER(zephcore_boot, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 static uint32_t s_reset_cause;
 static bool s_reset_cause_valid;
+
+#if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+/* Zephyr's ESP32 hwinfo driver reports 0 for the reasons it has no case for,
+ * the commonest being ESP_RST_USB: esptool's reset over USB-Serial-JTAG, i.e.
+ * every flash. Map those onto the nearest RESET_* bit so they are labelled
+ * instead of "Unknown". */
+static uint32_t esp_unmapped_reset_cause(void)
+{
+	switch (esp_reset_reason()) {
+	case ESP_RST_USB:
+	case ESP_RST_JTAG:
+		return RESET_DEBUG;
+	case ESP_RST_PWR_GLITCH:
+		return RESET_BROWNOUT;
+	case ESP_RST_CPU_LOCKUP:
+		return RESET_CPU_LOCKUP;
+	case ESP_RST_EFUSE:
+		return RESET_HARDWARE;
+	default:
+		return 0;
+	}
+}
+#endif
 
 /* POST_KERNEL: before main() on every role. */
 static int boot_info_init(void)
@@ -26,6 +53,12 @@ static int boot_info_init(void)
 		/* Nothing to capture; the accessor reports false. */
 		return 0;
 	}
+
+#if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+	if (cause == 0) {
+		cause = esp_unmapped_reset_cause();
+	}
+#endif
 
 	s_reset_cause = cause;
 	s_reset_cause_valid = true;

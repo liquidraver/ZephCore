@@ -606,8 +606,8 @@ static const uint16_t spr_portal_b[16] = {
 
 /*
  * Fireball — a solid ball confined to the middle 8 rows of the 16×16 cell, so
- * it renders at roughly half an enemy's apparent size without the shared
- * sprite blitter needing a scale argument. Solid, unlike the outlined portal
+ * it renders at eye level, at roughly half an enemy's apparent size, through
+ * the shared blitter at scale 100. Solid, unlike the outlined portal
  * diamond, so the two never read as the same thing.
  */
 static const uint16_t spr_fireball[16] = {
@@ -663,14 +663,41 @@ static const uint16_t *get_sprite_16(const struct doom_enemy *e)
 
 /* ========== RAYCASTER ========== */
 
+/* The sprite texel under screen pixel (sc, sr) of a sprite drawn at
+ * [x0, x0 + w) x [y0, y0 + h). */
+static inline bool sprite_texel_on(const uint16_t *sprite, int sc, int sr,
+				   int x0, int y0, int w, int h)
+{
+	int tex_x = (sc - x0) * 16 / w;
+	int tex_y = (sr - y0) * 16 / h;
+
+	if (tex_x > 15) tex_x = 15;
+	if (tex_y > 15) tex_y = 15;
+	return (sprite[tex_y] & (0x8000 >> tex_x)) != 0;
+}
+
+static inline void clear_px(int x, int y)
+{
+	render_fb[(y / 8) * SCREEN_W + x] &= (uint8_t)~(1U << (y & 7));
+}
+
 /*
- * Render one 16×16 sprite at world position (wx, wy).
- * Shared by both the portal and all enemy sprites.
+ * Render one 16×16 sprite at world position (wx, wy), scale_pct percent of a
+ * wall's height with its feet on the floor. Shared by the portal, the enemies
+ * and the fireballs.
+ *
+ * Sprites are solid with a one-pixel black halo, not distance-dithered like
+ * the walls. On a 1-bit panel a dithered sprite ORed over the dithered floor
+ * band at the horizon has nothing to contrast against: the L2 boss, which
+ * starts 8-12 tiles away, was a few dots at best and a grey smudge in the
+ * floor's own pattern at 4 tiles. The halo pass clears first, then the fill
+ * sets; both honour the zbuffer, so a nearer wall is never cut into.
  */
 static void render_one_sprite(const uint16_t *sprite,
 			      fixed_t wx, fixed_t wy,
 			      fixed_t inv_det,
-			      struct doom_player *p)
+			      struct doom_player *p,
+			      int scale_pct)
 {
 	fixed_t sx = wx - p->x;
 	fixed_t sy = wy - p->y;
@@ -686,46 +713,49 @@ static void render_one_sprite(const uint16_t *sprite,
 		fp_to_int(fp_div(fp_mul(transform_x,
 			fp_from_int(SCREEN_W)), transform_y));
 
-	int sprite_h = fp_to_int(fp_abs(fp_div(
+	int base_h = fp_to_int(fp_abs(fp_div(
 		fp_from_int(SCREEN_H), transform_y)));
-	if (sprite_h < 3) return;
-	if (sprite_h > SCREEN_H * 2) sprite_h = SCREEN_H * 2;
+	if (base_h > SCREEN_H * 2) base_h = SCREEN_H * 2;
 
-	int draw_start_y = (SCREEN_H - sprite_h) / 2;
-	int draw_end_y   = draw_start_y + sprite_h;
+	int sprite_h = base_h * scale_pct / 100;
+	if (sprite_h < 3) return;
+
+	int draw_end_y   = (SCREEN_H + base_h) / 2;  /* the floor line */
+	int draw_start_y = draw_end_y - sprite_h;
 	int draw_start_x = sprite_screen_x - sprite_h / 2;
 	int draw_end_x   = sprite_screen_x + sprite_h / 2;
+	int sprite_w     = draw_end_x - draw_start_x;
 
-	/* Floor for sprites: at 8+ tiles the wall fade (brightness 1) passes one
-	 * dither cell in 16, so the boss, which starts ~11 tiles away in a
-	 * corner, drew as a few dots or nothing while its fireballs hit. Walls
-	 * keep the full fade; sprites keep a silhouette. */
-	int brightness = dist_to_brightness(transform_y);
-	if (brightness < 7) {
-		brightness = 7;
-	}
+	int x_lo = draw_start_x < 0 ? 0 : draw_start_x;
+	int x_hi = draw_end_x > SCREEN_W ? SCREEN_W : draw_end_x;
+	int y_lo = draw_start_y < 0 ? 0 : draw_start_y;
+	int y_hi = draw_end_y > SCREEN_H ? SCREEN_H : draw_end_y;
 
-	for (int sc = draw_start_x; sc < draw_end_x; sc++) {
-		if (sc < 0 || sc >= SCREEN_W) continue;
-		if (transform_y >= zbuffer[sc]) continue;
+	for (int pass = 0; pass < 2; pass++) {
+		for (int sc = x_lo; sc < x_hi; sc++) {
+			if (transform_y >= zbuffer[sc]) continue;
 
-		int tex_x = (sc - draw_start_x) * 16 / sprite_h;
-		if (tex_x < 0) tex_x = 0;
-		if (tex_x > 15) tex_x = 15;
-
-		for (int sr = draw_start_y; sr < draw_end_y; sr++) {
-			if (sr < 0 || sr >= SCREEN_H) continue;
-
-			int tex_y = (sr - draw_start_y) * 16 / sprite_h;
-			if (tex_y < 0) tex_y = 0;
-			if (tex_y > 15) tex_y = 15;
-
-			if (sprite[tex_y] & (0x8000 >> tex_x)) {
-				uint8_t threshold =
-					bayer4x4[sr & 3][sc & 3];
-				if (brightness > threshold) {
+			for (int sr = y_lo; sr < y_hi; sr++) {
+				if (!sprite_texel_on(sprite, sc, sr,
+						     draw_start_x, draw_start_y,
+						     sprite_w, sprite_h)) {
+					continue;
+				}
+				if (pass == 1) {
 					render_fb[(sr / 8) * SCREEN_W + sc] |=
 						(1U << (sr & 7));
+					continue;
+				}
+				for (int hx = sc - 1; hx <= sc + 1; hx++) {
+					if (hx < 0 || hx >= SCREEN_W ||
+					    transform_y >= zbuffer[hx]) {
+						continue;
+					}
+					for (int hy = sr - 1; hy <= sr + 1; hy++) {
+						if (hy >= 0 && hy < SCREEN_H) {
+							clear_px(hx, hy);
+						}
+					}
 				}
 			}
 		}
@@ -748,7 +778,7 @@ static void render_sprites(void)
 		render_one_sprite(pspr,
 			fp_from_int(game.portal_map_x) + FP_HALF,
 			fp_from_int(game.portal_map_y) + FP_HALF,
-			inv_det, p);
+			inv_det, p, 100);
 	}
 
 	/* Collect visible enemies and sort farthest-first */
@@ -781,7 +811,8 @@ static void render_sprites(void)
 
 	for (int i = 0; i < visible; i++) {
 		struct doom_enemy *e = &game.enemies[order[i].idx];
-		render_one_sprite(get_sprite_16(e), e->x, e->y, inv_det, p);
+		render_one_sprite(get_sprite_16(e), e->x, e->y, inv_det, p,
+				  e->type == ENEMY_BOSS ? 150 : 100);
 	}
 
 	/*
@@ -793,7 +824,7 @@ static void render_sprites(void)
 	for (int i = 0; i < MAX_FIREBALLS; i++) {
 		struct doom_fireball *f = &game.fireballs[i];
 		if (!f->active) continue;
-		render_one_sprite(spr_fireball, f->x, f->y, inv_det, p);
+		render_one_sprite(spr_fireball, f->x, f->y, inv_det, p, 100);
 	}
 }
 

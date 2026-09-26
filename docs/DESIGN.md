@@ -185,7 +185,7 @@ flowchart TB
 | V2 | `helpers/CommonCLI.cpp` includes the GPS manager, `ZephyrBoard`, WiFi OTA and UI headers (it serves `gps sync`, `start dfu`, `start ota`, display and input rotation). Sensors and GPS settings go through upstream's `SensorManager` since 2026-09-25. | Accepted: the remaining includes serve ZephCore-only commands. |
 | V3 | `helpers/boot_prefs.h` includes the GPS manager (applies GPS prefs at boot, as upstream's `applyGpsPrefs()`). | Accepted. |
 | V4 | The joystick UI calls `CompanionMesh` directly. | **Accepted by decision**: it runs on the main thread, so the calls are safe, and upstream's UITask reads `the_mesh` the same way. One access point (`JoystickUITask::getMesh()`). |
-| V5 | The MQTT adapter includes `app/observer_creds.h`. | Open, small. |
+| V5 | The MQTT adapter included `app/observer_creds.h`. | **Resolved 2026-09-26**: the credentials struct lives in `adapters/mqtt/uplink_creds.h`; the roles keep its persistence. |
 
 ### 5.4 Component inventory
 
@@ -358,6 +358,6 @@ upstream alignment (§9).
 
 1. `CompanionMesh.cpp` (~3.5k lines) and `CommonCLI.cpp` (~2k) remain the largest files, though now in upstream's
    shape (one handler per opcode; upstream command layout).
-2. V5 (§5.3).
-3. Merging the GPS standby and shutdown pin sequences needs current measurements first.
-4. ESP32 reset cause is not reported (`get pwrmgt.bootreason` shows `Unknown`).
+
+None beyond that: the items left open at the end of the restructure (V5, the GPS off sequences, the ESP32 reset
+cause) were closed on 2026-09-26.

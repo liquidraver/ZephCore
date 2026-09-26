@@ -85,6 +85,7 @@ zephcore/
 │   ├── gps/ZephyrGPSManager.cpp/h      # GNSS state machine, fix validation, public API
 │   ├── gps/gps_power.cpp, gps_module_cfg.cpp, gps_internal.h  # module power; module configuration + diag
 │   ├── mqtt/ZephyrMQTTPublisher.c/h    # MQTT packet publisher (observer / uplink)
+│   ├── mqtt/uplink_creds.h             # WiFi/MQTT/location credentials struct (persisted by app/observer_creds)
 │   ├── ota/wifi_ota.c/h           # WiFi SoftAP + HTTP firmware upload
 │   ├── rng/ZephyrRNG.cpp/h        # Hardware CSPRNG with PRNG fallback
 │   ├── sensors/                   # ZephyrSensorManager (upstream SensorManager) over the I2C env sensors + power monitors
@@ -1271,7 +1272,10 @@ cleared register. nRF implements `hwinfo_clear_reset_cause()`;
 ESP32 does not, so the weak stub returns `-ENOSYS` and nothing is cleared
 there. That is harmless on ESP32, whose cause comes from `esp_reset_reason()`
 and does not accumulate across boots, but the capture is what readers should
-rely on rather than the register.
+rely on rather than the register. Zephyr's ESP32 hwinfo driver returns 0 for
+the reasons it has no case for; `boot_info` maps those itself (USB-Serial-JTAG
+and JTAG resets, i.e. every esptool flash, to `DEBUG`; power glitch to
+`BROWNOUT`; CPU lockup; eFuse error to `HARDWARE`).
 
 Everything below is software: bounded stall detection in the layer that owns the
 state machine. Each entry names what it recovers, because several are

@@ -13,7 +13,7 @@
 
 #include "ZephyrMQTTPublisher.h"
 #include "ZephyrWiFiStation.h"   /* g_wifi_events, WIFI_READY_BIT, zc_wifi_station_* */
-#include "observer_creds.h"
+#include "uplink_creds.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/net/mqtt.h>

@@ -151,6 +151,58 @@ static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps
 static bool gps_gpio_configured = false;
 #endif
 
+/* The off levels, shared by gps_power_control(false) and System OFF: reset
+ * and resetb asserted (the module held in reset while its supply is gated,
+ * so it starts cleanly on the next power-on), the enable and rtcint
+ * de-asserted, VRTC de-asserted unless keep_vrtc (warm standby).
+ *
+ * The sleep line is the one difference: runtime standby/off leaves it
+ * asserted, System OFF drops it -- as upstream, whose T1000-E sleep_gps() and
+ * stop_gps() drive GPS_SLEEP_INT HIGH and only powerOff() drives it LOW.
+ *
+ * gpio_pin_configure_dt() on every line: a boot with the GPS off never ran
+ * the power-on path, so the pins may not be outputs yet. */
+static void gps_drive_off_levels(bool keep_vrtc, bool system_off)
+{
+#if HAS_GPS_RESET
+	if (gpio_is_ready_dt(&gps_reset_gpio)) {
+		gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
+	}
+#endif
+#if HAS_GPS_VRTC
+	if (!keep_vrtc && gpio_is_ready_dt(&gps_vrtc_gpio)) {
+		gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_INACTIVE);
+	}
+#else
+	ARG_UNUSED(keep_vrtc);
+#endif
+#if HAS_GPS_POWER_CONTROL
+	/* INACTIVE, not LOW: physical LOW leaves an active-low enable asserted. */
+	if (gpio_is_ready_dt(&gps_enable_gpio)) {
+		gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
+		gps_gpio_configured = true;
+	}
+#endif
+#if HAS_GPS_SLEEP
+	if (system_off && gpio_is_ready_dt(&gps_sleep_gpio)) {
+		gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_INACTIVE);
+	}
+#else
+	ARG_UNUSED(system_off);
+#endif
+#if HAS_GPS_RTCINT
+	if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
+		gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
+	}
+#endif
+#if HAS_GPS_RESETB
+	/* Declared GPIO_ACTIVE_LOW, so ACTIVE drives it LOW. */
+	if (gpio_is_ready_dt(&gps_resetb_gpio)) {
+		gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_ACTIVE);
+	}
+#endif
+}
+
 /* GPS power control with warm standby support.
  * @param on        true = power on, false = power off
  * @param keep_vrtc When powering off: true = keep VRTC alive (warm standby,
@@ -263,62 +315,7 @@ void gps_power_control(bool on, bool keep_vrtc)
 		}
 #endif
 	} else {
-		/* Power off sequence */
-#if HAS_GPS_RESET
-		/* Hold GPS in reset during power-off — matches Arduino sleep_gps()/stop_gps().
-		 * Ensures chip sees RESET asserted when GPS_EN is asserted on next
-		 * power-on, preventing uncontrolled startup before the reset pulse.
-		 * Configure-on-first-use (mirrors the GPS_EN pin below): on a
-		 * boot-with-GPS-off the power-on path never ran, so the pin isn't an
-		 * output yet — gpio_pin_set_dt() alone would leave it floating instead
-		 * of asserting reset. GPIO_OUTPUT_ACTIVE drives the active (asserted)
-		 * level directly. */
-		if (gpio_is_ready_dt(&gps_reset_gpio)) {
-			if (!gps_gpio_configured) {
-				gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
-			} else {
-				gpio_pin_set_dt(&gps_reset_gpio, 1);
-			}
-		}
-#endif
-
-#if HAS_GPS_VRTC
-		if (!keep_vrtc) {
-			/* Full power-off: VRTC off too (cold start on next wake) */
-			if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
-				if (!gps_gpio_configured) {
-					gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_INACTIVE);
-				} else {
-					gpio_pin_set_dt(&gps_vrtc_gpio, 0);
-				}
-			}
-		}
-		/* else: warm standby — VRTC stays asserted, preserving
-		 * ephemeris/almanac/RTC for fast re-acquisition (~1-2 µA) */
-#endif
-		if (gpio_is_ready_dt(&gps_enable_gpio)) {
-			if (!gps_gpio_configured) {
-				gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
-				gps_gpio_configured = true;
-			} else {
-				gpio_pin_set_dt(&gps_enable_gpio, 0);
-			}
-		}
-
-#if HAS_GPS_RESETB
-		/* Assert RESETB when GPS is off (Arduino sleep_gps/stop_gps).
-		 * The alias is declared GPIO_ACTIVE_LOW, so this drives it LOW. */
-		if (gpio_is_ready_dt(&gps_resetb_gpio)) {
-			gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_ACTIVE);
-		}
-#endif
-
-#if HAS_GPS_RTCINT
-		/* GPS_RTC_INT stays de-asserted during sleep/off (same as normal operation) */
-		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
-		}
-#endif
+		gps_drive_off_levels(keep_vrtc, false);
 
 #if HAS_GPS_VRTC
 		LOG_INF("GPS power OFF (%s)", keep_vrtc ?
@@ -332,12 +329,9 @@ void gps_power_control(bool on, bool keep_vrtc)
 #endif
 }
 
-/* Put every GPS control line this board declares into its System OFF state:
- * the power enable, and where present VRTC, sleep and rtcint, de-asserted;
- * reset and resetb asserted, holding the module in reset while its supply is
- * gated -- the same levels gps_power_control(false) leaves them at.
- * Uses gpio_pin_configure_dt() so pins are properly set even if
- * gps_power_control() was never called (GPIO not yet configured). */
+/* Put every GPS control line this board declares into its System OFF state
+ * (see gps_drive_off_levels()), the regulator rail off and VRTC off too.
+ * Configures the pins, so it works even if gps_power_control() never ran. */
 void gps_power_off_for_shutdown(void)
 {
 #if HAS_GPS_POWER_REGULATOR
@@ -346,40 +340,7 @@ void gps_power_off_for_shutdown(void)
 		gps_reg_enabled = false;
 	}
 #endif
-#if HAS_GPS_POWER_CONTROL
-	/* INACTIVE: physical LOW leaves an active-low enable asserted, i.e. the
-	 * module still powered across System OFF. */
-	if (gpio_is_ready_dt(&gps_enable_gpio)) {
-		gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_VRTC
-	if (gpio_is_ready_dt(&gps_vrtc_gpio)) {
-		gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RESET
-	/* ACTIVE, matching the power-off path: reset stays asserted across
-	 * System OFF, as Arduino stop_gps() leaves it. */
-	if (gpio_is_ready_dt(&gps_reset_gpio)) {
-		gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
-#if HAS_GPS_SLEEP
-	if (gpio_is_ready_dt(&gps_sleep_gpio)) {
-		gpio_pin_configure_dt(&gps_sleep_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RTCINT
-	if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-		gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
-	}
-#endif
-#if HAS_GPS_RESETB
-	if (gpio_is_ready_dt(&gps_resetb_gpio)) {
-		gpio_pin_configure_dt(&gps_resetb_gpio, GPIO_OUTPUT_ACTIVE);
-	}
-#endif
+	gps_drive_off_levels(false, true);
 }
 
 #if HAS_GNSS
