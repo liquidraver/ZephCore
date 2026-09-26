@@ -19,6 +19,7 @@
 
 #include <zephyr/dt-bindings/input/input-event-codes.h>
 #include <zephyr/dt-bindings/adc/adc.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
 #include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
 #include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
@@ -77,7 +78,7 @@
 	vext_enable: vext-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vext";
-		enable-gpios = <&gpio1 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+		enable-gpios = <&gpio1 4 (GPIO_PULL_UP | GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -130,6 +131,15 @@
 &lora0 {
 	dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 	rx-boosted;
+	/* Held across light sleep with NSS below; inert when CONFIG_PM=n. */
+	reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
+};
+
+/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+ * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+ * into its retention RAM.  Inert when CONFIG_PM=n. */
+&spi2 {
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
 };
 
 /* GPS on UART1 — optional external NMEA module on the pin header, wired to the

@@ -124,7 +124,7 @@
 	vext_enable: vext-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vext";
-		enable-gpios = <&gpio1 8 GPIO_ACTIVE_LOW>;  /* GPIO40 = gpio1 pin 8 */
+		enable-gpios = <&gpio1 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO40 = gpio1 pin 8 */
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -140,7 +140,7 @@
 	fem_power: fem-power {
 		compatible = "regulator-fixed";
 		regulator-name = "fem-power";
-		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;  /* VFEM_Ctrl = GPIO7 */
+		enable-gpios = <&gpio0 7 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* VFEM_Ctrl = GPIO7, held across light sleep */
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -247,12 +247,16 @@
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
 
-	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;  /* NSS = GPIO8 */
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* NSS = GPIO8 */
 
 	lora0: modem@0 {
 		compatible = "semtech,sx1262";
 		reg = <0>;
-		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;  /* RESET = GPIO12 */
+		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
+					 ESP32_GPIO_SLEEP_HOLD_EN)>;  /* RESET = GPIO12 */
 		busy-gpios    = <&gpio0 13 GPIO_ACTIVE_HIGH>;                      /* BUSY  = GPIO13 */
 		dio1-gpios    = <&gpio0 14 GPIO_ACTIVE_HIGH>;                      /* DIO1  = GPIO14 */
 
@@ -267,15 +271,15 @@
 		 * off` gate CSD instead in 1.17.2, shutting the FEM down and taking
 		 * the receive path with it (~69 dB, measured). */
 		/*
-		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep powers down
-		 * RTC_PERIPH (see boards/common/pm_esp32.overlay for the full
-		 * chain), and GPIO2/GPIO5 are RTC-capable pads (0-21), so their
-		 * state is not retained across a sleep unless explicitly held.
-		 * These two lines are the FEM's entire control surface — CSD low
-		 * disables the PA and the LNA with it, CTX high bypasses the LNA —
-		 * so losing them means transmitting through a bypassed PA, tens of
-		 * dB down, with RX sensitivity gone too, while the node otherwise
-		 * looks healthy and keeps relaying.
+		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep switches every pad
+		 * that is not held to an isolated sleep configuration (input and
+		 * output off, no pulls), so these lines float for the length of
+		 * each sleep (boards/common/pm_esp32.overlay).  They are the FEM's
+		 * entire control surface — CSD low disables the PA and the LNA with
+		 * it, CTX high bypasses the LNA — and the radio keeps receiving
+		 * through the sleep, so a floating pair means RX without its LNA
+		 * and TX through a bypassed PA, tens of dB down, while the node
+		 * otherwise looks healthy and keeps relaying.
 		 * The flag is ignored when CONFIG_PM=n, so this is inert on
 		 * builds that never light-sleep.
 		 */

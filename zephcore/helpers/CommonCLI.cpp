@@ -7,6 +7,7 @@
 #include "battery_curve.h"
 #include "led_gate.h"
 #include "buzzer_gate.h"
+#include "pm_sleep_guard.h"
 #include <helpers/ui/ui_task.h>
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DISPLAY)
 #include <helpers/ui/display.h>
@@ -664,8 +665,36 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 				 gps_get_last_known_position(&pos) ? "fix" : "no fix",
 				 (int)gsi.satellites);
 		}
+	} else if (memcmp(command, "powersaving on", 14) == 0) {
+		/* Upstream's replies.  ESP32 light-sleep builds: allowed again
+		 * once the console window closes (upstream ESP32 waits 2 min
+		 * from boot).  nRF always idles in System ON, which is what
+		 * upstream's nRF branch turns on, so it is simply stored. */
+#if ZC_PM_LIGHT_SLEEP
+		_prefs->powersaving_enabled = 1;
+		savePrefs();
+		zc_pm_set_powersaving(true);
+		uint32_t win_s = zc_pm_console_window_remaining_ms() / 1000U;
+		if (win_s > 0) {
+			snprintf(reply, CLI_REPLY_SIZE, "on - After %u s (console window)",
+				 (unsigned)win_s);
+		} else {
+			strcpy(reply, "on - Immediate effect");
+		}
+#elif defined(CONFIG_SOC_FAMILY_NORDIC_NRF)
+		_prefs->powersaving_enabled = 1;
+		savePrefs();
+		strcpy(reply, "on - Immediate effect");
+#else
+		strcpy(reply, "Board not supported");
+#endif
+	} else if (memcmp(command, "powersaving off", 15) == 0) {
+		_prefs->powersaving_enabled = 0;
+		savePrefs();
+		zc_pm_set_powersaving(false);
+		strcpy(reply, "off");
 	} else if (memcmp(command, "powersaving", 11) == 0) {
-		strcpy(reply, "Not implemented");
+		strcpy(reply, _prefs->powersaving_enabled ? "on" : "off");
 	} else if (memcmp(command, "log start", 9) == 0) {
 		_callbacks->setLoggingOn(true);
 		strcpy(reply, "   logging on");
@@ -984,6 +1013,12 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 
 void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, char* reply) {
 	const char* config = &command[4];
+	if (strcmp(config, "pm") == 0) {
+		if (zc_pm_format_stats(reply, CLI_REPLY_SIZE) == 0) {
+			strcpy(reply, "Error: no light sleep on this build");
+		}
+		return;
+	}
 	/* MUST stay above the "leds" branch: that one compares only the first
 	 * four characters, so "leds.radio" and "leds.hb" both match it and
 	 * would otherwise return the master switch instead. */

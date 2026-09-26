@@ -85,7 +85,7 @@
 	vext_enable: tft_pwr_enable: vext-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vext";
-		enable-gpios = <&gpio0 3 GPIO_ACTIVE_HIGH>;
+		enable-gpios = <&gpio0 3 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;
 		regulator-boot-on;
 		regulator-always-on;
 		/* Documents the rail's requirement, but do not rely on it. It is
@@ -120,7 +120,7 @@
 	fem_power: fem-power {
 		compatible = "regulator-fixed";
 		regulator-name = "fem-power";
-		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;
+		enable-gpios = <&gpio0 7 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* held across light sleep */
 		regulator-boot-on;
 		regulator-always-on;
 		/* Documents the FEM's requirement, but do not rely on it — inert for
@@ -244,12 +244,16 @@
 	status = "okay";
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
-	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
 
 	lora0: lora@0 {
 		compatible = "semtech,sx1262";
 		reg = <0>;
-		reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;
+		reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
+					  ESP32_GPIO_SLEEP_HOLD_EN)>;
 		busy-gpios = <&gpio0 13 GPIO_ACTIVE_HIGH>;
 		dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 
@@ -265,14 +269,12 @@
 		 * path select is DIO2 in hardware, which is what leaves CTX
 		 * free to mean LNA-or-bypass. */
 		/*
-		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep powers down
-		 * RTC_PERIPH (chain documented in boards/common/pm_esp32.overlay)
-		 * and GPIO4/GPIO5 are RTC-capable pads (0-21), so without the
-		 * hold the FEM comes out of a sleep disabled and with an
-		 * indeterminate receive path — transmit goes out through a
-		 * bypassed PA, tens of dB down, and RX may lose the LNA, while
-		 * the node keeps relaying and looks healthy.  Inert when
-		 * CONFIG_PM=n.
+		 * ESP32_GPIO_SLEEP_HOLD_EN on both: light sleep switches every pad
+		 * that is not held to an isolated sleep configuration (input and
+		 * output off, no pulls; boards/common/pm_esp32.overlay), so without
+		 * the hold the FEM is disabled, with an indeterminate receive path,
+		 * for the length of each sleep — and the radio keeps receiving
+		 * through it.  Inert when CONFIG_PM=n.
 		 */
 		antenna-enable-gpios = <&gpio0 4 (GPIO_ACTIVE_HIGH |
 						 ESP32_GPIO_SLEEP_HOLD_EN)>;

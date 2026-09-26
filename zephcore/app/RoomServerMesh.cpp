@@ -441,6 +441,12 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     }
 
     LOG_INF("Room login success");
+    /* What save() stores that a login can change: a new entry (permissions
+     * 0 until set below), the role, sync_since, the secret. */
+    uint8_t prev_perms = client->permissions;
+    uint32_t prev_sync_since = client->extra.room.sync_since;
+    bool secret_changed = memcmp(client->shared_secret, secret, PUB_KEY_SIZE) != 0;
+
     client->last_timestamp = sender_timestamp;
     client->extra.room.sync_since = sender_sync_since;
     client->extra.room.pending_ack = 0;
@@ -450,7 +456,12 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     client->permissions |= perms;
     memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
 
-    if (perms != PERM_ACL_GUEST) {
+    /* Upstream schedules the write on every non-guest login; a member logging
+     * in again with nothing new (same secret, role and sync point) would
+     * rewrite an identical ACL. */
+    if (perms != PERM_ACL_GUEST &&
+        (client->permissions != prev_perms || client->extra.room.sync_since != prev_sync_since ||
+         secret_changed)) {
       if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
     }
   }

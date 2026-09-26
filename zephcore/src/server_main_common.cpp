@@ -54,6 +54,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include "mesh_events.h"
 #include "../adapters/datastore/ZephyrFsFormat.h"
 #include <helpers/LoopWakeStats.h>
+#include <helpers/pm_sleep_guard.h>
 #include <Serial.h>
 #include <adapters/clock/ZephyrRTCDiscover.h>
 #include <ZephyrSensorManager.h>
@@ -750,6 +751,9 @@ int server_main(const ServerRole &role)
 				 dev_id[0], dev_id[1], dev_id[2], dev_id[3]);
 		}
 	}
+
+	/* ESP32 light sleep: `powersaving off` holds a sleep lock. No-op elsewhere. */
+	zc_pm_set_powersaving(prefs->powersaving_enabled != 0);
 
 	/* Apply RX boost and duty cycle from prefs */
 	lora_radio.setRxBoost(prefs->rx_boost != 0);

@@ -444,6 +444,7 @@ void ZephyrBoard::onPacketReceived()
 
 void ZephyrBoard::reboot()
 {
+	zephcore_persist_before_off();
 	k_msleep(50);  /* Let UART/USB flush */
 #ifdef ZEPHCORE_USBD_DETACH
 	/* USB device stack (CDC ACM): detach so the host sees an unplug. */
@@ -468,6 +469,7 @@ void ZephyrBoard::powerOff()
 
 void ZephyrBoard::rebootToBootloader()
 {
+	zephcore_persist_before_off();
 #ifdef NRF52_GPREGRET
 	/* Write magic value to GPREGRET0 - enter UF2 bootloader mode.
 	 * UF2 supports both drag-and-drop (.uf2) and serial DFU (nrfutil). */
@@ -523,6 +525,7 @@ bool ZephyrBoard::startOTAUpdate(const char *id, char reply[])
 {
 #ifdef NRF52_GPREGRET
 	/* Write magic value to GPREGRET0 - enter BLE OTA DFU mode */
+	zephcore_persist_before_off();
 	nrf_power_gpregret_set(NRF_POWER, 0, BOOTLOADER_DFU_OTA_MAGIC);
 	sprintf(reply, "OK - rebooting to BLE DFU (name: %s)", id ? id : "DfuTarg");
 	k_msleep(50);  /* Let UART/USB flush */

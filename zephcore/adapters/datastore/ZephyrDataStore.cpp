@@ -433,6 +433,8 @@ bool ZephyrDataStore::loadLegacyPrefs(NodePrefs &prefs)
 	/* That firmware's 3300 mV default is 3200 now (NodePrefs.h). */
 	prefs.auto_shutdown_set = 0;
 	auto_shutdown_upgrade(&prefs);
+	prefs.powersaving_set = 0;
+	powersaving_upgrade(&prefs);
 	return true;
 }
 

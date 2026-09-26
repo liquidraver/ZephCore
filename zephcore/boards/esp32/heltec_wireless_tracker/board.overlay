@@ -28,6 +28,7 @@
  */
 
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 #include <zephyr/dt-bindings/pinctrl/esp-pinctrl-common.h>
 #include <zephyr/dt-bindings/pinctrl/esp32s3-pinctrl.h>
 #include <zephyr/dt-bindings/pinctrl/esp32s3-gpio-sigmap.h>
@@ -230,12 +231,16 @@
 
 &spi2 {
 	pinctrl-0 = <&spim2_lora>;
-	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
 };
 
 &lora0 {
 	dio1-gpios = <&gpio0 14 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
 	rx-boosted;
+	reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
 };
 
 /*

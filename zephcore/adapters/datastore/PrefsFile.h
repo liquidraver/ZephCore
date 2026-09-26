@@ -13,5 +13,6 @@ typedef bool (*PrefsToJsonFn)(const NodePrefs &p, Stream &out);
 /* False if the file is absent, empty or does not parse; p is then untouched. */
 bool zephcore_prefs_json_load(const char *path, NodePrefs &p, PrefsFromJsonFn from_json);
 
-/* Power-safe replace; false (and the old file kept) on any short write. */
+/* Power-safe replace; false (and the old file kept) on any short write. A
+ * file that already holds exactly this is left alone (true, no write). */
 bool zephcore_prefs_json_save(const char *path, const NodePrefs &p, PrefsToJsonFn to_json);

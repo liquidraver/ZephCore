@@ -32,7 +32,7 @@ All commands are sent over USB serial (CDC-ACM). Commands sent remotely over the
 | `start ota` | ESP32: start WiFi AP + HTTP OTA server. nRF52: reboot into BLE OTA DFU mode |
 | `stop ota` | Stop WiFi OTA server (ESP32 only) |
 | `clkreboot` | Set clock to a fixed reference time (15 May 2024 8:50pm UTC) then reboot. On a board with a hardware RTC the reference time is written to the chip too, as upstream, so the reset survives the reboot |
-| `powersaving` | Not implemented |
+| `powersaving` / `powersaving on` / `powersaving off` | Upstream's command and replies. On ESP32 light-sleep repeaters (boards with `light_sleep: true`) it gates light sleep: `off` (persisted) keeps the SoC awake, which also keeps a USB Serial/JTAG console attached; `on` allows sleep again, replying `on - After N s (console window)` while the console window is open, else `on - Immediate effect`. Default **on** on those builds, and prefs from firmware that stored the field without acting on it are read as on once. nRF52/nRF54L: stored, replies `on - Immediate effect` (they always idle in System ON; `off` changes nothing). Other boards: `Board not supported` |
 
 ---
 
@@ -312,6 +312,7 @@ Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: tr
 | `get extra.sf` | LR2021 side detectors: the extra spreading factors currently received alongside `sf`, comma-separated (bare, no `> ` prefix), or `No extra SF configured`. Reflects the saved prefs, not what the chip accepted — if the set became invalid after an `sf`/`bw` change it is reported here but was refused at boot (a `WRN` line says so). |
 | `get adc.multiplier` | Battery voltage ADC calibration multiplier |
 | `get bootloader.ver` | Bootloader version string |
+| `get pm` | ESP32 light-sleep builds: `> on asleep P% sleeps S/E wake tT gG oO radioR btnB [win Ns]` (`off` when powersaving is off): powersaving state, share of uptime asleep, sleeps taken out of light-sleep entries, wake causes (RTC timer, GPIO, other), sleeps that ended with the radio IRQ / user button active, and the console window left. Radio wakes should track the packets the node hears. Other builds: `Error: no light sleep on this build` |
 | `get pwrmgt.support` | `> supported` on nRF52 (VBUS detection, boot voltage), else `> unsupported` — upstream's reply |
 | `get pwrmgt.source` | nRF52: `> external` (VBUS present) or `> battery`; elsewhere `ERROR: Power management not supported` |
 | `get pwrmgt.bootreason` | `> Reset: <cause>; Shutdown: <reason>`. The cause is this boot's hardware reset cause as labels (`PIN`, `SOFTWARE`, `BROWNOUT`, `POR`, `WATCHDOG`, `LOWPOWER` for a wake from System OFF, ...), followed by `(crash <K_ERR> in <thread>, pc 0x...)` when the previous run ended in a fatal error and rebooted — resolve the pc with `addr2line` against the same build. The shutdown reason is `User Request`, `Low Voltage` or `None` |

@@ -54,8 +54,35 @@ static bool json_writer(struct fs_file_t *file, void *arg)
 	return c->to_json(*c->p, out) && out.ok();
 }
 
+/* True if serialising p would reproduce the file byte for byte. Most
+ * savePrefs() callers save whatever the command touched, including a value
+ * set to what it already was; this keeps those off the flash. */
+static bool prefs_json_unchanged(const char *path, const NodePrefs &p, PrefsToJsonFn to_json)
+{
+	if (!zephcore_fs_exists(path)) {
+		return false;
+	}
+
+	struct fs_file_t file;
+
+	fs_file_t_init(&file);
+	if (fs_open(&file, path, FS_O_READ) < 0) {
+		return false;
+	}
+	FsCompareStream cmp(&file);
+	bool same = to_json(p, cmp) && cmp.same();
+
+	fs_close(&file);
+	return same;
+}
+
 bool zephcore_prefs_json_save(const char *path, const NodePrefs &p, PrefsToJsonFn to_json)
 {
+	if (prefs_json_unchanged(path, p, to_json)) {
+		LOG_DBG("%s unchanged, not rewritten", path);
+		return true;
+	}
+
 	struct json_writer_ctx c = { &p, to_json };
 
 	return zephcore_fs_atomic_write(path, json_writer, &c, "savePrefs");

@@ -94,6 +94,10 @@ __weak void ui_before_power_off(void)
 {
 }
 
+__weak void zephcore_persist_before_off(void)
+{
+}
+
 /* Sensor and buzzer power-gate regulators. GPS has its own; never BLE (that
  * corrupts controller state across the wake). */
 static void power_regulators_off(void)
@@ -117,6 +121,9 @@ static void power_regulators_off(void)
 void zephcore_power_off(void)
 {
 	LOG_INF("Powering off");
+
+	/* 0. Deferred flash writes, while every rail is still up. */
+	zephcore_persist_before_off();
 
 	/* 1. The UI: heartbeat LED, display (EPD keeps its image). */
 	ui_before_power_off();

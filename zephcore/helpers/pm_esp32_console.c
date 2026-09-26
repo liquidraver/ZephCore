@@ -19,20 +19,18 @@
  *    could carry a GPIO wake instead.  Characters typed at a sleeping node are
  *    therefore dropped, and no amount of TX handling changes that.
  *
- *    The answer here is a boot window rather than a wake source: sleep is
- *    blocked outright for ZEPHCORE_PM_BOOT_AWAKE_MS after boot, so a node is
- *    always reachable for that long.  This works better in practice than it
- *    sounds, because the USB bridge on these boards drives EN from DTR — a
- *    terminal that asserts DTR on open resets the board, which re-arms the
- *    window at the moment someone connects.  A terminal that does not toggle
- *    DTR gets no window, and the node has to be power-cycled to answer over
- *    USB; that is the known limitation of this approach.  Arming
- *    esp_sleep_enable_uart_wakeup() and re-taking the lock on console activity
- *    would remove it, at the cost of the first keystroke (the hardware
- *    consumes it as the wake trigger).
+ *    The answer here is a console window rather than a wake source: sleep is
+ *    blocked outright for ZEPHCORE_PM_BOOT_AWAKE_MS after boot, and again
+ *    after every press of the user button (helpers/pm_esp32_wake.c), so a
+ *    node is reachable for that long whenever someone is standing at it.
+ *    On Heltec V3 a terminal that asserts DTR on open also resets the board
+ *    through its USB bridge, which opens the window too.  Boards that console
+ *    on the S3's own USB Serial/JTAG (V4, V4.3, Wireless Tracker V2, XIAO,
+ *    Station G2) do not reset on open, and their USB device detaches on every
+ *    sleep; the button is the way back in, or `powersaving off` over LoRa.
  *
- * Remote admin over LoRa is unaffected by any of this: DIO1 is armed as a wake
- * source by patches/zephyr/0012 and wakes the SoC on a received packet.
+ * Remote admin over LoRa is unaffected by any of this: the radio's IRQ line
+ * wakes the SoC on a received packet (helpers/pm_esp32_wake.c).
  */
 
 #include <zephyr/kernel.h>
@@ -65,38 +63,55 @@ static struct pm_notifier console_notifier = {
 	.state_entry = pm_console_flush,
 };
 
-/* ========== 2. Keep the node awake for a window after boot ========== */
+/* ========== 2. Keep the node awake for a console window ========== */
 
-#if CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS > 0
+/* 1 while the window holds its sleep lock. The lock is taken only on the
+ * 0 -> 1 edge and released only on 1 -> 0, so re-opening an open window just
+ * moves its deadline. */
+static atomic_t window_locked;
 
-static void boot_window_expired(struct k_work *work)
+static void console_window_expired(struct k_work *work)
 {
 	ARG_UNUSED(work);
 
-	zc_pm_unblock_sleep();
-	LOG_INF("boot window elapsed — light sleep enabled "
-		"(USB console answers again after a reset)");
+	if (atomic_cas(&window_locked, 1, 0)) {
+		zc_pm_unblock_sleep();
+		LOG_INF("console window closed — light sleep enabled "
+			"(press the user button to reopen it)");
+	}
 }
 
-static K_WORK_DELAYABLE_DEFINE(boot_window_work, boot_window_expired);
+static K_WORK_DELAYABLE_DEFINE(console_window_work, console_window_expired);
 
-#endif /* CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS > 0 */
+void zc_pm_console_window_open(void)
+{
+#if CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS > 0
+	if (atomic_cas(&window_locked, 0, 1)) {
+		zc_pm_block_sleep();
+	}
+	k_work_reschedule(&console_window_work,
+			  K_MSEC(CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS));
+#endif
+}
+
+uint32_t zc_pm_console_window_remaining_ms(void)
+{
+	if (!atomic_get(&window_locked)) {
+		return 0;
+	}
+	return (uint32_t)k_ticks_to_ms_floor64(
+		k_work_delayable_remaining_get(&console_window_work));
+}
 
 static int pm_console_init(void)
 {
 	pm_notifier_register(&console_notifier);
 
-#if CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS > 0
-	/* Taken here rather than released here: the lock is held from init and
-	 * dropped by the work item, so there is no window at startup in which
-	 * the node could sleep before the guard is in place. */
-	zc_pm_block_sleep();
-	k_work_schedule(&boot_window_work,
-			K_MSEC(CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS));
-
+	/* Opened here, at POST_KERNEL, so there is no stretch at startup in
+	 * which the node could sleep before the guard is in place. */
+	zc_pm_console_window_open();
 	LOG_INF("light sleep deferred %d ms (console configuration window)",
 		CONFIG_ZEPHCORE_PM_BOOT_AWAKE_MS);
-#endif
 
 	return 0;
 }

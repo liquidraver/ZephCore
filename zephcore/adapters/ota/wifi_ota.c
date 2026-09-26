@@ -14,6 +14,7 @@
 #include "wifi_ota.h"
 #include "ota_page.h"
 #include "../../helpers/pm_sleep_guard.h"
+#include "../board/zephyr_poweroff.h"
 
 #include <zephyr/kernel.h>
 #include <zephyr/net/wifi_mgmt.h>
@@ -55,6 +56,7 @@ static char home_html[384];
 static void ota_reboot_fn(struct k_work *work)
 {
 	LOG_INF("OTA reboot");
+	zephcore_persist_before_off();
 	sys_reboot(SYS_REBOOT_COLD);
 }
 

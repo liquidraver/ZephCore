@@ -251,6 +251,12 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     }
 
     LOG_INF("Login success");
+    /* What save() stores that a login can change: a new entry (permissions
+     * 0 until set below), the role, the secret. last_timestamp and
+     * last_activity are RAM-only. */
+    uint8_t prev_perms = client->permissions;
+    bool secret_changed = memcmp(client->shared_secret, secret, PUB_KEY_SIZE) != 0;
+
     client->last_timestamp = sender_timestamp;
     client->last_activity = getRTCClock()->getCurrentTime();
     /* Role assignment only ever escalates. putClient() hands back the
@@ -265,7 +271,7 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     }
     memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
 
-    if (client->isAdmin()) {
+    if (client->isAdmin() && (client->permissions != prev_perms || secret_changed)) {
       /* Flush admin sessions now instead of leaving them on the lazy
        * timer. The entry carries the shared secret this session's
        * traffic is encrypted with; if power is lost before the timer
@@ -274,7 +280,13 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
        * a wrong password or an unreachable node. A repeater is the
        * device most likely to lose power unattended, so the few
        * milliseconds are worth it. save() writes the whole ACL, so any
-       * other pending changes go out with it. */
+       * other pending changes go out with it.
+       *
+       * Only when the stored entry changed, though. The secret is the
+       * ECDH of the two fixed keys, so a known admin logging in again
+       * carries the same one: rewriting an identical ACL on every login
+       * (a monitoring tool polling every few minutes) was pure wear.
+       * Upstream schedules a lazy write on every non-guest login. */
       if (_store) {
         acl.save(_store->getFS());
         dirty_contacts_expiry = 0;

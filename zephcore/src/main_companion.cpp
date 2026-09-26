@@ -64,6 +64,7 @@ LOG_MODULE_REGISTER(zephcore_main, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #ifdef ZEPHCORE_LORA
 #include <app/CompanionMesh.h>
 #include <helpers/CommonCLI.h>
+#include <helpers/pm_sleep_guard.h>
 #include <helpers/StatsFormatHelper.h>
 #include <app/CompanionCLI.h>
 #include <helpers/battery_curve.h>
@@ -89,6 +90,7 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #define MESH_EVENT_PREFS_DIRTY   BIT(MESH_EVENT_ROLE_BASE + 2)  /* Prefs mutated off-main; main flushes to flash */
 #define MESH_EVENT_CONTACT_ITER  BIT(MESH_EVENT_ROLE_BASE + 3)  /* Continue contact-dump iteration on main thread */
 #define MESH_EVENT_LINK          BIT(MESH_EVENT_ROLE_BASE + 4)  /* A transport connected or disconnected */
+#define MESH_EVENT_PERSIST       BIT(MESH_EVENT_ROLE_BASE + 5)  /* Flush deferred writes: a reboot/power-off waits on it */
 
 #ifdef ZEPHCORE_LORA
 static void save_prefs_to_flash(void);
@@ -98,7 +100,7 @@ static void power_policy_tick(void);
 #define MESH_EVENT_BASE          (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | \
 	MESH_EVENT_BLE_RX | MESH_EVENT_HOUSEKEEPING | MESH_EVENT_UI_ACTION |  \
 	MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_PREFS_DIRTY | \
-	MESH_EVENT_CONTACT_ITER | MESH_EVENT_LINK)
+	MESH_EVENT_CONTACT_ITER | MESH_EVENT_LINK | MESH_EVENT_PERSIST)
 #if IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK)
 #define MESH_EVENT_ALL           (MESH_EVENT_BASE | MESH_EVENT_JOYSTICK_LOOP)
 #else
@@ -147,6 +149,46 @@ K_TIMER_DEFINE(housekeeping_timer, housekeeping_timer_fn, NULL);
 
 #ifdef ZEPHCORE_LORA
 static CompanionMesh *companion_mesh_ptr;
+
+/* The thread running mesh_event_loop(), once it is running. */
+static k_tid_t mesh_thread;
+static K_SEM_DEFINE(persist_done, 0, 1);
+
+/* Bounds a reboot/power-off requested off the main thread. A full contacts
+ * rewrite is a second or two on internal flash; past this the device goes
+ * down anyway rather than hang on a wedged main thread. */
+#define PERSIST_WAIT_MS 5000
+
+/* Main thread: the deferred contacts/channels writes, and a prefs save still
+ * waiting in the event mask. */
+static void persist_pending_writes(void)
+{
+	if (k_event_clear(&mesh_events, MESH_EVENT_PREFS_DIRTY) & MESH_EVENT_PREFS_DIRTY) {
+		save_prefs_to_flash();
+	}
+	companion_mesh_ptr->flushPendingWrites();
+}
+
+/* zephyr_poweroff.h: every clean reboot and power-off path calls this. The
+ * lazy contacts deadline is long (CompanionMesh.h), so a clean shutdown that
+ * skipped it would lose the last hour of contact updates. */
+extern "C" void zephcore_persist_before_off(void)
+{
+	if (!companion_mesh_ptr) {
+		return;
+	}
+	if (!mesh_thread || k_current_get() == mesh_thread) {
+		persist_pending_writes();
+		return;
+	}
+	/* The mesh state belongs to the main thread: hand the flush over. */
+	k_sem_reset(&persist_done);
+	k_event_post(&mesh_events, MESH_EVENT_PERSIST);
+	if (k_sem_take(&persist_done, K_MSEC(PERSIST_WAIT_MS)) != 0) {
+		LOG_WRN("persist before off: main thread did not flush in %d ms",
+			PERSIST_WAIT_MS);
+	}
+}
 #endif
 
 /* ========== Companion transports ==========
@@ -308,6 +350,9 @@ static void run_contact_iteration(void)
 static void mesh_event_loop(void)
 {
 	LOG_INF("starting event-driven loop");
+#ifdef ZEPHCORE_LORA
+	mesh_thread = k_current_get();
+#endif
 
 	k_timer_start(&housekeeping_timer, K_MSEC(HOUSEKEEPING_INTERVAL_MS),
 		      K_MSEC(HOUSEKEEPING_INTERVAL_MS));
@@ -324,6 +369,14 @@ static void mesh_event_loop(void)
 		if (events & MESH_EVENT_LINK) {
 			process_link_change();
 		}
+
+#ifdef ZEPHCORE_LORA
+		/* A reboot/power-off on another thread is waiting for this. */
+		if ((events & MESH_EVENT_PERSIST) && companion_mesh_ptr) {
+			persist_pending_writes();
+			k_sem_give(&persist_done);
+		}
+#endif
 
 #ifdef ZEPHCORE_LORA
 		/* UI button actions (advert, pref saves) */
@@ -925,6 +978,8 @@ int main(void)
 	companion_mesh.prefs.gps_interval = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC; /* 0 = always on */
 
 	data_store.loadPrefs(companion_mesh.prefs);
+	/* ESP32 light sleep: `powersaving off` holds a sleep lock. No-op elsewhere. */
+	zc_pm_set_powersaving(companion_mesh.prefs.powersaving_enabled != 0);
 	/* Until the first fix, the position is the configured one. */
 	sensors.node_lat = companion_mesh.prefs.node_lat;
 	sensors.node_lon = companion_mesh.prefs.node_lon;

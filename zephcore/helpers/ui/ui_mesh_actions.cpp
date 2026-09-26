@@ -24,6 +24,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 #include <ZephyrDataStore.h>
 #include <adapters/radio/LoRaRadio.h>
 #include <adapters/board/ZephyrBoard.h>
+#include <adapters/board/zephyr_poweroff.h>
 #include <adapters/clock/ZephyrRTCClock.h>
 #include <ZephyrBLE.h>
 #include <ZephyrSensorManager.h>
@@ -325,6 +326,7 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_SAVE_RESTART) {
 		LOG_INF("rebooting (save+restart action)");
+		zephcore_persist_before_off();
 		sys_reboot(SYS_REBOOT_COLD);
 	}
 }

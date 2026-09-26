@@ -39,6 +39,14 @@ FUNC_NORETURN void zephcore_power_off(void);
  * builds provide it. */
 void ui_before_power_off(void);
 
+/* Write out whatever the role defers to flash lazily (the companion's contacts
+ * and channels), before a clean reboot or power-off. Weak no-op here; the
+ * companion provides it (main_companion.cpp). Callable from any thread: off
+ * the main thread it hands the work to the main thread and waits, bounded.
+ * zephcore_power_off() and the ZephyrBoard reboot paths call it; so must any
+ * new clean-reboot path that calls sys_reboot() directly. */
+void zephcore_persist_before_off(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -466,10 +466,10 @@ if(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
   endif()
 endif()
 
-# ESP32 light-sleep console guards — TX flush before sleep + post-boot awake
-# window. Only meaningful when CONFIG_PM is on (boards/common/pm_esp32.conf).
+# ESP32 light sleep (boards/common/pm_esp32.conf): console guards (TX flush
+# before sleep, console window) and the wake pins, `powersaving` and `get pm`.
 if(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32 AND CONFIG_PM)
-  target_sources(app PRIVATE helpers/pm_esp32_console.c)
+  target_sources(app PRIVATE helpers/pm_esp32_console.c helpers/pm_esp32_wake.c)
 endif()
 
 # Native-Linux (native_sim) runtime setup: force real-time clock mode so the

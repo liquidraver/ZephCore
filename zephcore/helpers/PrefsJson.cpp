@@ -71,6 +71,7 @@ protected:
 		def("xsf", (void *)_p->extra_sf, EXTRA_SF_MAX);
 		def("disp_rot", _p->display_rotate);
 		def("in_rot", _p->input_rotate);
+		def("pwr_sav_set", _p->powersaving_set);
 	}
 
 public:
@@ -140,6 +141,7 @@ protected:
 		def("vc_flags", _p->v_contact_flags);
 		def("vbat_mv", _p->v_battery_alert_mv);
 		def("adc_mult", _p->adc_multiplier);
+		def("pwr_sav_en", _p->powersaving_enabled);
 	}
 
 public:
@@ -320,10 +322,12 @@ bool companionPrefsFromJson(NodePrefs &p, Stream &in)
 	/* Absent keys keep the caller's value: clear the marker first, so a file
 	 * from before it existed is recognised (NodePrefs.h). */
 	t.auto_shutdown_set = 0;
+	t.powersaving_set = 0;
 	if (!j.load(in)) {
 		return false;
 	}
 	auto_shutdown_upgrade(&t);
+	powersaving_upgrade(&t);
 	saneRadio(t);
 	sanitizeNodePrefs(&t);
 	p = t;
@@ -339,6 +343,7 @@ bool serverPrefsFromJson(NodePrefs &p, Stream &in)
 	 * file from before it existed was written by firmware that ran the GPS
 	 * regardless of gps.en, and keeps doing so (NodePrefs.h). */
 	t.gps_enabled_set = 0;
+	t.powersaving_set = 0;
 	if (!j.load(in)) {
 		return false;
 	}
@@ -346,6 +351,7 @@ bool serverPrefsFromJson(NodePrefs &p, Stream &in)
 		t.gps_enabled = 1;
 		t.gps_enabled_set = 1;
 	}
+	powersaving_upgrade(&t);
 	saneRadio(t);
 	sanitizeNodePrefs(&t);
 	p = t;

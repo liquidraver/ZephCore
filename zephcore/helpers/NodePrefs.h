@@ -130,6 +130,11 @@ struct NodePrefs {
 	uint8_t leds_hb_mode;           // LEDS_HB_* — heartbeat LED behaviour (0 = all, as before)
 	// Power saving
 	uint8_t powersaving_enabled;
+	/* 1 = powersaving_enabled is a real choice.  The field was stored but
+	 * did nothing before ESP32 light sleep honoured it (2026-09-26), so a
+	 * stored 0 without this marker takes the build's default once
+	 * (powersaving_upgrade). */
+	uint8_t powersaving_set;
 	// GPS settings
 	uint8_t gps_enabled;
 	/* Servers only: 1 = gps_enabled is a real choice. Servers before
@@ -304,6 +309,22 @@ static inline void auto_shutdown_upgrade(NodePrefs *p) {
 	p->auto_shutdown_set = 1;
 }
 
+/* `powersaving` gates ESP32 light sleep (helpers/pm_esp32_wake.c).  On a
+ * light-sleep build the default is on: those builds slept unconditionally
+ * before the switch existed, and the stored 0 carried no intent.  Elsewhere
+ * it is upstream's default, off. */
+#if defined(CONFIG_PM) && defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+#define POWERSAVING_DEFAULT 1
+#else
+#define POWERSAVING_DEFAULT 0
+#endif
+static inline void powersaving_upgrade(NodePrefs *p) {
+	if (!p->powersaving_set && p->powersaving_enabled == 0) {
+		p->powersaving_enabled = POWERSAVING_DEFAULT;
+	}
+	p->powersaving_set = 1;
+}
+
 #define GPS_INTERVAL_MIN_SEC 10u
 #define GPS_INTERVAL_MAX_SEC 604800u
 static inline uint32_t clampGpsInterval(uint32_t sec) {
@@ -363,7 +384,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	 * restoring the default — left over from when the default was dry-run. */
 	p->cad_auto            = saneBool<uint8_t>(p->cad_auto, 1);
 	p->allow_read_only     = saneBool<uint8_t>(p->allow_read_only, 0);
-	p->powersaving_enabled = saneBool<uint8_t>(p->powersaving_enabled, 0);
+	p->powersaving_enabled = saneBool<uint8_t>(p->powersaving_enabled, POWERSAVING_DEFAULT);
+	p->powersaving_set     = saneBool<uint8_t>(p->powersaving_set, 0);
 	p->display_rotate      = saneBool<uint8_t>(p->display_rotate, 0);
 	p->input_rotate        = saneBool<uint8_t>(p->input_rotate, 0);
 	/* Defaults that are on, not off. */
@@ -469,7 +491,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->leds_disabled = 0;         // LEDs on
 	prefs->leds_radio_mode = LEDS_RADIO_TX;  // activity LED on transmit, as before
 	prefs->leds_hb_mode = LEDS_HB_ALL;       // heartbeat + unread, as before
-	prefs->powersaving_enabled = 0;
+	prefs->powersaving_enabled = POWERSAVING_DEFAULT;
+	prefs->powersaving_set = 1;
 	prefs->gps_enabled = 0;
 	prefs->gps_interval = 300;        // 5 minutes
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;

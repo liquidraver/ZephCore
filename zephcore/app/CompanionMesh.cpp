@@ -100,6 +100,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	_app_target_ver = 0;
 	_dirty_contacts_expiry = 0;
 	_dirty_channels_expiry = 0;
+	memset(&_advert_prev, 0, sizeof(_advert_prev));
 	memset(_send_scope.key, 0, sizeof(_send_scope.key));
 	_send_scope_force_unscoped = false;
 	_cli_exec_cb = nullptr;
@@ -711,19 +712,50 @@ bool CompanionMesh::putBlobByKey(const uint8_t key[], int key_len, const uint8_t
 	return _store->putBlobByKey(key, key_len, src_buf, len);
 }
 
+/* Snapshot the contact record before the base class updates it, for the
+ * dirty decision in onDiscoveredContact(). */
+void CompanionMesh::onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, uint32_t timestamp,
+				 const uint8_t *app_data, size_t app_data_len)
+{
+	const ContactInfo *c = lookupContactByPubKey(id.pub_key, PUB_KEY_SIZE);
+
+	_advert_prev.known = c && c->type != ADV_TYPE_NONE;
+	if (_advert_prev.known) {
+		_advert_prev.type = c->type;
+		_advert_prev.gps_lat = c->gps_lat;
+		_advert_prev.gps_lon = c->gps_lon;
+		memcpy(_advert_prev.name, c->name, sizeof(_advert_prev.name));
+	}
+	BaseChatMesh::onAdvertRecv(packet, id, timestamp, app_data, app_data_len);
+	_advert_prev.known = false;
+}
+
 /* BaseChatMesh virtual implementations */
 void CompanionMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t *path)
 {
 	LOG_INF("onDiscoveredContact: '%s' is_new=%d path_len=%d num_contacts=%d",
 		contact.name, is_new, path_len, getNumContacts());
 
-	/* A re-heard advert from a contact we already have is liveness only —
-	 * the base class has just refreshed last_advert_timestamp and lastmod,
-	 * and nothing else typically moved.  Persist it lazily rather than
-	 * spending a full-file rewrite per advert; a genuinely new contact, a
-	 * path change (onContactPathUpdated) or a message all still flush on the
-	 * short deadline. */
-	markContactsDirty(is_new);
+	/* is_new is upstream's "NOT in contacts[]": auto-add declined it (type
+	 * filter, hop limit, or a full table), so nothing that is stored changed
+	 * and there is nothing to write -- upstream schedules its lazy write only
+	 * for !is_new. A contact the base class has just added arrives with
+	 * is_new false.
+	 *
+	 * Of those, an addition or a changed name, type or position is
+	 * substantive and flushes on the short deadline; a known contact
+	 * re-advertising (only the timestamps moved) is liveness and waits the
+	 * long one, rather than costing a full-file rewrite per advert. */
+	if (!is_new) {
+		bool substantive = !_advert_prev.known ||
+				   _advert_prev.type != contact.type ||
+				   _advert_prev.gps_lat != contact.gps_lat ||
+				   _advert_prev.gps_lon != contact.gps_lon ||
+				   strncmp(_advert_prev.name, contact.name,
+					   sizeof(_advert_prev.name)) != 0;
+
+		markContactsDirty(substantive);
+	}
 
 	// Update advert path table
 	if (path && mesh::Packet::isValidPathLen(path_len)) {

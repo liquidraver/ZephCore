@@ -98,61 +98,32 @@ Applied from sx126x_config() after SetRfFrequency so a runtime band change
 re-selects it, and re-applied after each Calibrate(ALL) alongside the existing
 CalibrateImage re-issue.
 
-== Mark DIO1 as a system wakeup source ==
+== DIO1 is a plain input: ESP32 light-sleep wake lives in ZephCore ==
 
-Without this, enabling CONFIG_PM on an ESP32 gives a node that light-sleeps
-correctly and is deaf: the SX1262 asserts DIO1 on a received packet, but the
-SoC is not armed to wake on that pin, so the frame is dropped and the CPU only
-resumes on the next RTC timer deadline. The failure is silent and looks like a
-success on a current meter, which is the worst possible shape for it.
+DIO1 is configured GPIO_INPUT, as upstream does.  Until 2026-09-26 this patch
+passed GPIO_INT_WAKEUP on it and, on ESP32 with CONFIG_PM, registered a
+pm_notifier that handed the pad back from the RTC IO mux after every light
+sleep (rtc_gpio_hold_dis + rtc_gpio_deinit) and ran the DIO1 handler by hand
+when the line was still high.  Both are gone, because in Zephyr's ESP32 GPIO
+driver GPIO_INT_WAKEUP means an EXT1 wake, and EXT1 was the wrong mechanism:
 
-The Zephyr ESP32 GPIO driver arms the wake in its CONFIGURE path --
-gpio_esp32_config() reads (flags & GPIO_INT_WAKEUP) at drivers/gpio/gpio_esp32.c
-and calls esp_sleep_enable_ext1_wakeup_io() -- not in the interrupt path, which
-strips the bit. So the flag has to go on gpio_pin_configure_dt(), not on the
-gpio_pin_interrupt_configure_dt() call below it.
+  * It takes RTC pads only (GPIO 0-21 on the S3).  xiao_esp32s3 (DIO1 on
+    GPIO39), station_g2 (GPIO48) and thinknode_m9 (GPIO42) could not wake on
+    a packet at all.
+  * On the S3 it has one trigger polarity for all of its pins.  ZephCore's
+    pm_esp32.overlay also armed the active-low user button, gpio-keys
+    configured it first (lower DT ordinal, same init priority), and the
+    driver refused DIO1 ("wakeup polarity conflicts with other EXT1 pins",
+    invisible without logging).  Every light-sleeping Heltec from 1.17.1 on
+    woke only on its RTC timer and the button, and received by polling.
+  * Before every sleep the HAL routes each EXT1 pad to the RTC mux, and
+    nothing routes it back.
 
-GPIO_INT_WAKEUP is deliberately NOT part of GPIO_INT_MASK (see
-include/zephyr/drivers/gpio.h), precisely so it can be passed to
-gpio_pin_configure() without tripping its "Interrupt flags are not supported"
-assert. Drivers that do not implement wakeup ignore the bit, so this stays a
-no-op on nRF/STM32/MG24 rather than needing a per-platform guard.
-
-Board caveat, not fixable here: on ESP32-S3 esp_sleep_is_valid_wakeup_gpio()
-reduces to RTC_GPIO_IS_VALID_GPIO(), i.e. GPIO 0-21 only. Boards wiring DIO1
-above that (xiao_esp32s3 GPIO39, station_g2 GPIO48, thinknode_m9 GPIO42) log
-"Pin N is not wakeup capable" and cannot use light sleep with LoRa RX at all.
-Heltec V3/V4/V43 and the Wireless Trackers put DIO1 on GPIO14 and are fine.
-
-== Return DIO1 to the digital GPIO block after every light sleep ==
-
-The wake above is only half of what EXT1 needs.  Before each light sleep,
-ESP-IDF's ext1_wakeup_prepare() (esp_hw_support/sleep_modes.c) routes the
-wake pad to the RTC IO mux (RTCIO_LL_FUNC_RTC) and, with RTC_PERIPH powered
-down, engages its hold.  Nothing on the way out undoes either:
-esp_light_sleep_start() leaves both, and Zephyr's esp32_sleep_gpio_restore()
-releases only pins flagged ESP32_GPIO_SLEEP_HOLD_EN.  Espressif puts the
-obligation on the caller -- sleep_modes.rst, EXT1 warnings: rtc_gpio_deinit()
-before using the pad as a digital GPIO again, rtc_gpio_hold_dis() after a
-light-sleep wake.  Nothing called either, so from the first sleep on DIO1 sat
-on the RTC mux, held.
-
-sx126x_hal.c now registers a pm_notifier (CONFIG_PM on
-SOC_FAMILY_ESPRESSIF_ESP32 only) whose state_exit does both, and then checks
-the DIO1 level.  The edge that woke the SoC happened while the pad belonged to
-the RTC domain, so the digital edge detector never saw it; SX126x IRQs are
-sticky, so DIO1 still being high means an IRQ is pending and the handler is run
-by hand.  Gated on the level, not unconditional: the handler reads IRQ status
-over SPI, and an NSS edge in the duty-cycle sleep phase disturbs the chip's own
-RX cycle.  A duplicate kick is harmless (k_work_submit on a queued item is a
-no-op; a handler that finds the status clear does nothing).
-
-Symptom it addresses: on the allowlisted Heltec repeaters a TX_DONE that lands
-while the SoC sleeps -- the common case, nothing else runs during airtime -- is
-lost; the adapter's wait thread times out and the packet, which did go out,
-is counted nowhere (reported on a Heltec V4.3 as "sent never increments",
-1.17.4/1.17.5c).  The C++ adapter additionally holds a PM lock across each
-transmit.  Not yet verified on hardware.
+ESP32 light sleep now arms the radio IRQ line and the user button as level
+GPIO wakes (ESP-IDF gpio_wakeup_enable(), any pad, per-pin level) for the
+length of each sleep, and re-raises the pin interrupt a sleep swallowed, from
+ZephCore's helpers/pm_esp32_wake.c.  Nothing here is ESP32-specific any more.
+See ZephCore devdocs/lld/13-power-management.md.
 
 == Bound the lifetime of the RX-busy latch (payload-phase deadline) ==
 
@@ -3640,137 +3611,10 @@ index 0122958c32a..9d39100a713 100644
  
  #endif /* ZEPHYR_DRIVERS_LORA_SX126X_SX126X_INTERNAL_H_ */
 diff --git a/drivers/lora/native/sx126x/sx126x_hal.c b/drivers/lora/native/sx126x/sx126x_hal.c
-index 34f7089584f..c21085e372e 100644
+index 34f7089584f..7093bf6b622 100644
 --- a/drivers/lora/native/sx126x/sx126x_hal.c
 +++ b/drivers/lora/native/sx126x/sx126x_hal.c
-@@ -10,6 +10,12 @@
- 
- #include "sx126x.h"
- 
-+#if defined(CONFIG_PM) && defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
-+#include <zephyr/pm/pm.h>
-+#include <driver/rtc_io.h>
-+#define SX126X_HAL_ESP32_EXT1_WAKE 1
-+#endif
-+
- #include <zephyr/logging/log.h>
- LOG_MODULE_REGISTER(sx126x_hal, CONFIG_LORA_LOG_LEVEL);
- 
-@@ -107,6 +113,84 @@ void sx126x_hal_dio1_irq_enable(const struct device *dev)
- 	ARG_UNUSED(dev);
- }
- 
-+#ifdef SX126X_HAL_ESP32_EXT1_WAKE
-+/* Hand DIO1 back to the digital GPIO block after every light sleep.
-+ *
-+ * GPIO_INT_WAKEUP (sx126x_hal_init) makes the Zephyr ESP32 GPIO driver arm
-+ * DIO1 as an EXT1 wake source.  Before each light sleep, ESP-IDF's
-+ * ext1_wakeup_prepare() then routes the pad to the RTC IO mux
-+ * (RTCIO_LL_FUNC_RTC) and, because RTC_PERIPH is powered down, puts it in
-+ * hold.  Nothing on the way out undoes either: esp_light_sleep_start() leaves
-+ * both in place, and Zephyr's esp32_sleep_gpio_restore() only releases pins
-+ * carrying ESP32_GPIO_SLEEP_HOLD_EN.  Espressif documents the obligation on
-+ * the caller (sleep_modes.rst, EXT1 warnings): call rtc_gpio_deinit() before
-+ * using the pad as a digital GPIO again, and rtc_gpio_hold_dis() after a
-+ * light-sleep wake.  Nobody did, so from the first sleep on DIO1 sat on the
-+ * RTC mux with its hold engaged.
-+ *
-+ * Restoring the pad is not enough on its own.  The DIO1 edge that woke us
-+ * happened while the pad belonged to the RTC domain, so the digital edge
-+ * detector never saw it and the interrupt is gone.  An SX126x IRQ is sticky
-+ * -- DIO1 stays asserted until ClearIrqStatus -- so the level is the
-+ * authoritative record: if DIO1 is high after the restore, an IRQ is pending
-+ * and the handler has to be run by hand.  Without it a TX_DONE that lands
-+ * while the SoC sleeps (the common case: nothing else runs during airtime)
-+ * is lost -- the C++ adapter's wait thread times out and the dispatcher never
-+ * counts a packet that did go out on air -- and an RX_DONE waits until
-+ * something else clears the chip's IRQ status.
-+ *
-+ * Deliberately gated on the level rather than kicking the handler on every
-+ * wake: the handler reads IRQ status over SPI, and an NSS edge during the
-+ * duty-cycle sleep phase disturbs the chip's own RX cycle.  A duplicate kick
-+ * when the digital side did catch the edge is harmless -- k_work_submit on a
-+ * queued item is a no-op, and a handler that finds the status already
-+ * cleared does nothing.
-+ *
-+ * Runs from pm_state_notify(false), which may be in the waking ISR; every
-+ * call here is ISR-safe.  One radio per board, so a single static device. */
-+static const struct device *sx126x_pm_wake_dev;
-+
-+static int sx126x_hal_dio1_gpio_num(const struct sx126x_hal_config *config)
-+{
-+#if DT_NODE_EXISTS(DT_NODELABEL(gpio1))
-+	if (config->dio1.port == DEVICE_DT_GET(DT_NODELABEL(gpio1))) {
-+		return 32 + config->dio1.pin;
-+	}
-+#endif
-+	return config->dio1.pin;
-+}
-+
-+static void sx126x_hal_pm_state_exit(enum pm_state state)
-+{
-+	const struct device *dev = sx126x_pm_wake_dev;
-+	const struct sx126x_hal_config *config;
-+	struct sx126x_hal_data *data;
-+	int num;
-+
-+	if (state != PM_STATE_STANDBY || dev == NULL) {
-+		return;
-+	}
-+
-+	config = dev->config;
-+	data = get_hal_data(dev);
-+	num = sx126x_hal_dio1_gpio_num(config);
-+	if (!rtc_gpio_is_valid_gpio(num)) {
-+		return;
-+	}
-+
-+	(void)rtc_gpio_hold_dis(num);
-+	(void)rtc_gpio_deinit(num);
-+
-+	if (data->dio1_callback != NULL && gpio_pin_get_dt(&config->dio1) > 0) {
-+		data->dio1_callback(dev);
-+	}
-+}
-+
-+static struct pm_notifier sx126x_pm_notifier = {
-+	.state_exit = sx126x_hal_pm_state_exit,
-+};
-+#endif /* SX126X_HAL_ESP32_EXT1_WAKE */
-+
- int sx126x_hal_init(const struct device *dev)
- {
- 	const struct sx126x_hal_config *config = dev->config;
-@@ -150,7 +234,13 @@ int sx126x_hal_init(const struct device *dev)
- 		LOG_ERR("DIO1 GPIO not ready");
- 		return -ENODEV;
- 	}
--	ret = gpio_pin_configure_dt(&config->dio1, GPIO_INPUT);
-+	/* GPIO_INT_WAKEUP: let a DIO1 assertion wake the SoC from a system
-+	 * low-power state, so an inbound packet is not slept through when
-+	 * CONFIG_PM is enabled. Outside GPIO_INT_MASK by design, so this is
-+	 * legal here and ignored by drivers without wakeup support.
-+	 */
-+	ret = gpio_pin_configure_dt(&config->dio1,
-+				    GPIO_INPUT | GPIO_INT_WAKEUP);
- 	if (ret < 0) {
- 		LOG_ERR("Failed to configure DIO1 GPIO: %d", ret);
- 		return ret;
-@@ -164,6 +254,13 @@ int sx126x_hal_init(const struct device *dev)
- 		return ret;
- 	}
- 
-+#ifdef SX126X_HAL_ESP32_EXT1_WAKE
-+	if (sx126x_pm_wake_dev == NULL) {
-+		sx126x_pm_wake_dev = dev;
-+		pm_notifier_register(&sx126x_pm_notifier);
-+	}
-+#endif
-+
- 	/* Configure optional GPIOs */
- 	ret = sx126x_hal_configure_gpio(&config->antenna_enable, GPIO_OUTPUT_INACTIVE,
- 					"antenna enable");
-@@ -183,6 +280,14 @@ int sx126x_hal_init(const struct device *dev)
+@@ -183,6 +183,14 @@ int sx126x_hal_init(const struct device *dev)
  		return ret;
  	}
  
@@ -3785,7 +3629,7 @@ index 34f7089584f..c21085e372e 100644
  	LOG_DBG("HAL initialized");
  	return 0;
  }
-@@ -220,15 +325,54 @@ int sx126x_hal_configure_tx_params(const struct device *dev, int8_t power,
+@@ -220,15 +228,54 @@ int sx126x_hal_configure_tx_params(const struct device *dev, int8_t power,
  		}
  		tx_power = CLAMP(power, SX1261_MIN_POWER, SX1261_MAX_POWER_TX_PARAM);
  	} else {

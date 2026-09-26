@@ -17,26 +17,43 @@
 
 #include <zephyr/dt-bindings/lora/sx126x.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 
 / {
 	aliases {
 		lora0 = &lora;
 		sw0 = &user_button;
+		/delete-property/ led0;
 	};
 
 	buttons: buttons {
 		compatible = "gpio-keys";
 		user_button: user_button {
-			gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;
+			/* GPIO21 is also the XIAO's onboard LED line, which does not
+			 * pull the pad to a defined level: without the pull-up the
+			 * input floats, reads "pressed", and (with CONFIG_PM) wakes
+			 * the SoC as soon as it sleeps. */
+			gpios = <&gpio0 21 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;
 			label = "User Button";
 			zephyr,code = <INPUT_BTN_0>;
 		};
 	};
 };
 
+/* GPIO21 is the user button on the Wio-SX1262 kit (as upstream MeshCore:
+ * PIN_USER_BTN=21) and also the XIAO's onboard LED line.  The Zephyr board
+ * declares it led0, and ZephCore's heartbeat drives led0 — which pulled the
+ * button low, read as a press, and (with CONFIG_PM) woke the SoC and reopened
+ * the console window after every sleep.  The button owns the pin. */
+/delete-node/ &led0;
+
 /* SX1262 on SPI2 (SCK=GPIO7, MISO=GPIO8, MOSI=GPIO9 — in board pinctrl) */
+/* ESP32_GPIO_SLEEP_HOLD_EN on NSS, RESET and RXEN: light sleep isolates every
+ * pad that is not held (boards/common/pm_esp32.overlay), and the radio keeps
+ * receiving through the sleep.  RXEN is the MCU-driven half of the RF switch:
+ * floating, the receive path is undefined.  Inert when CONFIG_PM=n. */
 &spi2 {
-	cs-gpios = <&gpio1 9 GPIO_ACTIVE_LOW>;  /* GPIO41 NSS */
+	cs-gpios = <&gpio1 9 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO41 NSS */
 
 	lora: lora@0 {
 		compatible = "semtech,sx1262";
@@ -44,12 +61,12 @@
 		spi-max-frequency = <8000000>;
 
 		/* LoRa control pins */
-		reset-gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;                    /* GPIO42 */
+		reset-gpios = <&gpio1 10 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO42 */
 		busy-gpios  = <&gpio1 8 GPIO_ACTIVE_HIGH>;                    /* GPIO40 */
 		dio1-gpios  = <&gpio1 7 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>; /* GPIO39 */
 
 		/* RF switch: RXEN for RX, DIO2 drives TX enable */
-		rx-enable-gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;  /* GPIO38 RXEN */
+		rx-enable-gpios = <&gpio1 6 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO38 RXEN */
 		dio2-tx-enable;
 
 		/* TCXO 1.8V via DIO3 */

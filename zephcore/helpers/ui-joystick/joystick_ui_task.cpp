@@ -1520,6 +1520,7 @@ void JoystickUITask::shutdown(bool restart)
 #endif
 
 	if (restart) {
+		zephcore_persist_before_off();
 		_display.turnOff();
 		sys_reboot(SYS_REBOOT_COLD);
 	} else {
@@ -1530,6 +1531,7 @@ void JoystickUITask::shutdown(bool restart)
 		zephcore_shutdown_reason_save(ZC_SHUTDOWN_USER);
 		zephcore_power_off();
 #else
+		zephcore_persist_before_off();
 		_display.turnOff();
 		sys_reboot(SYS_REBOOT_COLD);
 #endif

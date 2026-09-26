@@ -196,10 +196,17 @@ public:
 	/* From the housekeeping event: loop() only runs on packet events. */
 	void timeSyncTick();
 
+	/* Write out any lazily-deferred contacts/channels now. Main thread only;
+	 * every reboot and power-off path reaches it through
+	 * zephcore_persist_before_off(). */
+	void flushPendingWrites() { flushDirtyContacts(); flushDirtyChannels(); }
+
 	NodePrefs prefs;
 
 protected:
 	/* BaseChatMesh */
+	void onAdvertRecv(mesh::Packet *packet, const mesh::Identity &id, uint32_t timestamp,
+			  const uint8_t *app_data, size_t app_data_len) override;
 	void onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t *path) override;
 	ContactInfo *processAck(const uint8_t *data) override;
 	void onContactPathUpdated(const ContactInfo &contact) override;
@@ -331,16 +338,33 @@ private:
 	int64_t _dirty_channels_expiry;
 	static constexpr int64_t LAZY_WRITE_DELAY_MS = 5000;  /* as upstream */
 
-	/* Deadline for a liveness-only change (a known contact re-advertised).
-	 * saveContacts() rewrites the whole file (~47 KB without external flash);
-	 * on the 5 s deadline a T1000-E did 21 rewrites in 90 minutes, one per
-	 * advert. A substantive change still pulls the deadline in. */
-	static constexpr int64_t LAZY_WRITE_LIVENESS_MS = 600000;  /* 10 minutes */
+	/* Deadline for a liveness-only change (a known contact re-advertised with
+	 * nothing but a newer timestamp): only last_advert_timestamp and lastmod
+	 * moved. saveContacts() rewrites the whole file (~40 KB, ten 4 KB blocks
+	 * on a T1000-E's 128 KB /lfs); on a busy mesh something is always
+	 * re-advertising, so this deadline IS the rewrite rate. 5 s (upstream)
+	 * was a rewrite per advert, 10 min was 144 a day, and one hour is 24,
+	 * below the adv_blobs write per advert. Every clean reboot and power-off
+	 * flushes first (flushPendingWrites()), so only a crash or a pulled
+	 * battery loses the last hour of "last heard" times. A substantive
+	 * change still pulls the deadline in. */
+	static constexpr int64_t LAZY_WRITE_LIVENESS_MS = 3600000;  /* 1 hour */
 
 	void markContactsDirty(bool substantive = true);
 	void markChannelsDirty();
 	void flushDirtyContacts();
 	void flushDirtyChannels();
+
+	/* What the contact record held before the advert being processed, so
+	 * onDiscoveredContact() can tell an addition or a real change (name,
+	 * type, position) from a re-advert. Set by onAdvertRecv() around the
+	 * base class call. */
+	struct AdvertPrev {
+		bool known;
+		uint8_t type;
+		int32_t gps_lat, gps_lon;
+		char name[sizeof(ContactInfo::name)];
+	} _advert_prev;
 
 	/* Forward-only: our clock stamps outgoing DMs, and peers keep per-sender
 	 * replay high-water marks. */

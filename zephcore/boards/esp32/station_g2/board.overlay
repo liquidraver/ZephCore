@@ -13,6 +13,7 @@
  */
 
 #include <zephyr/dt-bindings/lora/sx126x.h>
+#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 
 / {
 	aliases {
@@ -27,7 +28,11 @@
 	buttons: buttons {
 		compatible = "gpio-keys";
 		user_button: user_button {
-			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;  /* GPIO38 = gpio1 pin 6 */
+			/* Active-LOW, as upstream reads it (variants/station_g2
+			 * target.cpp: MomentaryButton(PIN_USER_BTN, 1000, true), where
+			 * `reverse` means pressed == LOW).  The pull-up keeps the level
+			 * defined: it is also a light-sleep wake pin. */
+			gpios = <&gpio1 6 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;  /* GPIO38 = gpio1 pin 6 */
 			label = "User Button";
 			zephyr,code = <INPUT_BTN_0>;
 		};
@@ -36,14 +41,17 @@
 
 /* SX1262 + PA on SPI2 */
 &spi2 {
-	cs-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;  /* NSS = GPIO11 */
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 11 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* NSS = GPIO11 */
 
 	lora: lora@0 {
 		compatible = "semtech,sx1262";
 		reg = <0>;
 		spi-max-frequency = <8000000>;
 
-		reset-gpios = <&gpio0 21 GPIO_ACTIVE_LOW>;               /* RESET = GPIO21 */
+		reset-gpios = <&gpio0 21 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* RESET = GPIO21 */
 		busy-gpios  = <&gpio1 15 GPIO_ACTIVE_HIGH>;               /* BUSY  = GPIO47 = gpio1 pin 15 */
 		dio1-gpios  = <&gpio1 16 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;  /* DIO1  = GPIO48 = gpio1 pin 16 */
 

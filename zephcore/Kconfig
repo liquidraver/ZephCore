@@ -557,26 +557,27 @@ config ZEPHCORE_NOISE_FLOOR_INTERVAL_MS
 	  deadline instead, so raise both or neither.
 
 config ZEPHCORE_PM_BOOT_AWAKE_MS
-	int "Block light sleep for this long after boot (ms)"
+	int "Console window: no light sleep for this long (ms)"
 	depends on PM && SOC_FAMILY_ESPRESSIF_ESP32
 	default 600000
 	range 0 3600000
 	help
-	  How long after boot the SoC refuses to light-sleep, so the USB console
-	  is guaranteed reachable for a configuration session.
+	  How long the SoC refuses to light-sleep after boot, and again after
+	  every press of the user button, so the USB console is reachable for a
+	  configuration session.
 
 	  This exists because nothing arms a UART wake source on ESP32 — see
 	  helpers/pm_esp32_console.c.  Once the window closes, characters typed at
-	  a sleeping node are DROPPED and the CLI stops answering over USB until
-	  the board resets.  In practice connecting a terminal usually does reset
-	  it (the USB bridge drives EN from DTR), which re-arms the window.
+	  a sleeping node are DROPPED, and on boards that console over the S3's
+	  USB Serial/JTAG the USB device detaches on every sleep.  Press the user
+	  button, or send `powersaving off` over LoRa, to get it back.
 
 	  0 disables the window entirely — the node may sleep immediately after
 	  boot, and the USB console becomes unusable except in the instants it
 	  happens to be awake.  Do not set 0 on a board you still need to
 	  configure.
 
-	  Raising it costs only the extra awake time at the start of each boot.
+	  Raising it costs only the extra awake time after each boot or press.
 
 config ZEPHCORE_PM_CONSOLE_UART_NUM
 	int "Console UART index flushed before light sleep"
@@ -595,8 +596,8 @@ config ZEPHCORE_PM_CONSOLE_UART_NUM
 	  boards/common/esp32s3_usb.overlay is companion-only), so this flush
 	  targets a peripheral that is not their console and does nothing.  That
 	  is harmless but not a fix: a USJ console has no wake source either way,
-	  so on those boards the USB CLI is simply unavailable once
-	  ZEPHCORE_PM_BOOT_AWAKE_MS expires.  Change it only if a board's console
+	  so on those boards the USB CLI is unavailable outside the console
+	  window (ZEPHCORE_PM_BOOT_AWAKE_MS).  Change it only if a board's console
 	  is moved to another hardware UART — a wrong index does not fail the build, it
 	  just silently flushes the wrong peripheral and lets the console
 	  truncate again.

@@ -3,16 +3,16 @@
  * Devicetree half of boards/common/pm_esp32.conf — auto-paired by
  * zephcore_auto_pair_overlay() in CMakeLists.txt, so passing the .conf is
  * enough; this file does not need to be listed separately.
+ *
+ * Only the board-independent part lives here.  Pin holds are wiring facts and
+ * live in each board's DTS/overlay (see "PAD HOLD" below).
  */
-
-#include <zephyr/dt-bindings/gpio/gpio.h>
-#include <zephyr/dt-bindings/gpio/espressif-esp32-gpio.h>
 
 /*
  * The RTC timer is the wake source for every timed sleep.  Upstream leaves it
  * status = "disabled" (zephyr/dts/xtensa/espressif/esp32s3/esp32s3_common.dtsi),
  * and soc/espressif/common/power.c checks for it in rtc_wakeup_enable():
- * without a ready rtc_timer device it logs "Sleep skipped. Make sure
+ * without a wakeup-capable rtc_timer device it logs "Sleep skipped. Make sure
  * '&rtc_timer' is enabled as a wakeup source." and returns false — so
  * CONFIG_PM=y on its own is a silent no-op.  This is the single easiest thing
  * to forget when enabling ESP32 PM.
@@ -23,95 +23,41 @@
 };
 
 /*
- * Arms the GPIO wake path.  gpio_esp32_pm_action() calls
- * esp_sleep_enable_gpio_wakeup() on PM_DEVICE_ACTION_RESUME, but only when the
- * PORT is wakeup-capable — that is what pm_device_wakeup_is_capable() tests,
- * and it is set by this property.  Per-PIN arming is separate and comes from
- * patches/zephyr/0003, which passes GPIO_INT_WAKEUP on the DIO1 configure.
- * Both halves are needed: the port enables the wake source, the pin selects
- * which line triggers it.
+ * Switches on the ESP32 GPIO wake source (ESP_SLEEP_WAKEUP_GPIO):
+ * gpio_esp32_pm_action() calls esp_sleep_enable_gpio_wakeup() on RESUME, which
+ * pm_device_driver_init() runs at boot, when the port is wakeup-capable.  The
+ * source is SoC-wide, so gpio0 alone also covers pins on gpio1.
  *
- * gpio0 covers GPIO 0-31, which is where every RTC-capable pin lives on the
- * S3 (0-21) — so this is also the only port that can carry a LoRa DIO1 wake.
+ * WHICH pins wake the SoC is decided by helpers/pm_esp32_wake.c: the LoRa IRQ
+ * line and the user button (alias sw0) become level wakes for the length of
+ * each sleep.  GPIO_INT_WAKEUP is deliberately NOT used anywhere: in Zephyr's
+ * ESP32 driver it means EXT1, which takes RTC pads only, has one trigger
+ * polarity for all its pins on the S3 (an active-low button and an active-high
+ * DIO1 cannot both be armed: the one configured second is refused), and leaves
+ * each pad on the RTC mux after a sleep.  devdocs/lld/13-power-management.md
+ * F-1/F-2.
+ *
+ * Side effect worth knowing: this trigger keeps RTC_PERIPH powered in every
+ * light sleep (esp_sleep_start forces it ON for RTC_GPIO_TRIG_EN).
  */
 &gpio0 {
 	wakeup-source;
 };
 
 /*
- * Hold the SX1262 chip-select across light sleep.
+ * PAD HOLD — with CONFIG_PM, gpio_esp32_sys_init() (and the HAL's
+ * esp_sleep_startup_init()) give every pad an isolated sleep configuration —
+ * input off, output off, no pulls — and turn on the automatic switch to it on
+ * sleep entry.  So EVERY output that is not held floats for the length of each
+ * sleep, whatever its power domain: RTC pads and digital pads alike.  Only
+ * ESP32_GPIO_SLEEP_HOLD_EN (esp32_sleep_gpio_prepare() in power.c) keeps a
+ * level through a sleep.
  *
- * Light sleep powers down RTC_PERIPH on this SoC, and every LoRa pin on the
- * allowlisted boards is an RTC-capable pad (GPIO 0-21), so their levels are
- * NOT retained unless explicitly held.  The chain:
- *
- *   1. patches/zephyr/0003 passes GPIO_INT_WAKEUP on DIO1.  On the S3 that
- *      lands on esp_sleep_enable_ext1_wakeup_io() (drivers/gpio/gpio_esp32.c,
- *      SOC_PM_SUPPORT_EXT1_WAKEUP), i.e. RTC_EXT1_TRIG_EN.
- *   2. esp_sleep_start() only forces ESP_PD_DOMAIN_RTC_PERIPH on for
- *      RTC_EXT0_TRIG_EN | RTC_GPIO_TRIG_EN.  EXT1 is not in that mask, so the
- *      domain is left AUTO and powered OFF for the whole sleep.
- *   3. ext1_wakeup_prepare() then calls rtcio_hal_hold_enable() for the EXT1
- *      pin *only*, and only because RTC_PERIPH is off — IDF's own code
- *      treating "RTC_PERIPH down" as "this pad cannot hold its own state".
- *      DIO1 survives; nothing else does.
- *   4. Zephyr's general mechanism, esp32_sleep_gpio_prepare(), holds only pins
- *      carrying ESP32_GPIO_SLEEP_HOLD_EN.  Hence this override.
- *
- * NSS is the pin that matters.  Undriven, it floats, and the SX1262 samples
- * SPI commands whenever NSS is low — so a sleeping chip sitting in warm-start
- * sleep with its entire configuration (PA config, OCP, SetTxParams) in
- * retention RAM is exposed to whatever the floating bus does.  Nothing in the
- * driver ever re-issues SetTxParams: lora_config() is its only writer and
- * LoRaRadioBase::configure() short-circuits on every transmit after the first,
- * so a corrupted TX power persists until reboot or a `set tx <new value>`.
- * Symptom is a node that still relays but transmits ~30 dB down.
- *
- * Holding NSS high for the duration deselects the chip, which also makes SCK
- * and MOSI harmless — nothing can be clocked in while CS is deasserted, so
- * those pins do not need the pinctrl-side `sleep-hold-en`.
- *
- * All five allowlisted boards (heltec_wifi_lora32_v3/v4/v43,
- * heltec_wireless_tracker/_v2) wire the radio identically — &spi2, NSS GPIO8,
- * RESET GPIO12 — which is what lets this live in one shared overlay.  Re-check
- * that before adding a board to the allowlist in CMakeLists.txt.
+ * The radio keeps receiving while the SoC sleeps, so every line it depends on
+ * must be held by the board: NSS (a floating chip-select lets the sleeping
+ * SX1262 clock garbage into its retention RAM — the node then transmits ~30 dB
+ * down until reboot), RESET, an MCU-driven RF switch or FEM enable, and the
+ * FEM's supply regulator.  The flag is inert when CONFIG_PM=n, so boards carry
+ * it unconditionally.  Check a board's radio lines before declaring
+ * `light_sleep: true` in its zephcore.yml.
  */
-&spi2 {
-	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;
-};
-
-/*
- * The user button must wake the SoC too.
- *
- * DIO1 is not the only thing that needs to interrupt a sleeping node — a person
- * pressing the button expects the display to come on.  Marking the PORT
- * wakeup-source above only enables esp_sleep_enable_gpio_wakeup(); the PIN is
- * armed separately, and until now only DIO1 got that (via patches/zephyr/0003).
- * The result was a node that woke for packets and ignored its own button: press
- * it, nothing happens, the display never lights.  Reported from the field.
- *
- * GPIO_INT_WAKEUP is (1 << 6) in dt-bindings/gpio/gpio.h, so it fits the 16-bit
- * gpio_dt_flags_t and can be set here in DT rather than needing a driver patch —
- * gpio_pin_configure_dt() ORs spec->dt_flags into the flags it passes, so it
- * reaches gpio_esp32_config() and arms the wake.
- *
- * All five allowlisted boards put the USER key on the same pad (&gpio0 0 =
- * GPIO0, inside the S3's RTC-capable 0-21 range) under the same node label,
- * which is what lets this be one shared override.  Re-check when allowlisting
- * a new board.
- */
-&button0 {
-	gpios = <&gpio0 0 (GPIO_PULL_UP | GPIO_ACTIVE_LOW | GPIO_INT_WAKEUP)>;
-};
-
-/*
- * RESET is open-drain active-low against the SX1262's internal pull-up, so an
- * unheld pad going high-Z already reads as "not reset" and this is belt and
- * braces rather than a known fault.  It costs nothing and removes the question
- * of what the pad does on the way into and out of power-down — a spurious low
- * here would reset the radio outright.
- */
-&lora0 {
-	reset-gpios = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
-				  ESP32_GPIO_SLEEP_HOLD_EN)>;
-};

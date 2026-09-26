@@ -5,6 +5,8 @@
  * The parser calls available() and read() once per character, so the reader
  * refills a small buffer instead of asking the filesystem each time. The
  * writer remembers any short write so the atomic replace can refuse to commit.
+ * The compare stream takes a writer's output and checks it against a file,
+ * so a save that would not change the file can skip the flash write.
  */
 
 #pragma once
@@ -64,6 +66,38 @@ public:
 		if (n < 0 || (size_t)n != size) {
 			_ok = false;
 			return n > 0 ? (size_t)n : 0;
+		}
+		return size;
+	}
+	int available() override { return 0; }
+	int read() override { return -1; }
+	int peek() override { return -1; }
+};
+
+class FsCompareStream : public Stream {
+	FsReadStream _in;
+	bool _same = true;
+
+public:
+	explicit FsCompareStream(struct fs_file_t *f) : _in(f) {}
+
+	/* True if everything written matched the file and covered all of it.
+	 * Call once, after the last write. */
+	bool same() { return _same && _in.read() < 0; }
+
+	/* Reports every byte written: a short count is a write failure to the
+	 * serializer, and a mismatch is not one. */
+	size_t write(uint8_t c) override
+	{
+		if (_same && _in.read() != c) {
+			_same = false;
+		}
+		return 1;
+	}
+	size_t write(const uint8_t *buf, size_t size) override
+	{
+		for (size_t i = 0; i < size && _same; i++) {
+			write(buf[i]);
 		}
 		return size;
 	}

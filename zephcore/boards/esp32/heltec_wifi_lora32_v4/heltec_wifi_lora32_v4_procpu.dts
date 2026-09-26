@@ -93,7 +93,7 @@
 	vext_enable: vext-enable {
 		compatible = "regulator-fixed";
 		regulator-name = "vext";
-		enable-gpios = <&gpio1 4 GPIO_ACTIVE_LOW>;  /* GPIO36 = gpio1 pin 4 */
+		enable-gpios = <&gpio1 4 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* GPIO36 = gpio1 pin 4 */
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -107,7 +107,7 @@
 	fem_power: fem-power {
 		compatible = "regulator-fixed";
 		regulator-name = "fem-power";
-		enable-gpios = <&gpio0 7 GPIO_ACTIVE_HIGH>;  /* VFEM_Ctrl = GPIO7 */
+		enable-gpios = <&gpio0 7 (GPIO_ACTIVE_HIGH | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* VFEM_Ctrl = GPIO7, held across light sleep */
 		regulator-boot-on;
 		regulator-always-on;
 	};
@@ -209,12 +209,16 @@
 	pinctrl-0 = <&spim2_default>;
 	pinctrl-names = "default";
 
-	cs-gpios = <&gpio0 8 GPIO_ACTIVE_LOW>;  /* NSS = GPIO8 */
+	/* NSS held across light sleep (boards/common/pm_esp32.overlay): an
+	 * isolated, floating chip-select lets the sleeping SX1262 clock garbage
+	 * into its retention RAM.  Inert when CONFIG_PM=n. */
+	cs-gpios = <&gpio0 8 (GPIO_ACTIVE_LOW | ESP32_GPIO_SLEEP_HOLD_EN)>;  /* NSS = GPIO8 */
 
 	lora0: modem@0 {
 		compatible = "semtech,sx1262";
 		reg = <0>;
-		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW)>;  /* RESET = GPIO12 */
+		reset-gpios   = <&gpio0 12 (GPIO_OPEN_DRAIN | GPIO_ACTIVE_LOW |
+					 ESP32_GPIO_SLEEP_HOLD_EN)>;  /* RESET = GPIO12 */
 		busy-gpios    = <&gpio0 13 GPIO_ACTIVE_HIGH>;                      /* BUSY  = GPIO13 */
 		dio1-gpios    = <&gpio0 14 GPIO_ACTIVE_HIGH>;                      /* DIO1  = GPIO14 */
 
@@ -223,19 +227,18 @@
 		 *   GPIO46 = CPS (TX select): HIGH during TX, LOW during RX
 		 * V4.3 (KCT8103L) uses GPIO5 instead of GPIO46 — see heltec_wifi_lora32_v43. */
 		/*
-		 * ESP32_GPIO_SLEEP_HOLD_EN on CSD only.  Light sleep powers down
-		 * RTC_PERIPH (chain documented in boards/common/pm_esp32.overlay)
-		 * and GPIO2 is an RTC-capable pad (0-21), so it needs the hold or
-		 * the FEM comes out of a sleep disabled — no PA on transmit, no
-		 * LNA on receive.  CPS on GPIO46 is above the RTC range and sits
-		 * in VDD3P3_CPU, which stays powered through light sleep, so it
-		 * is deliberately left alone rather than given a flag the pad may
-		 * not support.  (V4.3 moved this line to GPIO5, which IS in range
-		 * and does get the flag — see heltec_wifi_lora32_v43.)
+		 * ESP32_GPIO_SLEEP_HOLD_EN on CSD and CPS.  Light sleep switches
+		 * every pad that is not held to an isolated sleep configuration
+		 * (input and output off, no pulls) — RTC pad or not, so GPIO46 is
+		 * no exception (boards/common/pm_esp32.overlay).  An unheld CSD
+		 * disables the FEM for the length of each sleep, and the radio
+		 * keeps receiving through it: no LNA on receive.  CPS is held so
+		 * the RX path stays selected.  Inert when CONFIG_PM=n.
 		 */
 		antenna-enable-gpios = <&gpio0 2 (GPIO_ACTIVE_HIGH |
 						 ESP32_GPIO_SLEEP_HOLD_EN)>;   /* GC1109 CSD = GPIO2  */
-		tx-enable-gpios      = <&gpio1 14 GPIO_ACTIVE_HIGH>;       /* GC1109 CPS = GPIO46 = gpio1 pin 14 */
+		tx-enable-gpios      = <&gpio1 14 (GPIO_ACTIVE_HIGH |
+					 ESP32_GPIO_SLEEP_HOLD_EN)>;   /* GC1109 CPS = GPIO46 = gpio1 pin 14 */
 
 		/* DIO2 drives the SX1262 internal RF switch (TX path select).
 		 * Combined with tx-enable-gpios, this keeps both the internal and

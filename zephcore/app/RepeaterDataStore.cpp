@@ -158,6 +158,9 @@ bool RepeaterDataStore::loadLegacyPrefs(const char* path, NodePrefs& prefs) {
 	/* Likewise gps_enabled: that firmware ran the GPS whatever it said. */
 	prefs.gps_enabled = 1;
 	prefs.gps_enabled_set = 1;
+	/* And powersaving, which it stored but never acted on. */
+	prefs.powersaving_set = 0;
+	powersaving_upgrade(&prefs);
 	return true;
 }
 
