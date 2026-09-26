@@ -184,3 +184,18 @@
 		vbat-mv-multiplier = <7200>;
 	};
 };
+
+/* Optional GPS on the XIAO header serial (uart21: D6 = P2.08 TX, D7 = P2.07 RX),
+ * pins the Wio-SX1262 kit leaves free.  Declared unconditionally, like the
+ * RAK4631's optional RAK1910: a user who wires a 9600-baud NMEA module gets a
+ * working GPS from the release image, and with nothing fitted the driver simply
+ * never sees a fix.  The RX pad has a pull-up (upstream pinctrl), and the GPS
+ * manager suspends the UART whenever the GPS is off or in standby, so an unused
+ * port does not keep its receiver armed.  No power line: the manager uses the
+ * UART sleep commands (PMTK + UBX) for standby. */
+&uart21 {
+	current-speed = <9600>;
+	gnss: gnss-nmea-generic {
+		compatible = "gnss-nmea-generic";
+	};
+};

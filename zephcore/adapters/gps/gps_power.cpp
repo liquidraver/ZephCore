@@ -386,26 +386,27 @@ void gps_power_off_for_shutdown(void)
  * without one, suspend fails *after* disabling RX while the PM state stays
  * ACTIVE, so the next resume no-ops with -EALREADY — a dead GPS.
  *
- * REQUIRES GPS POWER CONTROL — do not relax this gate.
- * uarte_pm_suspend() busy-waits for RXTO with no timeout after triggering
- * STOPRX (uart_nrfx_uarte.c, the only unbounded wait in the path). In
- * interrupt-driven mode RX runs on a 1-byte buffer with no ENDRX_STARTRX
- * short, so the receiver stops after every byte until the ISR re-arms it —
- * and suspend disables the ENDRX interrupt *before* STOPRX, removing the
- * re-arm. Land in that window with bytes still arriving and STOPRX hits an
- * already-stopped receiver, no RXTO is generated, and the caller spins
- * forever. It runs on the main thread, so the whole mesh wedges (observed:
- * RAK3401 1W repeater on 1.16.6, CLI answering only "-> busy").
+ * Safe on boards WITHOUT GPS power control too, since patch 0010.
+ * uarte_pm_suspend() used to busy-wait for RXTO with no timeout after
+ * triggering STOPRX. In interrupt-driven mode RX runs on a 1-byte buffer
+ * with no ENDRX_STARTRX short, so the receiver stops after every byte until
+ * the ISR re-arms it — and suspend disables the ENDRX interrupt *before*
+ * STOPRX, removing the re-arm. Land in that window with bytes still arriving
+ * and STOPRX hits an already-stopped receiver, no RXTO is generated, and the
+ * caller spun forever on the main thread (observed: RAK3401 1W repeater on
+ * 1.16.6, CLI answering only "-> busy"). That is why this gate once required
+ * power control: boards with it cut the module first, so the line is quiet.
+ * Boards without it send gps_software_sleep()'s PMTK/UBX commands, which the
+ * module may ignore (CASIC parts; a MAX-7Q is protocol 14/15, older than the
+ * UBX-RXM-PMREQ we send) and keep streaming NMEA straight into the suspend.
  *
- * Boards with GPIO/regulator power control cut the module before we get
- * here, so the line is genuinely quiet and STOPRX always yields RXTO.
- * Boards without it fall back to gps_software_sleep(), whose PMTK/UBX
- * commands the module may simply ignore (u-blox MAX-7Q on RAK3401 is
- * protocol 14/15; the 16-byte UBX-RXM-PMREQ we send is protocol 23+) —
- * NMEA keeps streaming straight into the suspend. Those boards give up the
- * ~0.5-1 mA HFCLK saving; uptime wins. */
+ * Patch 0010 bounds that wait (4 ms, then the unconditional
+ * nrf_uarte_disable() force-stops the receiver) and clears the RX events, so
+ * the race can no longer hang the caller, and resume re-arms RX from a clean
+ * state. So every nRF UARTE GPS board releases its UART in standby/off now,
+ * including an optional GPS port with nothing fitted (xiao_nrf54l15 uart21).
+ * Bench-tested by the streaming-into-suspend case: devdocs/lld/13. */
 #if HAS_GPS_UART && defined(CONFIG_PM_DEVICE) && \
-	(HAS_GPS_POWER_CONTROL || HAS_GPS_POWER_REGULATOR) && \
 	DT_NODE_HAS_COMPAT(DT_BUS(DT_NODELABEL(gnss)), nordic_nrf_uarte)
 #define HAS_GPS_UART_PM 1
 #else
