@@ -14,6 +14,14 @@ zephcore_apply_patches() reset these two files, and 0003 re-supplied the lines
 0001 and 0002 had just added.  Now that each file has exactly one owner, both
 patches apply first time.
 
+
+Also adds DT_HAS_SEMTECH_LR1110_ENABLED / DT_HAS_SEMTECH_LR2021_ENABLED to the
+LORA_MODULE_BACKEND_NATIVE dependency.  Upstream 1263266b615 (2026-09-23) made
+that backend depend on the radios its in-tree drivers cover (SX1261/2, STM32WL,
+LR1121); zephcore_common.conf selects it on every board, so on an LR1110- or
+LR2021-only board the choice silently fell through to loramac-node (a Kconfig
+warning, no build error).  Our two drivers are native-backend drivers.
+
 diff --git a/drivers/lora/CMakeLists.txt b/drivers/lora/CMakeLists.txt
 index fecfe8ea8bb..0fbeadcc404 100644
 --- a/drivers/lora/CMakeLists.txt
@@ -32,7 +40,7 @@ index fecfe8ea8bb..0fbeadcc404 100644
  add_subdirectory_ifdef(CONFIG_LORA_MODULE_BACKEND_LORAMAC_NODE loramac-node)
  add_subdirectory_ifdef(CONFIG_LORA_MODULE_BACKEND_LORA_BASICS_MODEM lora-basics-modem)
 diff --git a/drivers/lora/Kconfig b/drivers/lora/Kconfig
-index e31c08c1371..d53979fabd1 100644
+index 67346bc1142..eff530d806a 100644
 --- a/drivers/lora/Kconfig
 +++ b/drivers/lora/Kconfig
 @@ -5,6 +5,7 @@
@@ -43,7 +51,19 @@ index e31c08c1371..d53979fabd1 100644
  
  menuconfig LORA
  	bool "LoRa drivers"
-@@ -79,6 +80,8 @@ config LORA_INIT_PRIORITY
+@@ -36,8 +37,10 @@ config LORA_MODULE_BACKEND_LORA_BASICS_MODEM
+ 
+ config LORA_MODULE_BACKEND_NATIVE
+ 	bool "Native Zephyr backend"
++	# ZephCore patch: lr11xx/ and lr20xx/ are native-backend drivers too.
+ 	depends on DT_HAS_SEMTECH_SX1261_ENABLED || DT_HAS_SEMTECH_SX1262_ENABLED \
+-		|| DT_HAS_ST_STM32WL_SUBGHZ_RADIO_ENABLED || DT_HAS_SEMTECH_LR1121_ENABLED
++		|| DT_HAS_ST_STM32WL_SUBGHZ_RADIO_ENABLED || DT_HAS_SEMTECH_LR1121_ENABLED \
++		|| DT_HAS_SEMTECH_LR1110_ENABLED || DT_HAS_SEMTECH_LR2021_ENABLED
+ 	help
+ 	  Use Zephyr's built-in LoRa drivers without external modules.
+ 	  Currently supports SX1261/SX1262, the STM32WL sub-GHz radio and LR1121.
+@@ -81,6 +84,8 @@ config LORA_INIT_PRIORITY
  
  rsource "Kconfig.sx12xx"
  rsource "Kconfig.rylrxxx"

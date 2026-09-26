@@ -39,12 +39,26 @@ static const struct bt_gatt_attr *gatt_sc_value_attr;
 static struct bt_gatt_indicate_params gatt_sc_ind_params;
 static uint16_t gatt_sc_ind_range[2];
 
+/* Persisted key, so formatted here rather than with bt_addr_le_to_str(): that
+ * is a display format and changed upstream ("AA:..:FF (public)" became
+ * "P:AA:..:FF"), which orphaned every stored key and sent every bonded phone a
+ * needless Service Changed. This keeps the original format byte for byte. */
 static void gatt_peer_settings_key(char *key, size_t key_len, const bt_addr_le_t *addr)
 {
-	char addr_str[BT_ADDR_LE_STR_LEN];
+	static const char *const type_str[] = { "public", "random", "public-id", "random-id" };
+	char type_hex[5];
+	const char *type;
 
-	bt_addr_le_to_str(addr, addr_str, sizeof(addr_str));
-	snprintk(key, key_len, "ble/gatt_peer/%s", addr_str);
+	if (addr->type < ARRAY_SIZE(type_str)) {
+		type = type_str[addr->type];
+	} else {
+		snprintk(type_hex, sizeof(type_hex), "0x%02x", addr->type);
+		type = type_hex;
+	}
+
+	snprintk(key, key_len, "ble/gatt_peer/%02X:%02X:%02X:%02X:%02X:%02X (%s)",
+		 addr->a.val[5], addr->a.val[4], addr->a.val[3],
+		 addr->a.val[2], addr->a.val[1], addr->a.val[0], type);
 }
 
 static int gatt_peer_layout_load(const bt_addr_le_t *addr, uint8_t *ver_out)
