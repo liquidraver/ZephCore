@@ -33,7 +33,7 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Service advertises (CONFIG_BT_DIS_FW_REV_STR, generated from it below), what the
 # GitHub release is tagged/named, and what the Mesh America catalog uses as its
 # version key. The release workflow reads this line directly — keep its form.
-set(ZEPHCORE_FIRMWARE_VERSION "1.17.5c-zephcore")
+set(ZEPHCORE_FIRMWARE_VERSION "1.17.6a-zephcore")
 
 # ========== Helpers ==========
 # Append FILE to the overlay list once, keeping its FIRST position. Position is
