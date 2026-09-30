@@ -106,6 +106,7 @@ size_t companionPrefsEncode(const NodePrefs &p, uint8_t *buf, size_t cap)
 	w.put(&p.tz_offset, 1);
 	w.put(&p.leds_radio_mode, 1);
 	w.put(&p.leds_hb_mode, 1);
+	w.put(&p.led_brightness, 1);
 	w.put(&p.wifi_enabled, 1);
 	w.put(p.wifi_ssid, sizeof(p.wifi_ssid));
 	w.put(p.wifi_pwd, sizeof(p.wifi_pwd));
@@ -285,6 +286,8 @@ size_t serverPrefsEncode(const NodePrefs &prefs, uint8_t *buf, size_t cap)
 	/* LED activity/heartbeat modes (offsets 309-310) */
 	w.put(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	w.put(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+	/* led_brightness (ZephCore extension, since 1.17.4), offset 311. */
+	w.put(&prefs.led_brightness, sizeof(prefs.led_brightness));
 	return w.off;
 }
 

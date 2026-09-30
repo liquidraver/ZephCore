@@ -14,8 +14,8 @@
 #include <stdint.h>
 #include "NodePrefs.h"
 
-#define COMPANION_PREFS_SIZE  272
-#define SERVER_PREFS_SIZE     311
+#define COMPANION_PREFS_SIZE  273
+#define SERVER_PREFS_SIZE     312
 
 /* Companion file layout, including the fields shared with upstream's former
  * new_prefs up to offset 92. Returns the byte count (COMPANION_PREFS_SIZE),
