@@ -61,6 +61,7 @@ protected:
 		def("leds_off", _p->leds_disabled);
 		def("leds_radio", _p->leds_radio_mode);
 		def("leds_hb", _p->leds_hb_mode);
+		def("leds_brightness", _p->led_brightness);
 		def("rx_dc", _p->rx_duty_cycle);
 		def("mts", _p->meshtimesync);
 		def("cad_auto", _p->cad_auto);

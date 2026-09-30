@@ -74,3 +74,21 @@ void zephcore_led_radio_hold_pin(bool held)
 {
 	atomic_set(&s_radio_holds_pin, held ? 1 : 0);
 }
+
+/* Same cross-thread readers/writers as the gate above (heartbeat work queue,
+ * TX path, CLI) — atomic for the same reason. RAM-only on purpose: no
+ * savePrefs() call anywhere near this, see led_gate.h. */
+static atomic_t s_led_brightness_pct = ATOMIC_INIT(ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT);
+
+uint8_t zephcore_led_brightness_pct(void)
+{
+	return (uint8_t)atomic_get(&s_led_brightness_pct);
+}
+
+void zephcore_led_set_brightness_pct(uint8_t pct)
+{
+	if (pct > 100) {
+		pct = 100;
+	}
+	atomic_set(&s_led_brightness_pct, pct);
+}

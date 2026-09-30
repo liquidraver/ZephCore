@@ -35,6 +35,7 @@ static inline void apply_boot_prefs(const NodePrefs *p, bool gps_time_sync)
 	zephcore_leds_set_disabled(leds_off);
 	zephcore_leds_set_radio_mode(p->leds_radio_mode);
 	zephcore_leds_set_hb_mode(p->leds_hb_mode);
+	zephcore_led_set_brightness_pct(p->led_brightness);
 	LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
 
 	if (gps_time_sync && gps_is_available()) {
