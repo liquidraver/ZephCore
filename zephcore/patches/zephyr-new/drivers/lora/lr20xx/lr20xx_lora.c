@@ -1154,7 +1154,10 @@ static bool lr20xx_apply_rx_duty_cycle(struct lr20xx_data *data)
  * As on the LR11xx (DS §6.3.8 is word for word UM §7.2.6): any NSS edge in
  * the sleep phase ends the loop, and BUSY is high in sleep and in Rx alike.
  * So suspend = SetStandby (never an NSS poke: that caused the X1's CMD_PERR
- * storm), resume = re-arm. Caller holds spi_mutex. LLD 05 §13. */
+ * storm), resume = re-arm. Resume expects the standby suspend left: the chip
+ * answers SetRxDutyCycle with CMD_FAIL while in Rx (measured; DS §6.3.5 says
+ * it of SetRx), so a caller that enters Rx in between leaves it again first.
+ * Caller holds spi_mutex. LLD 05 §13. */
 static bool lr20xx_dc_suspend(struct lr20xx_data *data)
 {
 	if (!data->rx_duty_cycle_enabled || !data->in_rx_mode) {
@@ -2440,6 +2443,12 @@ int16_t lr20xx_get_rssi_inst(const struct device *dev)
 		out = rssi;
 	}
 
+	if (armed) {
+		/* Leave the Rx entered above; dc_resume() re-arms from standby. */
+		lr20xx_system_set_standby_mode(&data->hal_ctx,
+					       LR20XX_SYSTEM_STANDBY_MODE_RC);
+	}
+
 	lr20xx_dc_resume(data, armed);
 	k_mutex_unlock(&data->spi_mutex);
 
@@ -2529,6 +2538,10 @@ int lr20xx_get_rssi_burst(const struct device *dev, int16_t *out, int n,
 			    LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID))) {
 			got = -EAGAIN;
 		}
+
+		/* Leave the Rx entered above; dc_resume() re-arms from standby. */
+		lr20xx_system_set_standby_mode(&data->hal_ctx,
+					       LR20XX_SYSTEM_STANDBY_MODE_RC);
 	}
 
 	lr20xx_dc_resume(data, armed);

@@ -158,6 +158,7 @@ xiao_mg24
 ```
 me25ls02/nrf54l15/cpuapp
 seeed_lr2021_evk/nrf54l15/cpuapp
+seeed_lr2021_evk_lm20a/nrf54lm20a/cpuapp   # source-only, no published firmware
 xiao_nrf54l15/nrf54l15/cpuapp
 ```
 <!-- /boards -->

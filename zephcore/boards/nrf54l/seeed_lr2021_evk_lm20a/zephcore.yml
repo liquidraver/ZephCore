@@ -1,0 +1,3 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+# No release: until validated on hardware.
+target: seeed_lr2021_evk_lm20a/nrf54lm20a/cpuapp

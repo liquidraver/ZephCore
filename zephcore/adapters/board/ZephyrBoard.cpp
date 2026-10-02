@@ -175,6 +175,17 @@ static const struct device *const fuel_gauge_dev =
 #define HAS_FUEL_GAUGE 0
 #endif
 
+/* nPM1300 charger (XIAO nRF54LM20A): the PMIC measures VBAT with its own ADC
+ * and Zephyr exposes that through the sensor API, not the fuel-gauge one.
+ * Voltage only; state of charge comes from the discharge curve. */
+#if !HAS_FUEL_GAUGE && DT_HAS_COMPAT_STATUS_OKAY(nordic_npm1300_charger)
+#define HAS_PMIC_CHARGER 1
+static const struct device *const pmic_charger_dev =
+	DEVICE_DT_GET(DT_COMPAT_GET_ANY_STATUS_OKAY(nordic_npm1300_charger));
+#else
+#define HAS_PMIC_CHARGER 0
+#endif
+
 /* Initialize activity LED GPIO at boot */
 #if HAS_TX_LED
 /* Width of the receive blink.  A transmit holds the LED for its whole airtime,
@@ -253,6 +264,21 @@ uint16_t ZephyrBoard::readBattMilliVolts()
 			return (uint16_t)(val.voltage_uv / 1000);  /* µV -> mV */
 		}
 		LOG_WRN("Fuel gauge voltage read failed: %d", ret);
+	}
+	return 0;
+#elif HAS_PMIC_CHARGER
+	if (device_is_ready(pmic_charger_dev)) {
+		struct sensor_value v;
+		int ret = sensor_sample_fetch(pmic_charger_dev);
+
+		if (ret == 0) {
+			ret = sensor_channel_get(pmic_charger_dev,
+						 SENSOR_CHAN_GAUGE_VOLTAGE, &v);
+		}
+		if (ret == 0) {
+			return (uint16_t)(v.val1 * 1000 + v.val2 / 1000);  /* V -> mV */
+		}
+		LOG_WRN("PMIC battery voltage read failed: %d", ret);
 	}
 	return 0;
 #elif DT_NODE_EXISTS(DT_PATH(zephyr_user)) && \

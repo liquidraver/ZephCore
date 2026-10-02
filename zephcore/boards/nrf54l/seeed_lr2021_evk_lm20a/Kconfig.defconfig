@@ -1,0 +1,33 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+if BOARD_SEEED_LR2021_EVK_LM20A_NRF54LM20A_CPUAPP
+
+config HAS_BT_CTLR
+	default BT
+
+# nPM1300 init order, copied from upstream Zephyr's xiao_nrf54lm20a
+# Kconfig.defconfig. The charger driver raises the PMIC's VBUS current limit
+# from its 100 mA power-up default to 500 mA, and it lives under the sensor
+# subsystem (priority 90). The regulators must come up after it, or the LDO1
+# soft-start inrush trips over-current protection and the board brown-outs in a
+# boot loop. The 500 mA limit matters to us beyond boot: an LR2021 at +22 dBm
+# does not fit in 100 mA on a kit running from USB alone.
+
+config SENSOR
+	default y
+
+config REGULATOR
+	default y
+
+if REGULATOR_NPM13XX
+
+config REGULATOR_NPM13XX_COMMON_INIT_PRIORITY
+	default 91
+
+config REGULATOR_NPM13XX_INIT_PRIORITY
+	default 92
+
+endif # REGULATOR_NPM13XX
+
+endif # BOARD_SEEED_LR2021_EVK_LM20A_NRF54LM20A_CPUAPP

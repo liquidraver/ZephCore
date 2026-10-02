@@ -1,0 +1,6 @@
+# Semtech LR2021 LoRa Plus EVK on a XIAO nRF54LM20A — board configuration
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+config BOARD_SEEED_LR2021_EVK_LM20A
+	select SOC_NRF54LM20A_CPUAPP if BOARD_SEEED_LR2021_EVK_LM20A_NRF54LM20A_CPUAPP

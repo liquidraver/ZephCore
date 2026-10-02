@@ -1,0 +1,9 @@
+# Copyright (c) 2026 ZephCore
+# SPDX-License-Identifier: MIT
+
+board:
+  name: seeed_lr2021_evk_lm20a
+  full_name: Semtech LR2021 LoRa Plus EVK (XIAO nRF54LM20A + Wio-LR2021)
+  vendor: seeed
+  socs:
+    - name: nrf54lm20a

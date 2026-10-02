@@ -1,0 +1,430 @@
+/*
+ * Semtech LR2021 LoRa Plus Evaluation Kit with a XIAO nRF54LM20A fitted
+ * Copyright (c) 2026 ZephCore
+ * SPDX-License-Identifier: MIT
+ *
+ * The same three-board sandwich as boards/nrf54l/seeed_lr2021_evk, with the
+ * MCU module swapped:
+ *
+ *   Seeed XIAO nRF54LM20A         — the MCU (2036 KB RRAM, 511 KB RAM, nPM1300)
+ *   LoRa Plus Expansion Board V2a — OLED, buttons, Grove, SMA, SWD
+ *   Wio-LR2021 module             — LR2021WIO1XDCS, 868/915 MHz, switchless
+ *
+ * Everything about the carrier and the radio module is unchanged and is
+ * explained in seeed_lr2021_evk_nrf54l15_cpuapp.dts; this file only records
+ * what the other XIAO changes. Sources, in devdocs/seeed_lr2021_evk/assets/lm20a:
+ * the XIAO nRF54LM20A schematic and Zephyr's own xiao_nrf54lm20a board.
+ *
+ * XIAO connector map (Zephyr seeed_xiao_connector.dtsi, schematic sheet 6):
+ *   D0  P1.00  LR2021 IRQ (chip DIO8)   D8  P1.04  SPI SCK  (spi23)
+ *   D1  P1.31  LR2021 BUSY              D9  P1.05  SPI MISO (spi23)
+ *   D2  P1.30  LR2021 NRESET            D10 P1.06  SPI MOSI (spi23)
+ *   D3  P1.29  LR2021 NSS
+ *   D4  P1.03  I2C SDA (i2c22) — OLED + 2x Grove
+ *   D5  P1.07  I2C SCL (i2c22) — OLED + 2x Grove
+ *   D6  P1.08  LR2021 DIO7  / uart21 TX / Grove UART
+ *   D7  P1.09  LR2021 DIO11 / uart21 RX / Grove UART
+ *   D16 P3.05  K1 user button on the expansion board (back pad TP16; the
+ *              expansion board calls this pogo "D14", which is the L15's map)
+ *
+ * What differs from the nRF54L15 XIAO, beyond the pin numbers:
+ *   - The radio is on spi23. spi00 belongs to the XIAO's own 8 MB flash on P2,
+ *     which is mounted as /ext.
+ *   - Every pin used here sits on a port with GPIOTE (P0, P1, P3), so the
+ *     buttons are interrupt-driven and the L15's polling workaround is gone.
+ *   - An nPM1300 PMIC makes the 3.3 V rail and charges the battery.
+ *   - No 2.4 GHz antenna switch: ANT goes through a fixed match to the
+ *     ceramic antenna (sheet 6). Seeed's pin sheet lists RF_SW_PWR/RF_SW_CTL
+ *     on P1.27/P1.28, but no such net exists in the schematic.
+ *   - The SoC has USB, the board does not use it: D+/D- are no-connects and
+ *     the VBUS link R23 is not fitted. Flashing and console stay on the SAMD11.
+ */
+
+/dts-v1/;
+#include <nordic/nrf54lm20a_cpuapp.dtsi>
+#include "seeed_lr2021_evk_lm20a-pinctrl.dtsi"
+#include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/regulator/npm13xx.h>
+
+/ {
+	model = "Semtech LR2021 LoRa Plus EVK (XIAO nRF54LM20A)";
+	compatible = "seeed,lr2021-evk-lm20a";
+
+	chosen {
+		zephyr,sram = &cpuapp_sram_app;
+		zephyr,flash = &cpuapp_rram;
+		zephyr,flash-controller = &rram_controller;
+		zephyr,console = &uart20;
+		zephyr,shell-uart = &uart20;
+		zephyr,bt-hci = &bt_hci_controller;
+		zephyr,display = &ssd1306;
+		/* No zephyr,code-partition: no bootloader, the image links at
+		 * RRAM base 0x0. Same choice as seeed_lr2021_evk. */
+	};
+
+	aliases {
+		lora0 = &lora;
+		led0 = &blue_led;
+		sw0 = &user_button;
+	};
+
+	/* RGB LED on the XIAO core board. */
+	leds {
+		compatible = "gpio-leds";
+
+		blue_led: led_0 {
+			gpios = <&gpio1 23 GPIO_ACTIVE_LOW>;
+			label = "Blue LED";
+		};
+
+		red_led: led_1 {
+			gpios = <&gpio1 22 GPIO_ACTIVE_LOW>;
+			label = "Red LED";
+		};
+
+		green_led: led_2 {
+			gpios = <&gpio1 24 GPIO_ACTIVE_LOW>;
+			label = "Green LED";
+		};
+	};
+
+	buttons: buttons {
+		compatible = "gpio-keys";
+
+		/*
+		 * K1 on the expansion board: a bare switch to GND, so the
+		 * internal pull-up is required.
+		 *
+		 * NOT this XIAO's D14. K1 reaches the MCU through a pogo pin
+		 * placed for the nRF54L15 XIAO's D14 back pad, and the two XIAOs
+		 * put different nets on the same eight pad positions (both KiCad
+		 * board files, devdocs/seeed_lr2021_evk/assets). The pad that
+		 * pogo touches here is TP16 = D16 = P3.05; D14 (P3.03, TP14) sits
+		 * in the other pad row. P3 has a GPIOTE instance (gpiote20), so
+		 * no polling as on the L15's P2.09.
+		 *
+		 * Derived from the board files, NOT confirmed on hardware: on the
+		 * one kit tried (2026-10-02) holding K1 pulled none of P3.00..07
+		 * low with pull-ups on all eight, i.e. the pogo pins made no
+		 * contact at all. The XIAO's own button below is the one that works.
+		 */
+		user_button: button_0 {
+			gpios = <&gpio3 5 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "K1 (expansion board)";
+		};
+
+		/* The XIAO core board's own USR button. Same key code as K1. */
+		xiao_button: button_1 {
+			gpios = <&gpio0 9 (GPIO_PULL_UP | GPIO_ACTIVE_LOW)>;
+			zephyr,code = <INPUT_KEY_0>;
+			label = "USR (XIAO core board)";
+		};
+	};
+
+	/* Button chain — same mapping as RAK4631 (rak4631/board.overlay). */
+	user_btn_longpress {
+		compatible = "zephyr,input-longpress";
+		input = <&buttons>;
+		input-codes = <INPUT_KEY_0>;
+		short-codes = <INPUT_KEY_A>;
+		long-codes = <INPUT_KEY_ENTER>;
+		long-delay-ms = <1000>;
+	};
+
+	page_btn_multitap {
+		compatible = "zephcore,input-multi-tap";
+		input-codes = <INPUT_KEY_A>;
+		tap-codes = <INPUT_KEY_1 INPUT_KEY_LEFT>;
+		tap-delay-ms = <400>;
+	};
+
+	/*
+	 * nPM1300 on a bit-banged bus (P1.17 SCL / P1.18 SDA). Copied from
+	 * upstream Zephyr's xiao_nrf54lm20a; the init order it depends on is in
+	 * Kconfig.defconfig.
+	 */
+	pmic_i2c: pmic-i2c {
+		compatible = "gpio-i2c";
+		#address-cells = <1>;
+		#size-cells = <0>;
+		sda-gpios = <&gpio1 18 GPIO_ACTIVE_HIGH>;
+		scl-gpios = <&gpio1 17 GPIO_ACTIVE_HIGH>;
+		clock-frequency = <100000>;
+		status = "okay";
+
+		pmic: npm1300@6b {
+			compatible = "nordic,npm1300";
+			reg = <0x6b>;
+
+			pmic_charger: charger {
+				compatible = "nordic,npm1300-charger";
+				term-microvolt = <4200000>;
+				term-warm-microvolt = <4000000>;
+				current-microamp = <150000>;
+				dischg-limit-microamp = <1000000>;
+				vbus-limit-microamp = <500000>;
+				thermistor-ohms = <10000>;
+				thermistor-beta = <3380>;
+				charging-enable;
+			};
+
+			regulators {
+				compatible = "nordic,npm1300-regulator";
+
+				/*
+				 * BUCK2 is VSYS_3V3: the nRF54, the SAMD11 debugger
+				 * and, through the expansion board, the LR2021.
+				 */
+				vsys_3v3: BUCK2 {
+					regulator-always-on;
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+				};
+
+				/* IMU and microphone supply. */
+				imu_vdd: LDO1 {
+					regulator-init-microvolt = <3300000>;
+					regulator-min-microvolt = <3300000>;
+					regulator-max-microvolt = <3300000>;
+					regulator-initial-mode = <NPM13XX_LDSW_MODE_LDO>;
+					regulator-allowed-modes = <NPM13XX_LDSW_MODE_LDO>;
+					regulator-boot-on;
+				};
+			};
+		};
+	};
+};
+
+&cpuapp_sram {
+	status = "okay";
+};
+
+&hfpll {
+	clock-frequency = <DT_FREQ_M(128)>;
+};
+
+&grtc {
+	owned-channels = <0 1 2 3 4 5 6 7 8 9 10 11>;
+	/* Channels 7-11 reserved for Zero Latency IRQs, 3-4 for FLPR */
+	child-owned-channels = <3 4 7 8 9 10 11>;
+	status = "okay";
+};
+
+/* Clock set as upstream's xiao_nrf54lm20a. */
+&clock {
+	status = "okay";
+};
+
+&xo {
+	status = "okay";
+};
+
+&lfclk {
+	status = "okay";
+};
+
+&xo24m {
+	status = "okay";
+};
+
+/* Console: P1.11 TX / P1.10 RX -> SAMD11 CMSIS-DAP bridge -> USB CDC */
+&uart20 {
+	status = "okay";
+	current-speed = <115200>;
+	pinctrl-0 = <&uart20_default>;
+	pinctrl-1 = <&uart20_sleep>;
+	pinctrl-names = "default", "sleep";
+};
+
+/* D6/D7 are also the LR2021's DIO7/DIO11 — see seeed_lr2021_evk. */
+&uart21 {
+	status = "disabled";
+};
+
+&i2c22 {
+	status = "okay";
+	pinctrl-0 = <&i2c22_default>;
+	pinctrl-1 = <&i2c22_sleep>;
+	pinctrl-names = "default", "sleep";
+	clock-frequency = <400000>;
+
+	/* Mandatory for the SSD1306 on nrf-twim: 1 + 1024, rounded up. */
+	zephyr,concat-buf-size = <1088>;
+
+	/* ZJY-2864KSWPG01 on the expansion board; settings as seeed_lr2021_evk. */
+	ssd1306: ssd1306@3c {
+		compatible = "solomon,ssd1306";
+		reg = <0x3c>;
+		width = <128>;
+		height = <64>;
+		segment-offset = <0>;
+		page-offset = <0>;
+		display-offset = <0>;
+		multiplex-ratio = <63>;
+		segment-remap;
+		com-invdir;
+		inversion-on;
+		prechargep = <0x22>;
+	};
+};
+
+&spi23 {
+	status = "okay";
+	cs-gpios = <&gpio1 29 GPIO_ACTIVE_LOW>;	/* D3 = P1.29 NSS */
+	pinctrl-0 = <&spi23_default>;
+	pinctrl-1 = <&spi23_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	/* The bus must idle at the LR2021's NOP, not Nordic's 0xFF. */
+	overrun-character = <0x00>;
+
+	lora: lora@0 {
+		compatible = "semtech,lr2021";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		reset-gpios = <&gpio1 30 GPIO_ACTIVE_LOW>;			/* D2 = P1.30 */
+		busy-gpios = <&gpio1 31 GPIO_ACTIVE_HIGH>;			/* D1 = P1.31 */
+		irq-gpios = <&gpio1 0 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;	/* D0 = P1.00 */
+		irq-dio = <8>;	/* chip DIO8 -> module pin 1 -> D0 */
+
+		/* No TCXO and no RF switch: both are properties of the Wio-LR2021
+		 * module, settled on hardware — see seeed_lr2021_evk. */
+		rx-boosted;
+	};
+};
+
+/*
+ * The XIAO's own 8 MB SPI NOR (PY25Q64HA) on P2, mounted as /ext by
+ * qspi-ext.dtsi below: contacts, channels and blobs move there, and contact
+ * saves become atomic. Flash parameters are upstream Zephyr's xiao_nrf54lm20a
+ * node, except the clock: upstream gives the part's 133 MHz ceiling, this
+ * stays at 8 MHz until a faster rate is measured to be worth having.
+ *
+ * The label is "qspi_flash" because that is the name qspi-ext.dtsi and
+ * ZephyrFsFormat.c look for; the part is driven as plain single-line SPI.
+ */
+&spi00 {
+	status = "okay";
+	cs-gpios = <&gpio2 5 GPIO_ACTIVE_LOW>;
+	pinctrl-0 = <&spi00_default>;
+	pinctrl-1 = <&spi00_sleep>;
+	pinctrl-names = "default", "sleep";
+
+	qspi_flash: py25q64ha@0 {
+		compatible = "jedec,spi-nor";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+		jedec-id = [85 20 17];
+		sfdp-bfp = [e5 20 f9 ff ff ff ff 03 44 eb 08 6b 08 3b 80 bb
+			    fe ff ff ff ff ff 00 ff ff ff 44 eb 0c 20 0f 52
+			    10 d8 00 81];
+		size = <67108864>;
+		has-dpd;
+		t-enter-dpd = <3000>;
+		requires-ulbpr;
+		hold-gpios = <&gpio2 0 GPIO_ACTIVE_LOW>;
+		wp-gpios = <&gpio2 3 GPIO_ACTIVE_LOW>;
+
+		partitions {
+			compatible = "fixed-partitions";
+			#address-cells = <1>;
+			#size-cells = <1>;
+
+			/* Full 8 MB for LittleFS storage */
+			qspi_storage_partition: partition@0 {
+				label = "qspi_storage";
+				reg = <0x00000000 0x00800000>;
+			};
+		};
+	};
+};
+
+&gpio0 {
+	status = "okay";
+};
+
+&gpio1 {
+	status = "okay";
+};
+
+&gpio2 {
+	status = "okay";
+};
+
+&gpio3 {
+	status = "okay";
+};
+
+&gpiote20 {
+	status = "okay";
+};
+
+&gpiote30 {
+	status = "okay";
+};
+
+&vregmain {
+	status = "okay";
+	regulator-initial-mode = <NRF5X_REG_MODE_DCDC>;
+};
+
+/* Crystal load capacitances as upstream's xiao_nrf54lm20a. */
+&lfxo {
+	load-capacitors = "internal";
+	load-capacitance-femtofarad = <17000>;
+	status = "okay";
+};
+
+&hfxo {
+	load-capacitors = "internal";
+	load-capacitance-femtofarad = <15000>;
+	status = "okay";
+};
+
+&radio {
+	status = "okay";
+};
+
+&bt_hci_controller {
+	status = "okay";
+};
+
+&temp {
+	status = "okay";
+};
+
+/* Default Nordic RRAM map, then re-carved below for ZephCore. */
+#include <vendor/nordic/nrf54lm20a_cpuapp_partition.dtsi>
+
+/*
+ * RRAM layout (2036 KB total, 0x1FD000; the last 96 KB are the FLPR core's).
+ *
+ * No bootloader: the application starts at 0x0, so the DFU slots are deleted.
+ *
+ *   0x000000 - 0x1C0000  (1792 KB)  application (links from 0x0)
+ *   0x1C0000 - 0x1E0000  (128 KB)   LittleFS: identity, prefs, contacts,
+ *                                   channels, BLE bonds
+ *   0x1E0000 - 0x1E5000  (20 KB)    unused
+ *   0x1E5000 - 0x1FD000  (96 KB)    reserved for FLPR
+ */
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+&cpuapp_rram {
+	partitions {
+		lfs_partition: partition@1c0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "lfs";
+			reg = <0x1C0000 0x20000>;
+		};
+	};
+};
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"
+
+/* /ext on the 8 MB SPI NOR: deferred init, mounted by the store on first use */
+#include "../../common/qspi-ext.dtsi"
