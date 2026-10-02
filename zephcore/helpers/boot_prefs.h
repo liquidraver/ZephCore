@@ -39,6 +39,7 @@ static inline void apply_boot_prefs(const NodePrefs *p, bool gps_time_sync)
 
 	if (gps_time_sync && gps_is_available()) {
 		gps_set_poll_interval_sec(p->gps_interval);
+		gps_set_standby_max_sec(p->gps_standby_max);
 		gps_set_repeater_mode(true);
 		if (p->gps_enabled) {
 			gps_enable(true);

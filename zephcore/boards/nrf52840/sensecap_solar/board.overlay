@@ -26,8 +26,21 @@
 		};
 	};
 
+	/* L76KB WAKEUP (schematic net GNSS_WAKEUP, P0.02; upstream's
+	 * PIN_GPS_STANDBY): HIGH = run, LOW = Standby with the supply kept.
+	 * The GPS manager uses it for duty-cycle standby, so a wake is a hot
+	 * start; P1.05 is cut on `gps off` and System OFF. */
+	gps_wake: gps-wakeup {
+		compatible = "gpio-leds";
+		gps_wakeup_pin: gps_wakeup {
+			gpios = <&gpio0 2 GPIO_ACTIVE_HIGH>;
+			label = "GNSS Wakeup";
+		};
+	};
+
 	aliases {
 		gps-enable = &gps_enable_pin;
 		gps-reset = &gps_reset_pin;
+		gps-wakeup = &gps_wakeup_pin;
 	};
 };

@@ -189,14 +189,18 @@ int Utils::encryptThenMAC(const uint8_t *shared_secret, uint8_t *dest, const uin
 int Utils::MACThenDecrypt(const uint8_t *shared_secret, uint8_t *dest, const uint8_t *src, int src_len)
 {
 	if (src_len <= (int)CIPHER_MAC_SIZE) return 0;
+
+	int enc_len = src_len - CIPHER_MAC_SIZE;
+	if (enc_len % CIPHER_BLOCK_SIZE != 0) return 0;  /* reject non-block-aligned ciphertext */
+
 	uint8_t computed_mac[CIPHER_MAC_SIZE];
-	if (compute_hmac_truncated(shared_secret, PUB_KEY_SIZE, src + CIPHER_MAC_SIZE, (size_t)src_len - CIPHER_MAC_SIZE, computed_mac, CIPHER_MAC_SIZE) != 0)
+	if (compute_hmac_truncated(shared_secret, PUB_KEY_SIZE, src + CIPHER_MAC_SIZE, (size_t)enc_len, computed_mac, CIPHER_MAC_SIZE) != 0)
 		return 0;
 	/* Constant-time MAC compare. Runs on every encrypted packet — a
 	 * timing oracle here would let attackers forge MACs byte-by-byte
 	 * across the entire mesh, bypassing message authentication. */
 	if (!Utils::constantTimeEqual(computed_mac, src, CIPHER_MAC_SIZE)) return 0;
-	return decrypt(shared_secret, dest, src + CIPHER_MAC_SIZE, src_len - CIPHER_MAC_SIZE);
+	return decrypt(shared_secret, dest, src + CIPHER_MAC_SIZE, enc_len);
 }
 
 /* See header for rationale. The `volatile` accumulator forces

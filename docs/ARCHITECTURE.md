@@ -793,7 +793,8 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - State machine: OFF → ACQUIRING → STANDBY (with warm standby on supported hardware)
 - 3 consecutive good fixes (≥4 satellites) required before reporting
 - Multi-constellation: GPS+GLONASS+Galileo+BeiDou with fallback
-- T1000-E: Complex 6-GPIO power sequencing with VRTC preservation
+- T1000-E / MeshTracker X1 (AG3335): multi-GPIO power sequencing; standby is the module's RTC backup sleep
+  (`$PAIR650,0` before `GPS_EN` is cut, VRTC kept, a `GPS_RTC_INT` pulse wakes it)
 - GPS time blocks phone time sync for 2 hours after last fix
 - Three files: `ZephyrGPSManager.cpp` (states, fix validation, public API), `gps_power.cpp` (power line / PMU rail / UART sleep commands, UARTE PM), `gps_module_cfg.cpp` (GNSS-API or PMTK/PCAS/UBX configuration, `get gps diag`); `gps_internal.h` carries the feature detection
 - **Main thread only.** The GNSS callbacks (system work queue) only validate and post: a validated fix is snapshotted and handed to the fix callback by `gps_process_event()` on the main thread, so the callback sets the clock and the node position directly. The UI's GPS toggles post an action too.
@@ -838,7 +839,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 **Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1. Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
 
-**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back.
+**Clock** (`adapters/clock/ZephyrRTCClock`): `setCurrentTime()` also writes the hardware RTC when the board has one (coalesced on the system work queue), as upstream's `AutoDiscoverRTCClock` writes its chip; `seedCurrentTime()` is the boot restore, not written back. Without a hardware RTC, the last time read is kept in no-init memory (RTC slow memory on ESP32) and restored after a reset that keeps RAM (reboot, crash, watchdog), as upstream's `ESP32RTCClock`; a power cycle starts from 1970 again.
 
 **LED master switch** (`helpers/led_gate.{c,h}`, `set leds on|off`, all roles): one process-wide
 flag every LED driver consults — heartbeat and unread-message LEDs in `helpers/ui/ui_common.c`, the

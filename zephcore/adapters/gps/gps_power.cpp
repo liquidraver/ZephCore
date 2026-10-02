@@ -25,8 +25,8 @@ LOG_MODULE_DECLARE(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
  *   every wake is a warm start, not a cold one. (Backup mode, the deeper
  *   state, requires cutting VCC while V_BCKP holds the RTC domain; this
  *   board has no VCC switch, so Standby is the floor available to us.)
- * - T1000-E (AG3335): GPS_EN de-asserted + VRTC asserted = warm standby (ephemeris
- *   preserved via backup RAM, ~1-2µA VRTC current)
+ * - T1000-E, MeshTracker X1 (AG3335): RTC backup sleep ($PAIR650,0), then
+ *   GPS_EN de-asserted with VRTC kept; a GPS_RTC_INT pulse wakes it
  * - All boards: gps-enable alias → GPIO power control
  *
  * CONFIG_PM_DEVICE is on globally, but nothing suspends automatically —
@@ -144,11 +144,50 @@ static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps
 #define HAS_GPS_RESETB 0
 #endif
 
+/* Module standby pin (L76K WAKEUP: asserted = run, de-asserted = Standby, RF
+ * off with the core powered) on a board that ALSO has a supply switch
+ * (gps-enable): standby uses this pin and keeps the supply, so a wake is a
+ * hot start; a full off (`gps off`, boot with GPS disabled, System OFF) cuts
+ * the supply, since Standby still draws. A board whose only control is the
+ * standby pin (Wio Tracker L1) declares it as gps-enable instead. */
+#if HAS_GPS_WAKEUP
+static const struct gpio_dt_spec gps_wakeup_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_wakeup), gpios);
+#endif
+
 /* T1000-E has extra GPS control pins that require a specific init sequence */
 #define HAS_T1000_GPS_CONTROL (HAS_GPS_VRTC || HAS_GPS_RESET || HAS_GPS_SLEEP)
 
+/* AG3335 RTC backup sleep (upstream AirohaSleep.h; T1000-E, MeshTracker X1):
+ * the module is told to save its state and sleep before GPS_EN is cut, VRTC
+ * keeps its RTC domain powered, and a GPS_RTC_INT pulse wakes it. */
+#define HAS_GPS_BACKUP_SLEEP \
+	(HAS_GPS_POWER_CONTROL && HAS_GPS_VRTC && HAS_GPS_RTCINT && HAS_GPS_UART)
+
 #if HAS_GPS_POWER_CONTROL
 static bool gps_gpio_configured = false;
+/* T1000-E sequence only: the module was powered on by us / is in backup sleep. */
+static bool gps_module_on = false;
+static bool gps_backup_sleeping = false;
+#endif
+
+#if HAS_GPS_BACKUP_SLEEP
+/* Upstream stop_gps(). The ack ($PAIR001,650,0) cannot be read here, the GNSS
+ * driver owns the UART RX, so the command goes out blind and upstream's 50 ms
+ * ack window plus 50 ms grace is waited out. A missed command is the old
+ * behaviour: a power cut with VRTC kept. */
+static void gps_enter_backup_sleep(void)
+{
+	static const char pair_sleep[] = "$PAIR650,0*25\r\n";
+
+	gpio_pin_configure_dt(&gps_vrtc_gpio, GPIO_OUTPUT_ACTIVE);
+	gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
+	gps_uart_send((const uint8_t *)pair_sleep, sizeof(pair_sleep) - 1);
+	k_msleep(100);
+	gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_INACTIVE);
+	gps_module_on = false;
+	gps_backup_sleeping = true;
+	LOG_INF("GPS power OFF (RTC backup sleep)");
+}
 #endif
 
 /* The off levels, shared by gps_power_control(false) and System OFF: reset
@@ -164,6 +203,12 @@ static bool gps_gpio_configured = false;
  * the power-on path, so the pins may not be outputs yet. */
 static void gps_drive_off_levels(bool keep_vrtc, bool system_off)
 {
+#if HAS_GPS_WAKEUP
+	/* Low before the supply goes: no pin driven into an unpowered module. */
+	if (gpio_is_ready_dt(&gps_wakeup_gpio)) {
+		gpio_pin_configure_dt(&gps_wakeup_gpio, GPIO_OUTPUT_INACTIVE);
+	}
+#endif
 #if HAS_GPS_RESET
 	if (gpio_is_ready_dt(&gps_reset_gpio)) {
 		gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
@@ -231,10 +276,15 @@ void gps_power_control(bool on, bool keep_vrtc)
 	 * (driver PM can hang on modem_pipe_close / modem_chat_run_script).
 	 * The GNSS driver's modem pipe stays open.
 	 *
-	 * T1000-E (HAS_GPS_VRTC): Use warm standby (keep VRTC) for app toggle
-	 *   so UART/chip state is preserved. Matches Arduino sleep_gps().
+	 * T1000-E / X1 (HAS_GPS_BACKUP_SLEEP): standby and app toggle use the
+	 *   AG3335 RTC backup sleep, as Arduino stop_gps().
 	 * Simple boards (Wio etc.): Full power off/on via GPS_EN. */
 	if (on) {
+#if HAS_GPS_WAKEUP
+		if (gpio_is_ready_dt(&gps_wakeup_gpio)) {
+			gpio_pin_configure_dt(&gps_wakeup_gpio, GPIO_OUTPUT_ACTIVE);
+		}
+#endif
 #if HAS_T1000_GPS_CONTROL
 		/* T1000-E power-on sequence (from Arduino target.cpp start_gps())
 		 * Must follow this exact order with delays. Levels are ASSERTED /
@@ -265,7 +315,9 @@ void gps_power_control(bool on, bool keep_vrtc)
 #endif
 
 #if HAS_GPS_RESET
-		if (gpio_is_ready_dt(&gps_reset_gpio)) {
+		/* Not when waking from backup sleep: upstream resets the module
+		 * once, in begin(), and a reset here would make the wake a restart. */
+		if (!gps_backup_sleeping && gpio_is_ready_dt(&gps_reset_gpio)) {
 			gpio_pin_configure_dt(&gps_reset_gpio, GPIO_OUTPUT_ACTIVE);
 			k_msleep(10);
 			gpio_pin_set_dt(&gps_reset_gpio, 0);  /* Release reset (logical) */
@@ -279,9 +331,12 @@ void gps_power_control(bool on, bool keep_vrtc)
 #endif
 
 #if HAS_GPS_RTCINT
-		/* GPS_RTC_INT (P0.15) — held de-asserted during normal operation */
+		/* GPS_RTC_INT: a 5 ms pulse wakes the AG3335 from RTC backup sleep
+		 * (upstream start_gps(), on every power-on); otherwise de-asserted. */
 		if (gpio_is_ready_dt(&gps_rtcint_gpio)) {
-			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_INACTIVE);
+			gpio_pin_configure_dt(&gps_rtcint_gpio, GPIO_OUTPUT_ACTIVE);
+			k_msleep(5);
+			gpio_pin_set_dt(&gps_rtcint_gpio, 0);
 		}
 #endif
 
@@ -294,7 +349,10 @@ void gps_power_control(bool on, bool keep_vrtc)
 		}
 #endif
 		gps_gpio_configured = true;
-		LOG_INF("GPS power ON (T1000-E sequence)");
+		LOG_INF("GPS power ON (T1000-E sequence%s)",
+			gps_backup_sleeping ? ", wake from backup sleep" : "");
+		gps_module_on = true;
+		gps_backup_sleeping = false;
 #else
 		/* Simple boards - just GPS_EN */
 		if (!gps_gpio_configured) {
@@ -315,7 +373,29 @@ void gps_power_control(bool on, bool keep_vrtc)
 		}
 #endif
 	} else {
+#if HAS_GPS_BACKUP_SLEEP
+		if (keep_vrtc && gps_module_on) {
+			gps_enter_backup_sleep();
+			return;
+		}
+		if (keep_vrtc && gps_backup_sleeping) {
+			return;  /* already asleep (disabled while in standby) */
+		}
+#endif
+#if HAS_GPS_WAKEUP
+		/* Standby by the module's own pin, supply kept: the wake is a hot
+		 * start and skips the reset pulse (gps_backup_sleeping). */
+		if (keep_vrtc && gpio_is_ready_dt(&gps_wakeup_gpio)) {
+			gpio_pin_configure_dt(&gps_wakeup_gpio, GPIO_OUTPUT_INACTIVE);
+			gps_module_on = false;
+			gps_backup_sleeping = true;
+			LOG_INF("GPS standby (WAKEUP pin, supply kept)");
+			return;
+		}
+#endif
 		gps_drive_off_levels(keep_vrtc, false);
+		gps_module_on = false;
+		gps_backup_sleeping = false;
 
 #if HAS_GPS_VRTC
 		LOG_INF("GPS power OFF (%s)", keep_vrtc ?

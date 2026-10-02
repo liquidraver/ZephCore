@@ -62,6 +62,13 @@
 #define HAS_GPS_POWER_CONTROL 0
 #endif
 
+/* Module standby pin beside a supply switch (gps-wakeup alias, see gps_power.cpp). */
+#if DT_NODE_EXISTS(DT_ALIAS(gps_wakeup))
+#define HAS_GPS_WAKEUP 1
+#else
+#define HAS_GPS_WAKEUP 0
+#endif
+
 /* GPS powered from a PMU regulator rail (chosen zephcore,gps-power). */
 #if DT_NODE_EXISTS(DT_CHOSEN(zephcore_gps_power))
 #define HAS_GPS_POWER_REGULATOR 1

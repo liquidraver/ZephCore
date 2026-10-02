@@ -6,7 +6,8 @@
  * - GPS_EN (P1.11) - Main power enable
  * - GPS_VRTC_EN (P0.8) - RTC voltage regulator (critical!)
  * - GPS_RESET (P1.15) - Reset control
- * - GPS_SLEEP_INT (P1.12) - Sleep interrupt
+ * - GPS_SLEEP_INT (P1.12) - Sleep interrupt, hogged LOW (see the end)
+ * - GPS_RTC_INT (P0.15) - pulsed to wake the module from RTC backup sleep
  */
 
 / {
@@ -37,16 +38,7 @@
 		};
 	};
 
-	/* GPS sleep interrupt - P1.12 */
-	gps_sleep: gps-sleep-int {
-		compatible = "gpio-leds";
-		gps_sleep_pin: gps_sleep {
-			gpios = <&gpio1 12 GPIO_ACTIVE_HIGH>;
-			label = "GPS Sleep Int";
-		};
-	};
-
-	/* GPS RTC interrupt - P0.15 (held LOW during normal operation) */
+	/* GPS RTC interrupt - P0.15 (LOW, pulsed HIGH to wake from backup sleep) */
 	gps_rtcint: gps-rtc-int {
 		compatible = "gpio-leds";
 		gps_rtcint_pin: gps_rtc_int {
@@ -73,8 +65,19 @@
 		gps-enable = &gps_enable_pin;
 		gps-vrtc-enable = &gps_vrtc_pin;
 		gps-reset = &gps_reset_pin;
-		gps-sleep-int = &gps_sleep_pin;
 		gps-rtc-int = &gps_rtcint_pin;
 		gps-resetb = &gps_resetb_pin;
+	};
+};
+
+/* GPS_SLEEP_INT (P1.12): held LOW at all times, as upstream since the RTC
+ * backup sleep (#3525). No gps-sleep-int alias, so the GPS manager leaves it
+ * alone. */
+&gpio1 {
+	gps_sleep_int_low {
+		gpio-hog;
+		gpios = <12 GPIO_ACTIVE_HIGH>;
+		output-low;
+		line-name = "gps-sleep-int";
 	};
 };

@@ -9,8 +9,8 @@
  *
  * Power strategy:
  * - Direct GPIO toggle via gps-enable alias (all boards)
- * - T1000-E warm standby: VRTC stays powered during standby, preserving
- *   ephemeris/almanac/RTC in backup RAM for fast re-acquisition (3-8s vs 15-45s)
+ * - T1000-E / MeshTracker X1: AG3335 RTC backup sleep during standby (VRTC
+ *   stays powered, see gps_power.cpp) for fast re-acquisition
  * - GNSS UARTE suspended (device PM) while GPS is off/standby — releases
  *   HFCLK on nRF52840 (~0.5-1 mA), resumed before every wake
  * - Full power-off only on user-disable or System OFF
@@ -83,6 +83,8 @@ static uint64_t standby_interval_ms = 0; /* How long standby lasts (for next-wak
 static const uint32_t gps_acquire_timeout_ms   = CONFIG_ZEPHCORE_GPS_FIX_TIMEOUT_SEC * 1000U;
 static const uint32_t gps_first_fix_timeout_ms = CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC * 1000U;
 static uint32_t gps_wake_interval_ms           = CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC * 1000U;
+/* prefs.gps_standby_max, see gps_set_standby_max_sec() */
+static uint32_t gps_standby_max_sec            = GPS_STANDBY_MAX_DEFAULT_SEC;
 
 /* Duty cycle vs always-on: a non-zero standby interval duty-cycles; interval 0
  * keeps the GPS in continuous acquisition (never sleeps) so it streams fresh
@@ -528,7 +530,11 @@ static void gps_go_to_standby(void)
 	 *   RTC survive the cut and re-acquisition is a warm/hot start, not cold.
 	 * Other non-GPIO boards: software sleep via UART commands (PMTK + UBX). */
 	gps_reapply_cancel();
-	gps_module_power(false);
+	/* A standby-pin board keeps the supply only for a short interval: its
+	 * Standby draws all the time, a cold start only for a few minutes, so
+	 * past gps_standby_max_sec the supply cut is the cheaper one. */
+	gps_module_power(false, !HAS_GPS_WAKEUP ||
+				wake_interval / 1000U <= gps_standby_max_sec);
 
 	/* Module is off/asleep — release the UART until the next wake
 	 * (nRF: drops the HFCLK request held by the armed RX). */
@@ -878,12 +884,12 @@ void gps_enable(bool enable)
 		k_work_cancel_delayable(&gps_timeout_work);
 		gps_reapply_cancel();
 
-		/* Power off GPS — warm standby if VRTC available (Arduino sleep_gps),
-		 * full power off otherwise. Warm standby preserves ephemeris/RTC
-		 * in AG3335 backup RAM for fast re-acquisition (1-8s vs 15-45s).
+		/* Power off GPS — AG3335 RTC backup sleep where the board has it
+		 * (Arduino stop_gps), full power off otherwise.
 		 * Boards with no power line get the UART sleep commands, as in
-		 * the duty cycle's standby. */
-		gps_module_power(false);
+		 * the duty cycle's standby. A standby-pin board cuts the supply
+		 * here: its Standby still draws, and this off has no end. */
+		gps_module_power(false, !HAS_GPS_WAKEUP);
 
 		/* GPS is off until re-enabled — release the UART. */
 		gps_uart_set_power(false);
@@ -938,6 +944,29 @@ uint32_t gps_get_poll_interval_sec(void)
 	return gps_wake_interval_ms / 1000U;
 #else
 	return CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC;
+#endif
+}
+
+bool gps_has_standby_pin(void)
+{
+	return HAS_GPS_WAKEUP;
+}
+
+uint32_t gps_get_standby_max_sec(void)
+{
+#if HAS_GNSS
+	return gps_standby_max_sec;
+#else
+	return 0;
+#endif
+}
+
+void gps_set_standby_max_sec(uint32_t sec)
+{
+#if HAS_GNSS
+	gps_standby_max_sec = sec;
+#else
+	ARG_UNUSED(sec);
 #endif
 }
 

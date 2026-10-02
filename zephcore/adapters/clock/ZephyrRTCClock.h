@@ -11,6 +11,8 @@ namespace mesh {
 
 class ZephyrRTCClock : public RTCClock {
 public:
+	/* Starts from the time kept across the last reset, if any (see the .cpp). */
+	ZephyrRTCClock();
 	uint32_t getCurrentTime() override;
 	/* Also written to the board's hardware RTC, if it has one, as upstream's
 	 * AutoDiscoverRTCClock does: coalesced on the system work queue, so

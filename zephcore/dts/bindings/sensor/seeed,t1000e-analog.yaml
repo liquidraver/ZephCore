@@ -17,9 +17,9 @@ description: |
       scale verbatim as CayenneLPP luminosity, so this driver does the same.
       The value is a percentage despite the channel's nominal lux units.
 
-  Neither divider outputs a valid voltage until the rail regulator and the
-  sensor-enable GPIO are both asserted and given time to settle, so the driver
-  switches them around each sample fetch rather than leaving them on.
+  Neither divider outputs a valid voltage until the rail regulator is on and
+  given time to settle, so the driver switches it around each sample fetch
+  rather than leaving it on.
 
 compatible: "seeed,t1000e-analog"
 
@@ -57,9 +57,9 @@ properties:
   power-gpios:
     type: phandle-array
     description: |
-      Sensor-enable pin (SENSOR_EN, P0.4 on the T1000-E), asserted for the
-      duration of a sample fetch. This is in addition to power-supply: the
-      T1000-E gates these two sensors behind both.
+      Optional sensor-enable pin, asserted for the duration of a sample fetch,
+      in addition to power-supply. The T1000-E has none (P0.4 is a voltage
+      detect input, not SENSOR_EN) and leaves this unset.
 
   power-supply:
     type: phandle

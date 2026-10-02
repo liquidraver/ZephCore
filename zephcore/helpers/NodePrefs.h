@@ -142,6 +142,9 @@ struct NodePrefs {
 	 * without this marker is upgraded to gps_enabled = 1 once. */
 	uint8_t gps_enabled_set;
 	uint32_t gps_interval;          // in seconds
+	/* Standby-pin boards: duty intervals up to this (seconds) keep the GPS
+	 * supply and use the standby pin, longer ones cut it. 0 = always cut. */
+	uint32_t gps_standby_max;
 	uint8_t advert_loc_policy;
 	uint32_t discovery_mod_timestamp;
 	float adc_multiplier;
@@ -327,6 +330,7 @@ static inline void powersaving_upgrade(NodePrefs *p) {
 
 #define GPS_INTERVAL_MIN_SEC 10u
 #define GPS_INTERVAL_MAX_SEC 604800u
+#define GPS_STANDBY_MAX_DEFAULT_SEC 3600u
 static inline uint32_t clampGpsInterval(uint32_t sec) {
 	if (sec == 0) return 0;
 	if (sec < GPS_INTERVAL_MIN_SEC) return GPS_INTERVAL_MIN_SEC;
@@ -426,6 +430,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	if (p->ble_pin > 999999) p->ble_pin = 0;
 	/* 0 is always-on, so a corrupt value clamps to the week, not to 0. */
 	p->gps_interval = clampGpsInterval(p->gps_interval);
+	if (p->gps_standby_max > GPS_INTERVAL_MAX_SEC) p->gps_standby_max = GPS_INTERVAL_MAX_SEC;
 	/* 0 = board/Kconfig default on both, else the range the UI offers. */
 	if (p->display_brightness != 0) p->display_brightness = clampPref<uint8_t>(p->display_brightness, 10, 100);
 	if (p->screen_off_secs != 0) p->screen_off_secs = clampPref<uint16_t>(p->screen_off_secs, 5, 300);
@@ -495,6 +500,7 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->powersaving_set = 1;
 	prefs->gps_enabled = 0;
 	prefs->gps_interval = 300;        // 5 minutes
+	prefs->gps_standby_max = GPS_STANDBY_MAX_DEFAULT_SEC;
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;
 	prefs->adc_multiplier = 0.0f;
 	prefs->rx_boost = 1;              // Default to boosted RX for better sensitivity

@@ -162,6 +162,8 @@ Regions control which flood packets the repeater forwards. The region tree is hi
 | `gps advert prefs` | Include stored lat/lon from prefs in advertisements |
 | `set gps duty <sec>` | GPS duty interval (standby seconds between fixes). `0` = always-on (continuous; streams fresh fixes, can download a full almanac). Floor 10s, cap 604800 (1 week). Persists to flash, applied live. |
 | `set gps duty default` | Reset GPS duty to the role default (repeater/room 48h, companion 300s) |
+| `set gps standby <sec>` | Only on boards with a GPS standby pin beside a supply switch (SenseCAP Solar). Duty intervals up to `<sec>` keep the module powered in standby between fixes (hot start, a fix in seconds); longer intervals cut its supply (cold start, minutes, but no draw in between). `0` = always cut the supply. Default 3600. Cap 604800. Persists to flash; applies at the next standby. `gps off` always cuts the supply. Other boards answer `Error: no GPS standby pin on this board`. |
+| `set gps standby default` | Reset the standby threshold to 3600 s |
 | `set gps diag <0\|1\|on\|off>` | Arm GPS module-configuration diagnostics (see below). Not persisted — clears on reboot |
 
 **GPS configuration diagnostics.** At boot the firmware configures the GNSS module — constellations, AssistNow/EASY, minimum elevation, fix rate — and on modules driven over raw NMEA those commands are sent **blind**: nothing reads the module's reply, so a silently rejected configuration is indistinguishable from a working one. These two commands make that visible.
@@ -301,6 +303,7 @@ Companion builds of boards whose `zephcore.yml` declares `capabilities: wifi: tr
 | `get input.rotate` | Joystick/D-pad axis swap: `0` or `1` |
 | `get tz.offset` | Display timezone: whole hours from UTC, `-12`..`14` (`0` = UTC) |
 | `get gps duty` | Now-effective GPS duty interval in seconds (`always on (0)` when continuous) |
+| `get gps standby` | GPS standby threshold in seconds (see `set gps standby`); `n/a` on a board without a GPS standby pin |
 | `get gps diag` | What the last GPS module-configuration attempt did — which path ran, bytes sent, and tracked satellites per constellation. See **GPS configuration diagnostics** in the GPS section for the field reference |
 | `get meshtimesync` | Mesh time-sync state + live dry-run: on/off, eligible voter count, votes for/against, consensus skew and radius, would-be verdict (`ok`/`in-band`/`step±N`/`abstain (reason)`/`hold (reason)`; a recent clock set — manual or GPS — shows as `hold (suppressed)`, and a backward step a forward-only role would refuse is annotated `(skipped: forward-only)`), step counters, suppression countdown, and a per-sender evidence table (`prefix hops count skew E`, `E` = counted toward the verdict above). Entries that count print first, so a size-capped reply never hides the ones that explain the summary; if the table doesn't fully fit, a trailing `+N more` shows how many were left out. Sensing runs even while off, so this works as a dry-run before enabling. Over remote admin the reply is truncated to the packet size (summary always fits); the full table needs the USB CLI. |
 | `get probe.interval` | Seconds between periodic radio measurements (noise-floor sample + CAD probe). 0 = CAD probing off |

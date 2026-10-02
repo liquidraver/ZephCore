@@ -1103,6 +1103,7 @@ int main(void)
 	 * state machine if enabled. */
 	if (gps_is_available()) {
 		gps_set_poll_interval_sec(companion_mesh.prefs.gps_interval);
+		gps_set_standby_max_sec(companion_mesh.prefs.gps_standby_max);
 		gps_ensure_power_state(companion_mesh.prefs.gps_enabled);
 
 		if (companion_mesh.prefs.gps_enabled) {

@@ -72,6 +72,7 @@ protected:
 		def("disp_rot", _p->display_rotate);
 		def("in_rot", _p->input_rotate);
 		def("pwr_sav_set", _p->powersaving_set);
+		def("gps_stby", _p->gps_standby_max);
 	}
 
 public:

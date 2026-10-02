@@ -107,10 +107,12 @@
 
 	/* Onboard NTC thermistor (AIN7) and photocell (AIN5).
 	 *
-	 * Both dividers hang off the sensor_power rail AND need SENSOR_EN
-	 * (P0.4) asserted — Arduino drives both before every read. The driver
-	 * switches them per sample fetch; regulator refcounting keeps that
+	 * Both dividers hang off the sensor_power rail (P1.06). The driver
+	 * switches it per sample fetch; regulator refcounting keeps that
 	 * safe alongside the battery read, which shares the rail.
+	 *
+	 * No power-gpios: P0.04 is "VCC voltage detect" in Seeed's pin table,
+	 * not a sensor enable, and upstream stopped driving it (#2065).
 	 *
 	 * The NTC conversion needs the rail voltage feeding its divider, so
 	 * the battery channel is wired in here as "vcc" with the same
@@ -124,7 +126,6 @@
 		vcc-max-mv = <3300>;
 		ntc-series-ohms = <8250>;
 		settle-time-ms = <10>;
-		power-gpios = <&gpio0 4 GPIO_ACTIVE_HIGH>;
 		power-supply = <&sensor_power>;
 	};
 
