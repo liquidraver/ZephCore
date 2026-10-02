@@ -534,6 +534,16 @@ int mc_display_init(void)
 	 * SSD1306 OLED reports MONO01 by default, which CFB now handles
 	 * correctly (white pixels on black background) without manual invert. */
 
+	/* E-paper is the exception: the page is white and the ink is black.
+	 * ssd16xx reported MONO10 until Zephyr b3150095671, so CFB flipped the
+	 * frame for us; it now reports MONO01 (a set RAM bit is a white pixel),
+	 * which CFB passes through as white text on a black page.  Keyed on the
+	 * reported format so it is a no-op against a driver that still says
+	 * MONO10.  mc_display_text()'s invert toggles are relative to this. */
+	if (is_epd && caps.current_pixel_format == PIXEL_FORMAT_MONO01) {
+		cfb_framebuffer_invert(disp_dev);
+	}
+
 	/* Clear CPU-side framebuffer (zeroes the RAM buffer — no SPI transfer). */
 	cfb_framebuffer_clear(disp_dev, false);
 

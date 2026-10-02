@@ -2,7 +2,7 @@
   * RAK4631 overlay for SoftDevice + UF2 bootloader.
   * App at 0x26000, storage at 0xD4000, bootloader at 0xF4000.
   * Uses SoftDevice s140 v6.1.1 (ends at 0x26000).
-  * Console: USB CDC ACM.
+  * Console: USB CDC ACM (upstream's board_cdc_acm_uart).
   * Battery: AIN3 = P0.05, voltage divider per RAK4631 schematic.
   *
   * QSPI Flash: Optional external flash on WisBlock Base boards.
@@ -38,9 +38,24 @@
 	};
 	chosen {
 		zephyr,code-partition = &code_partition;
-		zephyr,console = &cdc_acm_uart;
-		zephyr,shell-uart = &cdc_acm_uart;
 		zephyr,display = &ssd1306;
+	};
+
+	/* Both LEDs are active-high.  Upstream's board file stopped declaring
+	 * them at Zephyr 4085ca50ab6 (it now describes the bare core module and
+	 * leaves LEDs to base-board shields), so they live here. */
+	leds {
+		compatible = "gpio-leds";
+
+		blue_led: led_2 {
+			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
+			label = "Blue LED";
+		};
+
+		green_led: led_1 {
+			gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
+			label = "Green LED";
+		};
 	};
 
 	/* User button: P0.09 (NFC1). P0.00/P0.01 are 32k crystal — do not use for GPIO. */
@@ -93,10 +108,24 @@
 	};
 };
 
-&zephyr_udc0 {
-	cdc_acm_uart: cdc_acm_uart {
-		compatible = "zephyr,cdc-acm-uart";
-	};
+/* Since Zephyr 4085ca50ab6 upstream describes the bare core module with every
+ * WisBlock peripheral enabled for shields to claim.  We use none of the PWM
+ * channels or the 802.15.4 radio; turn them back off so the build carries the
+ * same devices it did before that rework. */
+&pwm0 {
+	status = "disabled";
+};
+
+&pwm1 {
+	status = "disabled";
+};
+
+&pwm2 {
+	status = "disabled";
+};
+
+&ieee802154 {
+	status = "disabled";
 };
 
 &lora {
@@ -141,15 +170,6 @@
 	};
 };
 
-/* LEDs are active-high on this board (stock RAK4631 DTS used active-low). */
-&green_led {
-	gpios = <&gpio1 3 GPIO_ACTIVE_HIGH>;
-};
-
-&blue_led {
-	gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
-};
-
 /*
   * GPS on UART1 - RAK1910 (u-blox MAX-7Q) at 9600 baud, Slot A.
   *
@@ -161,6 +181,7 @@
   * upstream, whereas uart0 is the legacy nrf-uart.
   */
 &uart1 {
+	status = "okay";
 	current-speed = <9600>;
 	gnss: gnss-nmea-generic {
 		compatible = "gnss-nmea-generic";
@@ -176,6 +197,8 @@
 
 /* I2C0: optional SSD1306 + sensors */
 &i2c0 {
+	status = "okay";
+
 	ssd1306: ssd1306@3c {
 		compatible = "solomon,ssd1306";
 		reg = <0x3c>;
