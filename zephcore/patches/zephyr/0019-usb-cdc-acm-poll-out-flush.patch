@@ -1,26 +1,94 @@
-USB CDC ACM: cdc_acm_poll_out() flushes a full TX buffer instead of dropping.
+USB CDC ACM: a full TX buffer is flushed by poll_out() and fifo_fill().
 
 6d69698de74 ("cdc_acm: tx throughput improvements", merged 2026-09-25)
-replaced the TX ring buffer with net_bufs. poll_out() now only fills the one
-`current` 64 B buffer, and moving on to the next is left to tx_fifo_work. A
-printk burst from a thread that does not yield (a packet log line is 100-300 B)
-fills that buffer and every further byte is discarded ("No TX buffer available,
-discard data") because the work item cannot run meanwhile: RAW hex cut after
-~64 B, RX lines losing their start, CLI replies such as `get public.key`
-corrupted. The old ring buffer accepted ~1 KB per burst.
+replaced the TX ring buffer with net_bufs. Data is written into one `current`
+64 B buffer, and handing a full one to the USB stack is left to tx_fifo_work.
+Two callers cannot wait for that work item.
 
-Enqueue the full buffer from poll_out() (thread context only) and retry once.
-It never blocks, so an unplugged host cannot hang the caller; bytes are
+poll_out(): a printk burst from a thread that does not yield (a packet log
+line is 100-300 B) fills the buffer and every further byte is discarded ("No
+TX buffer available, discard data") because the work item cannot run
+meanwhile: RAW hex cut after ~64 B, RX lines losing their start, CLI replies
+such as `get public.key` corrupted. The old ring buffer accepted ~1 KB per
+burst. Enqueue the full buffer from poll_out() (thread context only) and retry
+once. It never blocks, so an unplugged host cannot hang the caller; bytes are
 dropped only when the buffer pool is exhausted, as before the rewrite.
 
-Found 2026-09-26 with a rak3401_1watt repeater + packet_logging.conf feeding
-mctomqtt. Not fixed on Zephyr main as of 3e7672a71bd; no upstream issue found.
+fifo_fill(): it enqueues a buffer only after writing into it. When `current`
+is already full on entry it accepts 0 bytes, while irq_tx_ready() reports
+space (cdc_acm_tx_fifo_space_get() counts the free pool buffers once the echo
+mitigation is done). A UART ISR that loops while the driver reports a pending
+interrupt, as the Zephyr samples and ZephyrCompanionUSB.cpp do, then never
+returns; it runs on the work queue that would run tx_fifo_work, so nothing
+flushes the buffer and every thread below the work queue starves. `current`
+is full on entry when poll_out() filled it (boot log, banner) or when it was
+filled before the echo mitigation, whose flush is scheduled
+CONFIG_USBD_CDC_ACM_TX_DELAY_MS (100 ms) after the host opens the port: a
+reply sent in that window hangs the node. Enqueue the full buffer from
+fifo_fill() and retry once.
+
+Suspended bus (host asleep with the port open): cdc_acm_tx_fifo_enqueue() does
+nothing while CDC_ACM_CLASS_SUSPENDED is set, so the free pool buffers are not
+usable either and the same loop spins on the next frame. Report only the
+current buffer's tailroom while suspended. Queued data goes out with the next
+TX enable or RX after the resume. From the code; not reproduced on hardware.
+
+poll_out(): found 2026-09-26 with a rak3401_1watt repeater +
+packet_logging.conf feeding mctomqtt. fifo_fill(): found 2026-10-03 on a
+wio_tracker_l1 debug companion (silent on USB whenever the first host action
+after boot was a CLI frame, BLE still advertising). Neither is fixed on Zephyr
+main as of ac03a4a9085; no upstream issue found.
 
 diff --git a/subsys/usb/device_next/class/usbd_cdc_acm.c b/subsys/usb/device_next/class/usbd_cdc_acm.c
-index 3957daa167b..5492f6c5ce4 100644
+index 3957daa167b..03a0d2634f7 100644
 --- a/subsys/usb/device_next/class/usbd_cdc_acm.c
 +++ b/subsys/usb/device_next/class/usbd_cdc_acm.c
-@@ -1143,6 +1143,7 @@ static void cdc_acm_poll_out(const struct device *dev, const unsigned char c)
+@@ -268,7 +268,11 @@ static uint32_t cdc_acm_tx_fifo_space_get(struct cdc_acm_uart_data *const data)
+ 
+ 	if (available == 0) {
+ 		space = 0;
+-	} else if (available == 1 || !data->echo_mitigated) {
++	} else if (available == 1 || !data->echo_mitigated ||
++		   atomic_test_bit(&data->state, CDC_ACM_CLASS_SUSPENDED)) {
++		/* ZephCore: nothing is enqueued while suspended, so only the
++		 * current buffer can take data, as before the echo mitigation.
++		 */
+ 		space = cdc_acm_tx_current_tailroom_locked(data);
+ 	} else {
+ 		/* Use available - 1 to prevent sudden drop of available
+@@ -882,6 +886,7 @@ static int cdc_acm_fifo_fill(const struct device *dev,
+ {
+ 	struct cdc_acm_uart_data *const data = dev->data;
+ 	k_spinlock_key_t key;
++	bool flushed = false;
+ 	int done = 0;
+ 
+ 	if (!check_wq_ctx(dev)) {
+@@ -905,11 +910,22 @@ static int cdc_acm_fifo_fill(const struct device *dev,
+ 			done += written;
+ 			enqueue = data->echo_mitigated &&
+ 				  net_buf_tailroom(data->tx_fifo.current) == 0;
++		} else if (!flushed) {
++			/* ZephCore: the current buffer was already full on entry
++			 * (filled by poll_out(), or before the echo mitigation).
++			 * cdc_acm_tx_fifo_space_get() counts the free pool buffers
++			 * behind it, so irq_tx_ready() reports space; hand the full
++			 * buffer over here to make that space usable. Otherwise it
++			 * waits for tx_fifo_work, which cannot run while the caller
++			 * keeps the work queue busy retrying.
++			 */
++			flushed = true;
++			enqueue = data->echo_mitigated && data->tx_fifo.current != NULL;
+ 		}
+ 
+ 		k_spin_unlock(&data->lock, key);
+ 
+-		if (written == 0) {
++		if (written == 0 && !enqueue) {
+ 			break;
+ 		}
+ 
+@@ -1143,6 +1159,7 @@ static void cdc_acm_poll_out(const struct device *dev, const unsigned char c)
  	struct cdc_acm_uart_data *const data = dev->data;
  	k_spinlock_key_t key;
  	uint32_t wrote;
@@ -28,7 +96,7 @@ index 3957daa167b..5492f6c5ce4 100644
  
  	while (true) {
  		key = k_spin_lock(&data->lock);
-@@ -1153,6 +1154,18 @@ static void cdc_acm_poll_out(const struct device *dev, const unsigned char c)
+@@ -1153,6 +1170,18 @@ static void cdc_acm_poll_out(const struct device *dev, const unsigned char c)
  			break;
  		}
  
