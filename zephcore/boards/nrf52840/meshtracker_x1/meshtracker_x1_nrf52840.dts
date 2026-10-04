@@ -335,8 +335,10 @@
  * The part is an RX8900 second-source (same 3.2x2.5x1.0 package, same
  * 32.768 kHz TCXO grades), so it uses the RX8900 register layout rather than
  * the RX8130CE one that rtc-i2c.dtsi assumes for address 0x32: time at 0x00,
- * FLAG at 0x0E, VLF in bit 1. Boot-time discovery BCD-validates what it reads,
- * so a wrong guess here is detected and skipped, not silently trusted. */
+ * FLAG at 0x0E, VLF in bit 1. Boot-time discovery passes a device over when
+ * two reads both show seconds, minutes, date or month out of range with VLF
+ * not read as set (clear, or the FLAG read failed), so most wrong guesses
+ * are skipped; there is no zero-mask here. */
 &i2c1 {
 	compatible = "nordic,nrf-twim";
 	status = "okay";

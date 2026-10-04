@@ -23,11 +23,19 @@ extern "C" {
 #endif
 
 /*
- * Probe all declared RTC chips. If one is present and holds a sane time
- * (year >= 2025 and its power-loss flag is clear), store the Unix epoch in
- * *epoch_out and return true. The present chip (valid time or not) is
- * remembered as the write-back target. Returns false if none present or no
- * trustworthy time is held.
+ * Probe the declared RTC chips in order, stopping at the first that holds a
+ * sane time (year >= 2025 and its power-loss flag clear): store its Unix
+ * epoch in *epoch_out and return true. The first chip found (valid time or
+ * not) is remembered as the write-back target. A failed first read means
+ * nothing is there, and a first read of all 0xFF (an erased EEPROM) is
+ * skipped. Otherwise a device is passed over only if two reads each show it
+ * is not that RTC: a bit set that the data sheet shows as 0 (the
+ * descriptor's zero-mask), seconds, minutes, date or month out of range
+ * while the power-loss flag does not read as set (an unreadable flag counts
+ * as not set), or, on the second read, all 0xFF. A failed second read never
+ * rules a device out. A time is taken only from a clean read whose fields,
+ * hours and year are each in range (12-hour mode is not decoded). Returns
+ * false if none present or no trustworthy time is held.
  */
 bool zephcore_rtc_restore(uint32_t *epoch_out);
 
@@ -35,6 +43,9 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * Persist an authoritative epoch to the discovered RTC chip and clear its
  * power-loss flag. No-op if no RTC was discovered. Safe to call often, but
  * intended only for real syncs (GPS/app/CLI), not per-packet clock nudges.
+ * If restore adopted nothing but skipped a candidate whose first read was all
+ * 0xFF, the first save probes again, once per boot, in the caller's context.
+ * A device ruled out on its second read is not probed again for that reason.
  */
 void zephcore_rtc_save(uint32_t epoch);
 

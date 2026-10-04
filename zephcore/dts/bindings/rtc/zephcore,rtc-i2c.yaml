@@ -41,3 +41,13 @@ properties:
     type: int
     required: true
     description: Bit mask within status-reg that means the held time is unreliable.
+
+  zero-mask:
+    type: uint8-array
+    description: >
+      Seven bytes, one per register of the time block in block order: the
+      bits the chip's data sheet shows as reading 0. A device that
+      shows one of them, or seconds, minutes, date or month out of range
+      while the power-loss flag does not read as set, on two reads, is not
+      this RTC and is never adopted. Leave it out for a chip whose unused
+      bits are not documented as reading 0.

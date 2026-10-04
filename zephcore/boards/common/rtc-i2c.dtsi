@@ -39,6 +39,12 @@ rtc_ds3231: rtc-ds3231@68 {
 	date-index = <4>;
 	status-reg = <0x0F>;   /* control/status */
 	status-mask = <0x80>;  /* OSF — oscillator stopped */
+	/* Bits shown as 0 in all three parts: DS3231 (19-5170 Rev 10, Figure 1,
+	 * p. 11) and DS3232 (19-5337 Rev 5, Figure 1, p. 11), where 05h bit 7 is
+	 * Century, and DS1307 (Rev 3/15, Table 2, p. 8, "always reads back as
+	 * 0"). 00h bit 7 is left out: it is the DS1307's clock-halt bit, set on
+	 * a new chip. On a DS1307, 0Fh is RAM, so status-reg reads a user byte. */
+	zero-mask = [00 80 80 f8 c0 60 00];
 };
 
 rtc_pcf8563: rtc-pcf8563@51 {
@@ -48,6 +54,8 @@ rtc_pcf8563: rtc-pcf8563@51 {
 	date-index = <3>;      /* PCF8563 puts date before weekday */
 	status-reg = <0xFF>;   /* flag is in the seconds byte */
 	status-mask = <0x80>;  /* VL — clock integrity not guaranteed */
+	/* No zero-mask: the data sheet (Rev. 11.1, Table 4, p. 10) marks the
+	 * unused bits "not relevant", not 0. */
 };
 
 rtc_rv3028: rtc-rv3028@52 {
@@ -57,6 +65,8 @@ rtc_rv3028: rtc-rv3028@52 {
 	date-index = <4>;
 	status-reg = <0x0e>;   /* status */
 	status-mask = <0x01>;  /* PORF — power-on reset */
+	/* RV-3028-C7 Application Manual Rev. 1.4, 3.2, p. 12 */
+	zero-mask = [80 80 c0 f8 c0 e0 00];
 };
 
 rtc_rx8130ce: rtc-rx8130ce@32 {
@@ -66,4 +76,6 @@ rtc_rx8130ce: rtc-rx8130ce@32 {
 	date-index = <4>;
 	status-reg = <0x1d>;   /* flag */
 	status-mask = <0x02>;  /* VLF — voltage low */
+	/* RX8130CE Application Manual ETM50E-10, 13.2.1 Table 12, p. 22 */
+	zero-mask = [80 80 c0 80 c0 e0 00];
 };
