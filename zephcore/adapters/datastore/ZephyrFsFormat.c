@@ -37,7 +37,7 @@ static void flatten(uint8_t id, const char *tag)
 	flash_area_close(fap);
 }
 
-#if FIXED_PARTITION_EXISTS(qspi_storage_partition)
+#if PARTITION_EXISTS(qspi_storage_partition)
 /* qspi-ext.dtsi makes the flash under /ext zephyr,deferred-init, so nothing
  * probes it at boot. The flash sits behind a GPIO-switched rail on several
  * boards, and the boot-time JEDEC read went out before a cold rail had come
@@ -49,7 +49,7 @@ static void flatten(uint8_t id, const char *tag)
  * earlier call already ran the init, whatever the result was. */
 static void ext_flash_init(void)
 {
-	const struct device *dev = FIXED_PARTITION_DEVICE(qspi_storage_partition);
+	const struct device *dev = PARTITION_DEVICE(qspi_storage_partition);
 
 	if (!device_is_ready(dev)) {
 		int rc = device_init(dev);
@@ -108,17 +108,17 @@ bool zephcore_fs_format_all(bool *out_ext_mounted)
 	fs_unmount(&FS_FSTAB_ENTRY(DT_NODELABEL(qspi_lfs)));
 #endif
 
-#if FIXED_PARTITION_EXISTS(lfs_partition)
+#if PARTITION_EXISTS(lfs_partition)
 	flatten(PARTITION_ID(lfs_partition), "lfs_partition");
 #endif
 
-#if FIXED_PARTITION_EXISTS(storage_partition)
+#if PARTITION_EXISTS(storage_partition)
 	/* BLE bonds (NVS).  A factory reset should clear them too; the caller
 	 * reboots so NVS and the BT stack re-init clean. */
 	flatten(PARTITION_ID(storage_partition), "storage_partition");
 #endif
 
-#if FIXED_PARTITION_EXISTS(qspi_storage_partition)
+#if PARTITION_EXISTS(qspi_storage_partition)
 	/* A repeater never mounts /ext, so its flash is still uninitialised. */
 	ext_flash_init();
 	flatten(PARTITION_ID(qspi_storage_partition), "qspi_storage_partition");

@@ -8,7 +8,7 @@
  *   - SDv6: covers RAK4631, ThinkNode M1/M3/M6, ProMicro LR2021, RAK WisMesh Tag
  *   - SDv7: covers T1000-E, Wio Tracker L1, Ikoka Nano 30dBm
  *
- * Internal flash uses DTS FIXED_PARTITION_EXISTS — partition layout is identical
+ * Internal flash uses DTS PARTITION_EXISTS — partition layout is identical
  * across all boards with the same SoftDevice version.
  *
  * QSPI external flash uses bare-metal register probing (qspi_probe.c) — no
@@ -108,15 +108,15 @@ int main(void)
 	led_on();
 
 	/* ── LittleFS partition (all platforms) ── */
-#if FIXED_PARTITION_EXISTS(lfs_partition)
-	if (erase_partition(FIXED_PARTITION_ID(lfs_partition), "LittleFS (/lfs)")) {
+#if PARTITION_EXISTS(lfs_partition)
+	if (erase_partition(PARTITION_ID(lfs_partition), "LittleFS (/lfs)")) {
 		errors++;
 	}
 #endif
 
 	/* ── NVS storage partition (ESP32 etc.) ── */
-#if FIXED_PARTITION_EXISTS(storage_partition)
-	if (erase_partition(FIXED_PARTITION_ID(storage_partition), "NVS (storage)")) {
+#if PARTITION_EXISTS(storage_partition)
+	if (erase_partition(PARTITION_ID(storage_partition), "NVS (storage)")) {
 		errors++;
 	}
 #endif

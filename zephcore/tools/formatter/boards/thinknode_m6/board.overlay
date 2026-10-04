@@ -5,7 +5,7 @@
  * chip fitted, so the board dropped &qspi, its partition, the P0.21 enable
  * regulator and the qspi-ext.dtsi (/ext) include together (see the note in
  * thinknode_m6.dts).  There is therefore no /ext LittleFS instance to drop
- * and no QSPI enable to hog here; main.c's FIXED_PARTITION_EXISTS() checks
+ * and no QSPI enable to hog here; main.c's PARTITION_EXISTS() checks
  * simply skip the QSPI erase.  If the board ever restores QSPI, restore the
  * "/delete-node/ &qspi_lfs;" and the P0.21 hog that used to live here.
  *

@@ -72,19 +72,24 @@ One role per firmware image; you choose it when you flash.
 
 All of this is local behaviour. Nothing here changes the wire protocol, so mixed meshes work fine.
 
-- **A CPU that sleeps.** Everything is event-driven; there is no `loop()` spinning between packets.
 - **Self-tuning retransmit timing.** Repeaters measure how crowded their neighbourhood is and space their
   retransmits to match, instead of using fixed `txdelay` values. ([ADR 0007](docs/adr/0007-adaptive-contention-window.md))
 - **Adaptive listen-before-talk.** Channel-activity detection calibrates itself to the local noise.
   ([ADAPTIVE_CAD.md](docs/ADAPTIVE_CAD.md))
-- **Optional RX duty cycle.** The radio naps between preamble checks to cut receive current, on radios
-  that support it. ([ADR 0006](docs/adr/0006-sx126x-rx-duty-cycle-and-busy-gating.md))
+- **Optional RX duty cycle.** The radio chip itself naps between preamble checks to cut receive current,
+  on radios that support it. ([ADR 0006](docs/adr/0006-sx126x-rx-duty-cycle-and-busy-gating.md))
 - **Mesh time sync.** Nodes without GPS can agree on the time. Off by default.
   ([MESHTIMESYNC.md](docs/MESHTIMESYNC.md))
-- **WiFi firmware updates** for ESP32 repeaters, so the node on the roof can stay on the roof.
+- **An observer role.** A listen-only node that publishes everything it hears to MQTT over WiFi (ESP32).
+- **MQTT uplink on a repeater.** An ESP32 repeater can report what it hears to MQTT over WiFi while it
+  keeps repeating.
+- **LEDs you control.** Turn them all off with `set leds off`, or choose what each one shows: blink on
+  transmit, on receive or both, and a heartbeat that can signal unread messages. The receive blink tells
+  you at a glance whether a repeater is hearing anything.
+- **2.4 GHz on LR2021 boards.** Set a 2.4 GHz frequency and the radio switches to its high-band path on
+  its own.
 - **Runs on Linux too.** The same code runs as a normal process on a Raspberry Pi or Femtofox with a real
   SX1262 attached. ([LINUX_NATIVE.md](docs/LINUX_NATIVE.md))
-- **Newer radios.** LR1110 and LR2021 alongside SX126x and SX127x.
 
 ## Hardware
 

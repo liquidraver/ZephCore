@@ -252,7 +252,7 @@ bool ZephyrDataStore::hasPrefs() const
  * causing settings_load() to hang and blocking bt_enable(). */
 void ZephyrDataStore::formatNVSOnly()
 {
-#if FIXED_PARTITION_EXISTS(storage_partition)
+#if PARTITION_EXISTS(storage_partition)
 	const struct flash_area *fap;
 	int rc = flash_area_open(PARTITION_ID(storage_partition), &fap);
 	if (rc == 0) {
