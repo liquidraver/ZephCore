@@ -1,238 +1,192 @@
-<h1>ZephCore — MeshCore for Zephyr RTOS&nbsp;<img src="img/kite-network-logo-thick-bright.svg" alt="ZephCore logo" width="85" align="middle"></h1>
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="img/kite-network-logo-thick-bright.svg">
+    <img src="img/kite-network-logo-thick-dark.svg" alt="ZephCore logo" width="140">
+  </picture>
+</p>
 
-A port of [MeshCore](https://github.com/meshcore-dev/MeshCore/) LoRa mesh firmware from Arduino to [Zephyr RTOS](https://zephyrproject.org/). Aiming for full protocol compatibility with the original Arduino firmware and the MeshCore mobile apps.
+<h1 align="center">ZephCore</h1>
 
-## Why Zephyr?
+<p align="center"><b>MeshCore, but it runs on Zephyr.</b></p>
 
-The Arduino version uses a `loop()`. This port replaces that with Zephyr's event-driven primitives (`k_event_wait`, `k_poll`, `k_msgq`), so the CPU sleeps in WFI (Wait For Interrupt) between events.
+<p align="center">
+  <a href="https://github.com/liquidraver/ZephCore/actions/workflows/build.yml"><img src="https://github.com/liquidraver/ZephCore/actions/workflows/build.yml/badge.svg" alt="build"></a>
+  <a href="https://github.com/liquidraver/ZephCore/actions/workflows/tests.yml"><img src="https://github.com/liquidraver/ZephCore/actions/workflows/tests.yml/badge.svg" alt="tests"></a>
+  <a href="https://github.com/liquidraver/ZephCore/releases/latest"><img src="https://img.shields.io/github/v/release/liquidraver/ZephCore" alt="latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue" alt="MIT"></a>
+</p>
 
-Other benefits:
+<p align="center">
+  <a href="https://zephcore.meshcore.dev">Flash it</a> ·
+  <a href="docs/supported_boards.md">Boards</a> ·
+  <a href="docs/Repeater_CLI_commands.md">CLI</a> ·
+  <a href="docs/DESIGN.md">Design</a> ·
+  <a href="releasenotes/">Release notes</a>
+</p>
 
-- **Proper driver model** -- LoRa, GNSS, display, sensors, and BLE all use Zephyr subsystem drivers rather than Arduino libraries
-- **Hierarchical build configuration** -- board-specific settings compose cleanly via Kconfig and devicetree overlays
-- **DFU support** -- generates Arduino compatible zip packages for OTA updates and UF2 binaries for drag-and-drop flashing
-- **Back and forth compatible** -- Adapted to softdevice and adafruit's bootloader, so no bootloader re-flashing required.
+---
 
-## Supported Boards
+ZephCore is firmware for [MeshCore](https://github.com/meshcore-dev/MeshCore/) LoRa mesh nodes. It talks to
+the same mesh, pairs with the same MeshCore apps and answers the same CLI commands as the original firmware.
+What is different is underneath: instead of Arduino, it is built on [Zephyr RTOS](https://zephyrproject.org/).
 
-nRF52840, ESP32, nRF54L15, MG24, and STM32WL boards, covering SX126x, LR1110,
-LR2021, and SX127x radios. ZephCore also runs as a **native Linux process** on
-SBCs (Femtofox / Luckfox Pico Mini, Raspberry Pi + RAK6421 HAT) with a real
-SX1262 on SPI/GPIO and the companion app connecting over TCP — see
-[LINUX_NATIVE.md](docs/LINUX_NATIVE.md).
+If you already run MeshCore, a ZephCore node is just another node on your mesh. Your neighbours will not
+notice, and neither will your phone.
 
-For the full board list with exact `west build -b` strings, radios, and
-hardware notes, see the [supported boards list](docs/supported_boards.md) and
-the [Board Porting Guide](zephcore/boards/example_board/README.md).
+It is a community port, not the official firmware. The protocol and the apps belong to the MeshCore
+project; ZephCore follows them and does not change what goes over the air.
 
-## Device Roles
+> [!NOTE]
+> About 99% of this code was written by AI. A human decides what gets built and tests it on real radios.
+> More on that [at the bottom](#who-wrote-this).
 
-- **Companion** (default) -- connects to MeshCore mobile apps via BLE/USB. Contacts, channels, offline message queue.
-- **Repeater** -- forwards packets, configured via USB serial CLI. See the [Repeater CLI Command Reference](docs/Repeater_CLI_commands.md) for all available commands.
-- **Room Server** -- store-and-forward shared message room (a "BBS"). Clients log in with an admin or guest password and post messages; the server pushes each new post to every other logged-in client. No BLE; configured via the same USB serial CLI as the repeater.
-- **Observer** (ESP32 only) -- listen-only node that publishes received LoRa packets to MQTT over WiFi STA. Configured at runtime via serial CLI.
+## Get it on your device
 
-## Building
+1. **Web flasher** (easiest): open [zephcore.meshcore.dev](https://zephcore.meshcore.dev) in Chrome or
+   Edge, pick your board and role, plug in, flash.
+2. **Mesh America Device Configurator**: [apps.meshamerica.com](https://apps.meshamerica.com) carries the
+   same builds.
+3. **By hand**: download from [Releases](https://github.com/liquidraver/ZephCore/releases). nRF52 boards
+   take the `.uf2` by drag and drop; ESP32 boards take the `-merged.bin` at offset 0 with esptool.
 
-Prerequisites: [Zephyr SDK >=1.0.1 (!)](https://docs.zephyrproject.org/latest/develop/getting_started/index.html) and `west` installed (required by Zephyr 4.4.0, which is pinned in `west.yml`).
+> [!WARNING]
+> Coming from stock MeshCore (or going back)? On nRF52 the bootloader stays the same, so there is nothing
+> extra to flash. But settings do not carry over between the two firmwares in either direction: expect to
+> set the node up again.
 
-Optional: [adafruit-nrfutil](https://github.com/adafruit/Adafruit_nRF52_nrfutil) to allow DFU zip generation for OTA updates on nRF52.
+Then pair with the MeshCore app as usual (default BLE PIN `123456`). Not sure your board is covered? Check
+the [supported boards list](docs/supported_boards.md).
 
-Or skip the prerequisites entirely and use the [dev container](.devcontainer/README.md) -- SDK, toolchains, west and the vendor blobs, preconfigured to match CI. Open the repo in VS Code and run **Dev Containers: Reopen in Container**.
+## What a node can be
+
+| Role | What it does | How you talk to it |
+|---|---|---|
+| **Companion** | Your personal node: contacts, channels, offline message queue | MeshCore app over BLE or USB (WiFi on some ESP32 boards) |
+| **Repeater** | Relays packets for everyone else | [Text CLI](docs/Repeater_CLI_commands.md) over USB, or remote admin over the mesh |
+| **Room server** | A shared message board that keeps posts for clients who were away | Same CLI as the repeater; users log in from the app |
+| **Observer** | Listens only and publishes what it hears to MQTT over WiFi (ESP32) | Same CLI |
+
+One role per firmware image; you choose it when you flash.
+
+## What you get on top of stock MeshCore
+
+All of this is local behaviour. Nothing here changes the wire protocol, so mixed meshes work fine.
+
+- **A CPU that sleeps.** Everything is event-driven; there is no `loop()` spinning between packets.
+- **Self-tuning retransmit timing.** Repeaters measure how crowded their neighbourhood is and space their
+  retransmits to match, instead of using fixed `txdelay` values. ([ADR 0007](docs/adr/0007-adaptive-contention-window.md))
+- **Adaptive listen-before-talk.** Channel-activity detection calibrates itself to the local noise.
+  ([ADAPTIVE_CAD.md](docs/ADAPTIVE_CAD.md))
+- **Optional RX duty cycle.** The radio naps between preamble checks to cut receive current, on radios
+  that support it. ([ADR 0006](docs/adr/0006-sx126x-rx-duty-cycle-and-busy-gating.md))
+- **Mesh time sync.** Nodes without GPS can agree on the time. Off by default.
+  ([MESHTIMESYNC.md](docs/MESHTIMESYNC.md))
+- **WiFi firmware updates** for ESP32 repeaters, so the node on the roof can stay on the roof.
+- **Runs on Linux too.** The same code runs as a normal process on a Raspberry Pi or Femtofox with a real
+  SX1262 attached. ([LINUX_NATIVE.md](docs/LINUX_NATIVE.md))
+- **Newer radios.** LR1110 and LR2021 alongside SX126x and SX127x.
+
+## Hardware
+
+<!-- Generated by `python zephcore/scripts/board_manifest.py docs`; edit the board manifests, not this table. -->
+<!-- boards:summary -->
+| Platform | Boards | With published firmware |
+|---|---|---|
+| nRF52840 | 22 | 21 |
+| ESP32 family | 16 | 14 |
+| nRF54L | 4 | 3 |
+| EFR32MG24 | 1 | 1 |
+| STM32WL | 1 | 1 |
+| Native Linux (presets) | 3 | 3 |
+<!-- /boards -->
+
+RAK4631, SenseCAP T1000-E, Wio Tracker L1, Heltec T114 and V3/V4, XIAO ESP32-S3, nRF54L15 and MG24, Seeed
+LoRa-E5, Femtofox, Raspberry Pi with a RAK6421 HAT, and more. The full list with exact build strings is in
+[docs/supported_boards.md](docs/supported_boards.md). Want to add one? See the
+[board porting guide](zephcore/boards/example_board/README.md).
+
+## Build it yourself
+
+The quickest start is the [dev container](.devcontainer/README.md): open the repo in VS Code and choose
+**Reopen in Container**. Otherwise install the
+[Zephyr SDK and west](https://docs.zephyrproject.org/latest/develop/getting_started/index.html), then:
 
 ```bash
-# Initialize workspace (first time only)
-cd <cloned folder>
+# once
 west init -l zephcore
 west update
 
-# Companion (production — default, no extra conf needed)
+# a companion, then a repeater
 west build -b wio_tracker_l1 zephcore --pristine
+west build -b rak4631 zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
 
-# Companion (debug logging)
-west build -b wio_tracker_l1 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/debug.conf"
-
-# Repeater
-west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf"
-
-# Repeater (debug logging)
-west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/debug.conf"
-
-# Repeater with packet logging (clean RAW/RX/TX lines only, no debug spam)
-west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/packet_logging.conf"
-
-# ESP32 repeater + WiFi AP HTTP OTA (requires sysbuild for MCUboot)
-west build -b xiao_esp32s3/esp32s3/procpu zephcore --pristine --sysbuild -- \
-  -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/wifi_ota.conf"
-
-# Room Server (store-and-forward BBS, USB CLI)
-west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/room_server.conf"
-
-# Observer (ESP32, listen-only WiFi+MQTT)
-west build -b xiao_esp32c3 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/observer.conf"
-
-# Formatter (factory-reset utility)
-west build -b wio_tracker_l1 zephcore/tools/formatter --pristine
-
-# BLE debug logging (debug.conf enables logging; the flag raises the BLE adapter to DBG)
-west build -b rak4631 zephcore --pristine -- \
-  -DEXTRA_CONF_FILE="boards/common/debug.conf" -DCONFIG_ZEPHCORE_BLE_LOG_LEVEL_DBG=y
+west flash
 ```
 
-Output binaries are in `build/zephyr/` -- `.hex`, `.uf2`, and DFU `.zip` as applicable.
+Roles and extras are config fragments in `zephcore/boards/common/`, added through `EXTRA_CONF_FILE`
+(separate several with `;`):
 
-**Platform notes:**
-- ESP32 boards require `west blobs fetch hal_espressif` once before the first build.
-- ESP32 default builds use `CONFIG_ESP_SIMPLE_BOOT` (no MCUboot) -- `west flash` writes a self-contained `zephyr.bin`. The `wifi_ota.conf` overlay is the exception: it requires MCUboot, so add `--sysbuild`.
-- MG24 requires `west blobs fetch hal_silabs` and `pyocd` (`west flash --runner pyocd`).
-- nRF54L15 requires `--no-sysbuild` (no MCUboot support yet).
-- Heltec V3 routes console/shell to `uart0` -- use the UART serial port for logs/CLI.
+| Fragment | Gives you |
+|---|---|
+| *(none)* | Companion |
+| `repeater.conf` | Repeater |
+| `room_server.conf` | Room server |
+| `observer.conf` | Observer (ESP32) |
+| `debug.conf` | Logging and asserts |
+| `packet_logging.conf` | One clean RAW/RX/TX line per packet, nothing else |
 
-Always use `--pristine` when switching boards or roles.
+Every other variant, flashing per platform (ESP32 blobs and `--sysbuild`, nRF54L, MG24) and the Kconfig
+options are in [docs/BUILDING.md](docs/BUILDING.md).
 
-## Architecture Overview
+## For Zephyr people
 
-```
-Mobile App  <--BLE (NUS)--> [ Companion ]  <--LoRa-->  Mesh Network
-                                  |
-                            k_event_wait()
-                           /      |       \
-                    LORA_RX   LORA_TX_DONE  BLE_RX
-```
+ZephCore is a plain west workspace application, and it tries to be a well-behaved one:
 
-All code paths are event-driven. The CPU sleeps in WFI between events.
+- **Zephyr is pinned to a `main` commit**, bumped deliberately. ([ADR 0005](docs/adr/0005-zephyr-main-pin.md))
+- **A small patch set** in `zephcore/patches/zephyr` is applied at configure time and fails the build
+  loudly if it stops applying. One patch owns each upstream file. If you maintain one of those files,
+  that directory is the list of things we would love to see fixed upstream.
+- **Radios**: the in-tree SX126x and SX127x drivers, plus out-of-tree LR11xx and LR20xx drivers, behind
+  one adapter.
+- **Boards are devicetree and Kconfig only.** A board directory declares hardware, never role policy;
+  config is layered from `prj.conf` down to `board.conf`.
+- **ESP32**: simple boot for companions, MCUboot with sysbuild where WiFi OTA is involved
+  ([ADR 0001](docs/adr/0001-esp32-boot-and-flash-layout.md)); native USB on S3 companions
+  ([ADR 0002](docs/adr/0002-esp32s3-native-usb-companion.md)).
+- **Tests**: the mesh core builds and runs on the host under ASan and UBSan in CI.
 
-- **LoRa RX**: Zephyr driver callback enqueues to a ring buffer and signals the mesh event loop
-- **LoRa TX**: A dedicated thread blocks on `k_poll()`, restarts RX on completion, then notifies the mesh loop
-- **BLE**: NUS write handler enqueues to `k_msgq` and signals the mesh loop; TX uses `bt_gatt_notify_cb()` chaining
-- **USB**: CDC-ACM with V3 binary framing protocol, frame timeout recovery
-- **Main loop**: `k_event_wait()` blocks until work arrives; housekeeping runs every 5s
+## Documentation
 
-### Key Differences from Arduino
+| | |
+|---|---|
+| [DESIGN.md](docs/DESIGN.md) | The system view: roles, layers, rules |
+| [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component reference |
+| [adr/](docs/adr/README.md) | Decisions and why they were made |
+| [BUILDING.md](docs/BUILDING.md) | Every build variant, platform notes, Kconfig options |
+| [Repeater_CLI_commands.md](docs/Repeater_CLI_commands.md) | Every CLI command |
+| [supported_boards.md](docs/supported_boards.md) | Boards and build strings |
+| [LINUX_NATIVE.md](docs/LINUX_NATIVE.md) | Running on a Pi or Femtofox |
+| [releasenotes/](releasenotes/) | What changed in each release |
 
-| | Arduino | Zephyr |
-|---|---------|--------|
-| Idle behavior | Cooperative loop; CPU busy-waits unless `board.sleep()` called explicitly | `k_event_wait(K_FOREVER)` yields to idle thread → WFI between events |
-| LoRa TX completion | ISR sets flag, polled in `loop()` via `isSendComplete()` | ISR signals `k_poll_signal`, dedicated thread blocks on `k_poll()` |
-| BLE transport | Platform-specific (ESP-IDF BLE, Adafruit nRF52 lib) | Unified `bt_gatt` API across all SoCs |
-| LoRa driver | RadioLib (userspace SPI bit-bang) | Zephyr subsystem driver (DTS-configured, kernel-managed SPI) |
-| Configuration | `platformio.ini` + `variant.h` per board | Kconfig + devicetree overlays, hierarchical config inheritance |
-| Threading | Single `loop()` + ISRs | Explicit threads (main mesh, TX wait) + system work queue |
+## Who wrote this?
 
-### Adaptive Contention Window (ZephCore-only)
+Mostly robots. Around 99% of the code in this repository was written by AI (Claude and Cursor). One human
+points, argues, says "no, not like that", and flashes the result onto a bench full of real radios to see
+whether it actually works.
 
-Arduino MeshCore uses three static delay knobs (`txdelay`, `rxdelay`, `direct.txdelay`) that add the same retransmit jitter regardless of local conditions. In a linear chain of repeaters where each only hears its neighbor, this adds latency for zero benefit. In dense areas with 50+ neighbors, the same value may be too low to avoid collisions.
+The ideas that matter are not ours either: the mesh protocol, the apps and most new features come from the
+[MeshCore project](https://github.com/meshcore-dev/MeshCore/) and the people doing the hard thinking there.
 
-ZephCore replaces all three with a self-tuning system based on **observed retransmit contention**:
+What keeps it honest: changes are tested on real hardware before release (mostly nRF boards on our own
+bench; the ESP32 boards are largely tested by the community, so reports are very welcome), the mesh core
+has host tests in CI, and the decisions are written down in [ADRs](docs/adr/README.md) so the next robot
+does not undo them.
 
-1. **Dupe counting**: When a node retransmits a flood packet, it counts how many times it hears that same packet retransmitted by neighbors within a 10-second window. This is a direct measurement of local contention -- 0 dupes means a quiet linear chain, 15+ means a dense cluster.
+[![TWONKS: AI Design Logic](img/twonks-ai-design.jpg)](https://www.twonks.co.uk/)
 
-2. **EMA-based delay sizing**: Dupe counts feed into a rolling exponential moving average. This drives a sqrt-curve delay factor for future retransmits: near-zero delay in sparse areas, scaling up in dense ones. At ~15 dupes (moderate density), the factor matches the old Arduino default of 0.5. Jitter is double-capped at `min(2000ms, 6·airtime)` for repeaters.
-
-3. **Reactive per-packet backoff**: When a node is waiting to retransmit and hears a neighbor retransmit the same packet, it pushes its own TX back by a random amount (up to `backoff.multiplier × airtime`). This is real-time CSMA -- you hear the channel being used for your packet, so you defer. Capped at `min(2000ms, 12·airtime)` total reactive extension per packet.
-
-**Companion-originated floods** use a smaller spread (up to `min(1000ms, 3·airtime)`) so user messages feel responsive while still avoiding collisions with nearby repeaters that may be in TX/RX.
-
-**Direct packets** (routed, single next-hop) use minimal fixed jitter instead of adaptive delay, since only the next hop retransmits them.
-
-The old `txdelay`, `rxdelay`, and `direct.txdelay` commands are still accepted for binary compatibility with Arduino prefs but are ignored -- the system is fully adaptive.
-
-**CLI commands:**
-- `get txdelay` -- shows adaptive status: contention estimate and current flood delay factor
-- `get/set backoff.multiplier` -- per-dupe reactive backoff multiplier (default 0.2, range 0.0-2.0). Set to 0 to disable reactive backoff (EMA window still works). Higher values allow more per-packet deferral in dense areas.
-
-**Compatibility**: Purely local behavior, no wire protocol changes. Works alongside Arduino MeshCore repeaters -- their retransmits are counted as dupes just the same.
-
-## Power Saving
-
-- **LoRa RX duty cycle**: chip-autonomous receive windowing (sniff mode) reduces LoRa RX current from ~10-15mA to ~3-5mA. Off by default; toggle at runtime with `set rxduty on/off` (SX126x only — unsupported on LR1110 due to a mid-preamble lock issue, and on SX127x). Window timing is auto-sized per SF/BW/preamble from the SX126x datasheet constraints.
-- **Production by default**: No logging, no asserts, reboot-on-fatal. Add `debug.conf` to enable logging.
-- **GPIO-gated GPS**: Powered on only during fix acquisition
-
-## Configuration
-
-Key Kconfig options (set in board configs or via `-D` flags):
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `CONFIG_ZEPHCORE_ROLE_COMPANION` | y | BLE companion mode |
-| `CONFIG_ZEPHCORE_ROLE_REPEATER` | n | USB CLI repeater mode |
-| `CONFIG_ZEPHCORE_ROLE_OBSERVER` | n | Listen-only WiFi+MQTT mode (ESP32) |
-| `CONFIG_ZEPHCORE_RADIO_NATIVE` | y | SX1261/SX1262/SX1268, LLCC68, STM32WL (Zephyr native sx126x driver) |
-| `CONFIG_ZEPHCORE_RADIO_LR1110` | n | LR1110/LR1120/LR1121 (custom driver) |
-| `CONFIG_ZEPHCORE_RADIO_LR2021` | n | LR2021 (custom driver) |
-| `CONFIG_ZEPHCORE_RADIO_SX127X` | n | SX1272/SX1276/SX1278 (loramac-node backend) |
-| `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` | n | RX duty cycle (sniff mode) boot default; runtime toggle via `set rxduty on/off` (SX126x only) |
-| `CONFIG_ZEPHCORE_APC` | y (compiled in, runtime OFF) | Adaptive Power Control — enable at runtime via CLI |
-| `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM` | 22 | Initial TX power; lower for boards with external PA |
-| `CONFIG_ZEPHCORE_MAX_TX_POWER_DBM` | 22 | Hard cap (radio adapter clamps above this) |
-| `CONFIG_ZEPHCORE_MAX_CONTACTS` | 350 | Contact storage slots (companion) |
-| `CONFIG_ZEPHCORE_MAX_CHANNELS` | 40 | Channel slots (companion) |
-| `CONFIG_ZEPHCORE_BLE_PASSKEY` | 123456 | BLE pairing PIN |
-| `CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | Companion GPS duty interval between fixes (seconds, 10–86400); always-on is a runtime setting (`set gps duty 0`) |
-| `CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` | 300 | Cold-start window for the very first fix (longer to allow almanac download) |
-| `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC` | 172800 | Repeater/room-server GPS duty interval boot default (48 h); 0 = always-on |
-| `CONFIG_ZEPHCORE_WIFI_OTA` | n | WiFi AP + HTTP OTA updates (ESP32 repeaters, requires `--sysbuild`) |
-| `CONFIG_ZEPHCORE_REPEATER_UPLINK` | n | Repeater WiFi+MQTT uplink (ESP32) |
-| `CONFIG_ZEPHCORE_PACKET_LOGGING` | n | Arduino-compatible mesh packet logging |
-| `CONFIG_ZEPHCORE_HOUSEKEEPING_INTERVAL_MS` | 5000 | Periodic maintenance interval |
-
-## Project Structure
-
-```
-zephcore/
-  src/              Core mesh engine (Mesh, Dispatcher, Packet, Identity, ContentionTracker)
-  app/              Companion / Repeater / Room Server / Observer role implementations
-  adapters/
-    ble/            BLE NUS transport
-    board/          GPIO, LED, power management
-    clock/          Millisecond and RTC clocks
-    datastore/      LittleFS filesystem wrapper
-    gps/            GPS/GNSS drivers
-    mqtt/           MQTT publisher (observer / repeater uplink)
-    ota/            WiFi AP + HTTP firmware update server
-    radio/          LoRa radio drivers (SX126x, LR1110, LR2021, SX127x)
-    rng/            Random number generator
-    sensors/        I2C sensor auto-detection
-    transport/      TCP companion (native Linux) + serial companion (STM32WL)
-    usb/            USB serial transport (CDC-ACM, V3 framing)
-    wifi/           WiFi station client
-  helpers/
-    ui/             Shared UI plumbing (display, buzzer, multi-tap input)
-    ui-button/      Single-button page UI
-    ui-joystick/    5-way joystick UI (Wio Tracker L1)
-  boards/
-    nrf52840/       nRF52840 board overlays and configs
-    esp32/          ESP32 (classic + C3/C6/S3) board overlays and configs
-    nrf54l/         nRF54L15 board overlay and config
-    mg24/           EFR32MG24 board overlay and config
-    stm32wl/        Seeed LoRa-E5 board overlay and config
-    linux_native/   native_sim presets (Femtofox, RAK6421)
-    common/         Shared Kconfig fragments and devicetree includes
-  lib/              Monocypher crypto library (Ed25519/X25519)
-  patches/          Auto-applied patches to the Zephyr tree
-```
+*Comic by [TWONKS](https://www.twonks.co.uk/). Borrowed with love; go read the rest.*
 
 ## License
 
-MIT License — see [`LICENSE`](LICENSE). Same license as the
-upstream MeshCore project, which this work relies heavily on (see the
-[official meshcore repo](https://github.com/meshcore-dev/MeshCore/)).
-
-A few vendored dependencies carry their own (compatible) licenses — see the
-notice at the bottom of `LICENSE` for details (Monocypher, Zephyr patches).
-
-Logo by [recrof](https://github.com/recrof), licensed under the
-[WTFPL](https://en.wikipedia.org/wiki/WTFPL).
-
-The comic below was stolen from https://www.twonks.co.uk/
-
-[![TWONKS AI Design Logic](img/twonks-ai-design.jpg)](https://www.twonks.co.uk/)
-
-(FYI the whole project is 99,9% claude and cursor backed, relying heavily on the [official meshcore repo](https://github.com/meshcore-dev/MeshCore/) and the work they do in it)
+MIT, same as upstream MeshCore; see [LICENSE](LICENSE), which also lists the vendored pieces (Monocypher,
+Zephyr patches). Logo by [recrof](https://github.com/recrof), [WTFPL](https://en.wikipedia.org/wiki/WTFPL).

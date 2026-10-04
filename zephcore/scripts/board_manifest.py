@@ -33,7 +33,8 @@ Readers:
     two-space-indented `  <capability>: true|false` form.
   - build.sh:  board_manifest.py matrix <nrf|nrf54l|mg24|stm32wl|esp32|linux> [companions|repeaters]
   - gen_provider_catalog.py imports load_boards().
-  - docs:      board_manifest.py docs  (rewrites the generated lists in docs/supported_boards.md)
+  - docs:      board_manifest.py docs  (rewrites the generated lists in docs/supported_boards.md
+               and the board-count table in README.md)
 
 `board_manifest.py check` validates every manifest; CI should run it.
 """
@@ -196,9 +197,25 @@ DOCS_GROUPS = [("nrf52", "nRF52840"), ("esp32", "ESP32"), ("stm32wl", "STM32WL")
                ("mg24", "MG24"), ("nrf54l", "nRF54L")]
 
 
+SUMMARY_GROUPS = [("nrf52", "nRF52840"), ("esp32", "ESP32 family"), ("nrf54l", "nRF54L"),
+                  ("mg24", "EFR32MG24"), ("stm32wl", "STM32WL"), ("linux", "Native Linux (presets)")]
+
+
+def summary(boards):
+    """The '<!-- boards:summary -->' table: boards per platform, and how many are published."""
+    rows = ["| Platform | Boards | With published firmware |", "|---|---|---|"]
+    for platform, label in SUMMARY_GROUPS:
+        group = [b for b in boards if b.platform == platform]
+        rows.append("| %s | %d | %d |" % (label, len(group),
+                                         sum(b.release is not None for b in group)))
+    return "<!-- boards:summary -->\n%s\n<!-- /boards -->" % "\n".join(rows)
+
+
 def docs(boards, path):
     """Rewrite each '<!-- boards:<platform> -->' ... '<!-- /boards -->' block."""
     text = open(path, encoding="utf-8").read()
+    text = re.sub(r"<!-- boards:summary -->.*?<!-- /boards -->", lambda _m: summary(boards),
+                  text, flags=re.S)
     for platform, _ in DOCS_GROUPS:
         group = [b for b in boards if b.platform == platform]
         width = max((len(b.target) for b in group), default=0)
@@ -225,7 +242,10 @@ def main(argv):
             print(row)
         return 0
     if cmd == "docs":
-        docs(boards, argv[2] if len(argv) > 2 else os.path.join(APP_DIR, "..", "docs", "supported_boards.md"))
+        root = os.path.join(APP_DIR, "..")
+        for path in argv[2:] or [os.path.join(root, "docs", "supported_boards.md"),
+                                 os.path.join(root, "README.md")]:
+            docs(boards, path)
         return 0
     print(__doc__)
     return 2
