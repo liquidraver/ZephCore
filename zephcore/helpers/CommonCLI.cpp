@@ -589,7 +589,7 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (strlen(command) > 11) {
 			start = _atoi(command + 12);
 		}
-		if (start >= end) {
+		if (start < 0 || start >= end) {
 			strcpy(reply, "no custom var");
 		} else {
 			snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%d vars\n", end);
