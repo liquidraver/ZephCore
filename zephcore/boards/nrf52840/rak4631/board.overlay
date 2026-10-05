@@ -215,6 +215,33 @@
 	};
 
 	#include "../../common/sensors-i2c.dtsi"
+
+	/*
+	 * A WisBlock slot can carry a RAK12002 (RV3028 at 0x52). Only that
+	 * candidate, not all of rtc-i2c.dtsi: its DS3231 at 0x68 shares the
+	 * address of WisBlock IMUs.
+	 */
+	rtc_rv3028: rtc-rv3028@52 {
+		compatible = "zephcore,rtc-i2c";
+		reg = <0x52>;
+		time-reg = <0x00>;
+		date-index = <4>;
+		status-reg = <0x0e>;   /* status */
+		status-mask = <0x01>;  /* PORF — power-on reset */
+		/* RV-3028-C7 Application Manual Rev. 1.4, 3.2, p. 12 */
+		zero-mask = [80 80 c0 f8 c0 e0 00];
+		/* The RAK12002's backup is a supercapacitor. As the RV-3028-C7
+		 * manual's rechargeable-backup circuit (7.3): direct switchover
+		 * with trickle charging (0x37 TCE, BSM), TCR at its 3 kOhm delivery
+		 * default, FEDE set as 3.15.6 says it always should be; CLKOUT off
+		 * (0x35 CLKOE), as it is unused. 4.2.2 cautions
+		 * that DSM can switch needlessly when VDD and VBACKUP are close; 7.3
+		 * prescribes it for a capacitor anyway, and level switching would
+		 * leave the charge below 2.0 V unused. Any other RV3028 module at
+		 * 0x52 gets the same settings, trickle charging included, kept in
+		 * its EEPROM. */
+		rv3028-eeprom-config = [35 80 00  37 3f 34];
+	};
 };
 
 /* RAK4631 has BME680, not BME280 — override the common DTSI default */

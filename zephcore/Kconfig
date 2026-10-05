@@ -899,12 +899,19 @@ config ZEPHCORE_RTC_AUTODISCOVER
 	help
 	  Probe I2C RTC chips declared with the "zephcore,rtc-i2c" binding
 	  (DS3231 / PCF8563 / RV3028 / RX8130CE). Boards with a battery/cap-
-	  backed RTC opt in by including boards/common/rtc-i2c.dtsi; if a chip
-	  holds a valid time it is restored at boot — shown tagged "L" until the
-	  next external sync. On every GPS/app/CLI sync the time is written back
-	  so it survives power-off. Compact raw-I2C reader (no Zephyr RTC
-	  subsystem). Safe to leave on: a board with no rtc-i2c.dtsi include has
-	  no RTC nodes and compiles to nothing.
+	  backed RTC opt in by including boards/common/rtc-i2c.dtsi or
+	  declaring their own node; if a chip holds a valid time it is
+	  restored at boot — shown tagged "L" until the next external sync.
+	  On every GPS/app/CLI sync the time is written back so it survives
+	  power-off. A node with rv3028-eeprom-config has its time read and
+	  written with the chip's backup switch flag cleared before and
+	  checked after, and, when its chip is the one adopted, a read
+	  identifies it, and a checked time read just before the store shows
+	  no backup switchover, has that configuration committed to the
+	  chip's EEPROM when it differs, with backup switchover held off
+	  while the EEPROM is accessed. Compact raw-I2C reader (no Zephyr RTC
+	  subsystem). Safe to leave on: a board that declares no
+	  zephcore,rtc-i2c node compiles to nothing.
 
 menu "GPS Configuration"
 

@@ -51,3 +51,30 @@ properties:
       while the power-loss flag does not read as set, on two reads, is not
       this RTC and is never adopted. Leave it out for a chip whose unused
       bits are not documented as reading 0.
+
+  rv3028-eeprom-config:
+    type: uint8-array
+    description: >
+      RV3028 only. (register, mask, value) triplets for the chip's
+      EEPROM-backed configuration registers 0x35 (CLKOUT) to 0x37
+      (backup switchover and trickle charger), one triplet per register,
+      masking implemented bits only (35h bits 5:4 are not); any other
+      triplet is ignored. When a read identifies the chip, it is
+      adopted, and no switchover showed during its time read, any
+      register whose masked bits differ is written to the chip's EEPROM,
+      one byte at a time with backup switchover held off, so the chip's
+      own refresh from EEPROM keeps it. If that fails, the config is set
+      in the RAM mirror once the chip's EEbusy flag reads 0, and lasts
+      until the chip's next refresh from EEPROM (daily while EERD is
+      clear); if EEbusy never clears, switchover stays as the store left
+      it, off once the store has disabled it, until a retry or that
+      refresh. The store is retried up to 3 times, 10 minutes apart,
+      identifying the chip again first; a boot whose read could not
+      identify it cleanly waits for those retries. The time is read at
+      boot and written on each sync with the chip's backup switch flag
+      cleared before and checked after. A write sets year 00h first and
+      the real year last, so a write cut by a power loss reads as "time
+      not yet set", and a write not confirmed is repeated every 5 s, up
+      to 12 times. Set it only on a board whose backup supply is known:
+      trickle charging suits a supercapacitor or rechargeable cell,
+      never a primary cell.
