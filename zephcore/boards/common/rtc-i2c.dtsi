@@ -78,4 +78,6 @@ rtc_rx8130ce: rtc-rx8130ce@32 {
 	status-mask = <0x02>;  /* VLF — voltage low */
 	/* RX8130CE Application Manual ETM50E-10, 13.2.1 Table 12, p. 22 */
 	zero-mask = [80 80 c0 80 c0 e0 00];
+	/* 14.1.2 Table 15, p. 27: Sunday 01h ... Saturday 40h */
+	weekday-one-hot;
 };

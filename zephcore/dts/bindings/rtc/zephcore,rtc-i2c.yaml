@@ -6,9 +6,12 @@
 # the properties below. This keeps the boot-time RTC restore compact
 # (~2-3 KB total, "Path B") instead of pulling in the full RTC subsystem.
 #
-# All supported chips use a 7-byte BCD time block (sec, min, hour, then
-# weekday/date, month, year) starting at "time-reg". Only the day-of-month
-# byte offset varies between parts, captured by "date-index".
+# All supported chips use a 7-byte time block (sec, min, hour, then
+# weekday/date, month, year) starting at "time-reg", BCD in every field but
+# the weekday. The day-of-month byte offset varies between parts, captured
+# by "date-index". The weekday is written as a number 0-6 (Sunday 0), as
+# Zephyr's DS3231, PCF8563 and RV3028 drivers write it, or as one bit per
+# day where "weekday-one-hot" is set.
 
 description: ZephCore data-only I2C RTC descriptor (raw-I2C, no Zephyr RTC driver)
 
@@ -20,7 +23,7 @@ properties:
   time-reg:
     type: int
     required: true
-    description: Register address of the seconds byte (start of the 7-byte BCD block).
+    description: Register address of the seconds byte (start of the 7-byte time block).
 
   date-index:
     type: int
@@ -51,6 +54,13 @@ properties:
       while the power-loss flag does not read as set, on two reads, is not
       this RTC and is never adopted. Leave it out for a chip whose unused
       bits are not documented as reading 0.
+
+  weekday-one-hot:
+    type: boolean
+    description: >
+      The weekday register holds one bit per day (Sunday bit 0 to Saturday
+      bit 6) rather than a number 0-6. Set it for a chip whose data sheet
+      says so, such as the RX8130CE.
 
   rv3028-eeprom-config:
     type: uint8-array

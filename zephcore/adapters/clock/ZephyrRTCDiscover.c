@@ -3,7 +3,7 @@
  *
  * Compact raw-I2C hardware-RTC auto-discovery. See ZephyrRTCDiscover.h.
  *
- * Register layouts (sec/min/hour/.../month/year, all BCD) and the per-chip
+ * Register layouts (sec/min/hour/.../month/year) and the per-chip
  * power-loss flags are carried in devicetree via the "zephcore,rtc-i2c"
  * binding, so this reader is generic — adding a new chip is a DT node, not
  * code. Maps were taken from Zephyr's own drivers (rtc_pcf8563.c,
@@ -39,6 +39,7 @@ struct rtc_desc {
 	uint8_t  status_reg;   /* power-loss flag register, or RTC_STATUS_IN_SECONDS */
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
+	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -89,6 +90,7 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 		.zero        = COND_CODE_1(                           \
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
+		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -227,7 +229,7 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* The 7-byte BCD time block for an epoch, in d's register order. */
+/* The 7-byte time block for an epoch, in d's register order. */
 static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
@@ -244,7 +246,7 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	blk[2] = BIN2BCD(hour);
 	/* weekday occupies whichever of index 3/4 the date doesn't. */
 	blk[d->date_index] = BIN2BCD(day);
-	blk[d->date_index == 4 ? 3 : 4] = (uint8_t)dow;
+	blk[d->date_index == 4 ? 3 : 4] = d->week_one_hot ? (uint8_t)BIT(dow) : (uint8_t)dow;
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
 }
