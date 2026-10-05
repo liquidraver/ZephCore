@@ -708,8 +708,8 @@ config ZEPHCORE_SD_FWID
 	  Only applicable to nRF52 boards with Adafruit bootloader.
 
 	  Common values:
-	    0x00B6 - S140 v6.1.1 (RAK4631, Wio Tracker, T1000-E)
-	    0x0123 - S140 v7.3.0 (XIAO nRF52840, Ikoka Nano)
+	    0x00B6 - S140 v6.1.1 (RAK4631, ThinkNode M1, Heltec T114)
+	    0x0123 - S140 v7.3.0 (XIAO nRF52840, Wio Tracker L1, T1000-E)
 
 config ZEPHCORE_VBAT_MV_MULTIPLIER
 	int "Battery voltage ADC multiplier (fallback)"

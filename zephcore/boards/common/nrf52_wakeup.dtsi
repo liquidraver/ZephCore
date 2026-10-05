@@ -4,8 +4,9 @@
  * NOTE: On nRF52, this property is currently inert — the nRF GPIO driver
  * does not implement GPIO_INT_WAKEUP, so wakeup-source alone does not set
  * the GPIO SENSE bits required for System OFF wakeup. Actual SENSE
- * configuration is done explicitly in action_deep_sleep() (ui_task.c)
- * via nrf_gpio_cfg_sense_input() right before sys_poweroff().
+ * configuration is done explicitly for the sw0 alias in
+ * adapters/board/zephyr_poweroff.c via nrf_gpio_cfg_sense_input() right
+ * before sys_poweroff().
  *
  * Kept here so that:
  *   1. If a future Zephyr nRF GPIO driver gains GPIO_INT_WAKEUP support,
@@ -15,7 +16,7 @@
  *      on other platforms where the driver does honour GPIO_INT_WAKEUP.
  *
  * Include this in any nRF52 board DTS that defines a 'buttons' gpio-keys node.
- * Boards without buttons (e.g. ikoka_nano, rak4631) should NOT include this.
+ * Boards without buttons (e.g. ikoka_nano, rak3401_1watt) should NOT include this.
  *
  * SPDX-License-Identifier: MIT
  */

@@ -1,0 +1,50 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+#
+# TEMPLATE. Copy to boards/<platform>/<board>/zephcore.yml. This copy is not
+# read by anything: the manifest loader only scans the platform directories.
+#
+# The manifest is the one place a board is registered. build.sh (the release
+# matrix), gen_provider_catalog.py, docs/supported_boards.md and the board
+# count in the root README are all generated from it. After editing:
+#
+#   python zephcore/scripts/board_manifest.py check
+#   python zephcore/scripts/board_manifest.py docs
+
+# REQUIRED. The `west build -b` string, qualifiers included. It must start with
+# the directory name:
+#   nRF52840 / MG24 / STM32WL / ESP32-C3   my_board
+#   ESP32-S3                               my_board/esp32s3/procpu
+#   ESP32-C6                               my_board/esp32c6/hpcore
+#   Classic ESP32                          my_board/esp32/procpu
+#   nRF54L15                               my_board/nrf54l15/cpuapp
+target: my_board
+
+# OPTIONAL, ESP32 only. CMake reads these by line match, so keep the exact
+# two-space-indented `  name: true` form.
+# capabilities:
+#   wifi: true          # companion also gets the WiFi (TCP) transport: the
+#                       # board has the RAM for WiFi and BLE together (ADR 0009)
+#   light_sleep: true   # repeater light-sleeps between events. Declare it only
+#                       # after boards/common/pm_esp32.conf's checks pass on
+#                       # hardware; qualifying wiring alone is not enough
+
+# Leave `release:` out while the board is in bring-up: it then builds locally
+# and is listed as "source-only", but no release carries firmware for it.
+# release:
+#   roles: [companion, repeater]      # also: room_server, observer
+#   variants:                         # extra published builds of this board
+#     - id: noscreen                  # artifact name infix
+#       conf: no_display.conf         # in this directory; a no_display.overlay
+#                                     # beside it is paired automatically
+#       subtitle: "No screen"
+
+# Mesh America configurator tile. Needs `release:`. `device` must be MeshCore's
+# exact name for the board, or it will not fold into their tile; take it from
+# https://raw.githubusercontent.com/meshcore-dev/flasher.meshcore.io/main/config.json
+# (docs/PROVIDER_CATALOG.md). `maker` is a key of MAKERS in gen_provider_catalog.py.
+# catalog:
+#   device: "Vendor My Board"
+#   maker: vendor
+#   new: true           # MeshCore has no tile for it: publish our own
+#   img: lora.svg       # with `new`: stock art, or own_img: my_board.jpg
+#   subtitle: "30 dBm"  # tells two builds in one tile apart

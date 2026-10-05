@@ -1,0 +1,154 @@
+/*
+ * ============================================================================
+ *  ZephCore — partitions.overlay template (ESP32-S3 and ESP32-C3/C6 boards)
+ * ============================================================================
+ *
+ * The flash map of an ESP32-S3 / C-series board lives in this file, not in
+ * board.overlay, because it is fed to BOTH images of a sysbuild build: the app
+ * (last entry of EXTRA_DTC_OVERLAY_FILE, zephcore/CMakeLists.txt) and MCUboot
+ * (mcuboot_EXTRA_DTC_OVERLAY_FILE, zephcore/sysbuild/CMakeLists.txt). If the two
+ * disagree, MCUboot looks for the OTA image at a different address than the app
+ * wrote it to and every WiFi OTA "succeeds", then boots the old firmware.
+ * Background: docs/adr/0001-esp32-boot-and-flash-layout.md.
+ *
+ * Who needs this file:
+ *   ESP32-S3, ESP32-C3, ESP32-C6   yes (repeater and release builds use MCUboot)
+ *   Classic ESP32                  no: simple boot only; split the stock
+ *                                  storage_partition in board.overlay instead
+ *                                  (boards/esp32/ttgo_tbeam/board.overlay)
+ *   nRF52 / nRF54L / MG24 / STM32WL  no: see board.overlay
+ *
+ * Rules every layout here follows:
+ *   - slot0 at 0x10000, right after the 64 KB MCUboot region. This is also the
+ *     Arduino / ESP-IDF app offset, which keeps the release image compatible
+ *     with the Mesh America "flash-update" flow.
+ *   - slot0 and slot1 the same size (MCUboot swap).
+ *   - `storage` (16 KB NVS, BLE bonds) and `lfs` (LittleFS: identity, prefs,
+ *     contacts) at the top of flash. Once a board has shipped, never move
+ *     them: a reflash that moves them wipes every user's identity and bonds.
+ *   - every partition carries compatible = "zephyr,mapped-partition" (Zephyr
+ *     main); without it the code that opens the partition fails to compile
+ *     with "..._PARTITION_ID undeclared".
+ *
+ * THE BASE-TABLE TRAP. Espressif ships two stock tables per flash size,
+ * partitions_0x0_default_<size>.dtsi and partitions_0x0_amp_<size>.dtsi. The amp
+ * one also defines slot0_appcpu_partition and slot1_appcpu_partition. The
+ * /delete-node/ lists below match the DEFAULT table: on top of an amp table the
+ * two appcpu nodes survive and overlap the new slot1 and storage. Nothing checks
+ * partition overlap at build time, so it builds, boots and is silently wrong.
+ *   - Custom board DTS: include partitions_0x0_default_<size>.dtsi
+ *     (boards/esp32/lilygo_t3s3/lilygo_t3s3_procpu.dts).
+ *   - Upstream board whose DTS includes the amp table: add the two appcpu
+ *     labels to the delete list.
+ *
+ * After the first build, read the map back instead of trusting this file:
+ * build/zephyr/zephyr.dts for a plain build; for --sysbuild compare
+ * build/zephcore/zephyr/zephyr.dts with build/mcuboot/zephyr/zephyr.dts. A
+ * correct map is contiguous, free of overlaps and ends at the flash size.
+ *
+ * Layouts in the tree, by chip and flash size (copy the nearest sibling):
+ *
+ *   Chip / flash     storage (NVS)       lfs                  Sibling board
+ *   ───────────────  ──────────────────  ───────────────────  ──────────────────────
+ *   S3, 4 MB         0x39C000  16 KB     0x3A0000  384 KB     xiao_esp32s3, lilygo_t3s3
+ *   S3, 8 MB         0x79C000  16 KB     0x7A0000  384 KB     heltec_wifi_lora32_v3
+ *   S3, 16 MB        0xF9C000  16 KB     0xFA0000  384 KB     heltec_wifi_lora32_v4, station_g2
+ *   C3/C6, 4 MB      0x3E0000  16 KB     0x3B0000  192 KB     xiao_esp32c3, xiao_esp32c6
+ *
+ * Remove the #if 0 / #endif around the one layout that fits and delete the
+ * other. board.overlay must still end with
+ *   #include "../../common/filesystem.dtsi"
+ * which mounts &lfs_partition at /lfs.
+ *
+ * SPDX-License-Identifier: MIT
+ */
+
+#if 0 /* ---------- LAYOUT A: ESP32-S3, 4 MB flash (xiao_esp32s3) ---------- */
+
+/delete-node/ &sys_partition;
+/delete-node/ &slot0_lpcore_partition;
+/delete-node/ &slot1_lpcore_partition;
+/delete-node/ &storage_partition;
+/delete-node/ &coredump_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+&flash0 {
+	partitions {
+		/* App slots — equal size, slot0 at 0x10000. */
+		slot0_partition: partition@10000 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-0";
+			reg = <0x10000 0x1C6000>;
+		};
+		slot1_partition: partition@1D6000 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-1";
+			reg = <0x1D6000 0x1C6000>;
+		};
+		/* BLE bond NVS, 16 KB. */
+		storage_partition: partition@39C000 {
+			compatible = "zephyr,mapped-partition";
+			label = "storage";
+			reg = <0x39C000 0x4000>;
+		};
+		/* LittleFS, 384 KB (identity / prefs / contacts). */
+		lfs_partition: partition@3A0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "lfs";
+			reg = <0x3A0000 0x60000>;
+		};
+	};
+};
+
+#endif /* LAYOUT A */
+
+#if 0 /* ---------- LAYOUT B: ESP32-C3 / C6, 4 MB flash (xiao_esp32c3) ---------- */
+
+/* The stock LP-core slots at 0x3A0000 are kept, so the app slots stop there. */
+/delete-node/ &sys_partition;
+/delete-node/ &slot0_partition;
+/delete-node/ &slot1_partition;
+/delete-node/ &storage_partition;
+
+/ {
+	chosen {
+		zephyr,settings-partition = &storage_partition;
+	};
+};
+
+&flash0 {
+	partitions {
+		/* App slots — equal size, slot0 at 0x10000. */
+		slot0_partition: partition@10000 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-0";
+			reg = <0x10000 0x1C8000>;
+		};
+		slot1_partition: partition@1d8000 {
+			compatible = "zephyr,mapped-partition";
+			label = "image-1";
+			reg = <0x1D8000 0x1C8000>;
+		};
+		/* LittleFS, 192 KB (identity / prefs / contacts). */
+		lfs_partition: partition@3b0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "lfs";
+			reg = <0x3B0000 0x30000>;
+		};
+		/* BLE bond NVS, 16 KB. */
+		storage_partition: partition@3e0000 {
+			compatible = "zephyr,mapped-partition";
+			label = "storage";
+			reg = <0x3E0000 0x4000>;
+		};
+	};
+};
+
+#endif /* LAYOUT B */

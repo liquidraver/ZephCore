@@ -1,476 +1,274 @@
-ZephCore — Adding a New Board
-=============================
+# ZephCore: Adding a Board
 
+This directory is the template for a new board. It is not a buildable board.
 
-Supported Boards
-----------------
+| File | Copy it when | What it is |
+|---|---|---|
+| [`board.conf`](board.conf) | always | Kconfig that cannot be derived from devicetree: name, SoftDevice ID, radio type |
+| [`board.overlay`](board.overlay) | always, unless a custom `.dts` carries everything | Devicetree: radio, flash layout, console, peripherals. Every example is an `#if 0` block taken from a real board |
+| [`partitions.overlay`](partitions.overlay) | ESP32-S3, ESP32-C3, ESP32-C6 | The flash map, shared by the app and MCUboot |
+| [`zephcore.yml`](zephcore.yml) | always | The board manifest: registers the board for releases, the catalog and the docs |
+
+Looking for something else?
+
+- **Which boards exist, and their build strings:** [docs/supported_boards.md](../../../docs/supported_boards.md)
+  (generated from the manifests).
+- **Building, roles, flashing, the config chain:** [docs/BUILDING.md](../../../docs/BUILDING.md).
+- **Native Linux presets** (not boards): [docs/LINUX_NATIVE.md](../../../docs/LINUX_NATIVE.md).
+
+## 1. Two patterns
+
+**Pattern 1: the board already exists in Zephyr.** You add three or four files and no board definition.
+
+```
+zephcore/boards/<platform>/<board>/
+  board.conf
+  board.overlay
+  partitions.overlay     ESP32-S3 / C3 / C6 only
+  zephcore.yml
+```
+
+References: `nrf52840/rak4631`, `nrf52840/wio_tracker_l1`, `nrf54l/xiao_nrf54l15`, `mg24/xiao_mg24`,
+`esp32/xiao_esp32c3`, `esp32/xiao_esp32s3`, `esp32/heltec_wifi_lora32_v3`, `esp32/ttgo_tbeam` (classic ESP32),
+`stm32wl/lora_e5_mini`.
+
+**Pattern 2: a custom board.** The same directory also holds a complete Zephyr board definition:
+
+| File | Purpose |
+|---|---|
+| `board.yml` | Board name, vendor, SoC |
+| `Kconfig.<board>` | Selects the SoC |
+| `<board>[_<soc>[_<cluster>]].dts` | The devicetree. Named after the build target, as Zephyr expects; copy a sibling's naming |
+| `<board>-pinctrl.dtsi` | Pin control |
+| `<board>_defconfig` | Minimal defconfig |
+| `board.cmake` | Flash runners (optional: a UF2-only board needs none) |
+| `pre_dt_board.cmake`, `Kconfig.defconfig`, `Kconfig` | Only when needed: DTC warning flags, SoC defaults, extra heap |
+| `<board>.yaml` | Twister metadata, optional |
+| `battery_curve.c` | Optional per-board battery discharge curve, compiled automatically when present |
+
+With a custom `.dts` the hardware can be described there entirely, and `board.overlay` is then optional.
+
+References: `nrf52840/ikoka_nano_30dbm` (minimal, radio only), `nrf52840/thinknode_m1` (e-paper, GPS, QSPI,
+buzzer, two buttons), `nrf52840/t1000_e` (LR1110), `esp32/lilygo_t3s3` (ESP32-S3), `nrf54l/me25ls02` (nRF54L15).
+
+Two rules hold for both patterns:
+
+- **The directory name is the board name**, the first component of the `west build -b` string.
+- **The parent directory is the platform.** It selects `<platform>_common.conf`; there is nothing to register in
+  `CMakeLists.txt`. A board name may exist under one platform directory only (the build stops otherwise).
+
+| Directory | Platform conf | SoCs |
+|---|---|---|
+| `boards/nrf52840/` | `nrf52_common.conf` | nRF52840 with the Adafruit UF2 bootloader |
+| `boards/nrf54l/` | `nrf54l_common.conf` | nRF54L15, nRF54LM20A |
+| `boards/esp32/` | `esp32_common.conf` (+ `esp32c3s3_common.conf` on S3 and C3) | ESP32, ESP32-S3, ESP32-C3, ESP32-C6 |
+| `boards/mg24/` | `mg24_common.conf` | EFR32MG24 |
+| `boards/stm32wl/` | `stm32wl_common.conf` | STM32WL |
+
+## 2. Steps
+
+1. **Collect the facts first:** the schematic, and the board's Arduino MeshCore variant (`variants/<board>/`)
+   if there is one. The variant gives the pin map, the SoftDevice version (nRF52) and the name MeshCore uses.
+   Where a vendor annotation and the pin map disagree, trust the pin map.
+2. **Create `boards/<platform>/<board>/`** and copy the template files into it.
+3. **Edit `board.overlay`:** keep the examples for your platform, remove the `#if 0` / `#endif` lines around
+   them, delete the rest, and change every pin. The minimum is a radio node, a flash layout and a console.
+4. **Edit `board.conf`:** the two name strings, plus `CONFIG_ZEPHCORE_SD_FWID` on nRF52 and the radio type if
+   the radio is not an SX126x.
+5. **Edit `zephcore.yml`:** set `target`, and leave `release:` out for now.
+6. **Build** the companion, then the repeater. Always `--pristine` when changing board or role.
+
+   ```bash
+   west build -b <board> zephcore --pristine
+   ```
+
+   ```bash
+   west build -b <board> zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
+   ```
+
+   nRF54L adds `--no-sysbuild`. An ESP32-S3 / C3 / C6 **repeater** adds `--sysbuild` (section 5). ESP32 and
+   MG24 need their radio blobs once: `west blobs fetch hal_espressif` / `west blobs fetch hal_silabs`.
+7. **Read back what was built.** CMake prints a `ZephCore config hierarchy` block with the board directory,
+   platform, and the final conf and overlay lists: check that your files are in it. Then look at
+   `build/zephyr/zephyr.dts` for the radio node, the `chosen` entries and the partition map.
+8. **Validate on hardware**, then register the board for release (section 6).
+
+## 3. `board.conf`
+
+Required on every board:
+
+| Symbol | Meaning |
+|---|---|
+| `CONFIG_ZEPHCORE_BOARD_NAME` | Name shown in the app and by the `board` command; 39 characters at most |
+| `CONFIG_BT_DIS_MODEL_NUMBER_STR` | BLE Device Information model string |
+| `CONFIG_ZEPHCORE_SD_FWID` | nRF52 only: `0x00B6` (s140 v6) or `0x0123` (s140 v7), matching the partition include |
+
+Set only when the hardware calls for it (details and the values used in the tree are in the template):
+
+| Symbol | When |
+|---|---|
+| `CONFIG_ZEPHCORE_RADIO_LR1110` / `_LR2021` | LR11xx or LR2021 radio. SX126x, LLCC68 and STM32WL need nothing |
+| `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM`, `_MAX_TX_POWER_DBM` | External PA: keep the chip below the PA's maximum input |
+| `CONFIG_ZEPHCORE_MAX_CONTACTS`, `_MAX_CHANNELS`, `_OFFLINE_QUEUE_SIZE` | RAM-bound boards (ESP32 without PSRAM, classic ESP32, STM32WL) |
+| `CONFIG_HEAP_MEM_POOL_SIZE` | nRF with a panel larger than 128x64 |
+| `CONFIG_ESPTOOLPY_FLASHSIZE_8MB` / `_16MB` | ESP32 with more than 4 MB flash |
+| `CONFIG_SPIRAM_MODE_OCT` | ESP32-S3 with 8 MB octal PSRAM (R8) |
+| `CONFIG_ESPTOOLPY_FLASHMODE_DIO` (+ `_QIO=n`) | Classic ESP32 PICO-D4 |
+
+Do not set what devicetree already decides (`ZEPHCORE_UI_DISPLAY`, `ZEPHCORE_UI_BUZZER`, `PWM`, `SPI`,
+`NORDIC_QSPI_NOR`, `ESP_SPIRAM`), and do not put role or debug policy in a board: roles, logging and `BT=n`
+come from `boards/common/*.conf`. `CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE` is off by default for every role and
+is a user setting (`set rxduty`), not a board property.
+
+The chain, later wins:
+
+```
+prj.conf → zephcore_common.conf → <platform>_common.conf → esp32c3s3_common.conf (S3/C3)
+  → board.conf → auto-included feature confs → your EXTRA_CONF_FILE
+```
+
+Overlays follow the same order: `board.overlay` first, overlays paired with a conf after it, `partitions.overlay`
+last ([ADR 0003](../../../docs/adr/0003-devicetree-overlay-precedence.md)). A `foo.overlay` next to a `foo.conf`
+is paired automatically, which is how a board variant changes Kconfig and devicetree together
+(`heltec_t114/no_display.conf` + `no_display.overlay`).
+
+## 4. What the firmware reads from devicetree
+
+Only `lora0` is required. Everything else enables its feature by being present.
+
+| Devicetree | Effect |
+|---|---|
+| alias `lora0` | The radio, for example `semtech,sx1262`, `semtech,lr1110` or `semtech,lr2021` |
+| `lfs_partition` + `filesystem.dtsi` | `/lfs`: identity, prefs, contacts, channels |
+| chosen `zephyr,settings-partition` | NVS for BLE bonds (nRF52, ESP32). nRF54L and MG24 keep bonds in a file on `/lfs` |
+| aliases `led0`, `led1`, `lora-tx-led` | Heartbeat, unread, TX blink |
+| alias `sw0` | User button; wake source from nRF System OFF and ESP32 light sleep |
+| chosen `zephyr,display` | Display UI |
+| node labelled `buzzer` + alias `buzzer` | PWM buzzer |
+| node labelled `gnss` | GPS |
+| aliases `gps-enable`, `gps-wakeup`, `gps-reset`, `gps-resetb`, `gps-vrtc-enable`, `gps-sleep-int`, `gps-rtc-int`; chosen `zephcore,gps-power` | GPS power control |
+| `zephyr,user { io-channels; vbat-mv-multiplier; }` | Battery voltage; a regulator labelled `vbat_enable` is switched per read |
+| `sensors-i2c.dtsi`, `rtc-i2c.dtsi` | I2C sensors (probed at runtime) and a battery-backed RTC (opt-in) |
+| `nordic,qspi-nor` + `qspi-ext.dtsi` | `/ext` on external flash for contacts, channels and blobs |
+| chosen `zephcore,companion-uart` | Companion protocol on a UART, for boards without Bluetooth |
+| `zephcore,poweroff-gpios` | Pins released at shutdown on boards with a latched supply rail |
+
+`board.overlay` has a worked example for each row.
+
+## 5. Platform notes and traps
 
 ### nRF52840
 
-| Board               | Build string                              | Flash                         |
-|----------------------|-------------------------------------------|-------------------------------|
-| RAK4631              | `west build -b rak4631 zephcore`          | UF2 drag-drop or `west flash` |
-| RAK3401 1W           | `west build -b rak3401_1watt zephcore`    | UF2 drag-drop or `west flash` |
-| Wio Tracker L1       | `west build -b wio_tracker_l1 zephcore`   | UF2 drag-drop or `west flash` |
-| Wio Tracker L1 Pro 1W | `west build -b wio_tracker_l1_1w zephcore` | UF2 drag-drop or `west flash` |
-| SenseCAP Solar       | `west build -b sensecap_solar zephcore`    | UF2 drag-drop or `west flash` |
-| XIAO nRF52840        | `west build -b xiao_nrf52840 zephcore`     | UF2 drag-drop or `west flash` |
-| ProMicro SX1262      | `west build -b promicro_sx1262 zephcore`   | UF2 drag-drop or `west flash` |
-| T1000-E              | `west build -b t1000_e zephcore`          | UF2 drag-drop or `west flash` |
-| SenseCAP MeshTracker X1 | `west build -b meshtracker_x1 zephcore` | UF2 drag-drop or `west flash` |
-| ThinkNode M1         | `west build -b thinknode_m1 zephcore`     | UF2 drag-drop or `west flash` |
-| ThinkNode M3         | `west build -b thinknode_m3 zephcore`     | UF2 drag-drop or `west flash` |
-| ThinkNode M6         | `west build -b thinknode_m6 zephcore`     | UF2 drag-drop or `west flash` |
-| RAK WisMesh Tag      | `west build -b rak_wismesh_tag zephcore`  | UF2 drag-drop or `west flash` |
-| Ikoka Nano 30dBm     | `west build -b ikoka_nano_30dbm zephcore` | UF2 drag-drop                 |
-| GAT562 30S Mesh Kit  | `west build -b gat562_30s zephcore`       | UF2 drag-drop or `west flash` |
-| LilyGo T-Echo        | `west build -b lilygo_techo zephcore`     | UF2 drag-drop or `west flash` |
-| LilyGo T-Impulse Plus | `west build -b lilygo_timpulse_plus zephcore` | UF2 drag-drop or `west flash` |
-| Heltec T114          | `west build -b heltec_t114 zephcore`      | UF2 drag-drop or `west flash` |
-| Heltec Mesh Node T096 | `west build -b heltec_t096 zephcore`     | UF2 drag-drop or `west flash` |
-| Heltec Mesh Node T1   | `west build -b heltec_t1 zephcore`       | UF2 drag-drop or `west flash` |
-| muzi works R1 Neo    | `west build -b muziworks_r1neo zephcore`  | UF2 drag-drop or `west flash` |
+- **SoftDevice version decides two things together:** the partition include (`nrf52_partitions_sdv6.dtsi` or
+  `_sdv7.dtsi`) and `CONFIG_ZEPHCORE_SD_FWID`. The Arduino variant's linker script tells you which. The wrong
+  pair puts the app at the wrong address and the board bootloops with no USB.
+- **Include the shared partition file; do not write the map by hand.** It keeps `/lfs` and the bond store at
+  the offsets every shipped ZephCore board uses, and it sets `zephyr,sram`, which the nRF52840 SoC file does
+  not (without it the linker reports `region 'RAM' overflowed` on every build).
+- **No 32.768 kHz crystal:** set `&lfclk { k32src = "rc"; k32src-accuracy-ppm = <250>; };` in devicetree. The
+  old `CONFIG_CLOCK_CONTROL_NRF_K32SRC_*` choices are silently ignored
+  ([ADR 0005](../../../docs/adr/0005-zephyr-main-pin.md)).
+- **Wake from power-off** uses the `sw0` alias: `adapters/board/zephyr_poweroff.c` arms GPIO SENSE on that pin
+  before System OFF. `nrf52_wakeup.dtsi` documents the intent in devicetree; include it only when a node
+  labelled `buttons` exists, since a missing label is a build error.
+- **QSPI flash:** declare it only if the chip is fitted, and disable an upstream `&qspi` the variant lacks.
+- **SPIM0 / SPIM1 share their instance with TWIM0 / TWIM1.** Put the radio on `&spi2` or `&spi3`.
+- **SSD1306 / SH1106 on a `nordic,nrf-twim` bus** needs `zephyr,concat-buf-size`, or the panel stays blank.
 
-**Heltec T114 screenless:** append `boards/nrf52840/heltec_t114/no_display.conf` to `EXTRA_CONF_FILE` for units without the TFT module.
+### nRF54L
 
-UF2 flash: Double-tap reset button, drag `build/zephyr/zephyr.uf2` to the USB drive.
-SWD flash: `west flash` (requires J-Link, pyocd, or nrfjprog connected).
+- Build with `--no-sysbuild`. The SoC has no USB peripheral: no UF2 and no DFU, `zephyr.hex` over SWD.
+- Enable `&xo` and `&lfclk` if the board DTS does not; the BLE controller does not build without them.
+- **Port P2 has no GPIOTE.** No GPIO interrupt works there: the radio IRQ cannot be on P2, and a button on P2
+  needs `polling-mode` on its `gpio-keys` node (`seeed_lr2021_evk`).
 
 ### ESP32
 
-| Board               | Build string                                              | Flash           |
-|----------------------|-----------------------------------------------------------|-----------------|
-| XIAO ESP32-C3        | `west build -b xiao_esp32c3 zephcore`                   | `west flash`    |
-| XIAO ESP32-C6        | `west build -b xiao_esp32c6/esp32c6/hpcore zephcore`    | `west flash`    |
-| LilyGo TLoRa C6      | `west build -b lilygo_tlora_c6/esp32c6/hpcore zephcore` | `west flash`    |
-| LilyGo T3S3 (SX1262) | `west build -b lilygo_t3s3/esp32s3/procpu zephcore`     | `west flash`    |
-| XIAO ESP32-S3        | `west build -b xiao_esp32s3/esp32s3/procpu zephcore`     | `west flash`    |
-| Station G2           | `west build -b station_g2/esp32s3/procpu zephcore`       | `west flash`    |
-| Heltec V3            | `west build -b heltec_wifi_lora32_v3/esp32s3/procpu zephcore` | `west flash` |
-| Heltec V4.2 (GC1109 PA)  | `west build -b heltec_wifi_lora32_v4/esp32s3/procpu zephcore`  | `west flash` |
-| Heltec V4.3 (KCT8103L PA) | `west build -b heltec_wifi_lora32_v43/esp32s3/procpu zephcore` | `west flash` |
-| Heltec V4-R8 (KCT8103L PA, 8MB octal PSRAM) | `west build -b heltec_wifi_lora32_v4_r8/esp32s3/procpu zephcore` | `west flash` |
-| Heltec Wireless Tracker V1.1 | `west build -b heltec_wireless_tracker/esp32s3/procpu zephcore` | `west flash` |
-| Heltec Wireless Tracker V2 | `west build -b heltec_wireless_tracker_v2/esp32s3/procpu zephcore` | `west flash` |
-| LilyGo T-Beam v1.2     | `west build -b ttgo_tbeam/esp32/procpu zephcore`               | `west flash` |
-| ThinkNode M9           | `west build -b thinknode_m9/esp32s3/procpu zephcore`           | `west flash` |
-| Meshnology W12 (LR2021) | `west build -b meshnology_w12/esp32s3/procpu zephcore`        | `west flash` |
+- **Boot and flash layout** ([ADR 0001](../../../docs/adr/0001-esp32-boot-and-flash-layout.md)): a plain
+  companion build is simple boot at `0x0`. A repeater build on S3 / C3 / C6 pulls in WiFi OTA automatically
+  and **must be built with `--sysbuild`**; without it the board stops enumerating USB. Releases are always the
+  MCUboot `-merged.bin`. Classic ESP32 (`/esp32/` targets) is simple boot in every build and has no
+  `partitions.overlay`.
+- **`partitions.overlay` is shared with MCUboot.** Read the template before changing a layout, including the
+  `_default_` versus `_amp_` base-table trap.
+- **Flash size** defaults to 4 MB; state the real one in `board.conf` (it is copied to MCUboot).
+- **ESP32-S3 native USB** ([ADR 0002](../../../docs/adr/0002-esp32s3-native-usb-companion.md)): including
+  `esp32s3_usb_otg.dtsi` from `board.overlay` gives companion builds a USB transport. esptool then cannot
+  auto-reset the board; use `start dfu` or a 1200-baud touch.
+- **PSRAM** is enabled from devicetree when the board DTS uses an R-suffix module file. Only the mode needs
+  stating, because the upstream default cannot be overridden conditionally:
 
-**Heltec V3 console:** ZephCore routes console/shell to `uart0` on V3. Use the UART serial port for boot logs and CLI.
+  | Part | PSRAM | `board.conf` |
+  |---|---|---|
+  | `R2` | 2 MB quad | nothing |
+  | `R8` | 8 MB octal | `CONFIG_SPIRAM_MODE_OCT=y` |
 
-**Meshnology W12:** the only board here with an LR2021 *and* an external PA, and
-the only ESP32 board whose TX power is capped well below the chip maximum —
-4 dBm at the chip is ~30 dBm at the antenna through the GC1109 front end. It has
-no USB-UART bridge, so esptool cannot auto-reset a companion build into download
-mode; use `start dfu`, a 1200-baud touch, or hold BOOT. Full port notes and the
-vendor schematic live in `devdocs/w12/`.
+- **Manifest capabilities:** `wifi: true` gives the companion a WiFi transport and belongs only on boards with
+  the RAM for WiFi and BLE together ([ADR 0009](../../../docs/adr/0009-wifi-companion-boards.md)).
+  `light_sleep: true` makes repeaters light-sleep; the requirements are in `boards/common/pm_esp32.conf`, and
+  it is declared only after it was validated on the hardware. Either way, give NSS, RESET and every MCU-driven
+  RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start.
+- **RAM, not flash, limits the companion.** Boards without PSRAM lower `MAX_CONTACTS`; the classic ESP32 also
+  trims channels and the offline queue.
+- **Classic ESP32 PICO-D4** bootloops in QIO flash mode: `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y`. Console and CLI
+  are on `uart0`.
+- GPIO32 and up are on `&gpio1`: GPIO41 is `<&gpio1 9 ...>`.
 
-**Heltec V4.2 vs V4.3:** The hardware revision is printed on the PCB silkscreen. If
-unclear, check GPIO2's default pull: the V4.2 GC1109 PA has an internal pull-down
-(GPIO2 reads LOW at boot), while the V4.3 KCT8103L PA has an internal pull-up
-(GPIO2 reads HIGH). Only difference in firmware: TX control pin GPIO46→GPIO5.
+### MG24
 
-**Heltec Wireless Tracker V1.1 vs V2:** use `heltec_wireless_tracker` for the
-upstream Zephyr V1.1 target and `heltec_wireless_tracker_v2` for the ESP32-S3FN8
-V2 board with KCT8103L PA/FEM. The V2 pin map is documented in
-`boards/esp32/heltec_wireless_tracker_v2/README.md`.
+- Erase blocks are 8 KB: partition sizes are multiples of 8 KB.
+- Enable `&se` (secure element: crypto and the TRNG).
+- On the XIAO the default I2C pins are the radio's NSS / RXEN; disable `&i2c0`.
 
-**LilyGo T-Beam v1.2:** Classic ESP32 (PICO-D4) board — several caveats apply:
-- Upstream Zephyr DTS models the SX1276 variant; `board.overlay` overrides the radio node to SX1262 on the same SPI3 wiring.
-- PICO-D4 rev 1.0 bootloops when the bootloader tries to enable QIO flash mode. `board.conf` forces DIO (`CONFIG_ESPTOOLPY_FLASHMODE_DIO=y`). Any new classic ESP32 board with PICO-D4 needs this.
-- Classic ESP32 DRAM is much smaller than ESP32-S3. `board.conf` shrinks contacts/channels/queue (`MAX_CONTACTS=160`, `MAX_CHANNELS=8`, `OFFLINE_QUEUE_SIZE=128`) to fit.
-- AXP2101 PMU manages LoRa and GPS power rails via Zephyr regulator + fuel-gauge drivers (auto-enabled from the upstream DTS PMU nodes). Add `CONFIG_FUEL_GAUGE=y` to boards that expose battery state-of-charge over I2C.
-- Console/CLI are on `uart0` (onboard USB-UART). No native USB on classic ESP32.
+### STM32WL
 
-ESP32 flash uses esptool over USB via `west flash`. Hold BOOT button if the device
-doesn't enter download mode automatically.
+- No Bluetooth and no USB device. The companion protocol and the CLI both run on USART1; the board selects it
+  with the `zephcore,companion-uart` chosen node.
+- 64 KB SRAM: the companion tables are cut hard in `board.conf`.
+- `boards/stm32wl/lora_e5_mini/` is the only reference.
 
-Zephyr's `CONFIG_ESP_SIMPLE_BOOT` is active by default (no MCUBoot). The build
-produces a self-contained `zephyr.bin` that the ESP32 ROM bootloader loads directly
-from `0x0` — no special first-flash procedure, works on a bare chip.
+### SX127x
 
-**Exception — WiFi AP OTA** (`boards/common/wifi_ota.conf`): the HTTP OTA updater
-writes firmware to MCUBoot slot1 and requires MCUBoot. Add `--sysbuild` when building
-with `wifi_ota.conf`, and run `west flash` once to seat MCUBoot before OTA works:
+Source-only and unsupported: a separate path through Zephyr's loramac-node backend with no RX duty cycle and
+no RX boost. `boards/esp32/ttgo_lora32/` is the one board on it, and its `board.conf` shows the overrides.
+
+## 6. Registering the board
+
+`zephcore.yml` is the only registry. `build.sh` (and so CI and the release), the Mesh America catalog,
+[docs/supported_boards.md](../../../docs/supported_boards.md) and the board count in the root README are all
+generated from it. The schema is documented at the top of `zephcore/scripts/board_manifest.py`.
+
+- **Bring-up:** `target` only. The board builds locally and is listed as source-only.
+- **Validated:** add `release:` with the roles to publish.
+- **In the configurator:** add `catalog:`. `device` must be MeshCore's exact device name for the board to fold
+  into their tile ([docs/PROVIDER_CATALOG.md](../../../docs/PROVIDER_CATALOG.md)).
+
+After every manifest change:
+
 ```bash
-west build -b <board>/esp32s3/procpu zephcore --pristine --sysbuild -- \
-  -DEXTRA_CONF_FILE="boards/common/wifi_ota.conf"
-west flash --esp-device COMX
+python zephcore/scripts/board_manifest.py check
 ```
 
-**GitHub Release downloads for S3/C-series boards are always MCUboot-based**, unlike
-the plain-build default above: `build.sh` builds those boards with `--sysbuild`
-unconditionally, so the release always has MCUboot @ `0x0` + signed app @ `0x20000`.
-Only `-merged.bin` is published for them — flash that one, at offset `0x0`, for both
-first flash and updates. It does not touch `storage_partition`/`lfs_partition`
-(identity, prefs, contacts, BLE bonds), so routine updates preserve device state.
-Classic ESP32 boards (T-Beam, PICO-D4) still publish a self-contained plain `.bin`
-for `0x1000`, since they use simple-boot in the release build too.
-
-### SX127x Boards (loramac-node backend)
-
-ZephCore can drive SX1272/SX1276/SX1278 via the loramac-node backend — a separate radio path from the native SX126x driver used by all other boards. The TTGO LoRa32 is the only board exercising it.
-
-**This path is source-only and unsupported.** No release publishes firmware for it, it is not in `build.sh` or the Mesh America catalog, and it has no RX duty cycle and no RX gain boost. Treat it as a starting point to maintain yourself, not as a supported target.
-
-| Board          | Build string                                   | Flash        |
-|----------------|------------------------------------------------|--------------|
-| TTGO LoRa32    | `west build -b ttgo_lora32/esp32/procpu zephcore` | `west flash` |
-
-SX127x boards require these `board.conf` overrides (the `zephcore_common.conf` default enables the native SX126x path):
-
-```kconfig
-CONFIG_LORA_MODULE_BACKEND_NATIVE=n
-CONFIG_LORA_MODULE_BACKEND_LORAMAC_NODE=y
-CONFIG_ZEPHCORE_RADIO_SX127X=y
-CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE=n   # lora_recv_duty_cycle_async not implemented for SX127x
-CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM=17 # PA_BOOST max without external PA
+```bash
+python zephcore/scripts/board_manifest.py docs
 ```
 
-Classic ESP32 + PICO-D4 also need the DIO flash mode fix (see T-Beam note above).
-
-**One-time setup required (all ESP32 boards):**
-
-```
-# Download Espressif BLE controller blobs (closed-source, required for BLE)
-west blobs fetch hal_espressif
-```
-
-Run once after `west init`/`west update`. Without it, CMake aborts with a blob
-validation error. Re-run after any `west update` that bumps the `hal_espressif`
-revision.
-
-### nRF54L15
-
-| Board               | Build string                                                           | Flash           |
-|----------------------|------------------------------------------------------------------------|-----------------|
-| XIAO nRF54L15        | `west build -b xiao_nrf54l15/nrf54l15/cpuapp zephcore --no-sysbuild` | `west flash`    |
-| MinewSemi ME25LS02   | `west build -b me25ls02/nrf54l15/cpuapp zephcore --no-sysbuild`      | SWD (`west flash`) |
-| Semtech LR2021 LoRa Plus EVK | `west build -b seeed_lr2021_evk/nrf54l15/cpuapp zephcore --no-sysbuild` | `west flash`    |
-
-Requires J-Link or CMSIS-DAP (built into XIAO board via SAMD11 bridge).
-The `--no-sysbuild` flag is required (no MCUboot support yet).
-
-The LR2021 EVK is the Seeed/Semtech kit (SKU 100039980): a XIAO nRF54L15 plus the
-LoRa Plus Expansion Board plus a Wio-LR2021 module, all in XIAO sockets sharing one
-set of D0..D10 nets. It is a distinct board from `xiao_nrf54l15` above, which is the
-same MCU on a Wio-SX1262 carrier with incompatible wiring. Two hardware gotchas
-before first boot: the **IDCC jumper** must be fitted or the radio has no power, and
-the **LF U.FL pigtail** must be connected before transmitting. The board's `.dts`
-header carries the full pin map and the reasoning behind each choice.
-
-The SoC has no USB peripheral at all, so none of these boards has a UF2 or DFU path — `zephyr.hex`
-links at RRAM base 0x0 and is the complete image, written over SWD. On the ME25LS02's MX25LE02
-carrier the USB-C port is a CH340x UART bridge (console only), so it needs an external probe.
-
-### MG24 (Silicon Labs)
-
-| Board               | Build string                              | Flash           |
-|----------------------|-------------------------------------------|-----------------|
-| XIAO MG24            | `west build -b xiao_mg24 zephcore`       | `west flash`    |
-
-**First-time setup required:**
-
-```
-# Download Silicon Labs BLE controller blob
-west blobs fetch hal_silabs
-
-# Install pyocd + Silicon Labs device pack (if using pyocd)
-pip install pyocd
-pyocd pack install EFR32MG24B220F1536IM48
-```
-
-Flash with: `west flash --runner pyocd`
-
-### STM32WL (Seeed LoRa-E5)
-
-| Board          | Build string                          | Flash        |
-|----------------|---------------------------------------|--------------|
-| LoRa-E5 mini   | `west build -b lora_e5_mini zephcore` | `west flash` |
-
-The STM32WLE5JC integrates an SX1262-class sub-GHz radio (driven by the native
-SX126x driver via its STM32WL HAL over the internal `subghzspi` bus). RF
-front-end, RF switch (PA4/PA5), TCXO and the +22 dBm RFO_HP PA are described in
-upstream `zephyr/dts/arm/seeed_studio/lora-e5.dtsi`.
-
-STM32WL caveats — different from every other ZephCore platform:
-- **No Bluetooth and no USB device.** `boards/common/stm32wl_common.conf` forces
-  `CONFIG_BT=n`. The console/CLI and the companion protocol both run over
-  **USART1**, bridged to USB-C by the onboard USB-UART chip.
-- **Repeater** uses the USART CLI (add `repeater.conf`). The **companion** speaks
-  MeshCore serial framing over the same UART through the wired companion
-  transport (`ZephyrCompanionUSB.cpp`, UART backend: the board's
-  `zephcore,companion-uart` chosen node selects `CONFIG_ZEPHCORE_COMPANION_SERIAL`
-  when there is no Bluetooth) — no BLE pairing, the official serial client
-  connects directly, and a terminal gets the text CLI.
-- **RAM-bound, not flash-bound:** 64KB SRAM. The companion's contact/queue
-  arrays are capped hard in `board.conf` (`MAX_CONTACTS=24`, `OFFLINE_QUEUE_SIZE=8`).
-  AES tables live in ROM (`MBEDTLS_AES_ROM_TABLES`) to reclaim ~8KB SRAM.
-- **TRNG only (no HW CSPRNG):** the STM32 TRNG is enabled as the entropy source
-  and `CSPRNG_ENABLED` auto-resolves on top; `ZephyrRNG` further conditions
-  identity seeds with AES-CTR (the timing stages are skipped — SysTick has no
-  independent slow clock — so the TRNG-fed CSPRNG stages carry the seed).
-- **No MCUboot / UF2:** single app partition at flash origin + a LittleFS volume
-  (see `board.overlay`). Flash over SWD/ST-Link with `west flash` (OpenOCD).
-
-Build the repeater:
-```
-west build -b lora_e5_mini zephcore -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
-```
-
-### Building for Repeater Role
-
-Append `-- -DEXTRA_CONF_FILE="boards/common/repeater.conf"` to any build command:
-
-```
-west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/repeater.conf"
-```
-
-### Building for Room Server Role
-
-Append `-- -DEXTRA_CONF_FILE="boards/common/room_server.conf"` to any build command:
-
-```
-west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/room_server.conf"
-```
-
-### Production vs Debug Builds
-
-Production (no logging, no asserts, reboot-on-fatal) is the **default** — no
-extra conf needed. To enable logging, add the debug overlay:
-
-```
-west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/debug.conf"
-```
-
-### Repeater + Debug
-
-```
-west build -b rak4631 zephcore -- -DEXTRA_CONF_FILE="boards/common/repeater.conf;boards/common/debug.conf"
-```
-
-All build commands should include `--pristine` when switching between roles or boards.
-
-
-Adding a New Board
-------------------
-
-There are TWO ways to add a board, depending on whether Zephyr
-already has a board definition for your hardware.
-
-
-### PATTERN 1: Existing Zephyr Board (overlay only)
-
-Use this when your board already exists in Zephyr's tree.
-You only need TWO files: board.conf + board.overlay
-
-Examples: XIAO nRF54L15, XIAO MG24, XIAO ESP32-C3, RAK4631
-
-Directory structure:
-
-    zephcore/boards/<platform>/<board_name>/
-      board.conf       — Kconfig (name, radio type)
-      board.overlay    — DT overlay (LoRa SPI, partitions, peripherals)
-
-Steps:
-  1. Create directory: `boards/<platform>/<board_name>/`
-     Platform folders: nrf52840, nrf54l, mg24, esp32, stm32wl
-  2. Copy board.conf and board.overlay from THIS directory
-  3. Uncomment the sections matching your platform
-  4. Fill in YOUR pin numbers and partition layout
-  5. Add a zephcore.yml manifest (copy one from a similar board; schema in
-     zephcore/scripts/board_manifest.py). No CMake edit is needed: the
-     boards/<platform>/ directory the board lives in selects its platform.
-     Leave out `release:` until the board is validated on hardware, then run
-     `python zephcore/scripts/board_manifest.py check`.
-  6. Build and iterate!
-
-
-### PATTERN 2: Fully Custom Board (new DTS)
-
-Use this when your board does NOT exist in Zephyr's tree.
-You need a full board definition: .dts, pinctrl, Kconfig, etc.
-
-Examples: Ikoka Nano 30dBm, ThinkNode M1 (custom nRF52840 designs)
-
-Look at existing custom boards as templates:
-
-    zephcore/boards/nrf52840/ikoka_nano_30dbm/   — minimal (LoRa only)
-    zephcore/boards/nrf52840/thinknode_m1/       — full-featured (EPD, GPS, QSPI, buzzer)
-
-A full custom board includes:
-
-    board.conf                           — Kconfig (name, radio, overrides)
-    board.overlay                        — DT overlay (usually empty if DTS is complete)
-    <board>_<soc>.dts                    — Full device tree
-    <board>_<soc>-pinctrl.dtsi           — Pin control definitions
-    board.yml                            — Board metadata (name, arch, SoC)
-    Kconfig.<board>                      — SoC selection
-    <board>_<soc>_defconfig              — Minimal defconfig
-    board.cmake                          — Flash runner config
-
-**Critical: `zephyr,sram` in the chosen node (nRF52840 only)**
-
-The nRF52840 SoC DTSI defines `sram0` but does NOT set `zephyr,sram` in
-the chosen node. Without it, the linker gets `RAM size = 0` and every
-build fails with "region 'RAM' overflowed" regardless of actual RAM use.
-
-Boards that include `<nordic/nrf52840_partition.dtsi>` get this for free.
-Boards that use `nrf52_partitions_sdv6.dtsi` or `nrf52_partitions_sdv7.dtsi`
-directly (without the upstream include) also get it now — those DTSIs set
-`zephyr,sram = &sram0` themselves.
-
-If you write a fully custom DTS that includes neither, add it yourself:
-
-    chosen {
-        zephyr,sram = &sram0;
-        zephyr,code-partition = &code_partition;
-        ...
-    };
-
-
-**nRF52 boards with a user button: button wakeup from System OFF**
-
-`sys_poweroff()` on nRF52840 enters System OFF (~1µA). To allow waking via
-button press (instead of only via USB/charger), GPIO SENSE bits must be set
-before poweroff. This is done via the `wakeup-source` property on the
-`gpio-keys` node, which the nRF52 GPIO driver handles automatically.
-
-Boards that define a `buttons:` gpio-keys node must add at the END of their DTS:
-
-    #include "../../common/nrf52_wakeup.dtsi"
-
-Boards WITHOUT a `buttons` label (ikoka_nano) must NOT include it —
-referencing an undefined `&buttons` label is a hard build error.
-
-**RAK4631 user button:** `gpio-keys` on **P0.09** (NFC1). Short → next page (after
-tap window), double-tap → previous page, long press (≥1s) → enter / activate.
-
-
-What Goes in board.conf
------------------------
-
-Most hardware features are auto-detected from devicetree. board.conf
-should ONLY contain settings that can't be inferred from hardware:
-
-  REQUIRED (all boards):
-    CONFIG_ZEPHCORE_BOARD_NAME          Human-readable name
-    CONFIG_BT_DIS_MODEL_NUMBER_STR      BLE Device Information model
-
-  REQUIRED (nRF52 only):
-    CONFIG_ZEPHCORE_SD_FWID             SoftDevice firmware ID (0x00B6 or 0x0123)
-
-  OPTIONAL (only if needed):
-    CONFIG_ZEPHCORE_RADIO_LR1110        LR1110 radio (auto-selects SPI)
-    CONFIG_ZEPHCORE_MAX_CONTACTS        Override for RAM-limited boards
-    CONFIG_HEAP_MEM_POOL_SIZE           Override for large displays (>128x64)
-    CONFIG_SEGGER_RTT_BUFFER_SIZE_UP    Shrink RTT on RAM-tight boards
-    CONFIG_ESPTOOLPY_FLASHSIZE_16MB     ESP32 boards with 16MB flash
-    CONFIG_ESPTOOLPY_FLASHMODE_DIO=y    Classic ESP32 PICO-D4 boards (bootloops otherwise)
-    CONFIG_ESPTOOLPY_FLASHMODE_QIO=n    Companion to the DIO override above
-    CONFIG_FUEL_GAUGE=y                 Boards with AXP2101 or other I2C fuel gauge
-    CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM  Boards with external PA
-    CONFIG_ZEPHCORE_MAX_TX_POWER_DBM      Boards with external PA
-
-  AUTO-DETECTED (do NOT set in board.conf):
-    CONFIG_PWM                          Auto from DT buzzer nodelabel
-    CONFIG_ZEPHCORE_UI_BUZZER           Auto from DT buzzer nodelabel
-    CONFIG_ZEPHCORE_UI_DISPLAY          Auto from DT zephyr,display chosen
-    CONFIG_SPI                          Auto from ZEPHCORE_RADIO_LR1110
-    CONFIG_NORDIC_QSPI_NOR             Auto from DT nordic,qspi-nor node
-    CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE  OFF by default for all roles (boot default only;
-                                        runtime toggle via CLI "set rxduty on/off")
-    CONFIG_ESP_SPIRAM                   Auto: ON when DT psram0 size > 0 (ESP32-S/C5)
-    CONFIG_ESP_SPIRAM_SIZE              Auto: read from DT psram0 size by upstream Kconfig
-
-  NOT auto-detected (must set in board.conf for ESP32-S3 R8 boards):
-    CONFIG_SPIRAM_MODE_OCT              R8 chips (8 MB OPI octal) need this set
-                                        to "y" in board.conf. R2 chips (2 MB QSPI
-                                        quad) need nothing — QUAD is the upstream
-                                        default. See "ESP32 PSRAM" section below.
-
-
-ESP32 PSRAM (auto-enable, per-board mode on S3 R8)
---------------------------------------------------
-
-`CONFIG_ESP_SPIRAM=y` is enabled automatically from devicetree by
-[zephcore/Kconfig.psram](../../Kconfig.psram). As long as a board's DTS
-includes a Zephyr WROOM dtsi with an R-suffix (e.g. `esp32s3_wroom_n16r2.dtsi`,
-`esp32s3_wroom_n8r8.dtsi`), PSRAM lights up — no `board.conf` entry needed
-for the basics. Boards without PSRAM use a non-R-suffix dtsi (e.g.
-`esp32s3_wroom_n8`), which leaves `psram0` at size = 0, so PSRAM stays off.
-ESP32-C3/C6 are outside Espressif's PSRAM Kconfig gate entirely — no effect.
-
-**Mode selection is silicon-strapped, but not auto-pickable here:** upstream
-Kconfig.spiram sets an unconditional `default SPIRAM_MODE_QUAD` on the choice,
-which wins over any conditional override we'd add downstream. So:
-
-| Chip suffix | PSRAM size | Mode      | board.conf needs           |
-|-------------|-----------|-----------|----------------------------|
-| `R2`        | 2 MB      | QSPI quad | nothing — upstream default |
-| `R8`        | 8 MB      | OPI octal | `CONFIG_SPIRAM_MODE_OCT=y` |
-
-If you add a new ESP32-S3 **R8** board (e.g. `esp32s3_wroom_n*r8.dtsi`),
-add a one-liner to its board.conf:
-
-```kconfig
-# PSRAM mode — ESP32-S3R8 is silicon-strapped OPI octal.
-# Enable is auto-detected from DTS by Kconfig.psram; only the mode is set here.
-CONFIG_SPIRAM_MODE_OCT=y
-```
-
-For aggressive DRAM relief beyond the heap rebalance, additional Kconfigs
-`CONFIG_SPIRAM_FETCH_INSTRUCTIONS=y` and `CONFIG_SPIRAM_RODATA=y` move
-text/rodata into PSRAM at boot, but introduce PSRAM-cache-miss timing
-variability — only enable per-board after verifying radio and BLE paths
-still meet their timing budgets.
-
-
-Config Inheritance
-------------------
-
-    prj.conf                           Always loaded first
-      |
-    zephcore_common.conf               BLE, storage, input, LoRa, crypto, sensors
-      |
-    <platform>_common.conf             Platform-specific overrides only
-      |                                  nrf52_common.conf   — UF2, USB CDC, DLE, RTT
-      |                                  nrf54l_common.conf  — DLE, RTT
-      |                                  mg24_common.conf    — SiLabs blob stacks, heap
-      |                                  esp32_common.conf   — Espressif blob stacks, heap
-      |                                  stm32wl_common.conf — BT off, UART companion/CLI
-      |
-    board.conf                         Board name, radio type, board-specific
-
-DO NOT duplicate settings from parent configs in board.conf!
-
-
-Quick Reference: Wio-SX1262 XIAO Pin Mapping
----------------------------------------------
-
-All XIAO boards use the same D-pin assignment for Wio-SX1262:
-
-    Signal | XIAO Pin | nRF52840  | nRF54L15  | MG24      | ESP32-C3  | ESP32-C6  | ESP32-S3
-    -------|----------|-----------|-----------|-----------|-----------|-----------|----------
-    DIO1   | D1       | P0.03     | P1.05     | PC01      | GPIO3     | GPIO1     | GPIO39
-    RESET  | D2       | P0.28     | P1.06     | PC02      | GPIO4     | GPIO2     | GPIO42
-    BUSY   | D3       | P0.05     | P1.07     | PC03      | GPIO5     | GPIO21    | GPIO40
-    NSS    | D4       | P0.04     | P1.10     | PC04      | GPIO6     | GPIO22    | GPIO41
-    RXEN   | D5       | P0.29     | P1.11     | PC05      | GPIO7     | GPIO23    | GPIO38
-    SCK    | D8       | P1.13     | P2.01     | PA03      | GPIO8     | GPIO19    | GPIO7
-    MISO   | D9       | P1.14     | P2.04     | PA04      | GPIO9     | GPIO20    | GPIO8
-    MOSI   | D10      | P1.15     | P2.02     | PA05      | GPIO10    | GPIO18    | GPIO9
-
-Note: nRF52840 D-pin mapping varies by board (XIAO nRF52840 shown).
-RAK4631 has SX1262 integrated — different pinout entirely.
-
-
-RAK4631 LEDs and overlay (RAK4631)
------------------------------------
-
-- **Polarity:** Stock Zephyr RAK4631 DTS uses `GPIO_ACTIVE_LOW` for the two user
-  LEDs (P1.3 / P1.4). On hardware here they are **active-high** — the overlay
-  overrides `green_led` / `blue_led` to `GPIO_ACTIVE_HIGH`.
-- **Aliases:** Overlay sets `led0`→green (heartbeat), `led1`→blue (unread +
-  LoRa TX blink via `lora-tx-led`). On repeaters, firmware does not drive the
-  second LED as “unread”; blue stays TX-only.
+The notes under each list in `docs/supported_boards.md` are written by hand; add one if the board has
+something a user must know before flashing.
+
+## Quick reference: Wio-SX1262 on a XIAO
+
+Every XIAO carries the Wio-SX1262 on the same D pins:
+
+| Signal | XIAO pin | nRF52840 | nRF54L15 | MG24 | ESP32-C3 | ESP32-C6 | ESP32-S3 |
+|---|---|---|---|---|---|---|---|
+| DIO1 | D1 | P0.03 | P1.05 | PC01 | GPIO3 | GPIO1 | GPIO39 |
+| RESET | D2 | P0.28 | P1.06 | PC02 | GPIO4 | GPIO2 | GPIO42 |
+| BUSY | D3 | P0.05 | P1.07 | PC03 | GPIO5 | GPIO21 | GPIO40 |
+| NSS | D4 | P0.04 | P1.10 | PC04 | GPIO6 | GPIO22 | GPIO41 |
+| RXEN | D5 | P0.29 | P1.11 | PC05 | GPIO7 | GPIO23 | GPIO38 |
+| SCK | D8 | P1.13 | P2.01 | PA03 | GPIO8 | GPIO19 | GPIO7 |
+| MISO | D9 | P1.14 | P2.04 | PA04 | GPIO9 | GPIO20 | GPIO8 |
+| MOSI | D10 | P1.15 | P2.02 | PA05 | GPIO10 | GPIO18 | GPIO9 |
+
+RXEN and DIO2 together drive the module's RF switch, and DIO3 powers its TCXO at 1.8 V.

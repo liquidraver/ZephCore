@@ -1024,7 +1024,8 @@ New drivers in `patches/zephyr-new/` (LR11xx, LR20xx, native-Linux SPI/GPIO, DTS
 
 ## 10. Board Matrix
 
-Build strings and flash methods: `boards/supported_boards.md` and `boards/example_board/README.md`.
+Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Adding a board:
+`zephcore/boards/example_board/README.md`.
 
 | Board | SoC | Radio | GPS | Display | Notable extras |
 |-------|-----|-------|-----|---------|----------------|
