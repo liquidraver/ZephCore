@@ -142,8 +142,8 @@ struct NodePrefs {
 	 * without this marker is upgraded to gps_enabled = 1 once. */
 	uint8_t gps_enabled_set;
 	uint32_t gps_interval;          // in seconds
-	/* Standby-pin boards: duty intervals up to this (seconds) keep the GPS
-	 * supply and use the standby pin, longer ones cut it. 0 = always cut. */
+	/* Every board: duty intervals up to this (seconds) keep the GPS module's
+	 * state between fixes, longer ones power it off fully. 0 = always off. */
 	uint32_t gps_standby_max;
 	uint8_t advert_loc_policy;
 	uint32_t discovery_mod_timestamp;

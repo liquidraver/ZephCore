@@ -1202,8 +1202,7 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		reply[0] = '>'; reply[1] = ' ';
 		gps_get_diag_report(reply + 2, cap - 2);
 	} else if (memcmp(config, "gps standby", 11) == 0) {
-		if (!gps_has_standby_pin()) strcpy(reply, "> n/a (no GPS standby pin on this board)");
-		else snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)gps_get_standby_max_sec());
+		snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_prefs->gps_standby_max);
 	} else if (memcmp(config, "gps duty", 8) == 0) {
 		uint32_t s = gps_get_poll_interval_sec();  // now-effective value
 		if (s == 0) strcpy(reply, "> always on (0)");
@@ -1807,16 +1806,14 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			strcpy(reply, "usage: set gps diag <0|1|on|off>");
 		}
 	} else if (memcmp(config, "gps standby", 11) == 0) {
-		// set gps standby <seconds> | default   (0 = always cut the supply)
+		// set gps standby <seconds> | default   (0 = always the full power-off)
 		const char* arg = config + 11;
 		while (*arg == ' ') arg++;
 		char* end = NULL;
 		unsigned long parsed = strtoul(arg, &end, 10);
 		bool is_default = strcmp(arg, "default") == 0;
-		if (!gps_has_standby_pin()) {
-			strcpy(reply, "Error: no GPS standby pin on this board");
-		} else if (!is_default && (*arg == '\0' || end == arg || *end != '\0' || parsed > GPS_INTERVAL_MAX_SEC)) {
-			strcpy(reply, "usage: set gps standby <seconds> | default  (0 = always cut the supply)");
+		if (!is_default && (*arg == '\0' || end == arg || *end != '\0' || parsed > GPS_INTERVAL_MAX_SEC)) {
+			strcpy(reply, "usage: set gps standby <seconds> | default  (0 = always power off)");
 		} else {
 			uint32_t val = is_default ? GPS_STANDBY_MAX_DEFAULT_SEC : (uint32_t)parsed;
 			_prefs->gps_standby_max = val;

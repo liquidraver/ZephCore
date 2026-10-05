@@ -87,7 +87,7 @@ void gps_sat_tally(uint8_t out[5]);
 #endif
 
 /* ---- gps_power.cpp ---- */
-/* keep_vrtc (off only): T1000-E warm standby. */
+/* keep_vrtc (off only): the board's state-keeping off, if it has one. */
 void gps_power_control(bool on, bool keep_vrtc = false);
 /* The power line or rail if the board has one, else the UART sleep commands. */
 void gps_module_power(bool on, bool keep_vrtc = true);

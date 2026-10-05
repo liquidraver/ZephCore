@@ -925,19 +925,23 @@ config ZEPHCORE_GPS_FIX_TIMEOUT_SEC
 	  GPS will be powered off after this timeout.
 	  Default 120s — 30s was too aggressive for Air530Z / MAX-7Q warm
 	  starts in marginal sky conditions; the acquire loop would time out
-	  before the 3-consecutive-good-fix gate could promote. Only applies
-	  to wake cycles after the first successful fix since enable.
+	  before the 3-consecutive-good-fix gate could promote. Applies to
+	  wake cycles where the module kept its state; the first acquisition
+	  and every wake after a full power-off use
+	  ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC.
 
 config ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC
 	int "GPS first-acquisition timeout in seconds"
 	default 300
 	range 30 1800
 	help
-	  Bounded window for the FIRST position fix after GPS is enabled
-	  (cold start). Longer than the normal fix timeout because a cold
-	  start may need to download almanac data. If no fix is acquired in
-	  this window the node drops into the normal duty cycle anyway, so
-	  the GPS can never stay powered indefinitely with no sky view.
+	  Bounded window for a position fix that follows a full power-off
+	  (cold start): the first one after GPS is enabled, and every wake
+	  when the duty interval is above the `gps standby` limit, on every
+	  board. Longer than the normal fix timeout because a cold start may
+	  need to download almanac data. If no fix is acquired in this
+	  window the node drops into the normal duty cycle anyway, so the
+	  GPS can never stay powered indefinitely with no sky view.
 	  Default 300s (5 minutes). Companion mode only; repeaters use a
 	  fixed 5-minute time-sync window.
 

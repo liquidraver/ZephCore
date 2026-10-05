@@ -134,7 +134,7 @@ Set them in a board conf or with `-DCONFIG_...=`. The full list with help texts 
 | `ZEPHCORE_OFFLINE_QUEUE_SIZE` | 256 | Companion offline message queue |
 | `ZEPHCORE_BLE_PASSKEY` | 123456 | BLE pairing PIN |
 | `ZEPHCORE_GPS_POLL_INTERVAL_SEC` | 300 | Companion GPS interval between fixes (10 to 86400); the runtime setting is `set gps duty` |
-| `ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` | 300 | Window for the very first fix after a cold start |
+| `ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` | 300 | Window for a fix after a full GPS power-off: boot, `gps on`, and every wake when the GPS interval is above `gps standby` |
 | `ZEPHCORE_REPEATER_GPS_INTERVAL_SEC` | 172800 | Repeater and room server GPS interval (48 h); 0 = always on |
 | `ZEPHCORE_PACKET_LOGGING` | n | Upstream-format packet log lines (`packet_logging.conf`) |
 | `ZEPHCORE_WIFI_OTA` | n | WiFi AP + HTTP firmware update (ESP32 repeaters) |

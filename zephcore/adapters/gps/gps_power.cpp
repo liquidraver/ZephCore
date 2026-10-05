@@ -147,9 +147,10 @@ static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps
 /* Module standby pin (L76K WAKEUP: asserted = run, de-asserted = Standby, RF
  * off with the core powered) on a board that ALSO has a supply switch
  * (gps-enable): standby uses this pin and keeps the supply, so a wake is a
- * hot start; a full off (`gps off`, boot with GPS disabled, System OFF) cuts
- * the supply, since Standby still draws. A board whose only control is the
- * standby pin (Wio Tracker L1) declares it as gps-enable instead. */
+ * hot start; a full off (`gps off`, a standby past prefs.gps_standby_max,
+ * boot with GPS disabled, System OFF) cuts the supply, since Standby still
+ * draws. A board whose only control is the standby pin (Wio Tracker L1)
+ * declares it as gps-enable instead. */
 #if HAS_GPS_WAKEUP
 static const struct gpio_dt_spec gps_wakeup_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_wakeup), gpios);
 #endif
@@ -250,10 +251,13 @@ static void gps_drive_off_levels(bool keep_vrtc, bool system_off)
 
 /* GPS power control with warm standby support.
  * @param on        true = power on, false = power off
- * @param keep_vrtc When powering off: true = keep VRTC alive (warm standby,
- *                  preserves ephemeris/almanac/RTC for fast re-acquisition),
- *                  false = full power-off (cold start on next wake).
- *                  Only relevant on T1000-E (HAS_GPS_VRTC); ignored on other boards. */
+ * @param keep_vrtc When powering off: true = the state-keeping off this board
+ *                  has (AG3335 backup sleep, the gps-wakeup standby pin, VRTC
+ *                  left on: ephemeris/almanac/RTC survive for a fast
+ *                  re-acquisition), false = full power-off (cold start on
+ *                  next wake). The caller decides from the standby length
+ *                  alone (prefs.gps_standby_max), never from the board; a
+ *                  board with one off state lands in it either way. */
 void gps_power_control(bool on, bool keep_vrtc)
 {
 #if HAS_GPS_POWER_REGULATOR
@@ -276,8 +280,9 @@ void gps_power_control(bool on, bool keep_vrtc)
 	 * (driver PM can hang on modem_pipe_close / modem_chat_run_script).
 	 * The GNSS driver's modem pipe stays open.
 	 *
-	 * T1000-E / X1 (HAS_GPS_BACKUP_SLEEP): standby and app toggle use the
-	 *   AG3335 RTC backup sleep, as Arduino stop_gps().
+	 * T1000-E / X1 (HAS_GPS_BACKUP_SLEEP): standby up to
+	 *   prefs.gps_standby_max uses the AG3335 RTC backup sleep, as Arduino
+	 *   stop_gps(); a longer standby and `gps off` cut VRTC too.
 	 * Simple boards (Wio etc.): Full power off/on via GPS_EN. */
 	if (on) {
 #if HAS_GPS_WAKEUP

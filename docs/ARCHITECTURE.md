@@ -795,6 +795,10 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - Multi-constellation: GPS+GLONASS+Galileo+BeiDou with fallback
 - T1000-E / MeshTracker X1 (AG3335): multi-GPIO power sequencing; standby is the module's RTC backup sleep
   (`$PAIR650,0` before `GPS_EN` is cut, VRTC kept, a `GPS_RTC_INT` pulse wakes it)
+- Standby depth is decided from the duty interval alone, on every board: up to `prefs.gps_standby_max`
+  (`set gps standby`, default 3600 s) the module keeps its state (backup sleep, standby pin, VRTC), beyond it the
+  board's full power-off is used, as it is for `gps off`. `gps_power.cpp` maps the two onto the pins a board
+  declares; a board with one off state uses it for both
 - GPS time blocks phone time sync for 2 hours after last fix
 - Three files: `ZephyrGPSManager.cpp` (states, fix validation, public API), `gps_power.cpp` (power line / PMU rail / UART sleep commands, UARTE PM), `gps_module_cfg.cpp` (GNSS-API or PMTK/PCAS/UBX configuration, `get gps diag`); `gps_internal.h` carries the feature detection
 - **Main thread only.** The GNSS callbacks (system work queue) only validate and post: a validated fix is snapshotted and handed to the fix callback by `gps_process_event()` on the main thread, so the callback sets the clock and the node position directly. The UI's GPS toggles post an action too.
@@ -814,8 +818,10 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 
 Two separate timeouts apply to acquisition:
 
-- `CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` (default 300s): the cold-start window used for the very first acquisition after `gps_enable()`. Longer to allow almanac download.
-- `CONFIG_ZEPHCORE_GPS_FIX_TIMEOUT_SEC` (default 120s): the normal per-wake timeout for all subsequent acquisitions (warm start).
+- `CONFIG_ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` (default 300s): the cold-start window, used for every acquisition that follows a full power-off: the first one after `gps_enable()` (boot, `gps on`; `gps off` is a full power-off on every board) and every wake from a standby longer than `prefs.gps_standby_max`. Longer to allow almanac download and poor reception.
+- `CONFIG_ZEPHCORE_GPS_FIX_TIMEOUT_SEC` (default 120s): the normal per-wake timeout for all other acquisitions (warm start).
+
+Like the standby depth, the choice follows from the duty interval alone, never from the board.
 
 **Repeater mode**
 

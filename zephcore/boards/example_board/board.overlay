@@ -755,6 +755,11 @@ zephyr_udc0: &usbd {
  *   gps-vrtc-enable   backup (VRTC) supply, kept on for warm starts
  *   gps-sleep-int, gps-rtc-int   AG3335 sleep / RTC interrupt pins (t1000_e)
  *
+ * Nothing else is needed for `set gps standby`: on every board a standby
+ * longer than that limit (default one hour) is a full power-off, a shorter
+ * one keeps the module's state if the pins above give a way to (gps-wakeup,
+ * or gps-vrtc-enable). With gps-enable alone the two are the same.
+ *
  *   chosen zephcore,gps-power   a regulator instead of a pin: a
  *                     regulator-fixed node, or a PMU rail (heltec_t096,
  *                     ttgo_tbeam)

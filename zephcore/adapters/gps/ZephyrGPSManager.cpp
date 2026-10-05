@@ -13,7 +13,10 @@
  *   stays powered, see gps_power.cpp) for fast re-acquisition
  * - GNSS UARTE suspended (device PM) while GPS is off/standby — releases
  *   HFCLK on nRF52840 (~0.5-1 mA), resumed before every wake
- * - Full power-off only on user-disable or System OFF
+ * - Every board: a standby longer than prefs.gps_standby_max is the board's
+ *   full power-off instead of its state-keeping one (see gps_go_to_standby)
+ * - Full power-off also on user-disable, on boot with the GPS disabled and on
+ *   System OFF; the acquisition after any full power-off gets the long window
  */
 
 #include "gps_internal.h"
@@ -70,6 +73,7 @@ static enum gps_state gps_current_state = GPS_STATE_OFF;
 static uint8_t consecutive_good_fixes = 0;
 static bool first_fix_acquired = false;  /* True after first 3-good-fix cycle since enable. Cleared on gps_enable(false) and at boot. */
 static bool first_acquire_used = false;  /* True once the one-time long cold-start window has ended (fix or timeout). Cleared on gps_enable(false) and at boot. */
+static bool standby_powered_off = false; /* The last standby was the full power-off (interval past gps_standby_max_sec), so the wake after it is a cold start. Set on every standby, cleared on gps_enable(false). */
 static bool gps_time_synced = false;     /* True after GPS syncs RTC. Starts false at boot (RTC reset),
 										  * set true after 3 good fixes, cleared when GPS disabled. */
 static int64_t last_fix_uptime_ms = 0;  /* k_uptime when last validated fix was acquired */
@@ -488,13 +492,17 @@ static void gps_hold_sleep_lock(bool hold)
  *   on forever when there's no sky. Spent once (first_acquire_used set on the
  *   first standby), after which the node uses the normal duty cycle regardless
  *   of whether a fix was obtained.
- * - All later windows: the normal (warm) acquire timeout. */
+ * - A wake from a standby that was the full power-off: the same long window,
+ *   every time. The module lost its state, so this is a cold start again, and
+ *   in poor reception that does not fit the warm window. Decided from the
+ *   interval like the power-off itself, never from the board.
+ * - All other windows: the normal (warm) acquire timeout. */
 static uint32_t gps_acquire_window_ms(void)
 {
 	if (gps_repeater_mode) {
 		return GPS_REPEATER_SYNC_TIMEOUT_MS;
 	}
-	if (!first_fix_acquired && !first_acquire_used) {
+	if (standby_powered_off || (!first_fix_acquired && !first_acquire_used)) {
 		return gps_first_fix_timeout_ms;
 	}
 	return gps_acquire_timeout_ms;
@@ -530,11 +538,16 @@ static void gps_go_to_standby(void)
 	 *   RTC survive the cut and re-acquisition is a warm/hot start, not cold.
 	 * Other non-GPIO boards: software sleep via UART commands (PMTK + UBX). */
 	gps_reapply_cancel();
-	/* A standby-pin board keeps the supply only for a short interval: its
-	 * Standby draws all the time, a cold start only for a few minutes, so
-	 * past gps_standby_max_sec the supply cut is the cheaper one. */
-	gps_module_power(false, !HAS_GPS_WAKEUP ||
-				wake_interval / 1000U <= gps_standby_max_sec);
+	/* The module keeps its state (backup sleep, standby pin, VRTC) only for
+	 * a short interval: that draws all the time, a cold start only for a
+	 * few minutes, so past gps_standby_max_sec the full power-off is the
+	 * cheaper one. Not a board property: every board takes the same
+	 * decision, and gps_power_control() turns it into whatever the board's
+	 * pins can do. Where they give one off state only (a bare supply
+	 * switch, a bare standby pin, the UART sleep commands) both sides of
+	 * the limit are that state. */
+	standby_powered_off = wake_interval / 1000U > gps_standby_max_sec;
+	gps_module_power(false, !standby_powered_off);
 
 	/* Module is off/asleep — release the UART until the next wake
 	 * (nRF: drops the HFCLK request held by the armed RX). */
@@ -884,12 +897,12 @@ void gps_enable(bool enable)
 		k_work_cancel_delayable(&gps_timeout_work);
 		gps_reapply_cancel();
 
-		/* Power off GPS — AG3335 RTC backup sleep where the board has it
-		 * (Arduino stop_gps), full power off otherwise.
-		 * Boards with no power line get the UART sleep commands, as in
-		 * the duty cycle's standby. A standby-pin board cuts the supply
-		 * here: its Standby still draws, and this off has no end. */
-		gps_module_power(false, !HAS_GPS_WAKEUP);
+		/* Full power-off on every board: this off has no end, and any
+		 * state-keeping one (backup sleep, standby pin, VRTC) draws all
+		 * the time. Boards with no power line get the UART sleep
+		 * commands, as in the duty cycle's standby. The next enable is
+		 * a cold start and gets the long window (flags below). */
+		gps_module_power(false, false);
 
 		/* GPS is off until re-enabled — release the UART. */
 		gps_uart_set_power(false);
@@ -913,6 +926,7 @@ void gps_enable(bool enable)
 		 * expecting it to try hard for a fix. */
 		first_fix_acquired = false;
 		first_acquire_used = false;
+		standby_powered_off = false;
 
 		/* Clear time sync flag - time will drift, allow phone sync again */
 		gps_time_synced = false;
@@ -944,20 +958,6 @@ uint32_t gps_get_poll_interval_sec(void)
 	return gps_wake_interval_ms / 1000U;
 #else
 	return CONFIG_ZEPHCORE_GPS_POLL_INTERVAL_SEC;
-#endif
-}
-
-bool gps_has_standby_pin(void)
-{
-	return HAS_GPS_WAKEUP;
-}
-
-uint32_t gps_get_standby_max_sec(void)
-{
-#if HAS_GNSS
-	return gps_standby_max_sec;
-#else
-	return 0;
 #endif
 }
 

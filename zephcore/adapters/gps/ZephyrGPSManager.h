@@ -105,12 +105,10 @@ void gps_ensure_power_state(bool should_be_enabled);
 void gps_get_position(struct gps_position *pos);
 uint32_t gps_get_poll_interval_sec(void);
 void gps_set_poll_interval_sec(uint32_t interval);
-/* Boards with a module standby pin beside a supply switch (gps-wakeup alias):
- * duty intervals up to this many seconds use the pin (supply kept, hot start
- * on wake), longer ones cut the supply. 0 = always cut. Takes effect at the
- * next standby. */
-bool gps_has_standby_pin(void);
-uint32_t gps_get_standby_max_sec(void);
+/* Every board: duty intervals up to this many seconds keep the module's state
+ * between fixes (backup sleep, standby pin, VRTC: a fast fix on wake), longer
+ * ones take the board's full power-off. 0 = always the full power-off. Takes
+ * effect at the next standby. */
 void gps_set_standby_max_sec(uint32_t sec);
 
 /* Get RTC time from GPS (returns Unix timestamp, 0 if no valid time) */
