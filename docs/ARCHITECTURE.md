@@ -744,7 +744,7 @@ Companion extras: `get|set autoshutdown`, `get|set v.contact`, `get|set v.batter
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
 Time: `clock`, `clock sync`, `time <epoch>`, `set meshtimesync on/off`
 
-Full command reference with constraints and remote-admin restrictions: `Repeater_CLI_commands.md`.
+Full command reference with constraints and remote-admin restrictions: `CLI_commands.md`.
 
 ---
 

@@ -4,7 +4,7 @@
 > companion, server roles, event loops, connectivity, storage, peripherals, UI and the repository).
 > This is the system view: what ZephCore is made of and the rules that keep it coherent. Component detail is in
 > [ARCHITECTURE.md](ARCHITECTURE.md); decisions and their history are in [adr/](adr/README.md); the CLI is in
-> [Repeater_CLI_commands.md](Repeater_CLI_commands.md). Where a **rule** is stated, known exceptions are listed
+> [CLI_commands.md](CLI_commands.md). Where a **rule** is stated, known exceptions are listed
 > in §5.3.
 
 ---

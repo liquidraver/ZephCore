@@ -19,7 +19,7 @@
 <p align="center">
   <a href="https://zephcore.meshcore.dev">Flash it</a> ·
   <a href="docs/supported_boards.md">Boards</a> ·
-  <a href="docs/Repeater_CLI_commands.md">CLI</a> ·
+  <a href="docs/CLI_commands.md">CLI</a> ·
   <a href="docs/DESIGN.md">Design</a> ·
   <a href="releasenotes/">Release notes</a>
 </p>
@@ -62,9 +62,9 @@ the [supported boards list](docs/supported_boards.md).
 | Role | What it does | How you talk to it |
 |---|---|---|
 | **Companion** | Your personal node: contacts, channels, offline message queue | MeshCore app over BLE or USB (WiFi on some ESP32 boards) |
-| **Repeater** | Relays packets for everyone else | [Text CLI](docs/Repeater_CLI_commands.md) over USB, or remote admin over the mesh |
+| **Repeater** | Relays packets for everyone else | [Text CLI](docs/CLI_commands.md) over USB, or remote admin over the mesh |
 | **Room server** | A shared message board that keeps posts for clients who were away | Same CLI as the repeater; users log in from the app |
-| **Observer** | Listens only and publishes what it hears to MQTT over WiFi (ESP32) | Same CLI |
+| **Observer** | Listens only and publishes what it hears to MQTT over WiFi (ESP32) | [Its own small CLI](docs/CLI_commands.md#observer-zephcore-only) over USB |
 
 One role per firmware image; you choose it when you flash.
 
@@ -168,7 +168,7 @@ ZephCore is a plain west workspace application, and it tries to be a well-behave
 | [ARCHITECTURE.md](docs/ARCHITECTURE.md) | Component reference |
 | [adr/](docs/adr/README.md) | Decisions and why they were made |
 | [BUILDING.md](docs/BUILDING.md) | Every build variant, platform notes, Kconfig options |
-| [Repeater_CLI_commands.md](docs/Repeater_CLI_commands.md) | Every CLI command |
+| [CLI_commands.md](docs/CLI_commands.md) | Every CLI command |
 | [supported_boards.md](docs/supported_boards.md) | Boards and build strings |
 | [LINUX_NATIVE.md](docs/LINUX_NATIVE.md) | Running on a Pi or Femtofox |
 | [releasenotes/](releasenotes/) | What changed in each release |

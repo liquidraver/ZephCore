@@ -264,7 +264,7 @@ Only one client connects at a time.
 ### Repeater CLI
 
 The repeater role exposes the same configuration CLI as an MCU repeater's USB-CDC
-serial console — see [Repeater_CLI_commands.md](Repeater_CLI_commands.md) for the
+serial console — see [CLI_commands.md](CLI_commands.md) for the
 full command list (`get`/`set`, `password`, `reboot`, `clock`, …). On native Linux
 that console maps onto Zephyr's native-PTY UART (`CONFIG_SERIAL` +
 `CONFIG_UART_NATIVE_PTY`). At boot the binary prints the pseudo-terminal it created:
