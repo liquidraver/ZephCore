@@ -283,7 +283,7 @@ size_t serverPrefsEncode(const NodePrefs &prefs, uint8_t *buf, size_t cap)
 	/* LED activity/heartbeat modes (offsets 309-310) */
 	w.put(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	w.put(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
-	/* led_brightness (ZephCore extension, since 1.17.4), offset 311. */
+	/* led_brightness at offset 311. */
 	w.put(&prefs.led_brightness, sizeof(prefs.led_brightness));
 	return w.off;
 }
@@ -360,10 +360,7 @@ void serverPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.get(&prefs.tz_offset, sizeof(prefs.tz_offset));
 	r.get(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	r.get(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
-	/* led_brightness (ZephCore extension, since 1.17.4). Absent in files
-	 * written before this field existed; the no-op EOF read leaves the
-	 * initNodePrefs() default ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%),
-	 * same value a fresh node already showed before this was persisted. */
+	/* led_brightness at offset 311: a shorter file leaves the initNodePrefs() default. */
 	r.get(&prefs.led_brightness, sizeof(prefs.led_brightness));
 
 	/* Only the explicit "off" magic disables LEDs; a legacy AGC interval or an

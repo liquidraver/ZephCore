@@ -993,12 +993,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 			 cliModeName(LEDS_HB_NAMES, 4, _prefs->leds_hb_mode),
 			 CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
 	} else if (memcmp(config, "leds.brightness", 15) == 0) {
-		/* Separate from "leds" on purpose: keeps the on/off switch a
-		 * pure word command and the dimmer a pure number command,
-		 * instead of one command parsing both — see led_gate.h. Read
-		 * from _prefs, same as leds.radio/leds.hb above, not from the
-		 * RAM getter directly -- the two are always in sync, the "set"
-		 * handler below writes both together. */
 		snprintf(reply, CLI_REPLY_SIZE, "> %u%%", (unsigned)_prefs->led_brightness);
 	} else if (memcmp(config, "leds", 4) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->leds_disabled ? "off" : "on");
@@ -1272,15 +1266,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 				 CLI_HAS_HB_LED ? "" : " (no heartbeat LED on this board)");
 		}
 	} else if (memcmp(config, "leds.brightness ", 16) == 0) {
-		/* Separate from "leds" on purpose: keeps the on/off switch a pure
-		 * word command and the dimmer a pure number command, instead of
-		 * one command parsing both. Persisted (since 1.17.4): a fresh
-		 * node still starts at ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (the
-		 * append-only prefs format leaves this byte at the
-		 * initNodePrefs() default on any file that predates this field),
-		 * but once set it survives reboots and firmware updates like
-		 * leds.radio/leds.hb above. Checked before "leds " below so this
-		 * longer, more specific prefix is never shadowed by it. */
 		const char *val = &config[16];
 		char *endptr = (char *)val;
 		long pct = strtol(val, &endptr, 10);

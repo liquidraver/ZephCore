@@ -77,12 +77,7 @@ void ui_play_startup_chime(void)
  * messages; with both LEDs present, companions light led1 for unread.
  */
 
-/* PWM path (brightness-capable, shared with the LoRa TX LED via the same
- * DT_ALIAS(heartbeat_pwm_led)/DT_ALIAS(lora_tx_pwm_led) pair when a board's
- * heartbeat and TX indicator are the same physical LED, e.g. T096) takes
- * priority over the plain digital led0/led1 fallback. Brightness comes from
- * helpers/led_gate.h — one dimmer for every event on this LED, not a
- * heartbeat-only one. */
+/* PWM takes priority over the plain led0/led1 fallback. */
 #if DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led))
 static const struct pwm_dt_spec s_heartbeat_led_pwm =
 	PWM_DT_SPEC_GET(DT_ALIAS(heartbeat_pwm_led));
@@ -103,9 +98,6 @@ static const struct gpio_dt_spec s_heartbeat_led =
 #define HAS_HEARTBEAT_LED 0
 #endif
 
-/* "Some heartbeat LED exists, PWM or plain GPIO" — used where the on/off
- * write differs but everything else (work queue plumbing, readiness check)
- * is identical either way. */
 #define HAS_ANY_HEARTBEAT_LED (HAS_HEARTBEAT_LED_PWM || HAS_HEARTBEAT_LED)
 
 #if HAS_HEARTBEAT_LED_PWM
@@ -115,10 +107,7 @@ static inline bool heartbeat_led_is_ready(void)
 }
 static inline void heartbeat_led_write(bool on)
 {
-	uint32_t pulse = on ? (uint32_t)((uint64_t)s_heartbeat_led_pwm.period *
-					  zephcore_led_brightness_pct() / 100)
-			     : 0;
-	pwm_set_pulse_dt(&s_heartbeat_led_pwm, pulse);
+	zephcore_led_pwm_write(&s_heartbeat_led_pwm, on);
 }
 #elif HAS_HEARTBEAT_LED
 static inline bool heartbeat_led_is_ready(void)

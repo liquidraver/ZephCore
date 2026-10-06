@@ -34,18 +34,17 @@ bool zephcore_leds_disabled(void);
  * progress. Safe to call from any role, with or without a UI. */
 void zephcore_leds_set_disabled(bool disabled);
 
-/* Shared PWM brightness (0-100) for boards whose heartbeat/TX LED is
- * PWM-capable (DT_ALIAS(heartbeat_pwm_led) / DT_ALIAS(lora_tx_pwm_led)).
- * Persisted via NodePrefs (prefs.led_brightness); ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT
- * only seeds the RAM cache on a fresh node with no saved value yet (100%,
- * matching the brightness every PWM LED ran at before this setting existed).
- * Independent of the on/off gate above: brightness only matters while the
- * gate is open. No-op on boards without a PWM-capable LED (the getter still
- * returns the compiled default, simply unused). */
+/* Shared PWM brightness (0-100) for PWM-capable heartbeat/TX LEDs. Persisted
+ * as prefs.led_brightness; the default only applies to a node with no saved
+ * value. Independent of the on/off gate above. */
 #define ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT 100
 
 uint8_t zephcore_led_brightness_pct(void);
 void zephcore_led_set_brightness_pct(uint8_t pct);
+
+struct pwm_dt_spec;
+/* Drive a PWM LED at the shared brightness when on, dark when off. */
+void zephcore_led_pwm_write(const struct pwm_dt_spec *led, bool on);
 
 /* Called by zephcore_leds_set_disabled() after the flag changes. Weak no-op in
  * led_gate.c; helpers/ui/ui_common.c overrides it to stop/restart the heartbeat

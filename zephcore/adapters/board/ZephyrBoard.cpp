@@ -58,21 +58,12 @@
 #endif
 #endif
 
-/* LoRa radio activity LED (optional — defined per-board via DT alias). Still
- * called tx_led after "set leds.radio" gave it an RX mode, because the DT
- * alias it comes from is named lora-tx-led on every board that has one.
- *
- * PWM path (DT_ALIAS(lora_tx_pwm_led)) takes priority when it exists — used
- * on boards where the TX LED is the same physical LED as the heartbeat
- * (e.g. T096, see helpers/ui/ui_common.c), so both share the one brightness
- * in helpers/led_gate.h instead of the plain GPIO path fighting over the
- * pin. */
+/* LoRa activity LED, optional per board. The PWM alias wins over the GPIO one. */
 #if DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led))
 static const struct pwm_dt_spec tx_led_pwm = PWM_DT_SPEC_GET(DT_ALIAS(lora_tx_pwm_led));
 #define HAS_TX_LED_PWM 1
 #define HAS_TX_LED 0
-/* Init deferred to the combined tx_led_init() below (with the GPIO path),
- * since both now also need to arm s_rx_pulse_off -- see that block. */
+/* Initialised in tx_led_init() below, with the GPIO path. */
 #elif DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
 static const struct gpio_dt_spec tx_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(lora_tx_led), gpios);
@@ -83,12 +74,8 @@ static const struct gpio_dt_spec tx_led =
 #define HAS_TX_LED 0
 #endif
 
-/* True when this board wires the activity LED to the same pin as the heartbeat
- * (8 of the supported boards do, counting only the plain-GPIO ones -- see the
- * PWM branch below for the rest).  Only those pay for the arbitration hold in
- * led_gate.c — everywhere else the two LEDs are independent and the calls
- * compile out.  led1 is checked as well because ui_common.c falls back to it
- * when a board has no led0. */
+/* Heartbeat and activity LED on one pin: only then is the arbitration hold in
+ * led_gate.c needed. led1 counts too, since ui_common.c falls back to it. */
 #if HAS_TX_LED && DT_NODE_EXISTS(DT_ALIAS(led0)) && \
 	DT_SAME_NODE(DT_ALIAS(led0), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
@@ -96,10 +83,7 @@ static const struct gpio_dt_spec tx_led =
 	  DT_NODE_EXISTS(DT_ALIAS(led1)) && \
 	  DT_SAME_NODE(DT_ALIAS(led1), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
-/* PWM equivalent: true when heartbeat and TX activity are aliased to the same
- * PWM LED node (T096, Wireless Tracker V2). Not the case on every PWM board --
- * RAK3401 has two independent PWM LEDs (green/blue), so this stays 0 there and
- * the hold below is correctly never taken. */
+/* Same for one PWM LED node shared by both (T096, Wireless Tracker V2). */
 #elif HAS_TX_LED_PWM && DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led)) && \
       DT_SAME_NODE(DT_ALIAS(heartbeat_pwm_led), DT_ALIAS(lora_tx_pwm_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
@@ -107,17 +91,10 @@ static const struct gpio_dt_spec tx_led =
 #define ZEPHCORE_LED_PIN_SHARED 0
 #endif
 
-/* PWM-or-GPIO write for the activity LED, mirroring heartbeat_led_write() in
- * helpers/ui/ui_common.c -- same reasoning: the write itself must not care
- * which path is compiled in, only the callers (onBeforeTransmit/
- * onAfterTransmit/onPacketReceived/rx_pulse_off_handler below) do. */
 #if HAS_TX_LED_PWM
 static inline void tx_led_write(bool on)
 {
-	uint32_t pulse = on ? (uint32_t)((uint64_t)tx_led_pwm.period *
-					  zephcore_led_brightness_pct() / 100)
-			     : 0;
-	pwm_set_pulse_dt(&tx_led_pwm, pulse);
+	zephcore_led_pwm_write(&tx_led_pwm, on);
 }
 #elif HAS_TX_LED
 static inline void tx_led_write(bool on)
@@ -195,9 +172,7 @@ static const struct device *const pmic_charger_dev =
  * interlock that keeps an RX one-shot from clearing a pin that TX still owns:
  * the two are driven from different threads (radio TX path vs system work
  * queue), so without it a pulse landing mid-transmit would blank the LED for
- * the rest of the packet. Applies equally to the PWM-shared boards (T096,
- * Wireless Tracker V2): same race, same fix, just written through
- * tx_led_write() instead of a bare gpio_pin_set_dt(). */
+ * the rest of the packet. */
 static atomic_t s_tx_lit;
 static struct k_work_delayable s_rx_pulse_off;
 
@@ -418,9 +393,7 @@ void ZephyrBoard::onBeforeTransmit()
 	 * ("set leds.radio"). On a headless repeater this is the only LED that ever
 	 * lights, so both have to be checked here and not just in the UI layer.
 	 * onAfterTransmit() still clears the pin unconditionally, so a gate or mode
-	 * flipped mid-transmit can't strand it lit. Same interlock on PWM-shared
-	 * boards (T096, Wireless Tracker V2) as on plain-GPIO ones -- only the
-	 * final write (tx_led_write()) differs. */
+	 * flipped mid-transmit can't strand it lit. */
 #if HAS_TX_LED_PWM || HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (!zephcore_leds_disabled() &&
