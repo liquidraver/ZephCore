@@ -339,14 +339,19 @@ static void process_companion_rx(void)
 /* The contact dump, as far as every connected transport has room
  * (MESH_EVENT_CONTACT_ITER): BLE and TCP below their 2/3 high-water mark and
  * not congested, USB with room for a whole frame. A transport's TX idle
- * brings us back. */
+ * brings us back.
+ *
+ * Only while a client is connected: with none, nothing is busy and no write
+ * succeeds, so the dump would not advance and this loop would not end. The
+ * last client can leave while we are in here (its callbacks preempt this
+ * thread), before MESH_EVENT_LINK has cancelled the dump. */
 static void run_contact_iteration(void)
 {
 #ifdef ZEPHCORE_LORA
 	if (!companion_mesh_ptr) {
 		return;
 	}
-	while (!companion_serial.isWriteBusy()) {
+	while (companion_serial.isConnected() && !companion_serial.isWriteBusy()) {
 		if (!companion_mesh_ptr->continueContactIteration()) {
 			break;  /* iteration complete */
 		}

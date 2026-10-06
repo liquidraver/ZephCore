@@ -12,6 +12,8 @@
  */
 
 #include <zephyr/kernel.h>
+#include <zephyr/devicetree.h>
+#include <errno.h>
 #include "qspi_probe.h"
 
 #if defined(CONFIG_SOC_NRF52840)
@@ -25,6 +27,8 @@
 #define CMD_WRITE_EN     0x06  /* Write Enable (required before erase) */
 #define CMD_CHIP_ERASE   0xC7  /* Full chip erase */
 #define CMD_READ_STATUS  0x05  /* Read Status Register 1 */
+#define CMD_RELEASE_DPD  0xAB  /* Release from Deep Power-Down */
+#define CMD_READ         0x03  /* Read data, 24-bit address */
 #define STATUS_WIP       0x01  /* Write-In-Progress bit in status register */
 
 /* ── CINSTRCONF length values (opcode + N-1 data bytes) ───── */
@@ -32,6 +36,21 @@
 #define CINSTR_1B   1  /* opcode only */
 #define CINSTR_2B   2  /* opcode + 1 byte response */
 #define CINSTR_4B   4  /* opcode + 3 bytes response (JEDEC ID) */
+#define CINSTR_8B   8  /* opcode + 3 address bytes + 4 data bytes (READ) */
+
+/* A flash behind a switched rail needs time after the rail comes up before it
+ * answers: one settle, then a few more tries (MeshTracker X1 answered 00 00 00
+ * right after its rail was switched on). */
+#define PWR_SETTLE_MS    100
+#define PWR_RETRY_MS     200
+#define PWR_RETRIES      2
+
+/* Which SoftDevice this image is built for, from where the application starts
+ * (0x26000 under v6, 0x27000 under v7). */
+#define SD_ANY  0
+#define SD_V6   6
+#define SD_V7   7
+#define BUILD_SD ((DT_REG_ADDR(DT_CHOSEN(zephyr_code_partition)) == 0x27000) ? SD_V7 : SD_V6)
 
 /* ── Pin encoding: matches nRF52840 PSEL register format ──── */
 
@@ -49,20 +68,27 @@ struct qspi_pin_config {
 	const char *name;
 	uint8_t sck, csn, io0, io1, io2, io3;
 	uint8_t pwr_pin;  /* GPIO to drive HIGH before probe, QPIN_NONE if none */
+	uint8_t sd;       /* SD_V6/SD_V7: probe only in that build; SD_ANY: both */
 };
 
 /*
  * Pin table — add new boards here.
  * Sourced from ZephCore DTS + Arduino MeshCore variants.
  *
+ * PWR is the GPIO that switches the flash's supply rail. The firmware raises it
+ * from a regulator node; here nothing else does, and the rail has been off for
+ * the bootloader's whole DFU, so a missing PWR pin reads as "no flash".
+ *
  * Config                     SCK      CSN      IO0      IO1      IO2      IO3      PWR      Flash chip       Boards
  * ───────────────────────── ──────── ──────── ──────── ──────── ──────── ──────── ──────── ──────────────── ────────────────────────────────────────
- * Wio/XIAO/Ikoka/SenseCap   P0.21    P0.25    P0.20    P0.24    P0.22    P0.23    —        P25Q16H 2MB      Wio Tracker L1, XIAO nRF52, Ikoka Stick/Nano/Handheld, SenseCap Solar
- * ThinkNode M1 / TEcho       P1.14    P1.15    P1.12    P1.13    P0.07    P0.05    —        MX25R1635F 2MB   ThinkNode M1, LilyGo TEcho
+ * Wio/XIAO/Ikoka/SenseCap   P0.21    P0.25    P0.20    P0.24    P0.22    P0.23    —        P25Q16H 2MB      Wio Tracker L1 (+ Pro 1W), XIAO nRF52, Ikoka Stick/Nano/Handheld, SenseCap Solar
+ * ThinkNode M1 / TEcho       P1.14    P1.15    P1.12    P1.13    P0.07    P0.05    P0.12    MX25R1635F 2MB   ThinkNode M1, LilyGo TEcho
  * ThinkNode M6               P1.03    P0.23    P1.01    P1.02    P1.04    P1.05    P0.21    MX25R1635F 2MB   ThinkNode M6
  * RAK4631 / GAT562           P0.03    P0.26    P0.30    P0.29    P0.28    P0.02    —        IS25LP080D 1MB   RAK4631, RAK3401, GAT562 variants
  * LilyGo TEcho Lite          P0.04    P0.12    P0.06    P0.08    P1.09    P0.26    —        ZD25WQ32C 4MB    LilyGo TEcho Lite
  * Nano G2 Ultra              P0.08    P1.07    P0.06    P0.26    P1.04    P1.02    —        W25Q16JV 2MB     Nano G2 Ultra
+ * LilyGo T-Impulse Plus      P0.04    P0.12    P0.06    P1.09    P0.08    P0.26    P0.14    ZD25WQ32C 4MB    LilyGo T-Impulse Plus (SD v6; IO1/IO2 are the TEcho Lite's swapped)
+ * MeshTracker X1             P0.19    P0.20    P0.21    P0.22    P0.23    P1.00    P0.15    GD25Q64E 8MB     MeshTracker X1 (SD v7)
  */
 static const struct qspi_pin_config known_boards[] = {
 	{
@@ -77,7 +103,7 @@ static const struct qspi_pin_config known_boards[] = {
 		.sck = QPIN(1, 14), .csn = QPIN(1, 15),
 		.io0 = QPIN(1, 12), .io1 = QPIN(1, 13),
 		.io2 = QPIN(0,  7), .io3 = QPIN(0,  5),
-		.pwr_pin = QPIN_NONE,
+		.pwr_pin = QPIN(0, 12),
 	},
 	{
 		.name = "ThinkNode M6",
@@ -106,6 +132,22 @@ static const struct qspi_pin_config known_boards[] = {
 		.io0 = QPIN(0,  6), .io1 = QPIN(0, 26),
 		.io2 = QPIN(1,  4), .io3 = QPIN(1,  2),
 		.pwr_pin = QPIN_NONE,
+	},
+	{
+		.name = "LilyGo T-Impulse Plus",
+		.sck = QPIN(0,  4), .csn = QPIN(0, 12),
+		.io0 = QPIN(0,  6), .io1 = QPIN(1,  9),
+		.io2 = QPIN(0,  8), .io3 = QPIN(0, 26),
+		.pwr_pin = QPIN(0, 14),
+		.sd = SD_V6,
+	},
+	{
+		.name = "MeshTracker X1",
+		.sck = QPIN(0, 19), .csn = QPIN(0, 20),
+		.io0 = QPIN(0, 21), .io1 = QPIN(0, 22),
+		.io2 = QPIN(0, 23), .io3 = QPIN(1,  0),
+		.pwr_pin = QPIN(0, 15),
+		.sd = SD_V7,
 	},
 };
 
@@ -220,49 +262,102 @@ static bool qspi_cinstr(uint8_t opcode, uint8_t len, uint32_t *dat0)
 	return true;
 }
 
+/**
+ * Read the 4 bytes at flash address 0 (READ 0x03, single-line).
+ * The address goes out from CINSTRDAT0 bytes 0-2; the data comes back in the
+ * byte slots after it: CINSTRDAT0 byte 3 and CINSTRDAT1 bytes 0-2.
+ */
+static bool qspi_read_first4(uint32_t *out)
+{
+	NRF_QSPI->CINSTRDAT0 = 0;
+	NRF_QSPI->CINSTRDAT1 = 0;
+	NRF_QSPI->EVENTS_READY = 0;
+	NRF_QSPI->CINSTRCONF = ((uint32_t)CMD_READ) |
+				((uint32_t)CINSTR_8B << 8) |
+				(1UL << 12) | (1UL << 13);
+
+	if (!qspi_wait_ready(500)) {
+		return false;
+	}
+
+	*out = (NRF_QSPI->CINSTRDAT0 >> 24) | (NRF_QSPI->CINSTRDAT1 << 8);
+	return true;
+}
+
 /* ── Per-config probe and erase ───────────────────────────── */
 
+/* @return 0 erased, -ENODEV nothing answered on these pins, -EIO a flash
+ * answered but the erase failed.
+ */
 static int probe_one(const struct qspi_pin_config *cfg)
 {
-	uint32_t dat0;
+	uint32_t dat0, first4;
 	uint8_t mfr, type, cap;
+	int rc = -ENODEV;
 
 	printk("  Probing %s pins...", cfg->name);
 
 	/* Power-enable GPIO if needed */
 	if (cfg->pwr_pin != QPIN_NONE) {
 		gpio_set_output_high(cfg->pwr_pin);
-		k_msleep(2);
+		k_msleep(PWR_SETTLE_MS);
 	}
 
-	/* Configure and activate QSPI peripheral */
+	/* Activate with the pins disconnected, connect them afterwards (what
+	 * Zephyr's nrf_qspi_nor exit_dpd() does). ACTIVATE polls the flash's
+	 * status register until WIP reads 0; a part in deep power-down, or no
+	 * part at all, leaves IO1 floating and READY may never come.
+	 */
 	NRF_QSPI->ENABLE = QSPI_ENABLE_ENABLE_Disabled;
 	qspi_disconnect_pins();
-	qspi_set_pins(cfg);
 
 	if (!qspi_activate()) {
 		printk(" activate timeout\n");
 		goto fail;
 	}
+	qspi_set_pins(cfg);
 
-	/* READ JEDEC ID (0x9F → 3 bytes: manufacturer, type, capacity) */
-	if (!qspi_cinstr(CMD_READ_ID, CINSTR_4B, &dat0)) {
-		printk(" read ID timeout\n");
-		goto fail_deactivate;
-	}
+	for (int attempt = 0; ; attempt++) {
+		/* A repeater, room server or observer leaves the flash in deep
+		 * power-down, and the reset into this formatter does not wake
+		 * it: it then ignores everything but this command.
+		 */
+		if (!qspi_cinstr(CMD_RELEASE_DPD, CINSTR_1B, NULL)) {
+			printk(" wake timeout\n");
+			goto fail_deactivate;
+		}
+		k_msleep(1);
 
-	mfr  = (dat0 >>  0) & 0xFF;
-	type = (dat0 >>  8) & 0xFF;
-	cap  = (dat0 >> 16) & 0xFF;
+		/* READ JEDEC ID (0x9F → 3 bytes: manufacturer, type, capacity) */
+		if (!qspi_cinstr(CMD_READ_ID, CINSTR_4B, &dat0)) {
+			printk(" read ID timeout\n");
+			goto fail_deactivate;
+		}
 
-	/* Validate — reject bus-float (0xFF) and bus-ground (0x00) */
-	if (mfr == 0xFF || mfr == 0x00) {
-		printk(" no flash (ID=%02X %02X %02X)\n", mfr, type, cap);
-		goto fail_deactivate;
+		mfr  = (dat0 >>  0) & 0xFF;
+		type = (dat0 >>  8) & 0xFF;
+		cap  = (dat0 >> 16) & 0xFF;
+
+		/* Validate — reject bus-float (0xFF) and bus-ground (0x00) */
+		if (mfr != 0xFF && mfr != 0x00) {
+			break;
+		}
+		if (cfg->pwr_pin == QPIN_NONE || attempt >= PWR_RETRIES) {
+			printk(" no flash (ID=%02X %02X %02X)\n", mfr, type, cap);
+			goto fail_deactivate;
+		}
+		k_msleep(PWR_RETRY_MS);
 	}
 
 	printk(" found! JEDEC=%02X %02X %02X (%u KB)\n",
 	       mfr, type, cap, (unsigned)((1UL << cap) / 1024));
+
+	/* From here on a failure is an error, not "no flash". */
+	rc = -EIO;
+
+	if (qspi_read_first4(&first4)) {
+		printk("  First bytes before: %08X\n", (unsigned)first4);
+	}
 
 	/* ── Erase ── */
 	printk("  Erasing QSPI flash...");
@@ -294,6 +389,14 @@ static int probe_one(const struct qspi_pin_config *cfg)
 		}
 
 		if (!(dat0 & STATUS_WIP)) {
+			/* A chip erase the part refused (write-protected)
+			 * also ends with WIP clear: check it took.
+			 */
+			if (!qspi_read_first4(&first4) || first4 != 0xFFFFFFFF) {
+				printk(" FAILED (first bytes after: %08X)\n",
+				       (unsigned)first4);
+				goto fail_deactivate;
+			}
 			printk(" OK (%d.%ds)\n",
 			       elapsed_ms / 1000,
 			       (elapsed_ms % 1000) / 100);
@@ -313,24 +416,30 @@ fail:
 	if (cfg->pwr_pin != QPIN_NONE) {
 		gpio_release(cfg->pwr_pin);
 	}
-	return -1;
+	return rc;
 }
 
 /* ── Public API ───────────────────────────────────────────── */
 
 int qspi_probe_and_erase(void)
 {
-	printk("  QSPI: probing %d known pin configurations...\n",
-	       (int)ARRAY_SIZE(known_boards));
+	printk("  QSPI: probing known pin configurations...\n");
 
 	for (int i = 0; i < (int)ARRAY_SIZE(known_boards); i++) {
-		if (probe_one(&known_boards[i]) == 0) {
-			return 0;
+		int rc;
+
+		if (known_boards[i].sd != SD_ANY && known_boards[i].sd != BUILD_SD) {
+			continue;
+		}
+
+		rc = probe_one(&known_boards[i]);
+		if (rc != -ENODEV) {
+			return rc;
 		}
 	}
 
 	printk("  QSPI: no external flash found — skipped\n");
-	return -1;
+	return -ENODEV;
 }
 
 #else /* !CONFIG_SOC_NRF52840 */
@@ -338,7 +447,7 @@ int qspi_probe_and_erase(void)
 int qspi_probe_and_erase(void)
 {
 	printk("  QSPI: not supported on this platform\n");
-	return -1;
+	return -ENODEV;
 }
 
 #endif /* CONFIG_SOC_NRF52840 */

@@ -1,8 +1,10 @@
 # ZephCore 1.17.7-zephcore
 
-Faster GPS fixes on three trackers, a clock that survives a reboot, a fix for USB companions that
-could stop responding right after boot, more reliable detection of clock chips, repeaters that power
-down an external flash chip they do not use, and a few fixes ported from upstream MeshCore.
+Faster GPS fixes on three trackers, a clock that survives a reboot, fixes for USB companions that
+could stop responding right after boot or when the port closed during a contact sync, more reliable
+detection of clock chips, repeaters that power down an external flash chip they do not use, a
+formatter that erases that chip on every board that has one, and a few fixes ported from upstream
+MeshCore.
 
 > [!NOTE]
 > A normal upgrade keeps your identity, settings, contacts and phone pairing.
@@ -16,8 +18,8 @@ a search from scratch. Three boards now keep that data:
 
 - **SenseCAP T1000-E and MeshTracker X1**: the receiver uses its low-power backup sleep. On a
   T1000-E, a fix after a minute asleep took about 9 seconds instead of about 77.
-- **SenseCAP Solar**: the receiver stays in standby between fixes instead of being switched off. In
-  marginal reception it got a fix on 5 of 6 wakes, against 2 of 6 before.
+- **SenseCAP Solar**: the receiver stays in standby between fixes instead of being switched off,
+  which makes a fix in marginal reception more likely.
 
 Keeping that data uses a little power all the time, so it is only done when the GPS interval is one
 hour or less. Longer intervals (a repeater's default is 48 hours) switch the receiver off completely,
@@ -72,22 +74,39 @@ traffic, while Bluetooth kept advertising. Only a reset recovered it.
 
 The cause is in the USB serial driver of the Zephyr version 1.17.6 moved to: with its first 64-byte
 buffer already full, it reported free space but accepted no data, and the firmware retried forever.
-On a Wio Tracker L1 debug build, where the boot log fills that buffer, it happened on every such boot.
-It was not reproduced on a release build, but the boot banner left only 3 bytes of margin there.
-
-The driver is patched. On the Wio Tracker L1, 6 of 6 debug boots and 3 of 3 release boots now respond,
-and the companion protocol test gives the same replies as 1.17.6.
+The driver is patched.
 
 The same patch covers a second way into the same loop: a host computer going to sleep with the port
-open. That one is fixed from reading the code and has not been reproduced on hardware.
+open.
+
+## USB companion: a hang when the port closed during a contact sync
+
+A companion sending its contact list could get stuck when the last connected app went away before
+the list was complete: the app or browser tab was closed, or the tool exited. The node stayed in the
+loop that sends the list, with nobody to send it to, and handled nothing else until an app connected
+again; that app then received the rest of the list unasked. Present since 1.17.6.
+
+The loop ran for as long as no app was busy. With no app left none is busy and nothing can be sent,
+so it never ended. It now also stops when no app is connected.
+
+## USB companion: a host that goes away without closing the port
+
+A USB session ended only when the host closed the port or the cable lost power. A host that went
+away any other way (a USB hub resetting, a computer going to sleep with the app open) left the node
+treating the app as still connected. With one app that did no harm. With a phone on Bluetooth at the
+same time, the node could stop answering the phone once the data waiting for the USB side filled its
+buffer.
+
+Now a reset of the USB bus ends the session, and a session on a sleeping computer does not count as a
+connected app until the computer wakes. An app that keeps the port open but stops reading can still
+hold up a second app.
 
 ## Repeaters: the external flash chip is powered down
 
 Some boards carry a second flash chip, which companions keep contacts and channels on. Repeaters,
 room servers and observers store nothing on it. Since 1.17.6 those roles no longer set the chip up at
-all, and that left its control pins unconnected: on a Wio Tracker L1 repeater the chip-select line
-read low, so the chip sat selected for as long as the node ran instead of idling. 1.17.4 and earlier
-set the chip up at boot on every role.
+all, and that left its control pins unconnected, so the chip could sit selected for as long as the
+node ran instead of idling. 1.17.4 and earlier set the chip up at boot on every role.
 
 These roles now set the chip up once at start-up and put it into its deep power-down mode, with
 chip-select held high. A factory `erase` wakes the chip, erases it and puts it back. Companions are
@@ -96,13 +115,31 @@ unchanged: they use the chip, so it stays in standby.
 Boards with this chip: T-Echo, T-Impulse Plus, MeshTracker X1, SenseCAP Solar, ThinkNode M1,
 ThinkNode M6, Wio Tracker L1, Wio Tracker L1 Pro 1W and XIAO nRF52840.
 
-Checked on a Wio Tracker L1 repeater after a normal boot, after a first-boot format and after
-`erase`: the chip ignores an ID request, and answers again once it is woken. The current this saves
-has not been measured, and the change has not been run on the other boards.
-
 This was found while looking into a report of a XIAO nRF52840 repeater drawing about 4 mA more on
 1.17.6 than on 1.17.4 (thanks to **Kimotu**). Whether it accounts for that difference is not
 confirmed yet.
+
+## Formatter: the external flash chip is erased on every board that has one
+
+The nRF52 formatters (`SoftDevice_v6_formatter` and `SoftDevice_v7_formatter`, as `.uf2` and as the
+`.zip` the Mesh America configurator uses for its erase step) wipe a node completely: the internal storage, the
+Bluetooth pairings and the external flash chip. On some boards the formatter did not reach that chip,
+left it as it was and still reported success. A companion flashed afterwards then found the old
+contacts and channels on it.
+
+- **MeshTracker X1 and T-Impulse Plus**: the formatter did not know how the chip is wired on these
+  boards. It does now.
+- **Boards that switch the chip's power supply** (ThinkNode M1, T-Echo, T-Impulse Plus,
+  MeshTracker X1): the formatter now switches the supply on itself and waits for the chip to start.
+- **A chip in deep power-down**: a repeater, room server or observer on this release puts the chip to
+  sleep (see above), and a sleeping chip answers nothing. The formatter now wakes it first.
+
+The erase is also checked: the formatter reads the chip back afterwards and reports a failure if it
+is not blank. The last lines of its serial log say whether the external chip was erased, or that no
+such chip answered, which is normal on a board without one.
+
+Use the formatters from this release; the file names have not changed. As before, pick the one that
+matches the SoftDevice version of your bootloader.
 
 ## Also in this release
 
@@ -130,9 +167,8 @@ confirmed yet.
   companion port and the update page) was predictable, and is now derived from a secret as intended.
 - **Heltec V3 and Wireless Tracker companions** (WiFi and Bluetooth together, no PSRAM) had under
   1 KB of memory left; they now have about 2.5 KB. The Bluetooth controller's stack on ESP32-S3 and
-  ESP32-C3 companions was 4 KB and is now 2 KB: its measured use is 1.1 KB with WiFi connected.
-  Nothing changes in use. Measured on a XIAO ESP32-S3; not run on the two Heltec boards themselves or
-  on an ESP32-C3.
+  ESP32-C3 companions was 4 KB and is now 2 KB; it uses about 1.1 KB with WiFi connected. Nothing
+  changes in use.
 - **Documentation**: the README was reorganised, build and flashing instructions moved to
   `docs/BUILDING.md`, and the example board and porting guide were rewritten for the current board
   layout.

@@ -13,7 +13,8 @@
  * Probe all known QSPI pin configurations for connected flash.
  * If found, erase the entire chip.
  *
- * @return 0 if a chip was found and erased, -1 if no chip found or not supported
+ * @return 0 if a chip was found and erased, -ENODEV if no chip answered (or the
+ *         platform has no QSPI), -EIO if a chip answered but the erase failed
  */
 int qspi_probe_and_erase(void);
 
