@@ -44,6 +44,17 @@ bool zephcore_fs_format_all(bool *out_ext_mounted);
  */
 bool zephcore_fs_mount_ext(void);
 
+/**
+ * @brief Put the /ext flash into deep power-down, for a role that keeps
+ * nothing on it (repeater, room server, observer).
+ *
+ * Unmounts /ext if a format left it mounted, initialises the deferred flash,
+ * then suspends it: the part gets its Deep Power-Down command and the bus
+ * pads go to their sleep state.  Idempotent; a no-op on boards with no QSPI.
+ * zephcore_fs_format_all() and zephcore_fs_mount_ext() resume the part.
+ */
+void zephcore_fs_ext_power_down(void);
+
 #ifdef __cplusplus
 }
 #endif

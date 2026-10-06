@@ -378,6 +378,8 @@ target_sources(app PRIVATE
   helpers/buzzer_gate.c
   # QSPI bring-up probe. Self-stubs unless CONFIG_ZEPHCORE_QSPI_RDID_PROBE.
   helpers/qspi_probe.c
+  # TEMPORARY bench instrumentation. Self-stubs unless CONFIG_ZEPHCORE_POWER_DIAG.
+  helpers/power_diag.c
   # Storage shared by every role's store (the companion builds
   # ZephyrDataStore, the other three RepeaterDataStore): factory format,
   # power-safe replace and non-logging probes, the identity file, and the

@@ -867,6 +867,15 @@ config ZEPHCORE_LOOP_WAKE_STATS
 	  after a change to its scheduling.  Measure on the release config with
 	  this passed by -D, so debug logging does not add wakes of its own.
 
+config ZEPHCORE_POWER_DIAG
+	bool "CLI: CPU wake sources, sleep fraction, enabled peripherals (TEMPORARY)"
+	depends on SOC_NRF52840
+	help
+	  Bench instrumentation: `get pwr <n>` reports which interrupts wake the
+	  CPU, how much of the time it sleeps, and which clocks and peripherals
+	  stay enabled.  Build with boards/common/power_diag.conf, which turns
+	  on the user tracing hooks it counts from.
+
 config ZEPHCORE_LORA_RETENTION_DEBUG
 	bool "SX126x: verify the warm-start retention list on air"
 	depends on ZEPHCORE_RADIO_NATIVE

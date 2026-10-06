@@ -1,8 +1,8 @@
 # ZephCore 1.17.7-zephcore
 
 Faster GPS fixes on three trackers, a clock that survives a reboot, a fix for USB companions that
-could stop responding right after boot, more reliable detection of clock chips, and a few fixes ported
-from upstream MeshCore.
+could stop responding right after boot, more reliable detection of clock chips, repeaters that power
+down an external flash chip they do not use, and a few fixes ported from upstream MeshCore.
 
 > [!NOTE]
 > A normal upgrade keeps your identity, settings, contacts and phone pairing.
@@ -80,6 +80,29 @@ and the companion protocol test gives the same replies as 1.17.6.
 
 The same patch covers a second way into the same loop: a host computer going to sleep with the port
 open. That one is fixed from reading the code and has not been reproduced on hardware.
+
+## Repeaters: the external flash chip is powered down
+
+Some boards carry a second flash chip, which companions keep contacts and channels on. Repeaters,
+room servers and observers store nothing on it. Since 1.17.6 those roles no longer set the chip up at
+all, and that left its control pins unconnected: on a Wio Tracker L1 repeater the chip-select line
+read low, so the chip sat selected for as long as the node ran instead of idling. 1.17.4 and earlier
+set the chip up at boot on every role.
+
+These roles now set the chip up once at start-up and put it into its deep power-down mode, with
+chip-select held high. A factory `erase` wakes the chip, erases it and puts it back. Companions are
+unchanged: they use the chip, so it stays in standby.
+
+Boards with this chip: T-Echo, T-Impulse Plus, MeshTracker X1, SenseCAP Solar, ThinkNode M1,
+ThinkNode M6, Wio Tracker L1, Wio Tracker L1 Pro 1W and XIAO nRF52840.
+
+Checked on a Wio Tracker L1 repeater after a normal boot, after a first-boot format and after
+`erase`: the chip ignores an ID request, and answers again once it is woken. The current this saves
+has not been measured, and the change has not been run on the other boards.
+
+This was found while looking into a report of a XIAO nRF52840 repeater drawing about 4 mA more on
+1.17.6 than on 1.17.4 (thanks to **Kimotu**). Whether it accounts for that difference is not
+confirmed yet.
 
 ## Also in this release
 

@@ -14,6 +14,7 @@
 #endif
 #include <helpers/MeshTimeSync.h>
 #include <helpers/LoopWakeStats.h>
+extern "C" void power_diag_line(int n, char *out, size_t cap);  /* TEMPORARY: helpers/power_diag.c */
 #include <helpers/time_sync.h>
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/AdvertDataHelpers.h>
@@ -1234,6 +1235,10 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 #if IS_ENABLED(CONFIG_ZEPHCORE_MEM_STATS)
 	} else if (memcmp(config, "mem", 3) == 0) {
 		memStatsLine(atoi(&config[3]), reply);
+#endif
+#if IS_ENABLED(CONFIG_ZEPHCORE_POWER_DIAG)
+	} else if (memcmp(config, "pwr", 3) == 0) {
+		power_diag_line(atoi(&config[3]), reply, replyCap(sender_timestamp));
 #endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_LOOP_WAKE_STATS)
 	} else if (memcmp(config, "loop.wakes", 10) == 0) {

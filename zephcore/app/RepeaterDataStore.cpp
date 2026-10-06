@@ -36,6 +36,9 @@ bool RepeaterDataStore::begin() {
 		LOG_INF("Created %s directory", BASE_PATH);
 	}
 
+	/* Nothing a server role stores lives on /ext. */
+	zephcore_fs_ext_power_down();
+
 	_initialized = true;
 	LOG_INF("RepeaterDataStore initialized at %s", BASE_PATH);
 	return true;

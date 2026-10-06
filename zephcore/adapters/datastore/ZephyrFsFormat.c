@@ -9,6 +9,7 @@
 #include <zephyr/devicetree.h>
 #include <zephyr/device.h>
 #include <zephyr/fs/fs.h>
+#include <zephyr/pm/device.h>
 #include <zephyr/storage/flash_map.h>
 #include <zephyr/logging/log.h>
 
@@ -46,19 +47,69 @@ static void flatten(uint8_t id, const char *tag)
  * boot after a UF2 update (seconds in the bootloader, rail off) did not.
  * Bringing the part up here, on first use, is long after the rail. Each role
  * reaches this on its own path, so it is idempotent: -EALREADY means an
- * earlier call already ran the init, whatever the result was. */
+ * earlier call already ran the init, whatever the result was.
+ *
+ * A role that does not use /ext parks the part in deep power-down
+ * (zephcore_fs_ext_power_down()); a format still has to reach it, so a
+ * suspended flash is resumed here. */
 static void ext_flash_init(void)
 {
 	const struct device *dev = PARTITION_DEVICE(qspi_storage_partition);
+	enum pm_device_state state;
 
 	if (!device_is_ready(dev)) {
 		int rc = device_init(dev);
 
 		LOG_INF("%s flash init: rc=%d ready=%d", EXT_MNT_POINT, rc,
 			(int)device_is_ready(dev));
+	} else if (pm_device_state_get(dev, &state) == 0 &&
+		   state == PM_DEVICE_STATE_SUSPENDED) {
+		int rc = pm_device_action_run(dev, PM_DEVICE_ACTION_RESUME);
+
+		LOG_INF("%s flash resume: rc=%d", EXT_MNT_POINT, rc);
 	}
 }
 #endif
+
+void zephcore_fs_ext_power_down(void)
+{
+#if PARTITION_EXISTS(qspi_storage_partition)
+	const struct device *dev = PARTITION_DEVICE(qspi_storage_partition);
+	enum pm_device_state state;
+	int rc;
+
+	if (device_is_ready(dev) && pm_device_state_get(dev, &state) == 0 &&
+	    state == PM_DEVICE_STATE_SUSPENDED) {
+		return;
+	}
+
+#if DT_NODE_EXISTS(DT_NODELABEL(qspi_lfs))
+	/* A first-boot format leaves /ext mounted (zephcore_fs_format_all()). */
+	if (zephcore_fs_is_mounted(EXT_MNT_POINT)) {
+		FS_FSTAB_DECLARE_ENTRY(DT_NODELABEL(qspi_lfs));
+		fs_unmount(&FS_FSTAB_ENTRY(DT_NODELABEL(qspi_lfs)));
+	}
+#endif
+
+	/* The part has to be brought up to be put down: left deferred, nothing
+	 * ever configures its pads, and a floating CS# reads low -- the flash
+	 * sits selected for as long as the node runs (measured on a Wio Tracker
+	 * L1 repeater).  Init drives CS# and sends the part its commands;
+	 * suspend sends Deep Power-Down and applies the sleep pinctrl state,
+	 * which must keep a pull-up on CS#. */
+	ext_flash_init();
+	if (!device_is_ready(dev)) {
+		LOG_WRN("%s flash not ready, not powered down", EXT_MNT_POINT);
+		return;
+	}
+	rc = pm_device_action_run(dev, PM_DEVICE_ACTION_SUSPEND);
+	if (rc == 0) {
+		LOG_INF("%s flash in deep power-down", EXT_MNT_POINT);
+	} else {
+		LOG_WRN("%s flash power-down failed: %d", EXT_MNT_POINT, rc);
+	}
+#endif
+}
 
 bool zephcore_fs_mount_ext(void)
 {
