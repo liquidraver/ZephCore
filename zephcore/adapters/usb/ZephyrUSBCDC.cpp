@@ -8,8 +8,9 @@
  *     SET_LINE_CODING requests reach us as events (no DTR polling)
  *   - Emits a k_event when DTR transitions high — the boot path waits on it
  *     instead of a fixed sleep
- *   - Fires a user callback on every DTR transition (companion: reset RX +
- *     flip active_iface on drop)
+ *   - Fires a user callback on every DTR transition (companion: end the
+ *     session on drop), and reports VBUS loss and a bus reset as a drop
+ *   - Fires a user callback on bus suspend, resume and reset
  *   - Handles the Arduino-style 1200-baud touch → reboot-to-bootloader flow
  *     for nRF52 boards
  */
@@ -71,6 +72,7 @@ static K_EVENT_DEFINE(usb_cdc_events);
 static bool s_dtr_active;
 static bool s_initialized;
 static zephcore_usbd_cdc_dtr_cb_t s_dtr_cb;
+static zephcore_usbd_cdc_bus_cb_t s_bus_cb;
 
 /* ZephyrBoard for bootloader-magic write before reset. The class is stateless
  * (only static methods over GPREGRET + sys_reboot), so a local instance here
@@ -84,6 +86,17 @@ static void enter_bootloader(void)
 	k_msleep(100);
 	usb_board.rebootToBootloader();
 	CODE_UNREACHABLE;
+}
+
+/* The host went away without a DTR=0: report it as a DTR drop. */
+static void host_gone(void)
+{
+	if (s_dtr_active) {
+		s_dtr_active = false;
+		if (s_dtr_cb) {
+			s_dtr_cb(false);
+		}
+	}
 }
 
 /* ===== USBD message callback ===== */
@@ -142,11 +155,24 @@ static void usbd_msg_callback(struct usbd_context *const ctx,
 		 * connection until reboot).  Treat VBUS loss as a DTR drop so the
 		 * interface is handed back to BLE. */
 		LOG_INF("CDC ACM: VBUS removed (device unplug)");
-		if (s_dtr_active) {
-			s_dtr_active = false;
-			if (s_dtr_cb) {
-				s_dtr_cb(false);
-			}
+		host_gone();
+	} else if (msg->type == USBD_MSG_RESET) {
+		/* Bus reset.  At enumeration no port is open and this does nothing.
+		 * Later it means the host is enumerating us again (a hub upstream
+		 * was reset, or the host lost the device): the port it had open is
+		 * gone, and no DTR=0 says so, since the class keeps the line state
+		 * of the old session.  VBUS can stay up throughout, so treat it as
+		 * a DTR drop too.  A reset also ends a suspend, with no RESUME. */
+		LOG_INF("CDC ACM: bus reset");
+		host_gone();
+		if (s_bus_cb) {
+			s_bus_cb();
+		}
+	} else if (msg->type == USBD_MSG_SUSPEND || msg->type == USBD_MSG_RESUME) {
+		LOG_INF("CDC ACM: bus %s",
+			msg->type == USBD_MSG_SUSPEND ? "suspended" : "resumed");
+		if (s_bus_cb) {
+			s_bus_cb();
 		}
 	}
 }
@@ -266,6 +292,16 @@ extern "C" bool zephcore_usbd_is_dtr_active(void)
 extern "C" void zephcore_usbd_set_dtr_cb(zephcore_usbd_cdc_dtr_cb_t cb)
 {
 	s_dtr_cb = cb;
+}
+
+extern "C" bool zephcore_usbd_is_suspended(void)
+{
+	return s_initialized && usbd_is_suspended(&zephcore_usbd);
+}
+
+extern "C" void zephcore_usbd_set_bus_cb(zephcore_usbd_cdc_bus_cb_t cb)
+{
+	s_bus_cb = cb;
 }
 
 extern "C" void zephcore_usbd_detach(void)

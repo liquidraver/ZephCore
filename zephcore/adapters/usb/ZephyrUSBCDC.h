@@ -20,8 +20,13 @@ extern "C" {
 #endif
 
 /* Per-transition DTR callback. Fires on every host CONTROL_LINE_STATE change,
- * value = current DTR level. NULL is allowed (cb cleared). */
+ * value = current DTR level, and with false when the host goes away without
+ * one (VBUS loss, bus reset). NULL is allowed (cb cleared). */
 typedef void (*zephcore_usbd_cdc_dtr_cb_t)(bool dtr_active);
+
+/* Bus state callback: the bus was suspended, resumed or reset. Read the state
+ * with zephcore_usbd_is_suspended(). NULL is allowed (cb cleared). */
+typedef void (*zephcore_usbd_cdc_bus_cb_t)(void);
 
 /* Initialize USB device + CDC ACM class and enumerate.
  * Idempotent; subsequent calls are no-ops.
@@ -37,8 +42,15 @@ int zephcore_usbd_wait_dtr(uint32_t timeout_ms);
 bool zephcore_usbd_is_dtr_active(void);
 
 /* Register a callback fired on every DTR transition.
- * Companion uses this to reset its RX state and flip active_iface on drop. */
+ * Companion uses this to end its session on a drop. */
 void zephcore_usbd_set_dtr_cb(zephcore_usbd_cdc_dtr_cb_t cb);
+
+/* The host has suspended the bus (asleep with the port open): nothing we send
+ * leaves the device until it resumes. The USB stack's own state. */
+bool zephcore_usbd_is_suspended(void);
+
+/* Register a callback fired on a bus suspend, resume or reset. */
+void zephcore_usbd_set_bus_cb(zephcore_usbd_cdc_bus_cb_t cb);
 
 /* Detach from the USB bus (drop the D+ pull-up) so the host sees an unplug.
  * Call before a reset: a soft reset leaves the PHY attached on some SoCs, and

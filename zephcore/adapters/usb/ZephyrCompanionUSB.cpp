@@ -100,8 +100,15 @@ static const struct companion_link_cbs *s_link;
 K_MSGQ_DEFINE(usb_recv_queue, sizeof(struct frame), USB_RECV_QUEUE_DEPTH, 4);
 
 /* A session starts on the first traffic after open (a binary frame or a CLI
- * line) and ends when the host drops DTR. */
+ * line) and ends when the host drops DTR or goes away without one (VBUS loss,
+ * bus reset). */
 static bool usb_session_active;
+
+/* The session can carry frames: it is open and the bus is not suspended (host
+ * asleep with the port open). Main hears each edge as a connect or a
+ * disconnect, so a suspended session is not a client: nothing is queued for
+ * it, and it does not hold up the last-client cleanup. */
+static bool usb_link_up;
 
 /* CLI text line callback — fired when a complete line arrives in text mode. */
 static void (*s_cli_line_cb)(const char *line);
@@ -189,6 +196,31 @@ static void usb_uart_isr(const struct device *dev, void *user_data)
 	}
 }
 
+/* Recompute usb_link_up and tell main about an edge. Arduino shows "connected"
+ * for serial transports too, so a text session raises the edges as well. */
+static void usb_link_update(void)
+{
+	bool up = usb_session_active;
+
+#if COMPANION_HAS_DTR
+	up = up && !zephcore_usbd_is_suspended();
+#endif
+	if (up == usb_link_up) {
+		return;
+	}
+	usb_link_up = up;
+	if (!s_link) {
+		return;
+	}
+	if (up) {
+		if (s_link->on_connected) {
+			s_link->on_connected();
+		}
+	} else if (s_link->on_disconnected) {
+		s_link->on_disconnected();
+	}
+}
+
 /* Start a session on its first inbound traffic — a binary frame or a complete
  * CLI line. The official client opens with CMD_DEVICE_QUERY (0x16), not
  * CMD_APP_START, so any first traffic starts it. Other transports (BLE, WiFi)
@@ -202,10 +234,7 @@ static void usb_session_begin(uint8_t log_tag, bool is_text)
 	usb_session_is_text = is_text;
 	LOG_INF("usb_rx: first traffic 0x%02x, session started (%s)", log_tag,
 		is_text ? "text" : "binary");
-	/* Arduino shows "connected" for serial transports too */
-	if (s_link && s_link->on_connected) {
-		s_link->on_connected();
-	}
+	usb_link_update();
 }
 
 /* USB RX work - parses V3 frames from ring buffer */
@@ -347,7 +376,8 @@ static void usb_rx_work_fn(struct k_work *work)
 
 #if COMPANION_HAS_DTR
 /* DTR-transition callback from the shared ZephyrUSBCDC module.
- * On drop: host closed the port → reset parser, hand control back to BLE.
+ * On drop (the host closed the port, or went away: VBUS loss, bus reset):
+ * reset the parser and end the session.
  * CDC-only — a plain-UART backend has no DTR and never registers this. */
 static void on_dtr_change(bool dtr_active)
 {
@@ -355,7 +385,6 @@ static void on_dtr_change(bool dtr_active)
 		return;
 	}
 	LOG_INF("usb_dtr: DTR dropped, USB disconnected");
-	bool was_active = usb_session_active;
 
 	usb_session_active = false;
 	ring_buf_reset(&usb_ring_buf);
@@ -375,8 +404,19 @@ static void on_dtr_change(bool dtr_active)
 
 	/* The session is over: main runs its per-session cleanup (contact dump,
 	 * sync, sign buffer) once no other transport is still connected. */
-	if (was_active && s_link && s_link->on_disconnected) {
-		s_link->on_disconnected();
+	usb_link_update();
+}
+
+/* Bus suspend, resume or reset, from the shared ZephyrUSBCDC module. */
+static void on_bus_change(void)
+{
+	bool was_up = usb_link_up;
+
+	usb_link_update();
+	if (usb_link_up && !was_up) {
+		/* Resumed. The class does not restart TX by itself: frames queued
+		 * before the suspend wait for this kick. */
+		uart_irq_tx_enable(usb_dev);
 	}
 }
 #endif /* COMPANION_HAS_DTR */
@@ -455,7 +495,7 @@ size_t zephcore_usb_companion_recv(uint8_t *dest)
 
 bool zephcore_usb_companion_is_connected(void)
 {
-	return usb_session_active && !usb_session_is_text;
+	return usb_link_up && !usb_session_is_text;
 }
 
 /* Only a connected session is ever busy: MultiSerialInterface asks every
@@ -516,6 +556,7 @@ void zephcore_usb_companion_init(const struct companion_link_cbs *link)
 		 * shared usbd_msg_callback — no polling work needed.  Plain-UART
 		 * backends have no DTR; their session reset is protocol-driven. */
 		zephcore_usbd_set_dtr_cb(on_dtr_change);
+		zephcore_usbd_set_bus_cb(on_bus_change);
 #endif
 	} else {
 		LOG_WRN("Companion UART not ready");

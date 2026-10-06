@@ -21,8 +21,9 @@ extern "C" {
 
 /**
  * Initialize the transport: ring buffers, UART ISR, DTR tracking.
- * @param link  frame waiting / TX drained / session start / session end
- *              (DTR drop). Raised from the ISR and sysworkq: post events only.
+ * @param link  frame waiting / TX drained / session start (also a bus resume)
+ *              / session end (DTR drop, VBUS loss, bus reset; also a bus
+ *              suspend). Raised from the ISR and sysworkq: post events only.
  */
 void zephcore_usb_companion_init(const struct companion_link_cbs *link);
 
@@ -36,7 +37,8 @@ size_t zephcore_usb_companion_write_frame(const uint8_t *src, size_t len);
 /** Take the next received binary frame into dest (MAX_FRAME_SIZE). Returns its length, 0 if none. */
 size_t zephcore_usb_companion_recv(uint8_t *dest);
 
-/** A binary companion session is open (a text-CLI session is not a client). */
+/** A binary companion session is open and the bus is not suspended (a
+ *  text-CLI session is not a client). */
 bool zephcore_usb_companion_is_connected(void);
 
 /** The TX ring cannot take another full-size frame. */
