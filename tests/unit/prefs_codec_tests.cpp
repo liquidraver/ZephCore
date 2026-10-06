@@ -29,8 +29,8 @@ const Field kCompanion[] = {
     F(153, v_battery_alert_mv), F(155, cad_auto), F(156, cad_offset), F(157, probe_interval),
     F(158, cad_busycap), F(159, adc_multiplier), F(163, extra_sf), F(166, v_contact_flags),
     F(167, fem_rxgain), F(168, display_rotate), F(169, input_rotate), F(170, cad_base),
-    F(171, tz_offset), F(172, leds_radio_mode), F(173, leds_hb_mode), F(174, led_brightness),
-    F(175, wifi_enabled), F(176, wifi_ssid), F(209, wifi_pwd),
+    F(171, tz_offset), F(172, leds_radio_mode), F(173, leds_hb_mode), F(174, wifi_enabled),
+    F(175, wifi_ssid), F(208, wifi_pwd), F(272, led_brightness),
 };
 
 // Server /lfs/repeater/prefs, 312 bytes. Offset 120 is leds_disabled as a
@@ -154,7 +154,7 @@ TEST(prefs_companion_short, "UNIT-PREFS-003", "Short companion files keep the ca
     // Every field boundary: each length the format has had ends on one.
     const size_t lens[] = { 91, 92, 93, 94, 95, 96, 127, 143, 144, 145, 146, 148, 150, 151,
                             152, 153, 155, 156, 157, 158, 159, 163, 166, 167, 168, 169, 170,
-                            171, 172, 173, 174, 175, 176, 209, 273 };
+                            171, 172, 173, 174, 175, 208, 272, 273 };
     for (size_t len : lens) {
         NodePrefs got = defaults();
         CHECK(companionPrefsDecode(got, full, len));

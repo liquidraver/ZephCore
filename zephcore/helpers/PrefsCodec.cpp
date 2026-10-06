@@ -106,10 +106,10 @@ size_t companionPrefsEncode(const NodePrefs &p, uint8_t *buf, size_t cap)
 	w.put(&p.tz_offset, 1);
 	w.put(&p.leds_radio_mode, 1);
 	w.put(&p.leds_hb_mode, 1);
-	w.put(&p.led_brightness, 1);
 	w.put(&p.wifi_enabled, 1);
 	w.put(p.wifi_ssid, sizeof(p.wifi_ssid));
 	w.put(p.wifi_pwd, sizeof(p.wifi_pwd));
+	w.put(&p.led_brightness, 1);
 	return w.off;
 }
 
@@ -188,14 +188,11 @@ bool companionPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.take(&p.tz_offset, 1);
 	r.take(&p.leds_radio_mode, 1);
 	r.take(&p.leds_hb_mode, 1);
-	/* led_brightness (ZephCore extension, since 1.17.4). Absent in files
-	 * written before this field existed; the no-op EOF read leaves the
-	 * initNodePrefs() default ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT (10%),
-	 * same value a fresh node already showed before this was persisted. */
-	r.take(&p.led_brightness, 1);
 	r.take(&p.wifi_enabled, 1);
 	r.take(p.wifi_ssid, sizeof(p.wifi_ssid));
 	r.take(p.wifi_pwd, sizeof(p.wifi_pwd));
+	/* led_brightness at offset 272, after wifi_pwd: a 272-byte file leaves it at the initNodePrefs() default. */
+	r.take(&p.led_brightness, 1);
 
 	/* The one validator: bounds, NaNs, and the unterminated char fields */
 	sanitizeNodePrefs(&p);
