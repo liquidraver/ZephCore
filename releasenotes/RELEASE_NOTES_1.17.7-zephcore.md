@@ -106,6 +106,13 @@ confirmed yet.
 
 ## Also in this release
 
+- **A repeater with adverts off is no longer discoverable**, as in upstream MeshCore: with both
+  `flood.advert.interval` and `advert.interval` at `0` it stops answering discovery requests (the
+  app's repeater discovery, another repeater's `discover.neighbors`). With either one above `0`, and
+  with the defaults (47 hours and `0`), it answers as before. If a repeater is missing from discovery
+  after the update, check `get flood.advert.interval`: on firmware before 1.17.4,
+  `set flood.advert.interval default` stored `0` by mistake. `set flood.advert.interval default` now
+  puts it back to 47 hours.
 - **Malformed encrypted packets are rejected earlier**, before any cryptography runs.
 - **Large contact lists**: up to 24 contacts can share the same one-byte hash, up from 8.
 - **T1000-E**: a pin that was wrongly driven as a sensor enable is left alone. Sensor readings are
@@ -116,9 +123,16 @@ confirmed yet.
   the command is accepted.
 - **New board**: Seeed LR2021 LoRa Plus EVK with a XIAO nRF54LM20A. Build it from source; there is no
   published firmware for it yet.
-- **Zephyr** updated to `ac03a4a9085`. One change in it would have been visible and is handled:
+- **Zephyr** updated to `74b7173e9c9`. One change in it would have been visible and is handled:
   e-paper displays would have drawn white text on a black page. The RAK4631's LEDs are now declared
   by ZephCore, since Zephyr's board file no longer describes them; nothing changes on the board.
+  It also brings a fix for boards on WiFi: the starting sequence number of a TCP connection (the
+  companion port and the update page) was predictable, and is now derived from a secret as intended.
+- **Heltec V3 and Wireless Tracker companions** (WiFi and Bluetooth together, no PSRAM) had under
+  1 KB of memory left; they now have about 2.5 KB. The Bluetooth controller's stack on ESP32-S3 and
+  ESP32-C3 companions was 4 KB and is now 2 KB: its measured use is 1.1 KB with WiFi connected.
+  Nothing changes in use. Measured on a XIAO ESP32-S3; not run on the two Heltec boards themselves or
+  on an ESP32-C3.
 - **Documentation**: the README was reorganised, build and flashing instructions moved to
   `docs/BUILDING.md`, and the example board and porting guide were rewritten for the current board
   layout.

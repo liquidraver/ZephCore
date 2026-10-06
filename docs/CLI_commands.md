@@ -76,7 +76,7 @@ Every clock set (these commands, GPS, the app, mesh time sync, SNTP) is also wri
 |---------|-------------|
 | `neighbors` | Display current neighbor list |
 | `neighbor.remove <pubkey_hex>` | Remove a neighbor entry by its public key. A prefix is accepted — the hex is truncated to at most 32 bytes and matched at whatever length you give. **Repeater only in effect:** `RoomServerMesh` does not override `removeNeighbor`, so on a room server this replies `OK` and does nothing. |
-| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes; responses are collected for 60 s (as upstream `bf9c6cb5`). Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. Not implemented on room servers. |
+| `discover.neighbors` | *(repeater only)* Broadcast a node discovery request to find nearby nodes; responses are collected for 60 s (as upstream `bf9c6cb5`). Takes no arguments — anything after it replies `Err - discover.neighbors has no options`. A repeater with `repeat off`, or with both advert intervals at `0` (a hidden node, as upstream `f19733e4`), does not answer. Not implemented on room servers. |
 
 ---
 
@@ -433,7 +433,7 @@ four radio parameters together, since they are one interop-critical set.
 | `set flood.max <count>` | 0–64 | Maximum flood retransmit hops |
 | `set flood.max.unscoped <count>` | 0–64 | Hop limit for un-scoped floods only (default 64 = same as flood.max); scoped/transport floods still use flood.max |
 | `set flood.max.advert <count>` | 0–64 | Hop limit for ADVERT floods only (default 8); curbs advert churn independent of flood.max |
-| `set flood.advert.interval <hours>` | `0` (off) or 3–168 | How often the repeater floods its own advertisement. `0` disables periodic flood adverts. |
+| `set flood.advert.interval <hours>` | `0` (off) or 3–168 | How often the repeater floods its own advertisement. `0` disables periodic flood adverts. With `advert.interval` also `0` the repeater is hidden: it stops answering node discovery requests (`discover.neighbors`, the app's discover) as well. |
 | `set advert.interval <mins>` | `0` (off) or min–240 | How often the repeater sends local (zero-hop) advertisements. `0` — the default — disables them. Stored halved (the pref holds minutes/2), so odd values round down. |
 | `set allow.read.only <on\|off>` | | *(room server only)* Allow or deny read-only client connections |
 | `set guest.password <pwd>` | | Set guest access password |
