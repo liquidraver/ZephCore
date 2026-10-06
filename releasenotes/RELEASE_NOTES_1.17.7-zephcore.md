@@ -1,10 +1,10 @@
 # ZephCore 1.17.7-zephcore
 
 Faster GPS fixes on three trackers, a clock that survives a reboot, fixes for USB companions that
-could stop responding right after boot or when the port closed during a contact sync, more reliable
-detection of clock chips, repeaters that power down an external flash chip they do not use, a
-formatter that erases that chip on every board that has one, and a few fixes ported from upstream
-MeshCore.
+could stop responding right after boot or when the port closed during a contact sync, a contacts
+import that no longer stalls every few seconds, more reliable detection of clock chips, repeaters
+that power down an external flash chip they do not use, a formatter that erases that chip on every
+board that has one, and a few fixes ported from upstream MeshCore.
 
 > [!NOTE]
 > A normal upgrade keeps your identity, settings, contacts and phone pairing.
@@ -100,6 +100,15 @@ buffer.
 Now a reset of the USB bus ends the session, and a session on a sleeping computer does not count as a
 connected app until the computer wakes. An app that keeps the port open but stops reading can still
 hold up a second app.
+
+## Companion: importing contacts no longer stalls every few seconds
+
+Importing a configuration with many contacts from the app paused for a few seconds, again and again.
+The node saved its whole contact list 5 seconds after the first change, and while the import was
+still running it saved again every 5 seconds; it answers nothing while it saves.
+
+The save now waits until 5 seconds after the last change, as in MeshCore, so an import is saved once
+when it is done. The same applies to any other run of contact changes.
 
 ## Repeaters: the external flash chip is powered down
 

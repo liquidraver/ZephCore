@@ -276,22 +276,19 @@ void CompanionMesh::timeSyncTick()
 
 void CompanionMesh::markContactsDirty(bool substantive)
 {
-	int64_t deadline = _ms->getMillis() +
-			   (substantive ? LAZY_WRITE_DELAY_MS
-					: LAZY_WRITE_LIVENESS_MS);
+	int64_t now = _ms->getMillis();
 
-	/* Only set the timer on first dirty — don't keep pushing
-	 * the deadline forward or a busy mesh never flushes. */
-	if (!_dirty_contacts_expiry) {
-		_dirty_contacts_expiry = deadline;
+	/* A substantive change restarts the short delay, as upstream: a burst
+	 * (a contacts import) is written once, after its last change. */
+	if (substantive) {
+		_dirty_contacts_expiry = now + LAZY_WRITE_DELAY_MS;
 		return;
 	}
 
-	/* ...but a substantive change must not have to sit out a liveness wait
-	 * that is already pending.  Pulling the deadline IN cannot starve the
-	 * flush, only hasten it. */
-	if (substantive && deadline < _dirty_contacts_expiry) {
-		_dirty_contacts_expiry = deadline;
+	/* A liveness change only arms the long deadline; it never moves a
+	 * pending one (devdocs/lld/06-companion.md). */
+	if (!_dirty_contacts_expiry) {
+		_dirty_contacts_expiry = now + LAZY_WRITE_LIVENESS_MS;
 	}
 }
 

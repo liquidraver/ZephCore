@@ -385,7 +385,7 @@ config ZEPHCORE_BLE_CONN_MAX_INTERVAL
 	range 6 3200
 	help
 	  Maximum BLE connection interval in 1.25ms units.
-	  36 = 45ms. Matches Arduino default. Higher = lower power when idle.
+	  36 = 45ms. Higher = lower power when idle.
 
 config ZEPHCORE_BLE_CONN_LATENCY
 	int "BLE connection latency (skip events)"
@@ -393,7 +393,7 @@ config ZEPHCORE_BLE_CONN_LATENCY
 	range 0 500
 	help
 	  Skip up to N connection events when idle to save power.
-	  4 = skip 4 events (effective interval up to 375ms idle).
+	  4 = skip 4 events (effective interval up to 225ms idle at 45ms).
 
 config ZEPHCORE_BLE_CONN_TIMEOUT
 	int "BLE supervision timeout (units: 10ms)"
