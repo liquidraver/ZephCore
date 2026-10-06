@@ -200,12 +200,9 @@ extern "C" void zephcore_persist_before_off(void)
 #endif
 
 /* ========== Companion transports ==========
- *
  * As upstream's companion_radio/main.cpp: every transport this build has is a
- * BaseSerialInterface in one MultiSerialInterface, and CompanionMesh sees only
- * that (through CompanionSerial, which keeps a lossless reply the transports
- * could not take). Every connected transport gets every frame; a command from
- * any of them is served. */
+ * BaseSerialInterface in one MultiSerialInterface. Every connected one gets
+ * every frame; a command from any of them is served. */
 static MultiSerialInterface interface_manager;
 static CompanionSerial companion_serial(interface_manager);
 #if IS_ENABLED(CONFIG_BT)
@@ -337,14 +334,8 @@ static void process_companion_rx(void)
 }
 
 /* The contact dump, as far as every connected transport has room
- * (MESH_EVENT_CONTACT_ITER): BLE and TCP below their 2/3 high-water mark and
- * not congested, USB with room for a whole frame. A transport's TX idle
- * brings us back.
- *
- * Only while a client is connected: with none, nothing is busy and no write
- * succeeds, so the dump would not advance and this loop would not end. The
- * last client can leave while we are in here (its callbacks preempt this
- * thread), before MESH_EVENT_LINK has cancelled the dump. */
+ * (MESH_EVENT_CONTACT_ITER); a transport's TX idle brings us back. Only while a
+ * client is connected: with none no write succeeds and the loop would not end. */
 static void run_contact_iteration(void)
 {
 #ifdef ZEPHCORE_LORA

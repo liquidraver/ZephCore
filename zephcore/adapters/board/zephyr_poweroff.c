@@ -178,18 +178,9 @@ void zephcore_power_off(void)
 	}
 #endif /* CONFIG_SOC_FAMILY_NORDIC_NRF && sw0 */
 
-	/* 5. Release the board power latch — must be dead last.
-	 *
-	 * Only present on soft-power boards (see zephcore,poweroff-gpios). The
-	 * rail is cut here rather than in step 2 because the pins are ordered
-	 * loads-first/latch-last, and because step 4 must have observed the
-	 * button release first: on these boards the button is also the power-on
-	 * input, so dropping the latch while it is still held would let the I/O
-	 * controller re-latch the rail immediately.
-	 *
-	 * On battery this does not return — the supply is gone mid-loop, which
-	 * is the intended outcome. On USB the rail may be held up externally, in
-	 * which case we fall through to System OFF. */
+	/* 5. Release the board power latch, dead last: loads are already off and
+	 * step 4 has seen the button released (it is also the power-on input). On
+	 * battery this does not return; on USB we fall through to System OFF. */
 #if DT_HAS_COMPAT_STATUS_OKAY(zephcore_poweroff_gpios)
 	{
 #define _PWROFF_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(zephcore_poweroff_gpios)

@@ -85,22 +85,9 @@ bool mc_display_is_on(void);
  */
 bool mc_display_is_epd(void);
 
-/* Color overlay support is compiled only when the devicetree points at a raw
- * RGB565 TFT (the runtime probe still verifies pixel format and readiness).
- * Boards without one get constant-false / mono-fallback inlines so every
- * color code path — including the ~3.8 KB overlay op queue in display.c —
- * is dropped at compile time.
- *
- * Two ways to name the panel, in priority order:
- *
- *   1. chosen { zephcore,color-tft = <&some_panel>; }
- *   2. the `tft` nodelabel on the panel node
- *
- * (1) exists for boards whose panel node lives in an upstream Zephyr DTS:
- * an overlay cannot add a nodelabel to an existing node, but it can always
- * set a chosen property.  (2) is kept because every in-tree board that had
- * color before this indirection names its panel `tft:` — they need no edit.
- */
+/* Color overlay support is compiled only when the devicetree names a raw
+ * RGB565 TFT, by the `zephcore,color-tft` chosen node (for a panel in an
+ * upstream DTS) or the `tft` nodelabel. Other boards get mono inlines. */
 #if DT_HAS_CHOSEN(zephcore_color_tft)
 #define MC_DISPLAY_COLOR_NODE DT_CHOSEN(zephcore_color_tft)
 #elif DT_NODE_EXISTS(DT_NODELABEL(tft))
@@ -128,40 +115,10 @@ bool mc_display_is_epd(void);
 #endif
 
 /*
- * 180-degree rotation support, decided at compile time from the panel.
- *
- * Deliberately an allow-list of the two families where the rotation is a
- * hardware remap the driver actually implements: display_ssd1306.c flips
- * SEGMENT_MAP + COM_OUTPUT_SCAN (two bytes on the wire, framebuffer
- * untouched, no per-frame cost), and that driver backs both solomon,ssd1306
- * and sinowealth,sh1106.
- *
- * Other panel families are excluded on purpose rather than probed:
- *   - st7735r/st7789v (our mono-tft boards) return -ENOTSUP upstream for
- *     anything but NORMAL, so a probe would just fail;
- *   - ssd16xx e-paper *accepts* ROTATED_180 but implements it by flipping
- *     the RAM entry mode only, which reverses byte order without reversing
- *     bit order inside each byte — the 8 pixels a byte spans stay in their
- *     original order.  It would report success and render wrong, which is
- *     worse than reporting unsupported.
- *
- * The geometry test on top of the family check matters as much as the family
- * check itself.  Both remaps reverse the controller's *entire* addressable
- * range, not the part a given panel happens to use, so the flip only lands
- * back on the glass when the visible window is centred in that range:
- *
- *   - Vertically, that means the panel uses the full multiplex height from
- *     page 0.  Boards that window a small panel into a larger controller do
- *     not: lilygo_timpulse_plus is a 64x32 glass on a 128x64 SSD1306 driven
- *     at page-offset 4 with multiplex-ratio 63, so its content sits on COM
- *     32..63.  Reversing the COM scan moves it to COM 31..0 — off the bonded
- *     region entirely, i.e. a blank screen.  `page-offset == 0` and
- *     `height == multiplex-ratio + 1` is exactly the "uses the whole
- *     controller" condition, and it excludes that board.
- *   - Horizontally the surviving boards are already centred: the SSD1306
- *     ones are a full 128 columns at segment-offset 0, and the SH1106 ones
- *     are 128 columns at segment-offset 2 in 132 columns of RAM — the
- *     standard 2-either-side layout these modules ship with.
+ * 180-degree rotation support, decided at compile time: an SSD1306/SH1106
+ * panel that uses the controller's whole height from page 0 (page-offset 0,
+ * height == multiplex-ratio + 1). Other families and windowed panels are
+ * excluded on purpose.
  */
 #if DT_NODE_HAS_COMPAT(MC_DISPLAY_NODE, solomon_ssd1306) || \
 	DT_NODE_HAS_COMPAT(MC_DISPLAY_NODE, sinowealth_sh1106)

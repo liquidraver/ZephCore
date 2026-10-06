@@ -181,16 +181,9 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
   if (client == nullptr) {
     uint8_t perms;
 
-    /* Constant-time comparison: zero-pad BOTH the received password and
-     * the stored passwords into cleared buffers (copying only up to the
-     * NUL) before comparing full-width. Don't trust the stored buffer to
-     * be zero-padded: a password set over a longer previous value via the
-     * CLI leaves trailing garbage past the NUL (and such garbage may
-     * already be persisted in flash on upgraded devices). Comparing the
-     * raw stored buffer full-width would then fail to match a correct
-     * password. Compare both unconditionally so timing is identical for
-     * any wrong password regardless of which (admin/guest) it most
-     * resembles. */
+    /* Constant-time comparison: zero-pad both the received and the stored
+     * passwords into cleared buffers (up to the NUL) and compare full-width.
+     * The stored buffer can carry garbage past the NUL. */
     uint8_t received[sizeof(_prefs.password)] = {0};
     uint8_t admin_pw[sizeof(_prefs.password)] = {0};
     uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
@@ -206,27 +199,9 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
                   guest_pw,
                   sizeof(received));
 
-    /* An empty stored guest password means OPEN GUEST ACCESS on a repeater,
-     * deliberately, matching Arduino MeshCore: its NodePrefs default is
-     * guest_password[0] = 0 (src/helpers/CommonCLI.h) and
-     * examples/simple_repeater/MyMesh.cpp compares with a plain strcmp, so a
-     * blank submitted password logs in as guest. Only a blank submission
-     * matches -- a wrong non-blank password still fails, because both
-     * buffers are zero-padded and compared full-width.
-     *
-     * This is deliberately NOT what RoomServerMesh.cpp does, and the two
-     * must not be "made consistent". There an empty guest password disables
-     * guest access, because on a room server that password is what gates
-     * posting and an accidentally open room is a real hole (the 2026-07-30
-     * finding: every ZephCore room server shipped open). Arduino closes the
-     * same hole from the other side, by defaulting the room server's
-     * guest_password to ROOM_PASSWORD rather than leaving it empty.
-     *
-     * The blast radius on a repeater is small by construction:
-     * PERM_ACL_GUEST cannot run CLI commands -- the PAYLOAD_TYPE_TXT_MSG
-     * path in onPeerDataRecv() requires isAdmin() -- and cannot read the
-     * access list (REQ_TYPE_GET_ACCESS_LIST likewise). A guest gets login
-     * plus status/telemetry. Set a guest password to close it. */
+    /* An empty stored guest password means open guest access on a repeater, as
+     * Arduino MeshCore. Deliberately not what RoomServerMesh does, where it
+     * disables guest access. A repeater guest gets login plus status/telemetry. */
 
     if (admin_match) {
       perms = PERM_ACL_ADMIN;
@@ -272,21 +247,9 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
 
     if (client->isAdmin() && (client->permissions != prev_perms || secret_changed)) {
-      /* Flush admin sessions now instead of leaving them on the lazy
-       * timer. The entry carries the shared secret this session's
-       * traffic is encrypted with; if power is lost before the timer
-       * fires, the client keeps a secret the repeater no longer knows
-       * and every later request decrypts to nothing, which presents as
-       * a wrong password or an unreachable node. A repeater is the
-       * device most likely to lose power unattended, so the few
-       * milliseconds are worth it. save() writes the whole ACL, so any
-       * other pending changes go out with it.
-       *
-       * Only when the stored entry changed, though. The secret is the
-       * ECDH of the two fixed keys, so a known admin logging in again
-       * carries the same one: rewriting an identical ACL on every login
-       * (a monitoring tool polling every few minutes) was pure wear.
-       * Upstream schedules a lazy write on every non-guest login. */
+      /* Flush admin sessions now, not on the lazy timer: the entry carries the
+       * session's shared secret, and losing it to a power cut locks the client out.
+       * Only when the stored entry changed. */
       if (_store) {
         acl.save(_store->getFS());
         dirty_contacts_expiry = 0;
@@ -1553,16 +1516,9 @@ void RepeaterMesh::handleRegionLoadLine(uint32_t sender_timestamp, char* command
     while (*np == ' ') np++;
     int indent = np - command;
 
-    /* An unindented, name-like line is a typed command, not a region row:
-     * real rows are indent >= 1 (load_stack[0] is the wildcard), and the
-     * one unindented line a client legitimately sends is the exported
-     * wildcard header "*", whose '*' is not a name char.  Without this,
-     * `region load` is only escapable by a blank line -- which the USB
-     * reader discards (main_repeater.cpp) and a dead remote-admin client
-     * never sends, stranding the CLI until a reboot.  Abort without
-     * committing temp_map and run the command.  Must come BEFORE the
-     * name-terminator write below, which would truncate `set foo 1` to
-     * `set`. */
+    /* An unindented, name-like line is a typed command, not a region row: abort
+     * the load without committing and run the command. Must come before the
+     * name-terminator write below. */
     if (indent == 0 && RegionMap::is_name_char((uint8_t)*np)) {
       region_load_active = false;
       handleCommand(sender_timestamp, command, reply);

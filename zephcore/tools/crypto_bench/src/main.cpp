@@ -82,16 +82,9 @@ static inline void sink(const uint8_t *p, size_t n)
 
 /* ---------------------------------------------------------------- timing */
 
-/* Zephyr's portable cycle counter (DWT on Cortex-M, CCOUNT on Xtensa) — the
- * same mechanism ZephyrRNG's two-clock beat uses. See
- * memory/zephyrrng-entropy.md for the platform traps.
- *
- * MIN, not mean, is the headline figure: every perturbation (interrupt,
- * cache miss, flash wait state) can only ADD time, so the minimum over N runs
- * is the closest estimate of the true cost. Mean is printed alongside because
- * a large min/mean gap is itself information — it says the operation is being
- * interfered with, which matters on a node where it shares a CPU with the
- * radio ISR. */
+/* Zephyr's portable cycle counter (DWT on Cortex-M, CCOUNT on Xtensa). MIN
+ * is the headline figure (perturbations only add time); the mean is printed
+ * beside it because a large gap shows interference. */
 struct BenchResult {
 	const char *name;
 	uint64_t min_ns;
@@ -388,15 +381,8 @@ int main(void)
 	/* ---- composites: real call paths -------------------------------- */
 	print_header("Per-packet totals — the real RX/TX call paths");
 
-	/* Dedup as implemented today. SimpleMeshTables::wasSeen() and
-	 * markSeen() each call packet->calculatePacketHash() independently,
-	 * and since the 2026-07-02 hasSeen split every caller invokes markSeen
-	 * right after wasSeen returns false — so a NEW packet hashes twice.
-	 * The linear memcmp scan those functions also do is not crypto and is
-	 * not timed here; it is a 160-entry 8-byte compare, nowhere near the
-	 * hash. Packet.cpp is compiled from the main tree, so the buffer
-	 * assembly (the memcpy into a stack buffer) is included, as it is on a
-	 * node. */
+	/* Dedup as implemented: wasSeen() and markSeen() each hash the packet, so a
+	 * new packet hashes twice. The table scan is not crypto and is not timed. */
 	/* Not `static`: a function-local static with a non-trivial constructor
 	 * emits __cxa_guard_acquire/release, which Zephyr's minimal C++ runtime
 	 * does not provide. ~260 bytes on the stack instead. */

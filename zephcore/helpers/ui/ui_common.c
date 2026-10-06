@@ -29,13 +29,8 @@
 LOG_MODULE_REGISTER(ui_led, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
 /* ========== Input axis flip ==========
- *
- * Shared by both UI variants so an upside-down mount only has to be
- * configured once.  Written from the mesh/CLI thread, read from the input
- * callback.  A plain bool needs no atomic here: it is a single aligned byte,
- * and the only race — a keypress landing in the same instant the setting is
- * toggled — costs that one keypress its direction, which is what toggling an
- * axis swap does anyway. */
+ * Shared by both UI variants. Written from the mesh/CLI thread, read from the
+ * input callback; a plain bool is enough. */
 
 static bool input_flipped;
 
@@ -77,13 +72,8 @@ void ui_play_startup_chime(void)
 
 /* ========== LED Heartbeat ========== */
 /*
- * Uses led0 (or led1 fallback) as a heartbeat indicator.
- * Pulse width extends to LED_ON_MSG_MS when there are unread messages,
- * driven by ui_led_get_msg_count() which the button variant overrides.
- *
- * led1 is also claimed as a message indicator in non-repeater companion builds
- * when both led0 and led1 are present. The heartbeat cycle turns led1 on
- * only when msg count > 0, giving a visual unread-message reminder.
+ * Heartbeat on led0 (or led1). The pulse widens while there are unread
+ * messages; with both LEDs present, companions light led1 for unread.
  */
 
 #if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
@@ -125,14 +115,9 @@ static struct k_work_delayable s_led_off_work;
 __attribute__((weak)) uint16_t ui_led_get_msg_count(void) { return 0; }
 
 /*
- * Does the heartbeat LED light on this pass?  "unread" is not a separate blink
- * — it is this same cycle widening its pulse — so the modes are expressed as
- * two questions over one cycle: may it light at all right now, and how wide.
- *
- * The cycle keeps running in every mode including LEDS_HB_OFF.  That is on
- * purpose: on companions with two LEDs the unread indicator is lit from inside
- * this work chain, so stopping the chain would take unread indication down with
- * the heartbeat.  An idle pass costs one work item every 4 s.
+ * Does the heartbeat LED light on this pass? The cycle keeps running in
+ * every mode, LEDS_HB_OFF included, because the unread indicator is lit from
+ * inside it.
  */
 static bool hb_should_light(uint16_t msg_count)
 {

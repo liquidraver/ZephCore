@@ -257,19 +257,9 @@ void ui_notify_channel_msg(const char *channel_name, const char *text,
 void ui_notify_packet_sent(void);
 
 /* ===== Input axis flip =====
- *
- * A case that mounts the board upside down (e.g. the Meshnology N37E kit)
- * rotates the joystick along with the screen, so "up" on the stick walks the
- * menu down.  This flips the two axes back.
- *
- * Kept separate from the display rotation on purpose: the two are not always
- * wanted together — a panel can be remounted alone, and boards whose display
- * cannot rotate can still benefit from the axis swap.
- *
- * The state lives in ui_common.c so both UI variants (button and joystick)
- * share one source of truth; each variant's input callback runs its raw
- * event code through zephcore_input_map_code() before decoding it.
- */
+ * For an upside-down mount: flips the two joystick/D-pad axes back. Separate
+ * from the display rotation on purpose. State in ui_common.c; each variant's
+ * input callback maps its raw code through zephcore_input_map_code(). */
 
 /**
  * Enable or disable the joystick/D-pad axis swap.

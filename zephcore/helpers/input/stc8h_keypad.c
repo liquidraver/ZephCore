@@ -44,15 +44,9 @@
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(stc8h_keypad, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
-/* Register map — see dts/bindings/input/zephcore,stc8h-keypad.yaml.
- *
- * The key register is 0x01, NOT the 0x05 "matrix key" register that the
- * reference header documents: the recovered implementation bodies read the
- * key from 0x01, and the 0x05 define is dead code nothing consumes. Reading
- * 0x05 returns constant 0xFF — that was this driver's original bug (keys
- * fully dead, phantom 0xFF at init). The overlap with the battery registers
- * (0x01..0x04 little-endian) is odd but is what the shipped firmware does;
- * it is also why key reads are IRQ-gated below. */
+/* Register map: see dts/bindings/input/zephcore,stc8h-keypad.yaml. The key
+ * register is 0x01, not the 0x05 the reference header names (0x05 reads
+ * 0xFF). It overlaps the battery registers, hence the IRQ-gated key reads. */
 #define STC8H_REG_BATTERY 0x01 /* 0x01..0x04, little-endian millivolts */
 #define STC8H_REG_KEY     0x01
 #define STC8H_REG_STATE   0x06

@@ -5,13 +5,9 @@
 #include "battery_curve.h"
 
 /*
- * Generic single-cell LiPo OCV curve — 21 points at 5% steps.
- * Derived from measured LiPo discharge data; 11-point base expanded to
- * 21 points by linear interpolation for better knee resolution.
- *
- * Index 0 = 100% (4190 mV), index 20 = 0% (3100 mV).
- * 100% is 4190 mV, not 4200 mV — reflects observed charge ceiling across
- * multiple boards after the charger transitions to maintenance mode.
+ * Generic single-cell LiPo OCV curve, 21 points at 5% steps.
+ * Index 0 = 100% (4190 mV, the observed charge ceiling), index 20 = 0%
+ * (3100 mV).
  */
 static const uint16_t ocv_generic[21] = {
 	4190, 4120, 4050, 4020, 3990, /* 100 .. 80% */

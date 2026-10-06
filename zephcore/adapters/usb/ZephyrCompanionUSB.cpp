@@ -47,16 +47,9 @@ enum usb_rx_state {
 
 #define USB_TEXT_LINE_MAX 128
 
-/* ---- Backend selection --------------------------------------------------
- * The companion byte transport is normally a native-USB CDC-ACM UART, but the
- * same frame parser / TX ring / CLI runs unchanged over a plain UART too — for
- * boards whose USB-C is a USB-UART bridge (e.g. Heltec V3 / CP2102) or that
- * have no USB device controller at all.  A board selects the backend with the
- * `zephcore,companion-uart` chosen node; absent that we fall back to the sole
- * cdc-acm-uart, so existing native-USB and nRF builds resolve identically.
- *
- * COMPANION_HAS_DTR is true only for the CDC backend — a plain UART has no DTR
- * line, so a session there, once started, lasts until reboot. */
+/* ---- Backend selection ----
+ * The chosen `zephcore,companion-uart` node, else the sole cdc-acm-uart. Only
+ * the CDC backend has DTR; a plain-UART session lasts until reboot. */
 #if DT_HAS_CHOSEN(zephcore_companion_uart)
 #  define COMPANION_UART_DEV    DEVICE_DT_GET(DT_CHOSEN(zephcore_companion_uart))
 #  define COMPANION_HAS_DTR     DT_NODE_HAS_COMPAT(DT_CHOSEN(zephcore_companion_uart), zephyr_cdc_acm_uart)
@@ -104,10 +97,8 @@ K_MSGQ_DEFINE(usb_recv_queue, sizeof(struct frame), USB_RECV_QUEUE_DEPTH, 4);
  * bus reset). */
 static bool usb_session_active;
 
-/* The session can carry frames: it is open and the bus is not suspended (host
- * asleep with the port open). Main hears each edge as a connect or a
- * disconnect, so a suspended session is not a client: nothing is queued for
- * it, and it does not hold up the last-client cleanup. */
+/* The session is open and the bus is not suspended. Main hears each edge as
+ * a connect or a disconnect. */
 static bool usb_link_up;
 
 /* CLI text line callback — fired when a complete line arrives in text mode. */
@@ -244,13 +235,8 @@ static void usb_rx_work_fn(struct k_work *work)
 
 	uint8_t byte;
 
-	/* Timeout partial input — if we've been mid-frame or mid-text-line too
-	 * long without completing, reset the parser and resync. usb_frame_start_time
-	 * is refreshed on every text byte (below), so for USB_RX_TEXT this acts as an
-	 * inactivity watchdog: it recovers a stray printable byte back to IDLE (so a
-	 * later binary frame parses) without truncating a line that is actively being
-	 * typed. Note this only runs when bytes arrive — it is not a timer and never
-	 * wakes a sleeping node. */
+	/* A frame or text line left unfinished too long: resync. Checked only when
+	 * bytes arrive, never by a timer. */
 	if (usb_rx_st != USB_RX_IDLE &&
 	    (k_uptime_get_32() - usb_frame_start_time) > USB_FRAME_TIMEOUT_MS) {
 		LOG_WRN("usb_rx: partial input timeout (state=%d, expected=%u), resync",
@@ -531,13 +517,8 @@ void zephcore_usb_companion_init(const struct companion_link_cbs *link)
 {
 	s_link = link;
 
-	/* COMPANION_UART_DEV resolves to the chosen `zephcore,companion-uart` node,
-	 * or the sole cdc-acm-uart for back-compat (see the backend block above).
-	 * The cdc_acm_uart DT node may be present without the class driver compiled
-	 * (shared esp32s3_usb_otg.dtsi exposes the node unconditionally; the class
-	 * is only enabled with esp32s3_usb.conf) — the COMPANION_HAS_BACKEND gate
-	 * folds that case in, so DEVICE_DT_GET never references an undefined ordinal
-	 * on, e.g., a debug ESP32-S3 companion built without esp32s3_usb.conf. */
+	/* COMPANION_HAS_BACKEND is false when the cdc_acm_uart node exists without
+	 * the class driver (a debug ESP32-S3 companion). */
 #if COMPANION_HAS_BACKEND
 	usb_dev = COMPANION_UART_DEV;
 	if (device_is_ready(usb_dev)) {

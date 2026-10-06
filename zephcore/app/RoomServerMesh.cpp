@@ -391,17 +391,9 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
   }
 
   if (client == nullptr) {
-    /* Constant-time compare against both stored passwords.  Admin grants
-     * ADMIN; the guest/room password grants READ_WRITE (so guests may
-     * post); allow_read_only downgrades any other login to GUEST.
-     *
-     * Zero-pad BOTH operands into cleared buffers first: the CLI's
-     * StrHelper::strncpy null-terminates but does NOT clear the rest of
-     * the 16-byte buffer, so a password set over a longer previous value
-     * leaves trailing garbage. Comparing the raw stored buffer full-width
-     * against the (zero-padded) received bytes would then fail to match a
-     * correct password. Copy only up to the NUL so the compare reflects
-     * the actual string while staying constant-time over the full width. */
+    /* Constant-time compare against both stored passwords, zero-padded into
+     * cleared buffers first. Admin grants ADMIN; the guest/room password grants
+     * READ_WRITE; allow_read_only downgrades any other login to GUEST. */
     uint8_t received[sizeof(_prefs.password)] = {0};
     uint8_t admin_pw[sizeof(_prefs.password)] = {0};
     uint8_t guest_pw[sizeof(_prefs.guest_password)] = {0};
@@ -1148,16 +1140,9 @@ void RoomServerMesh::handleRegionLoadLine(uint32_t sender_timestamp, char* comma
     while (*np == ' ') np++;
     int indent = np - command;
 
-    /* An unindented, name-like line is a typed command, not a region row:
-     * real rows are indent >= 1 (load_stack[0] is the wildcard), and the
-     * one unindented line a client legitimately sends is the exported
-     * wildcard header "*", whose '*' is not a name char.  Without this,
-     * `region load` is only escapable by a blank line -- which the USB
-     * reader discards (main_repeater.cpp) and a dead remote-admin client
-     * never sends, stranding the CLI until a reboot.  Abort without
-     * committing temp_map and run the command.  Must come BEFORE the
-     * name-terminator write below, which would truncate `set foo 1` to
-     * `set`. */
+    /* An unindented, name-like line is a typed command, not a region row: abort
+     * the load without committing and run the command. Must come before the
+     * name-terminator write below. */
     if (indent == 0 && RegionMap::is_name_char((uint8_t)*np)) {
       region_load_active = false;
       handleCommand(sender_timestamp, command, reply);

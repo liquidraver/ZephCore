@@ -148,21 +148,14 @@ static void usbd_msg_callback(struct usbd_context *const ctx,
 			s_dtr_cb(dtr_now);
 		}
 	} else if (msg->type == USBD_MSG_VBUS_REMOVED) {
-		/* Physical unplug — VBUS lost.  On a device-side cable yank the
-		 * host often never sends a clean DTR=0 line-state change, so the
-		 * CONTROL_LINE_STATE release above won't fire and the companion
-		 * would stay stuck on the USB interface (rejecting every BLE
-		 * connection until reboot).  Treat VBUS loss as a DTR drop so the
-		 * interface is handed back to BLE. */
+		/* Unplugged: the host often sends no DTR=0, so VBUS loss counts as
+		 * a DTR drop. */
 		LOG_INF("CDC ACM: VBUS removed (device unplug)");
 		host_gone();
 	} else if (msg->type == USBD_MSG_RESET) {
-		/* Bus reset.  At enumeration no port is open and this does nothing.
-		 * Later it means the host is enumerating us again (a hub upstream
-		 * was reset, or the host lost the device): the port it had open is
-		 * gone, and no DTR=0 says so, since the class keeps the line state
-		 * of the old session.  VBUS can stay up throughout, so treat it as
-		 * a DTR drop too.  A reset also ends a suspend, with no RESUME. */
+		/* The host is enumerating us again, so the port it had open is
+		 * gone, and no DTR=0 says so: a DTR drop too. A reset also ends a
+		 * suspend, with no RESUME. See docs/ARCHITECTURE.md 7.4. */
 		LOG_INF("CDC ACM: bus reset");
 		host_gone();
 		if (s_bus_cb) {
@@ -310,19 +303,9 @@ extern "C" void zephcore_usbd_detach(void)
 		return;
 	}
 
-	/* usbd_disable() -> udc_disable() drops the D+ pull-up, which is the only
-	 * thing that makes the host see an unplug.  A soft reset does not: on the
-	 * ESP32-S3, esp_restart_noos() resets WiFi/BT, timers, SPI, UART, DMA and
-	 * crypto but nothing USB, so the PHY pad stays enabled across the reset
-	 * and the host keeps talking to an endpoint the firmware has abandoned.
-	 * (Same root cause as GH #43, which hit the USB-Serial-JTAG controller;
-	 * this covers the USB OTG one that the CDC companion transport uses.)
-	 *
-	 * Safe from the usbd message callback: CONFIG_USBD_MSG_DEFERRED_MODE is
-	 * on by default, so that callback runs on the system workqueue rather
-	 * than in the device stack context, and usbd_disable() is not re-entered
-	 * from the thread it stops.
-	 */
+	/* Drop the D+ pull-up so the host sees an unplug; a soft reset alone does
+	 * not. Safe from the usbd message callback, which runs on the system work
+	 * queue (CONFIG_USBD_MSG_DEFERRED_MODE). */
 	(void)usbd_disable(&zephcore_usbd);
 	s_initialized = false;
 	s_dtr_active = false;

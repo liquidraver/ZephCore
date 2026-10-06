@@ -46,15 +46,9 @@ static uint32_t _atoi(const char* sp) {
 }
 
 /* ---- "default" keyword + strict numeric parsing for the `set` path ----
- *
- * Bare atoi()/atof() fold every non-numeric string to 0, the word "default"
- * included.  On the knobs where 0 is itself legal and means "off" —
- * probe.interval, cad.busycap, flood.max, rxduty — that silently switched the
- * feature off and still answered OK.  `set probe.interval default` disabling
- * probing is the report that prompted this.
- *
- * Every `set` that has a default now takes the literal `default`, and rejects
- * trailing garbage rather than turning it into a zero. */
+ * atoi()/atof() fold any non-number to 0, which is "off" on several knobs.
+ * Every `set` with a default takes the literal `default` and rejects
+ * trailing garbage. */
 
 /* The defaults are read out of initNodePrefs() itself rather than restated as
  * constants here, so `set <x> default` cannot drift from what a factory-fresh
@@ -73,14 +67,8 @@ static const NodePrefs* cliDefaults() {
 
 /* ---- leds.radio / leds.hb mode names ----------------------------------- */
 /*
- * Which LEDs this board actually has, so the CLI can tell the user when a
- * setting it just accepted will not do anything here.  The pref is still
- * stored either way: the same prefs file follows a node onto a board that does
- * have the LED, and silently dropping the value would be worse than storing a
- * setting that is dormant.
- *
- * These mirror the aliases the drivers use — lora-tx-led in ZephyrBoard.cpp,
- * led0 with an led1 fallback in helpers/ui/ui_common.c.
+ * Which LEDs this board has, so the CLI can say when a setting it stored
+ * does nothing here. Mirrors the aliases the drivers use.
  */
 #define CLI_HAS_RADIO_LED  DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
 #define CLI_HAS_HB_LED     (DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) || \
@@ -248,30 +236,12 @@ void CommonCLI::savePrefs() {
 	_callbacks->savePrefs();
 }
 
-/* Drop everything the adaptive-CAD controller has learned.
+/* Drop everything the adaptive-CAD controller has learned: on `set
+ * cad.reset` and on every change of preset.
  *
- * Called both by `set cad.reset` and by every command that moves the radio to a
- * different preset, because such a change invalidates all three pieces at once:
- * detPeak's base table is per-SF and per-bandwidth, so the ladder the offset
- * addresses is re-based under it (SF7->SF12 is 5 counts on SX126x and 16 on the
- * LR11xx), and the per-level statistics that justified the offset describe a
- * preset that is no longer on air.  Re-converging from the new preset's own
- * base costs an hour or two; carrying a stale offset across can leave the node
- * either transmitting over live receptions or unable to transmit at all.
- *
- * The operating offset lives in two places — _prefs->cad_offset, and the radio's
- * CadController, which applyCadPrefs() reloads through setCadParams().
- *
- * preset_pending = the caller has already written the NEW freq/bw/sf/cr to
- * _prefs but the radio is still running the OLD preset (frozen by
- * freezeRadioParams until the reboot the caller is about to ask for).
- * applyCadPrefs() stamps cad_base from the RUNNING radio, i.e. the preset being
- * left, so that stamp has to be cleared again afterwards: a stale anchor in
- * flash is precisely what makes setCadParams() re-anchor a freshly reset offset
- * by (old_base - new_base) on the next boot, which is the bug this reset
- * exists to avoid.  0 means "no anchor recorded", which that re-anchor
- * deliberately treats as a no-op, and the next boot re-stamps it.
- */
+ * preset_pending = the new preset is in _prefs but the radio still runs the
+ * old one until the reboot. applyCadPrefs() then stamps cad_base from the
+ * preset being left, so the stamp is cleared again (0 = no anchor). */
 void CommonCLI::resetCadState(bool preset_pending) {
 	_prefs->cad_offset = cliDefaults()->cad_offset;
 	_prefs->cad_base = 0;
@@ -352,21 +322,9 @@ void CommonCLI::scheduleReboot(uint8_t type)
 	k_work_schedule(&_reboot_work, K_SECONDS(2));
 }
 
-/* CLI commands are case-sensitive, matching upstream Arduino MeshCore.
- *
- * A case-insensitive normalizer lived here from 2026-07-12 until 2026-07-19.
- * It lowercased the first two whitespace-delimited tokens before matching, on
- * the assumption that a value never appears before the third token.  That is
- * false for "password <value>", whose value IS token 1 -- so any admin
- * password containing uppercase was silently stored folded to lowercase and
- * could never be used to log in again.  ("set guest.password <value>" was
- * unaffected: three tokens.)
- *
- * Do not reintroduce input folding here.  Any scheme that rewrites the buffer
- * before dispatch has to guess where keywords end and arguments begin, and
- * that guess is what broke.  If case-insensitivity is wanted again, do it at
- * the comparison sites so argument bytes are never touched.
- */
+/* CLI commands are case-sensitive, matching upstream Arduino MeshCore. Do
+ * not fold the input buffer: a value can be the second token (`password
+ * <value>`). */
 void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, char* reply) {
 	if (handleRadioCmd(sender_timestamp, command, reply)) {  // is a radio CLI command?
 		return;
@@ -377,18 +335,9 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 	}
 
 	if (strcmp(command, "start dfu") == 0) {
-		/* Reboot into the chip's own firmware-update mode.  nRF52: the Adafruit
-		 * UF2 bootloader.  ESP32-S3: the ROM download mode, which is the only
-		 * way to get the USB port back from the CDC companion transport for
-		 * esptool (see ZephyrBoard::rebootToBootloader).
-		 *
-		 * Everything else has no bootloader this command can reach, so it must
-		 * NOT reboot.  rebootToBootloader() would just reset back into the app,
-		 * dropping the node off the mesh for nothing while replying that it had
-		 * gone somewhere it cannot go.  C3/C6 and classic ESP32 do not need it
-		 * anyway -- they have no DWC2 controller, so USB-Serial-JTAG never
-		 * loses the port and esptool resets them itself; nRF54L15/MG24/STM32WL
-		 * have no USB device peripheral at all and are flashed over SWD. */
+		/* Reboot into the chip's own firmware-update mode: the UF2 bootloader on
+		 * nRF52, the ROM download mode on ESP32-S3. Other platforms have no
+		 * bootloader this command can reach, so they must not reboot. */
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 		strcpy(reply, "OK - rebooting to ESP32 download mode");
 		scheduleReboot(REBOOT_DFU);
@@ -798,14 +747,9 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 			/* Plain number, matching upstream Arduino MeshCore's "> %d". */
 			snprintf(reply, CLI_REPLY_SIZE, "> %d", (int)_prefs->tx_power_dbm);
 		} else if (memcmp(config, "freqerr", 7) == 0) {
-			/* MUST stay above "freq" — that is a 4-char prefix match and
-			 * would swallow this one.
-			 *
-			 * Carrier frequency error measured on received packets, LR2021
-			 * only.  Diagnostic: nothing acts on it.  The mean approximates
-			 * THIS node's reference error only once averaged over many
-			 * different peers (theirs cancel, ours does not), which is why
-			 * the spread and packet count are shown alongside it. */
+			/* MUST stay above "freq", a 4-char prefix match that would swallow this
+			 * one. Carrier frequency error of received packets, LR2021 only;
+			 * diagnostic. */
 			int n = snprintf(reply, CLI_REPLY_SIZE, "> ");
 			if (_callbacks->formatFreqErrorStatus(reply + n,
 							      CLI_REPLY_SIZE - n) == 0) {
@@ -821,13 +765,8 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 	if (memcmp(command, "set ", 4) == 0) {
 		const char* config = &command[4];
 		if (memcmp(config, "dutycycle ", 10) == 0) {
-			/* Floor is 10%, not Arduino's 1%: this writes airtime_factor as
-			 * (100/dc)-1, and sanitizeNodePrefs() clamps that field to 0..9.
-			 * A 1% duty cycle stores af=99, survives until the next load, and
-			 * is then silently rewritten to 9 (=10%) — the node would run at
-			 * one duty cycle and boot into another.  10% is the lowest value
-			 * that round-trips, and it matches the 0..9 bound `set af` now
-			 * enforces directly. */
+			/* Floor is 10%, not Arduino's 1%: airtime_factor is clamped to 0..9, so
+			 * a lower duty cycle would not survive a reload. */
 			float dc;
 			if (!cliFloat(&config[10], 100.0f / (cliDefaults()->airtime_factor + 1.0f), &dc)) {
 				strcpy(reply, "ERROR: dutycycle must be 10-100, or default");
@@ -875,13 +814,7 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 				}
 			}
 		} else if (memcmp(config, "agc.reset.interval ", 19) == 0) {
-			/* Periodic AGC recalibration was removed: it reset the noise floor
-			 * to its unseeded sentinel on every fire, forcing a fresh seed and
-			 * a full EMA warmup, and it was already forced off under RX duty
-			 * cycle.  RX duty cycle is the supported way to cut RX current.
-			 * The prefs BYTE is retained (read/written, never acted on) — the
-			 * on-disk layout is byte-exact and shifting it would corrupt every
-			 * existing node's prefs. */
+			/* Removed. The prefs byte is kept for the legacy on-disk layout. */
 			strcpy(reply, "Removed - Automatic AGC reset is on");
 		} else if (memcmp(config, "multi.acks ", 11) == 0) {
 			long val;
@@ -1068,15 +1001,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 			 zephcore_buzzer_mode_name(mode));
 #endif
 #ifdef CONFIG_ZEPHCORE_ROLE_ROOM_SERVER
-	/* Room server only.  RoomServerMesh.cpp is the sole consumer of
-	 * allow_read_only; RepeaterMesh.cpp never reads it, so on a repeater
-	 * this advertised a setting that silently did nothing.  Note this is a
-	 * deliberate divergence from Arduino MeshCore, whose shared CommonCLI
-	 * exposes the knob on every role for the same reason ours used to.
-	 *
-	 * The pref itself stays unconditional -- it is byte 114 of the on-flash
-	 * prefs layout, identical to Arduino's, so dropping it would shift every
-	 * field after it and invalidate existing prefs files. */
+	/* Room server only: nothing else reads allow_read_only. The pref itself
+	 * stays for the legacy on-disk layout. */
 	} else if (memcmp(config, "allow.read.only", 15) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->allow_read_only ? "on" : "off");
 #endif
@@ -1274,18 +1200,8 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 				 (unsigned)_prefs->cad_busycap);
 		}
 	} else if (strcmp(config, "cad") == 0) {
-		/* Arduino exposes this as a boolean knob; ZephCore always does CAD,
-		 * so the answer is a constant "on".  Apps parse the word.
-		 *
-		 * EXACT match, not the 3-byte prefix this used to be.  Every branch
-		 * in this chain is a memcmp prefix test, so "cad" matched every
-		 * `get cad.*` that had no branch of its own and answered "on" for
-		 * all of them -- a percentage, a signed offset and an action all
-		 * came back as a boolean.  cad.stats escaped only by being ordered
-		 * above it, which is a fragile way to stay correct.  Anchoring this
-		 * one fixes the whole family at once: anything under cad. without a
-		 * getter now falls through to the honest "??:" reply instead of
-		 * being answered wrongly. */
+		/* ZephCore always does CAD, so the answer is a constant; apps parse the
+		 * word. Exact match: a prefix test would answer every `get cad.*`. */
 		strcpy(reply, "> on");
 	} else if (memcmp(config, "extra.sf", 8) == 0) {
 		/* No "> " prefix, and the empty case is a sentence -- both match
@@ -1444,15 +1360,8 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			strcpy(reply, "OK");
 		}
 	} else if (memcmp(config, "cad.reset", 9) == 0) {
-		/* Clearing the probe statistics alone left the node re-converging
-		 * FROM wherever the staircase had already walked detPeak, with no
-		 * evidence left to justify sitting there — the opposite of a reset,
-		 * and useless for the one job this command has (recovering after a
-		 * base-table change).
-		 *
-		 * preset_pending = false: the radio is running the preset this
-		 * reset is for, so the base applyCadPrefs() stamps is the right
-		 * one to keep. */
+		/* Reset the offset and the base anchor as well, not only the statistics.
+		 * preset_pending = false: the radio runs the preset this reset is for. */
 		resetCadState(false);
 		snprintf(reply, CLI_REPLY_SIZE,
 			 "OK - CAD probe stats cleared, detPeak offset reset to %d",
@@ -1773,15 +1682,8 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			strcpy(reply, "Error: must be 0, 1, on, or off");
 		}
 	} else if (memcmp(config, "tz.offset ", 10) == 0) {
-		// Whole-hour offset from UTC for the ON-DEVICE CLOCK DISPLAY only.
-		// The RTC, `clock` and `time <epoch>` all stay UTC: they round-trip
-		// with each other, apps parse them, and a timezone that reached the
-		// clock would look like a backward jump to every timestamp consumer
-		// on the node (see NodePrefs::tz_offset).
-		//
-		// Whole hours, matching upstream MeshCore's command of the same
-		// name, so an app that speaks to both trees behaves identically.
-		// Half-hour zones (+5:30, -3:30) cannot be expressed.
+		// Whole-hour offset from UTC for the on-device clock display only; the RTC,
+		// `clock` and `time <epoch>` stay UTC. Whole hours as upstream.
 		long val;
 		if (!cliNum(&config[10], cliDefaults()->tz_offset, &val)) {
 			snprintf(reply, CLI_REPLY_SIZE, "Error: expected %d..%d or default",

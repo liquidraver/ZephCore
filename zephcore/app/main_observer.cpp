@@ -326,17 +326,8 @@ int main(void)
 	}
 #endif
 
-	/* First boot on a volume that is not this role's - a fresh chip, a
-	 * companion, or a node that was running Arduino MeshCore, whose nRF52
-	 * filesystems overlap our lfs_partition
-	 * (devdocs/HANDOVER_lfs_arduino_overlap.md).  Erase everything so we
-	 * start from a known state: Zephyr's automount only
-	 * auto-formats the LittleFS volume when it fails to mount, and never
-	 * touches storage_partition (BLE bonds NVS) or QSPI.
-	 *
-	 * Self-limiting, so it needs no "done" marker: the identity is generated
-	 * and saved a few lines below, and loadPrefs() persists defaults on the
-	 * same boot, so the next boot sees this role's data and skips this. */
+	/* First boot on a volume that is not this role's: erase everything (LittleFS,
+	 * bond NVS, QSPI). Self-limiting: this boot writes the role's data. */
 	if (!data_store.hasRoleData()) {
 		LOG_WRN("Volume holds no data for this role - formatting before first boot");
 		if (!zephcore_fs_format_all(nullptr)) {
@@ -360,19 +351,8 @@ int main(void)
 	/* LoRa RX callback — observer never needs TX done */
 	lora_radio.setRxCallback(lora_rx_callback, nullptr);
 
-	/* Bind the radio to the mesh's NodePrefs BEFORE begin().
-	 *
-	 * The radio reads freq/bw/sf/cr through this pointer, both during
-	 * begin() → Dispatcher::begin() → Radio::begin() and on every later
-	 * reconfigure().  Bound to a placeholder that was never loaded from
-	 * flash, the radio stayed on the compiled-in defaults forever: `set freq/sf/bw/cr` wrote flash and
-	 * updated the CLI/MQTT readback but never reached the hardware, so the
-	 * setting looked accepted and then "reverted" on reboot.
-	 *
-	 * Binding before begin() is safe and required: begin() calls loadPrefs()
-	 * first and Dispatcher::begin() last, so the object is populated by the
-	 * time the radio reads through it.  Mirrors main_repeater.cpp and
-	 * main_room_server.cpp. */
+	/* Bind the radio to the mesh's NodePrefs before begin(): the radio reads
+	 * freq/bw/sf/cr through this pointer at begin() and on every reconfigure. */
 	lora_radio.setPrefs(observer_mesh.getNodePrefs());
 
 	/* Initialize and start mesh (loads prefs + identity from flash) */

@@ -26,16 +26,9 @@ LOG_MODULE_REGISTER(lr1110_hal, LOG_LEVEL_INF);
 /* SPI bus device */
 static const struct device *spi_dev = DEVICE_DT_GET(DT_BUS(LR1110_NODE));
 
-/* Flashing SPI clock cap.
- *
- * In bootloader mode the chip runs off its internal RC oscillator (the XOSC
- * needs either a crystal or a powered TCXO), so it has far less timing
- * margin than during normal operation. Flashing pushes ~1000 back-to-back
- * 256-byte writes, and the images are encrypted+signed: a SINGLE corrupted
- * byte anywhere makes the whole image fail its integrity check at boot,
- * with every write still reporting OK (the bootloader never reads back).
- * Cap the operational 8-16 MHz down to a conservative rate — the entire
- * 239 KB image still takes ~1 s of SPI time at 2 MHz. */
+/* Flashing SPI clock cap. In bootloader mode the chip runs on its RC
+ * oscillator with less timing margin, and one corrupted byte fails the whole
+ * signed image with every write reporting OK. */
 #define UPDATER_SPI_MAX_HZ 2000000
 
 /* SPI config — manual CS (we toggle NSS via GPIO) */
@@ -102,22 +95,9 @@ static int wait_on_busy(uint32_t timeout_ms)
 }
 
 /*
- * Wait for a command the chip has just been given to actually COMPLETE.
- *
- * The chip does not raise BUSY the instant NSS deasserts — it needs a few
- * microseconds. Polling only for "BUSY is low" therefore has a race: on a
- * fast host (ESP32-S3 at 240 MHz drives GPIO in nanoseconds) the poll can
- * observe the *stale* pre-command LOW and conclude the command is already
- * finished. The next transaction then starts clocking while the chip is
- * still writing flash, and because WriteFlashEncrypted is fire-and-forget
- * — no read-back, no status check — the resulting corruption is silent.
- * One bad chunk anywhere invalidates the whole signed image, so the odds
- * of a clean flash fall off a cliff as the image grows: a 19 KB loader is
- * 77 transactions, a 239 KB firmware is 959.
- *
- * So: first watch for the rising edge (bounded — a command that finishes
- * faster than we can look is fine and simply never appears busy), then
- * wait for the fall.
+ * Wait for a command the chip has just been given to complete: first watch
+ * for BUSY rising (bounded: a fast command may never show busy), then wait
+ * for it to fall. Polling for low alone can read the stale pre-command level.
  */
 /* ── Per-command instrumentation ───────────────────────────
  *
@@ -230,15 +210,9 @@ int lr1110_updater_reset_to_bootloader(void)
 {
 	printk("Resetting LR1110 into bootloader (BUSY held LOW)...\n");
 
-	/* Semtech lr1110_updater_tool pattern:
-	 * 1. Drive BUSY LOW as output during reset
-	 * 2. Pulse RESET
-	 * 3. Wait 500ms
-	 * 4. Release BUSY back to input
-	 * 5. Wait 100ms + BUSY low
-	 *
-	 * When BUSY is held LOW by the host during reset, the LR1110
-	 * enters bootloader mode instead of executing flash firmware. */
+	/* Semtech lr1110_updater_tool pattern: hold BUSY low as an output across
+	 * the RESET pulse, which makes the LR1110 enter its bootloader; wait 500 ms,
+	 * release BUSY, wait 100 ms and for BUSY low. */
 
 	/* Drive BUSY to physical LOW (pin_busy has GPIO_ACTIVE_HIGH,
 	 * so we use raw GPIO to be explicit about physical level) */
@@ -266,25 +240,10 @@ int lr1110_updater_reset_to_bootloader(void)
 	return ret;
 }
 
-/* ── SD card presence probe ───────────────────────────────────
- *
- * On boards where the SD slot shares the radio's SPI bus, an inserted card
- * breaks LR1110 flashing: every write still reports OK and the programmed
- * image fails its integrity check at boot, which is indistinguishable from a
- * dozen other faults and cost days to track down. There is no card-detect pin
- * wired on the M9, so presence is established over the bus.
- *
- * Standard SPI-mode detection: >=74 dummy clocks with CS high to bring the
- * card up in SPI mode, then CMD0 (GO_IDLE_STATE). A present card answers R1
- * with the MSB clear (0x01 = idle). An empty slot leaves MISO pulled high, so
- * every byte reads 0xFF and nothing else. False "absent" is possible if a card
- * ignores CMD0 — no worse than not probing; false "present" essentially cannot
- * happen, since 0xFF is all an empty slot can produce.
- *
- * Runs at 400 kHz (SD init is specified at 100-400 kHz; the radio path stays
- * at its own clock) and is safe on the shared bus: the LR1110's NSS is parked
- * inactive by hal_init, and the TFT is held in reset and is write-only.
- */
+/* ── SD card presence probe ──
+ * An inserted card on the radio's SPI bus silently corrupts LR1110 flashing,
+ * and the M9 has no card-detect pin. SPI-mode detection at 400 kHz: 74+ dummy
+ * clocks with CS high, then CMD0; a card answers R1, an empty slot reads 0xFF. */
 #if defined(CONFIG_BOARD_THINKNODE_M9)
 /* No DT node exists for the slot — the base board DTS only parks its CS with
  * a gpio-hog. GPIO48 = gpio1 pin 16. */
@@ -385,21 +344,8 @@ lr11xx_hal_status_t lr11xx_hal_write(const void *context, const uint8_t *command
 		return LR11XX_HAL_STATUS_ERROR;
 	}
 
-	/* Send the command and its payload as ONE contiguous buffer.
-	 *
-	 * Passing them as two spi_bufs makes Zephyr's ESP32 SPI driver walk
-	 * the set buffer-by-buffer (spi_context_max_continuous_chunk() never
-	 * spans a buffer boundary), so a 6-byte command and a 256-byte payload
-	 * become separate hardware transactions — and each is further split at
-	 * SOC_SPI_MAXIMUM_BUFFER_SIZE (64 bytes on the S3, no DMA).
-	 *
-	 * That matters here because WriteFlashEncrypted is the ONLY command
-	 * this tool issues with a payload: every command known to work
-	 * (GetVersion, GetStatus, EraseFlash, the EUI reads) is a single
-	 * sub-64-byte frame. Keeping the frame contiguous — together with a
-	 * flash chunk size chosen so command+payload stays under 64 bytes —
-	 * makes the write path look exactly like the paths already proven
-	 * good on this hardware. */
+	/* Send the command and its payload as one contiguous buffer: as two
+	 * spi_bufs the ESP32 SPI driver makes them separate hardware transactions. */
 	static uint8_t txbuf[LR11XX_HAL_MAX_FRAME];
 
 	if ((size_t)command_length + (size_t)data_length > sizeof(txbuf)) {

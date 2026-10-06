@@ -38,14 +38,8 @@
 #include <ZephyrRNG.h>
 
 #if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
-/* RTC-slow-clock beat diagnostic. ESP32's k_cycle_get_32() is CCOUNT, same
- * clock domain as the CPU, so CPU-jitter sampling measures a deterministic
- * loop (proven on hardware: maxrep in the thousands, ~0 bits). The RTC slow
- * clock is a SEPARATE oscillator (internal ~136 kHz RC, or a 32 kHz crystal)
- * that drifts independently of the main-crystal->PLL->240 MHz path — so the
- * number of CPU cycles that elapse across a fixed RTC interval fluctuates, and
- * that fluctuation is real physical entropy. This is what nRF gets for free
- * (its system timer IS the 32 kHz RTC). This diagnostic MEASURES that beat; it
+/* RTC-slow-clock beat diagnostic (ESP32): measures the CPU cycles elapsed
+ * across a fixed interval of the RTC slow clock, a separate oscillator. It
  * does not touch identity generation. */
 #include <esp_rtc_time.h>
 #define HAVE_RTC_BEAT 1

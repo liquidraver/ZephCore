@@ -14,41 +14,15 @@
 #include "radio_tuning.h"
 
 /* --- RSSI read timing (SX1261/2 DS rev 2.2 Table 13-82) ---
- *
- * The median-of-N above only rejects outliers if the N reads are actually
- * independent.  The chip updates RSSI once per "averaging window"; reads
- * issued faster than that return the same underlying sample repeatedly, and
- * the median degenerates into one read with extra SPI traffic.
- *
- * The published table is indexed by GFSK channel-filter bandwidth.  Across
- * all 19 rows the product window_us * BW_kHz lands in 921..938, so
- * 936 / BW_kHz reproduces every published value to within a microsecond.
- * The separate "RSSI delay" column (BUSY falling edge -> first valid sample)
- * is 12x to 15x the window across the same rows.
- *
- * CAVEAT: Semtech documents this for GFSK only and publishes no LoRa
- * equivalent.  The RSSI path is the same analog/AGC chain, so these are used
- * as the best available proxy — not as specified LoRa figures.  `get cad`
- * reports the measured burst spread so the assumption stays falsifiable on
- * real hardware.
- */
+ * Reads faster than the chip's averaging window return the same sample.
+ * window_us = 936 / BW_kHz reproduces the table; it is specified for GFSK and
+ * used here for LoRa as the best available figure. */
 #define RSSI_WINDOW_BW_PRODUCT   936U  /* window_us * BW_kHz, DS Table 13-82 */
 #define RSSI_SETTLE_WINDOWS      16U   /* delay/window is 12..15; round up */
 
-/* Burst-stat rescale point.  The counters behind `get cad`'s sp field are
- * halved (all three together, so the mean and the zero-spread share are
- * preserved exactly) once the burst count reaches this.
- *
- * Two reasons, and the display one is the hard constraint: the remote CLI
- * reply is capped at CLI_REMOTE_REPLY_SIZE (161 B) and has to fit the header
- * plus three level lines, so no field may grow without bound.  At one burst
- * per 15 s a free-running counter passes 500 000 in three months and would
- * eat the level rows.  8192 keeps it to four digits forever.
- *
- * The second reason is that halving turns the totals into an exponential
- * forgetting window, so the numbers describe recent conditions instead of
- * being anchored to whatever the channel was doing at boot.  Same idea as
- * CAD_STATS_DECAY_MS below, which halves the CAD counters on a timer. */
+/* Burst-stat rescale point: the counters behind `get cad`'s sp field are
+ * halved together at this count, which keeps the reply inside the remote CLI
+ * limit and makes the totals describe recent conditions. */
 #define RSSI_BURST_STATS_CAP     8192U
 
 static inline uint32_t rssi_avg_window_us(uint16_t bw_khz)
@@ -71,16 +45,8 @@ static inline uint32_t rssi_settle_delay_us(uint16_t bw_khz)
  * the every-16th-sample unguarded bypass are counted in samples, so they scale
  * with this value — see the Kconfig help before changing it. */
 #define NOISE_FLOOR_INTERVAL_MS  CONFIG_ZEPHCORE_NOISE_FLOOR_INTERVAL_MS
-/* A due sample that lands while the radio is mid-packet, transmitting, or in
- * its duty-cycle sleep window is retried on this deadline rather than waiting a
- * full interval.
- *
- * 5000 is not a tuned guess: before the deadline conversion a blocked sample
- * simply waited for the next 5 s housekeeping tick, so this reproduces the old
- * retry grid exactly.  It matters under RX duty cycle, where the chip is in its
- * sleep window a large fraction of the time and blocked attempts are the norm
- * rather than the exception — a shorter retry there can push the wake rate
- * ABOVE the fixed tick this conversion replaced, inverting the whole point. */
+/* A due sample that lands mid-packet, during TX or in the duty-cycle sleep
+ * window is retried after this long (the old housekeeping grid). */
 #define NOISE_FLOOR_RETRY_MS             5000
 /* Blocked attempts allowed before standing down to the next full interval. */
 #define NOISE_FLOOR_MAX_RETRIES          2
@@ -144,14 +110,8 @@ static inline enum lora_signal_bandwidth bw_khz_to_enum(uint16_t bw_khz)
 	case 125: return BW_125_KHZ;
 	case 250: return BW_250_KHZ;
 	case 500: return BW_500_KHZ;
-	/* Wide bandwidths, accepted under both spellings: the round name people
-	 * type and the chip's true value they may read off a datasheet. Both
-	 * select the same modem setting.
-	 *
-	 * Only the LR2021 implements these; every other driver here falls back
-	 * to 125 kHz for an unmapped enum, which would be a silent mismatch.
-	 * That is why the CLI only accepts a bandwidth above 500 on an LR2021
-	 * build — see the bw range check in CommonCLI.cpp. */
+	/* Wide bandwidths, under both spellings (the round name and the chip's true
+	 * value). LR2021 only; the CLI rejects them elsewhere. */
 	case 200: case 203:  return BW_200_KHZ;
 	case 400: case 406:  return BW_400_KHZ;
 	case 800: case 812:  return BW_800_KHZ;
@@ -160,22 +120,9 @@ static inline enum lora_signal_bandwidth bw_khz_to_enum(uint16_t bw_khz)
 	}
 }
 
-/* Lowest physically-possible noise floor for a given bandwidth, in dBm.
- *
- * This is raw thermal noise — kTB at 290 K, with NO noise-figure term:
- *     -174 dBm/Hz + 10*log10(BW_Hz)
- * A passive receiver cannot read below it, so it is the one place a sanity
- * clamp belongs: anything under this line is a bad RSSI read, not a quiet
- * site.  Adding a receiver noise figure here would clamp ABOVE what the
- * hardware can legitimately report and manufacture a floor — which is exactly
- * what the old fixed -120 rail did to BW 62.5 kHz, pinning it on every EMA
- * update because -120 happens to be that preset's kTB+NF.
- *
- * Bandwidth is the only term that moves.  SF changes the SNR the demodulator
- * can decode at, not the noise power in the channel, so it must NOT appear.
- *
- * For reference, a typical SX126x (NF ~6 dB) reads about 6 dB above these:
- * BW 62.5 kHz measures ~-120 dBm on a quiet site against a -126 kTB limit. */
+/* Lowest physically possible noise floor for a bandwidth, in dBm: thermal
+ * noise kTB at 290 K, -174 dBm/Hz + 10*log10(BW_Hz), with no noise figure and
+ * no SF term. A reading below it is a bad RSSI read. */
 static inline int16_t noise_floor_min_dbm(uint16_t bw_khz)
 {
 	switch (bw_khz) {

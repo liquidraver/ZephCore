@@ -37,59 +37,17 @@
 #endif
 
 /* ESP32-S3: reboot into the ROM download mode rather than back into the app.
- *
- * The USB CDC companion transport (boards/common/esp32s3_usb.conf) hands the
- * shared D+/D- pads to USB OTG and disables USB-Serial-JTAG.  USJ is exactly
- * what esptool drives to put the chip into download mode, so once our CDC-ACM
- * device owns the port esptool's auto-reset is inert: DTR/RTS land on a Zephyr
- * CDC endpoint that is not wired to EN/BOOT, and the only way back into the
- * bootloader is the physical BOOT button.
- *
- * FORCE_DOWNLOAD_BOOT lives in the RTC domain, which a software system reset
- * does not clear (only a power-on reset does), so setting it and rebooting
- * brings the ROM up in download mode.  That gives both `start dfu` and the
- * Arduino-style 1200-baud touch a way to hand the port back to esptool /
- * esptool-js / the web configurator.
- *
- * Setting it is not enough on its own, though.  WHICH USB controller the ROM
- * appears on is a separate mux, and it lives in the same RTC domain: Zephyr's
- * DWC2 quirk layer claims the internal PHY for USB OTG at init
- * (usb_wrap_ll_phy_enable_external(hw, false) -> RTC_CNTL_USB_CONF_REG
- * SW_HW_USB_PHY_SEL=1, SW_USB_PHY_SEL=1), and those bits survive the reboot
- * exactly like FORCE_DOWNLOAD_BOOT does.  Left alone the ROM therefore comes up
- * on USB OTG (303a:0009), not USB-Serial-JTAG (303a:1001).  That state is still
- * flashable -- esptool reports "USB mode: USB-OTG" and even loads the stub --
- * but it breaks everything that expects USJ: esptool's auto-reset does nothing
- * over ROM OTG CDC so it needs --before no-reset, and esptool-js special-cases
- * only PID 0x1001, so browser flashers fall into a classic DTR/RTS reset path
- * that cannot work.  Clearing SW_HW_USB_PHY_SEL hands the mux back to
- * hardware/eFuse control, whose default routes the internal PHY to USJ -- i.e.
- * it reproduces what a power-on reset would have left behind.
- *
- * Same register and sequence Arduino-ESP32 uses in usb_persist_restart()
- * (RESTART_BOOTLOADER).  OPTION1 carries no other bits on this SoC, but set the
- * bit rather than writing the word so it stays correct if that changes.  Scoped
- * to the S3 deliberately: it is the only part we ship whose USB port can be
- * taken away from the ROM this way (C3/C6 use a different LP_AON register, and
- * classic ESP32 has no native USB — it always flashes through its UART bridge).
- */
+ * FORCE_DOWNLOAD_BOOT and the USB PHY mux both live in the RTC domain and
+ * survive a software reset. */
 #if defined(CONFIG_SOC_SERIES_ESP32S3)
 #include <soc/rtc_cntl_reg.h>
 #include <soc/soc.h>
 #define ESP32_FORCE_DOWNLOAD_BOOT 1
 #endif
 
-/* Detach the USB device stack before a reset so the host sees a real unplug —
- * see zephcore_usbd_detach().  Matters most on the ESP32-S3 USB companion,
- * whose OTG PHY survives a soft reset with D+ still pulled up.
- *
- * The condition below must be EXACTLY the one CMakeLists.txt uses to compile
- * adapters/usb/ZephyrUSBCDC.cpp, or this call site compiles against an
- * implementation that is never linked (findings #22 — that failure mode has
- * already cost this repo four separate undefined-reference bugs).  The
- * repeater/observer/room-server branches use the inner half alone; the
- * companion branch wraps it in (LOG || COMPANION_USB || COMPANION_SERIAL), and
- * ZEPHCORE_COMPANION is the compile definition that identifies that branch. */
+/* Detach the USB device stack before a reset so the host sees a real unplug.
+ * The condition must be exactly the one CMakeLists.txt uses to compile
+ * adapters/usb/ZephyrUSBCDC.cpp, or the call is never linked. */
 #if !defined(CONFIG_CDC_ACM_SERIAL_INITIALIZE_AT_BOOT) && \
 	(defined(CONFIG_USB_CDC_ACM) || defined(CONFIG_USBD_CDC_ACM_CLASS))
 #if !defined(ZEPHCORE_COMPANION) || defined(CONFIG_LOG) || \
@@ -146,13 +104,8 @@ static const struct device *vbat_enable_dev = NULL;
 #endif
 
 /*
- * Battery voltage multiplier - prefer devicetree, fallback to Kconfig
- * Formula: Battery_mV = (raw * VBAT_MV_MULTIPLIER) / 4096
- *
- * To define in devicetree, add to board's DTS/overlay:
- *   zephyr,user {
- *       vbat-mv-multiplier = <7200>;
- *   };
+ * Battery_mV = raw * VBAT_MV_MULTIPLIER / 4096. Devicetree
+ * (zephyr,user vbat-mv-multiplier) wins over the Kconfig fallback.
  */
 #define ZEPHYR_USER_NODE DT_PATH(zephyr_user)
 #if DT_NODE_HAS_PROP(ZEPHYR_USER_NODE, vbat_mv_multiplier)
@@ -521,26 +474,15 @@ void ZephyrBoard::rebootToBootloader()
 	usb_serial_jtag_ll_phy_enable_pad(false);
 	k_msleep(100);
 #ifdef ESP32_FORCE_DOWNLOAD_BOOT
-	/* ...but put the pad back before resetting into the ROM.  The pad-enable
-	 * bit survives a software reset, and unlike the app the ROM download mode
-	 * never re-enables it, so leaving it off keeps USB-Serial-JTAG off the bus:
-	 * the host sees the port die and only a power cycle brings it back.  That
-	 * was `start dfu` on every S3 build whose console is USJ (repeater,
-	 * observer, room server, debug).  The 100 ms low above still gives the
-	 * host its disconnect; the ROM then enumerates as 303a:1001. */
+	/* Put the pad back before resetting into the ROM: the bit survives the
+	 * reset and the ROM never re-enables it. */
 	usb_serial_jtag_ll_phy_enable_pad(true);
 #endif
 #endif
 #ifdef ESP32_FORCE_DOWNLOAD_BOOT
-	/* Hand the internal USB PHY back to USB-Serial-JTAG, so the ROM download
-	 * mode we just armed appears as 303a:1001 rather than ROM USB OTG.  See
-	 * the header comment on ESP32_FORCE_DOWNLOAD_BOOT for why this is needed
-	 * and why it has to happen HERE -- after zephcore_usbd_detach(), which
-	 * has to drop the D+ pull-up while OTG still owns the PHY, or the host
-	 * never sees a clean disconnect.
-	 *
-	 * No-op on builds that never took the PHY (repeater/observer/debug keep
-	 * USJ, so both bits are already 0). */
+	/* Hand the internal USB PHY back to USB-Serial-JTAG, so the ROM appears as
+	 * 303a:1001. After zephcore_usbd_detach(), which needs OTG to still own the
+	 * PHY. */
 	REG_CLR_BIT(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL);
 	REG_CLR_BIT(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_USB_PHY_SEL);
 #endif

@@ -36,13 +36,8 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #endif
 
 /* USB CDC ACM init + 1200-baud DFU + DTR callbacks (shared with companion).
- *
- * Gate on the CDC-ACM class driver, NOT on DT_HAS_COMPAT_STATUS_OKAY alone: a
- * board overlay may expose a cdc_acm_uart DT node unconditionally (the shared
- * esp32s3_usb_otg.dtsi does), so the node can be present while the class driver
- * — and therefore zephcore_usbd_* and the device object — is not compiled
- * (e.g. an ESP32-S3 server built without esp32s3_usb.conf). This mirrors the
- * CMake condition that compiles ZephyrUSBCDC.cpp. */
+ * Gated on the class driver, as the CMake condition that compiles
+ * ZephyrUSBCDC.cpp: the DT node can exist without it. */
 #define ZEPHCORE_USB_STACK \
 	(IS_ENABLED(CONFIG_USB_CDC_ACM) || IS_ENABLED(CONFIG_USBD_CDC_ACM_CLASS))
 
@@ -67,16 +62,8 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include "display.h"
 #endif
 
-/* Headless servers link the weak no-op ui_* stubs (ui_headless_stubs.c), so
- * the periodic UI refresh in the maintenance pass is pure work for nothing on
- * them.  Guard the hot path on a real ui_* implementation being linked; the
- * one-shot calls at init and in the CLI reply path stay unguarded, matching
- * the rest of the file.
- *
- * This MUST mirror the CMake condition that selects the stubs, not the display
- * devicetree node: ZEPHCORE_UI_DESIGN_BUTTON is enabled by BUTTONS *or*
- * DISPLAY *or* BUZZER, so a board with buttons/buzzer and no panel still links
- * the real UI and still needs these updates. */
+/* A real ui_* implementation is linked (not the headless stubs). Mirrors the
+ * CMake condition that selects the stubs, not the display devicetree node. */
 #define ZEPHCORE_HAS_UI (IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_BUTTON) || \
 			 IS_ENABLED(CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK))
 
@@ -103,17 +90,9 @@ static const struct gpio_dt_spec led1 = GPIO_DT_SPEC_GET(LED1_NODE, gpios);
 #define MESH_EVENT_WAKE          BIT(MESH_EVENT_ROLE_BASE + 1)  /* Off-main state set; run loop() promptly */
 #define MESH_EVENT_ALL           (MESH_EVENT_LORA_RX | MESH_EVENT_LORA_TX_DONE | MESH_EVENT_CLI_RX | MESH_EVENT_MAINTENANCE | MESH_EVENT_GPS_ACTION | MESH_EVENT_TX_DRAIN | MESH_EVENT_INIT_ADVERT | MESH_EVENT_WAKE)
 
-/* Maintenance is deadline-driven, not periodic: after every pass the loop asks
- * the mesh when its soonest pending deadline is (msUntilNextMaintenance) and
- * arms a single one-shot wake for exactly that moment.  An idle node with
- * nothing scheduled therefore sleeps until its next real deadline instead of
- * waking on a fixed cadence.
- *
- * MAINTENANCE_BACKSTOP_MS bounds that: it caps how long we will go without a
- * pass even when everything reports idle, so a deadline that is missed or
- * mis-reported degrades to the old behaviour instead of wedging.
- * MAINTENANCE_MIN_MS floors it, so an item that is due-but-blocked (radio
- * mid-packet, duty-cycle sleep window) re-arms shortly rather than spinning. */
+/* Maintenance is deadline-driven: after every pass a one-shot is armed for the
+ * mesh's soonest deadline. MAINTENANCE_BACKSTOP_MS caps the wait,
+ * MAINTENANCE_MIN_MS floors it. */
 #define MAINTENANCE_BACKSTOP_MS CONFIG_ZEPHCORE_MAINTENANCE_BACKSTOP_MS
 #define MAINTENANCE_MIN_MS      50
 
@@ -256,16 +235,9 @@ static bool cli_rx_bytes(void)
 		const uint8_t prev = cli_prev_byte;
 		cli_prev_byte = byte;
 
-		/* Process command on \r OR \n. Accepting both is what makes a piped
-		 * `echo "cmd" > /dev/ttyACM0` (LF only) work. The cost is that a CRLF
-		 * terminal sends two terminator bytes per Enter, so collapse the pair
-		 * here: skip a terminator that directly follows a *different* one.
-		 * "\r\r" and "\n\n" (two genuine blank lines) still dispatch twice.
-		 * Blank lines ARE dispatched -- `region load` commits on one, and
-		 * handleCommand() no-ops a blank line otherwise. The previous
-		 * de-duplicator keyed on an empty line buffer instead: it ate every
-		 * blank line (stranding `region load` until a reboot) and still let
-		 * the CRLF tail fall through and emit a stray newline of its own. */
+		/* Process the command on \r or \n, collapsing a CRLF pair: skip a terminator
+		 * that directly follows a different one. Blank lines are dispatched
+		 * (`region load` commits on one). */
 		if (byte == '\r' || byte == '\n') {
 			if ((prev == '\r' || prev == '\n') && byte != prev) {
 				continue;   /* tail of a CRLF/LFCR pair */
@@ -342,17 +314,9 @@ static void maintenance_timer_fn(struct k_timer *timer)
 	k_event_post(&mesh_events, MESH_EVENT_MAINTENANCE);
 }
 
-/* Ask the mesh for its soonest pending deadline and arm the one-shot for it.
- * Called after every loop pass, whatever woke us: any event may have created
- * or cleared a deadline (a queued advert, a CLI tempradio command, a CAD probe
- * that just ran), so the schedule is recomputed from scratch each time rather
- * than tracked incrementally.
- *
- * The backstop below is an unconditional CEILING on the wait, not a fallback
- * used only when everything reports idle.  That means it must stay well above
- * the shortest legitimate recurring deadline (the noise-floor sampler, and the
- * CAD probe) or it becomes the effective period and the deadline scheduling
- * buys nothing — see ZEPHCORE_MAINTENANCE_BACKSTOP_MS. */
+/* Ask the mesh for its soonest pending deadline and arm the one-shot for it,
+ * after every loop pass. The backstop is a ceiling on the wait, so it must
+ * stay well above the shortest recurring deadline. */
 static void arm_maintenance_wake(void)
 {
 	uint32_t delay = MAINTENANCE_BACKSTOP_MS;
@@ -576,25 +540,9 @@ static void server_event_loop(void)
 #endif
 
 #ifdef ZEPHCORE_LORA
-		/* Radio maintenance runs OPPORTUNISTICALLY, on every pass, whatever
-		 * woke us — not only when its own timer fired.
-		 *
-		 * Every item inside is deadline-gated internally, so this is nearly
-		 * free when nothing is due.  The point is what it does to a busy
-		 * node: a hilltop repeater is already waking constantly for packets,
-		 * so maintenance rides along on those wakes, its deadlines advance,
-		 * and arm_maintenance_wake() below keeps pushing the timer out — the
-		 * maintenance timer then almost never fires and costs no wakes at
-		 * all.  Running it only on its own event (as this did originally)
-		 * inverted that: the busiest nodes, which can least afford it, paid
-		 * the full timer cadence on top of their packet wakes, and every
-		 * blocked sample burned a retry against a channel that is busy for
-		 * sustained reasons (real traffic in isReceiving(), the RSSI
-		 * prefilter) rather than the transient duty-cycle sleep window the
-		 * retries were sized for.
-		 *
-		 * Ordering matters: this sits AFTER packet processing so an inbound
-		 * frame is handled before we spend SPI time on an RSSI sweep. */
+		/* Radio maintenance runs on every pass, whatever woke us: each item is
+		 * deadline-gated, and on a busy node it rides along on packet wakes. After
+		 * packet processing, so an inbound frame is handled first. */
 		if (server_role) {
 			server_role->mesh->maintenanceLoop();
 		}
@@ -673,17 +621,8 @@ int server_main(const ServerRole &role)
 	}
 #endif
 
-	/* First boot on a volume that is not this role's - a fresh chip, a
-	 * companion, or a node that was running Arduino MeshCore, whose nRF52
-	 * filesystems overlap our lfs_partition
-	 * (devdocs/HANDOVER_lfs_arduino_overlap.md).  Erase everything so we
-	 * start from a known state: Zephyr's automount only
-	 * auto-formats the LittleFS volume when it fails to mount, and never
-	 * touches storage_partition (BLE bonds NVS) or QSPI.
-	 *
-	 * Self-limiting, so it needs no "done" marker: the identity is generated
-	 * and saved a few lines below, and loadPrefs() persists defaults on the
-	 * same boot, so the next boot sees this role's data and skips this. */
+	/* First boot on a volume that is not this role's: erase everything (LittleFS,
+	 * bond NVS, QSPI). Self-limiting: this boot writes the role's data. */
 	if (!data_store.hasRoleData()) {
 		LOG_WRN("Volume holds no data for this role - formatting before first boot");
 		if (!zephcore_fs_format_all(nullptr)) {

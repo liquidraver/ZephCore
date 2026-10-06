@@ -384,13 +384,8 @@ static void auto_off_handler(struct k_work *work)
 }
 
 /* ========== Early blanking ==========
- * OLED controllers (SSD1306, SH1106) turn the display ON during driver init,
- * showing stale VRAM from before reset.  Our mc_display_init() runs much later
- * (after BLE, LoRa, etc.), so there's a visible garbage flash.
- *
- * Fix: SYS_INIT hook runs right after the driver, sending "Display OFF" before
- * main() starts.  This is harmless for non-OLED displays (blanking is a no-op
- * or already blanked). */
+ * OLED controllers switch the panel on during driver init and show stale
+ * VRAM. Send Display OFF right after the driver, before main(). */
 static int display_early_blank(void)
 {
 	const struct device *dev = NULL;
@@ -478,13 +473,8 @@ int mc_display_init(void)
 		return ret;
 	}
 
-	/* Font selection.
-	 * Default: smallest height for best text density — our custom 6x8
-	 * Latin-1 font typically wins on OLEDs.
-	 * LARGE_FONT: smallest font whose height is >= 16 — picks Zephyr's
-	 * built-in 10x16 (cfb_fonts.c) for larger e-paper panels where 6x8
-	 * is too small to read.  Falls back to smallest-overall if no tall
-	 * font is compiled in. */
+	/* Font selection: the smallest height by default; with LARGE_FONT the
+	 * smallest font at least 16 high, falling back to the smallest overall. */
 	const bool want_large = IS_ENABLED(CONFIG_ZEPHCORE_DISPLAY_LARGE_FONT);
 	int num_fonts = cfb_get_numof_fonts(disp_dev);
 
@@ -856,24 +846,9 @@ void mc_display_finalize(void)
 	const int full_interval = CONFIG_ZEPHCORE_DISPLAY_EPD_FULL_REFRESH_INTERVAL;
 
 	if (is_epd && full_interval > 0 && ++epd_partial_count >= (uint32_t)full_interval) {
-		/* Periodic full refresh to clear accumulated ghosting.
-		 *
-		 * Replicate the clean post-boot sequence: full-refresh the panel
-		 * to WHITE, then redraw the current page as a partial.  blanking_on
-		 * selects the FULL profile; ssd16xx_fill_ram_white clears BOTH RAM
-		 * banks to white; blanking_off runs the full-refresh waveform,
-		 * leaving the panel (and both RAM banks) white.  The trailing
-		 * cfb_framebuffer_finalize then redraws the current frame — still
-		 * held in the CFB buffer — as a partial against the all-white
-		 * reference: every content pixel is actively driven and there is
-		 * nothing stale to erase.
-		 *
-		 * Going through white is required.  A partial after a full refresh
-		 * of *content* leaves unchanged regions (e.g. the top bar) on the
-		 * neutral waveform → they fade; and forcing the old-frame reference
-		 * white while the panel still shows content fails to erase pixels
-		 * that should clear → letters overlap.  The brief white flash is
-		 * the intended clean between frames. */
+		/* Periodic full refresh to clear ghosting: full-refresh the panel to white,
+		 * then redraw the current frame as a partial. Going through white is
+		 * required. */
 		display_blanking_on(disp_dev);
 #if ZEPHCORE_DISPLAY_HAS_SSD16XX
 		ssd16xx_fill_ram_white(disp_dev);

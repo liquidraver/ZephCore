@@ -49,20 +49,9 @@ const char* RepeaterDataStore::getBasePath() const { return BASE_PATH; }
 bool RepeaterDataStore::hasRoleData() const {
 	char path[64];
 
-	/* Only THIS role's files count.  A companion volume does not: the roles
-	 * are deliberately not interchangeable, and a companion's contacts and
-	 * blob cache would eat into the same 128 KB the repeater needs, so a
-	 * repeater booting onto a companion volume formats it.  The reverse
-	 * already happens — ZephyrDataStore::hasPrefs() tests /lfs/new_prefs,
-	 * which a repeater volume never has.
-	 *
-	 * Repeater, room server and observer DO share this store and base path;
-	 * they use the same prefs layout, so switching among them keeps the
-	 * node's identity, which is what an operator wants.
-	 *
-	 * Self-limiting: loadPrefs() persists defaults on boot 1 and main_*.cpp
-	 * saves a generated identity on the same boot, so after one successful
-	 * boot at least one of these exists and the check never fires again. */
+	/* Only this role's files count: a repeater booting onto a companion volume
+	 * formats it. Repeater, room server and observer share the store, so
+	 * switching among them keeps the identity. */
 	static const char* const ours[] = { "prefs.json", "prefs", "_main.id" };
 	for (size_t i = 0; i < ARRAY_SIZE(ours); i++) {
 		snprintf(path, sizeof(path), "%s/%s", BASE_PATH, ours[i]);

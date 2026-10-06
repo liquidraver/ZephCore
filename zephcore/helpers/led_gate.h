@@ -40,18 +40,9 @@ void zephcore_leds_set_disabled(bool disabled);
 void zephcore_leds_ui_sync(bool disabled);
 
 /*
- * Mode values for the two per-LED settings.  They live here rather than in
- * NodePrefs.h, where the rest of the prefs enums are, because both consumers of
- * the heartbeat modes are C (helpers/ui/ui_common.c) and NodePrefs.h is C++.
- * NodePrefs.h includes this header so the persisted fields and these values
- * still have exactly one definition between them.
- *
- * leds.radio — what the LoRa activity LED (the `lora-tx-led` DT alias) reacts
- * to.  TX is deliberately value 0: it is what every node did before the setting
- * existed, so an absent byte in an old prefs file, a short read, and a
- * zero-filled byte all decode to the historical behaviour.  Same reasoning
- * applies to LEDS_HB_ALL.  Boards without the alias have no activity LED at all
- * and ignore this setting whatever it says.
+ * Mode values for the two per-LED settings (here, not in NodePrefs.h, because
+ * the consumers are C). Value 0 is the historical behaviour in both, so an
+ * absent or zero byte in an old prefs file decodes to it.
  */
 #define LEDS_RADIO_TX   0   /* lit for the duration of each transmit (default) */
 #define LEDS_RADIO_RX   1   /* short pulse on each packet received */
@@ -73,12 +64,8 @@ void zephcore_leds_ui_sync(bool disabled);
 #define LEDS_HB_MAX     LEDS_HB_OFF
 
 /*
- * Per-LED modes, below the master gate: "set leds off" still wins over both.
- *
- * Kept here rather than read from NodePrefs directly because the consumers are
- * on different threads from the CLI that writes them: the heartbeat runs on the
- * system work queue and the activity LED on the radio's TX path, so both need a
- * lock-free snapshot rather than a pointer into a struct the main thread edits.
+ * Per-LED modes, below the master gate ("set leds off" wins). Lock-free
+ * snapshots: the consumers run on other threads than the CLI that writes.
  */
 uint8_t zephcore_leds_radio_mode(void);
 void zephcore_leds_set_radio_mode(uint8_t mode);
@@ -87,16 +74,9 @@ uint8_t zephcore_leds_hb_mode(void);
 void zephcore_leds_set_hb_mode(uint8_t mode);
 
 /*
- * Shared-pin arbitration.  On 8 of the supported boards the `lora-tx-led` alias
- * IS `led0`, so the heartbeat cycle and the radio activity LED drive the same
- * physical GPIO from two different modules.  Without this the two clip each
- * other: the heartbeat's off-work clears the pin in the middle of a transmit,
- * and onAfterTransmit() truncates a heartbeat pulse.
- *
- * ZephyrBoard raises the hold for the transmit window and for each RX pulse;
- * ui_common.c's heartbeat handlers skip lighting and clearing the pin while it
- * is held, so radio activity wins and the liveness tick yields.  Boards whose
- * pins differ compile the check out entirely (see ZEPHCORE_LED_PIN_SHARED).
+ * Shared-pin arbitration: where `lora-tx-led` is `led0`, the radio holds the
+ * pin for a transmit or RX pulse and the heartbeat skips it meanwhile.
+ * Compiled out where the pins differ (ZEPHCORE_LED_PIN_SHARED).
  */
 bool zephcore_led_radio_holds_pin(void);
 void zephcore_led_radio_hold_pin(bool held);

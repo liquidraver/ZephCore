@@ -15,27 +15,10 @@ class ZephyrRNG : public RNG {
 public:
 	void random(uint8_t *dest, size_t sz) override;
 
-	/* Layered entropy mixer for one-time first-boot identity-key
-	 * generation. Combines:
-	 *   1. sys_csrand_get (early)        — CSPRNG; on ESP32 only real
-	 *                                       because bootloader_random seeds
-	 *                                       the HWRNG (else pre-RF = 0 bits)
-	 *   2. HWINFO unique device ID       — per-device uniqueness (public)
-	 *   3. Optional caller-supplied data — e.g. external noise samples
-	 *   4. Hardware-timing entropy       — two-clock beat (ESP32 RTC-slow,
-	 *                                       nRF/MG24 32 kHz RTC); skipped on
-	 *                                       boards with no independent slow
-	 *                                       clock (they rely on their TRNG)
-	 *   5. sys_csrand_get (late)         — second HWRNG draw
-	 *   6. Hardware-timing entropy #2    — independent window
-	 * Conditioned via AES-256-CTR (SHA-256(pool) → key, ECB on counter).
-	 * On ESP32 the primary source is the bootloader_random-seeded HWRNG
-	 * (stages 1+5); the beat (4+6) is a physical second source. On nRF the
-	 * CSPRNG and the beat are both independently strong. Health-checked;
-	 * reboots on degenerate output. Blocks ~450ms — first-boot identity only.
-	 *
-	 * Output is suitable as an Ed25519 seed regardless of platform
-	 * TRNG state at boot. */
+	/* Layered entropy mixer for the one-time identity key: CSPRNG draws early and
+	 * late, the device ID, optional caller data and two windows of the two-clock
+	 * beat, conditioned via AES-256-CTR. Health-checked; reboots on degenerate
+	 * output. Blocks ~450 ms. */
 	static void mixIdentitySeed(uint8_t *out, size_t out_len,
 				    const uint8_t *extra = nullptr,
 				    size_t extra_len = 0);
@@ -51,25 +34,13 @@ public:
 	static void setTestKillHWRNG(bool kill);
 #endif
 
-	/* Silence mixIdentitySeed's per-stage entropy health report.
-	 *
-	 * Default OFF — the node prints it once, at first-boot identity
-	 * generation, and it is the only record of what the entropy sources
-	 * actually did for a key that is then permanent. Do not silence it there.
-	 *
-	 * Exists for tools/rng_selftest, which calls mixIdentitySeed thousands of
-	 * times: without this the ~12 lines per seed bury the summary. */
+	/* Silence mixIdentitySeed's per-stage health report. Default off; for
+	 * tools/rng_selftest only. */
 	static void setSeedHealthQuiet(bool quiet);
 
-	/* End-to-end first-boot identity generation. Mixes a fresh seed,
-	 * derives the Ed25519 keypair, and retries (up to 100×) if the
-	 * MeshCore protocol-reserved 0x00/0xFF public-key prefix happens
-	 * to land. Panics-and-reboots on cap exhaustion (essentially
-	 * impossible with a working CSPRNG: P(100 reserved in a row) ≈ 10⁻²¹¹).
-	 * Wipes the intermediate seed before return.
-	 *
-	 * Use this from main()'s `loadIdentity` fall-through path instead
-	 * of open-coding the mix+derive+retry+zeroize sequence. */
+	/* First-boot identity generation: mixes a seed, derives the Ed25519 keypair,
+	 * retries (up to 100 times) on a reserved 0x00/0xFF public-key prefix, and
+	 * wipes the seed. */
 	static void generateFirstBootIdentity(LocalIdentity &out_identity);
 };
 

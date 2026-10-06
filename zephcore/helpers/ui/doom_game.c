@@ -84,12 +84,8 @@ LOG_MODULE_REGISTER(doom_game, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 #define BOSS_CAST_PERIOD_RAGE 45  /* 2.25 s, phase 2 */
 #define BOSS_CAST_MIN_DIST    (FP_ONE * 5 / 2)  /* nearer than this it swings */
 /*
- * Frames the boss spends backing off after a melee swing. Without this it
- * closes once and camps in the player's face forever: the cast cycle is held
- * below BOSS_CAST_MIN_DIST, so the tell never fires again and the fight
- * collapses into a melee grind with nothing to read. Disengaging restores the
- * loop — close, swing, back out, cast, close again — and at phase-1 speed 50
- * frames buys back about 1.5 tiles, just past casting range.
+ * Frames the boss backs off after a melee swing, so the cast cycle can
+ * start again instead of a melee grind.
  */
 #define BOSS_RETREAT          50
 
@@ -394,16 +390,9 @@ static uint32_t isqrt64(uint64_t v)
 	return (uint32_t)r;
 }
 
-/* Turn by sin_r (signed) and put the view back on the unit circle.
- *
- * The rotation used to be cos = 1 - ROT/8, sin = ROT: a matrix with scale
- * ~0.993, plus truncation in every fp_mul, so each turn tick shrank dir and
- * plane. Half a view vector after ~1.3 full turns, 1/16 after ~5: walls read
- * as ever farther away (the level "stretches for kilometres", steps get
- * short), and around ten turns 1/ray_dir overflowed int32 in the raycaster
- * and a zero wall height divided by zero - a usage fault that rebooted the
- * node. Now: the small-angle cosine, then dir renormalised to exactly unit
- * length and plane rebuilt perpendicular to it at its 2/3 field of view. */
+/* Turn by sin_r (signed) and put the view back on the unit circle: the
+ * small-angle cosine, then dir renormalised to unit length and plane rebuilt
+ * perpendicular to it. Without the renormalisation the vectors shrink. */
 static void rotate_view(struct doom_player *p, fixed_t sin_r)
 {
 	fixed_t cos_r = FP_ONE - fp_mul(sin_r, sin_r) / 2;
@@ -682,16 +671,9 @@ static inline void clear_px(int x, int y)
 }
 
 /*
- * Render one 16×16 sprite at world position (wx, wy), scale_pct percent of a
- * wall's height with its feet on the floor. Shared by the portal, the enemies
- * and the fireballs.
- *
- * Sprites are solid with a one-pixel black halo, not distance-dithered like
- * the walls. On a 1-bit panel a dithered sprite ORed over the dithered floor
- * band at the horizon has nothing to contrast against: the L2 boss, which
- * starts 8-12 tiles away, was a few dots at best and a grey smudge in the
- * floor's own pattern at 4 tiles. The halo pass clears first, then the fill
- * sets; both honour the zbuffer, so a nearer wall is never cut into.
+ * Render one 16x16 sprite at world position (wx, wy), scale_pct percent of a
+ * wall's height with its feet on the floor. Solid with a one-pixel black
+ * halo; both passes honour the zbuffer.
  */
 static void render_one_sprite(const uint16_t *sprite,
 			      fixed_t wx, fixed_t wy,

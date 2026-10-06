@@ -433,17 +433,9 @@ void LoRaRadio::configure(bool tx)
 		return;
 	}
 
-	/* Fast path: if only the TX/RX direction changed, skip the full
-	 * hwConfigure → lora_config() call.  The driver already has a valid
-	 * config for the target direction (RadioSetRxConfig / RadioSetTxConfig
-	 * with TxTimeout=4000) from a previous cycle — Radio.Rx(0) / Radio.Send()
-	 * will use those register values directly.  This avoids the
-	 * modem_acquire → modem_release → Radio.Sleep() round-trip that wastes
-	 * ~5 ms on every TX↔RX transition.
-	 *
-	 * Not used for loramac-node: Radio.SetTxConfig() and Radio.SetRxConfig()
-	 * configure completely disjoint internal state (including TxTimeout).
-	 * Skipping either on a direction change leaves that state uninitialized. */
+	/* Fast path: only the TX/RX direction changed, so skip lora_config(); the
+	 * driver keeps a valid config for each direction. Not for loramac-node,
+	 * whose TX and RX configs are disjoint state. */
 	if (!_ops.loramac_node && _config_cached && onlyDirectionDiffers(cfg, _last_cfg)) {
 		LOG_DBG("%s: direction-only change, skip hwConfigure", who);
 		_last_cfg = cfg;

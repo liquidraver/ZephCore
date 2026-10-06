@@ -39,15 +39,8 @@
 #include "lr1110_bootloader.h"
 #include "lr1110_bl_updater.h"
 /*
- * Which transceiver image to flash. 0x0402 is the current release (and the
- * only one Semtech's own tool will attempt on bootloader 0x1001).
- *
- * 0x0401 is selectable to TEST whether the downgrade block is enforced by
- * the CHIP or merely by the host tool: the compatibility table that pairs
- * 0x0401 with bootloader 0x6500 lives in Semtech's reference *application*
- * (lr11xx_update_utils.c), not in the silicon. Since 0x0402 is a CVE fix,
- * anti-rollback in the new bootloader is plausible — but unverified, and a
- * chip that runs 0x0401 is fully usable by ZephCore (T1000-E ships it).
+ * Which transceiver image to flash. 0x0402 is the current release; 0x0401 is
+ * selectable to test whether the chip itself blocks a downgrade.
  *
  *   west build ... -- -DUPDATER_TARGET_FW=0x0401
  */
@@ -57,19 +50,8 @@
 
 /*
  * Perform the 0x6500 -> 0x1001 chip-bootloader update when firmware 0x0402 is
- * the target (0x0402 will not run on the old bootloader).
- *
- * Verified end-to-end on a T1000-E 2026-07-21: Stage A then Stage B, chip
- * afterwards reports TYPE=0x01 FW=0x0402 and runs from flash. An earlier
- * belief that this update bricks radios came from a sample where every
- * observed 0x1001 chip was on one board (ThinkNode M9) — that board has a
- * separate, still-open problem, so a board fault was being read as a
- * bootloader fault.
- *
- * It IS one-way: Semtech ships loaders in the forward direction only, and the
- * new bootloader lives inside the encrypted loader payload, so there is
- * nothing to flash back. Set this to 0 to flash firmware only and leave the
- * chip bootloader untouched.
+ * the target (0x0402 does not run on the old bootloader). One-way: there is
+ * no loader back. Set to 0 to flash firmware only.
  */
 #ifndef UPDATER_ALLOW_BOOTLOADER_UPDATE
 #define UPDATER_ALLOW_BOOTLOADER_UPDATE 1
@@ -124,32 +106,16 @@ static void led_off(void)   {}
 static void led_toggle(void) {}
 #endif
 
-/* Idle gap inserted after every flash page program.
- *
- * Diagnostic for a marginal supply. A page program pulls current for ~3.6 ms
- * and we issue 959 of them back to back, so a rail that cannot sustain that
- * burst will sag — and a sagging rail corrupts what gets programmed while the
- * write still reports OK (the bootloader never reads back). Spacing the pages
- * lets the supply recover between them. 10 ms stretches a full image write
- * from ~6.6 s to ~16 s, which costs nothing.
- *   west build ... -- -DUPDATER_CHUNK_DELAY_MS=10
- */
+/* Idle gap after every flash page program: a diagnostic for a marginal
+ * supply.
+ *   west build ... -- -DUPDATER_CHUNK_DELAY_MS=10 */
 #ifndef UPDATER_CHUNK_DELAY_MS
 #define UPDATER_CHUNK_DELAY_MS 0
 #endif
 
-/* Refuse to flash with an SD card in the slot.
- *
- * On the M9 the slot shares SPI2 with the radio, and a card present during
- * flashing produces a silently corrupt image: every write reports OK, the
- * chip spends real time programming, and the result fails its integrity check
- * at boot with no error anywhere to point at. Field-confirmed 2026-07-21 —
- * removing the card was what finally made that board flash.
- *
- * Gated rather than warned because the asymmetry is stark: the cost of the
- * gate is ejecting a card, the cost of missing it is days of debugging.
- *   west build ... -- -DUPDATER_IGNORE_SDCARD=1
- */
+/* Refuse to flash with an SD card in the slot (M9: the slot shares SPI2 with
+ * the radio and a card corrupts the image silently).
+ *   west build ... -- -DUPDATER_IGNORE_SDCARD=1 */
 #ifndef UPDATER_IGNORE_SDCARD
 #define UPDATER_IGNORE_SDCARD 0
 #endif
@@ -235,27 +201,11 @@ static uint8_t tcxo_code_from_mv(uint16_t mv)
 	return LR1110_TCXO_CTRL_1_6V;
 }
 
-/* Power the TCXO and switch the chip onto it before touching flash.
- *
- * On a crystal board the chip can start its 32 MHz XOSC by itself. On a
- * TCXO board the oscillator is powered from DIO3, which stays OFF until
- * SetTcxoMode is issued — so the chip would otherwise run the ENTIRE
- * update on its internal RC oscillator, which is both slower and far less
- * accurate. Flash program/erase pulse timing and the charge-pump sequencing
- * derive from that clock, so a marginal clock can produce writes that
- * report OK but do not survive the image integrity check at boot.
- *
- * Not in Semtech's update documentation (their reference hardware does not
- * need it), but field-reported to make LR1110 flashing succeed on boards
- * where it otherwise fails. Best-effort: a chip that rejects the command
- * simply stays on RC, exactly as before. */
+/* Power the TCXO and switch the chip onto it before touching flash, so a
+ * TCXO board does not run the update on its RC oscillator. Best-effort. */
 /*
- * Off by default. Neither Semtech's SWTL001 nor RadioLib touches the TCXO
- * while flashing, and SetTcxoMode (0x0117) / Calibrate (0x010F) are *system*
- * opcodes that the bootloader command set does not include — so issuing them
- * here is unverified behaviour on a bootloader we need to keep in a
- * well-defined state. The field report that TCXO helps was not reproducible
- * on this board (the failure predates and survives it). Set to 1 to re-test.
+ * Off by default: SetTcxoMode and Calibrate are not in the bootloader's
+ * command set. Set to 1 to re-test.
  */
 #define UPDATER_ENABLE_TCXO 0
 
@@ -409,15 +359,9 @@ static void erase_and_flash_image(void *ctx, const char *what,
 
 	const int64_t write_start = k_uptime_get();
 
-	/* MUST be 64 words (256 bytes = one flash page). A 14-word write is
-	 * rejected outright with PERR at chunk 0 — the chip validates the byte
-	 * count and only accepts whole pages (a short final chunk is fine).
-	 *
-	 * NOTE: that PERR result does NOT clear the SPI path, though it was
-	 * once read that way. A 14-word write is a 62-byte frame — one hardware
-	 * transaction on the ESP32-S3 — so it says nothing about whether a
-	 * 262-byte frame survives being split across five. Matches Semtech's
-	 * LR11XX_FLASH_DATA_MAX_LENGTH_UINT32 = 64 regardless. */
+	/* Must be 64 words (256 bytes = one flash page): the chip accepts whole
+	 * pages only (a short final chunk is fine). Semtech's
+	 * LR11XX_FLASH_DATA_MAX_LENGTH_UINT32. */
 	const uint32_t chunk_size = 64;
 	uint32_t num_chunks = (total + chunk_size - 1) / chunk_size;
 	uint32_t progress_step = num_chunks / 10; /* Print every 10% */
@@ -508,28 +452,9 @@ static void loader_rewrite_and_verify(void *ctx)
 	lr1110_bl_updater_report_t report = { 0 };
 	lr1110_status_t rc;
 
-	/* No configure_tcxo() here, deliberately.  The 0x8100 rewrite below is a
-	 * flash write and the chip is back on its RC oscillator after the reboot
-	 * into the loader, so this looks like a hole in the TCXO workaround that
-	 * erase_and_flash_image() applies — it is not:
-	 *
-	 * - SWTL001 configures no TCXO at ANY point of the update (its
-	 *   lr11xx_update_firmware() is just erase + write; the driver's
-	 *   set_tcxo_mode is never called by the update application). Our
-	 *   configure_tcxo() is a ZephCore-only field workaround with no
-	 *   counterpart in the reference flow.
-	 * - The loader image's documented command set is only 0x8100/01/02 plus
-	 *   GetVersion/GetStatus. It exposes no system commands, so SetTcxoMode
-	 *   (0x0117) is undocumented against a RUNNING loader — sending it is a
-	 *   guess, not a fix.
-	 * - The failure modes are not symmetric. A bad transceiver flash leaves
-	 *   the chip falling back to the bootloader, which is retryable. A bad
-	 *   bootloader rewrite may not be recoverable at all. That asymmetry is
-	 *   what decides it: do not fire an undocumented opcode at the chip in
-	 *   the seconds before the one irreversible operation in this tool.
-	 *
-	 * If M9 bring-up ever shows the rewrite failing on a TCXO board, revisit
-	 * with the GetStatus output below as evidence — do not add it blind. */
+	/* No configure_tcxo() here, deliberately: SetTcxoMode is undocumented
+	 * against a running loader, and this is the one irreversible operation in
+	 * the tool. */
 
 	/* Ask the loader to rewrite the bootloader — BUSY is held for the
 	 * duration; the HAL grants opcode 0x8100 the long timeout. */
@@ -761,16 +686,9 @@ int main(void)
 			fatal_error("Unknown chip type — cannot proceed");
 		}
 
-		/* Enter the bootloader the way RadioLib does: the SOFTWARE reboot
-		 * command with stay_in_bootloader=true.
-		 *
-		 * We previously used the BUSY-held hardware reset (what SWTL001
-		 * does). Both are documented, but RadioLib is the reference that
-		 * demonstrably flashes this chip family from an ESP32 host, and the
-		 * entry method is the last structural difference left between its
-		 * flow and ours — opcodes, offsets, byte order and 64-word pages are
-		 * all now verified identical. The BUSY-held reset stays as the
-		 * fallback for a chip that will not answer commands at all. */
+		/* Enter the bootloader as RadioLib does: the software reboot command with
+		 * stay_in_bootloader=true. The BUSY-held hardware reset stays as the
+		 * fallback for a chip that does not answer. */
 		printk("[4/8] Entering bootloader (software reboot, stay=true)...\n");
 		lr1110_bootloader_reboot(ctx, true);
 		k_msleep(500);
@@ -863,19 +781,9 @@ int main(void)
 	erase_and_flash_image(ctx, "transceiver firmware",
 			      lr11xx_firmware_image, LR11XX_FIRMWARE_IMAGE_SIZE);
 
-	/* Boot the freshly written firmware with the bootloader's own reboot
-	 * command (0x8005, stay=false) — and then DO NOT TOUCH NRESET.
-	 *
-	 * The LR1110 samples BUSY as NRESET is released and enters the
-	 * bootloader whenever it reads LOW. Nothing holds that line high while
-	 * the chip is in reset, so a hardware reset here lands back in the
-	 * bootloader every time — which is precisely what the old "re-reset for
-	 * a clean state" did, making this step report "firmware not running"
-	 * no matter how good the flash was. Stage A reboots the very same way
-	 * *without* a trailing hardware reset, and its image always came up
-	 * running: that asymmetry is what exposed this.
-	 *
-	 * Firmware boot takes ~273 ms (datasheet); 500 ms is comfortable. */
+	/* Boot the new firmware with the bootloader's reboot command (0x8005,
+	 * stay=false) and do not touch NRESET afterwards: the chip samples BUSY as
+	 * NRESET is released and would re-enter the bootloader. Boot takes ~273 ms. */
 	printk("  Rebooting LR1110 into new firmware...\n");
 	lr1110_bootloader_reboot(ctx, false);
 	k_msleep(500);

@@ -229,13 +229,8 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 	ARG_UNUSED(dev);
 
 	if (!gps_enabled || gps_current_state == GPS_STATE_STANDBY) {
-		/* GPS disabled or in standby — ignore NMEA data.
-		 * The GNSS driver fires callbacks as long as the UART has data,
-		 * even after we de-assert GPS_EN (module drains its buffer).
-		 * On boards without GPS power control (e.g. RAK3401 where 3V3_S
-		 * rail is shared with LoRa FEM), the GPS module stays powered in
-		 * standby and keeps streaming NMEA — suppress those callbacks to
-		 * avoid log spam and wasted CPU for the entire standby period. */
+		/* Disabled or in standby: ignore NMEA. The driver keeps calling while the
+		 * UART has data, and a module without power control keeps streaming. */
 		return;
 	}
 
@@ -250,20 +245,8 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 	k_mutex_lock(&gps_mutex, K_FOREVER);
 
 	if (data->info.fix_status >= GNSS_FIX_STATUS_GNSS_FIX) {
-		/* Reject "Null Island" (0,0) fixes. Zephyr's NMEA parser splits
-		 * data across callbacks: gnss_nmea0183_parse_gga fills altitude +
-		 * fix_status but NOT lat/lon; gnss_nmea0183_parse_rmc fills
-		 * lat/lon. A merged publish fires when both GGA and RMC share a
-		 * UTC. If the chip emits GGA quality=1 while RMC is still 'V'
-		 * (or reports null-island coords), parse_rmc's early-exit on 'V'
-		 * leaves lat/lon at their previous value (zero at first boot, or
-		 * stale) while altitude advances — the caller sees valid
-		 * fix_status + altitude-only motion + (0,0) coords. Observed on
-		 * AT6558R (RAK WisMesh Tag) during early acquisition; Air530Z
-		 * (ThinkNode M1) doesn't desync GGA/RMC this way. (0,0) is never
-		 * a real fix — skip so we don't poison current_pos (and with it
-		 * telemetry and the node position) or promote
-		 * consecutive_good_fixes. */
+		/* Reject (0,0): the parser can publish a valid fix status with lat/lon not
+		 * yet filled (GGA ahead of RMC). It is never a real fix. */
 		if (data->nav_data.latitude == 0 && data->nav_data.longitude == 0) {
 			LOG_DBG("GPS: Ignoring (0,0) fix — GGA/RMC desync "
 				"(fix=%d sats=%d alt_mm=%d)",
@@ -391,13 +374,8 @@ GNSS_DATA_CALLBACK_DEFINE(NULL, gnss_data_cb);
 
 #ifdef CONFIG_ZEPHCORE_GPS_SAT_DIAG
 /* ========== Per-constellation satellite tally (diagnostic) ==========
- * The Zephyr GSV parser fills gnss_satellite.system from the NMEA talker ID
- * ($GPGSV/$GLGSV/$GAGSV/$GBGSV), so this is direct evidence of which
- * constellations the module is actually tracking — the only way to confirm
- * that the boot-time PMTK353 / UBX-CFG-GNSS configuration was accepted.
- * A module still in its GPS-only default yields sats_gps only.
- *
- * Counts only tracked satellites (is_tracked), not merely visible ones. */
+ * Tracked satellites per constellation, from the GSV talker ID: shows which
+ * constellations the module was actually configured for. */
 static uint8_t sat_count[5];    /* gps, glonass, galileo, beidou, other */
 static int64_t sat_seen_ms[5];  /* uptime when each bucket was last reported */
 
@@ -485,18 +463,9 @@ static void gps_hold_sleep_lock(bool hold)
 	}
 }
 
-/* Acquire-window timeout (ms) for the current phase.
- * - Repeater: fixed 5-min time-sync window.
- * - First acquisition after enable (cold start, no fix yet): a generous but
- *   bounded window so almanac download has time, without pinning the module
- *   on forever when there's no sky. Spent once (first_acquire_used set on the
- *   first standby), after which the node uses the normal duty cycle regardless
- *   of whether a fix was obtained.
- * - A wake from a standby that was the full power-off: the same long window,
- *   every time. The module lost its state, so this is a cold start again, and
- *   in poor reception that does not fit the warm window. Decided from the
- *   interval like the power-off itself, never from the board.
- * - All other windows: the normal (warm) acquire timeout. */
+/* Acquire-window timeout (ms) for the current phase: repeaters a fixed
+ * 5 minutes; the long first-fix window for the first acquisition after enable
+ * and after every full power-off; the warm timeout otherwise. */
 static uint32_t gps_acquire_window_ms(void)
 {
 	if (gps_repeater_mode) {
@@ -538,14 +507,9 @@ static void gps_go_to_standby(void)
 	 *   RTC survive the cut and re-acquisition is a warm/hot start, not cold.
 	 * Other non-GPIO boards: software sleep via UART commands (PMTK + UBX). */
 	gps_reapply_cancel();
-	/* The module keeps its state (backup sleep, standby pin, VRTC) only for
-	 * a short interval: that draws all the time, a cold start only for a
-	 * few minutes, so past gps_standby_max_sec the full power-off is the
-	 * cheaper one. Not a board property: every board takes the same
-	 * decision, and gps_power_control() turns it into whatever the board's
-	 * pins can do. Where they give one off state only (a bare supply
-	 * switch, a bare standby pin, the UART sleep commands) both sides of
-	 * the limit are that state. */
+	/* Keep the module's state only for a short interval; past
+	 * gps_standby_max_sec use the full power-off. The same decision on every
+	 * board: gps_power_control() maps it onto the pins. */
 	standby_powered_off = wake_interval / 1000U > gps_standby_max_sec;
 	gps_module_power(false, !standby_powered_off);
 
@@ -563,15 +527,9 @@ static void gps_go_to_standby(void)
 	k_work_schedule(&gps_wake_work, K_MSEC(wake_interval));
 }
 
-/* Wake GPS and start acquiring.
- * GPIO boards: hardware power-on.
- * Non-GPIO boards: UART wake byte (wakes L76K from standby, ZOE-M8Q from backup).
- * Does NOT call gps_module_configure(). Calling modem_chat_run_script() here
- * would deadlock: the chip needs ~300ms to boot after GPIO power restore,
- * but modem_chat blocks the calling thread waiting for the system work
- * queue which may be processing stale UART data. CASIC settings are NOT
- * persisted (no PCAS00, see the air530z driver), so they are re-sent blind
- * a second after power-on (CONFIG_ZEPHCORE_GPS_REAPPLY). */
+/* Wake GPS and start acquiring (power-on, or a UART wake byte). Must not
+ * run a modem_chat script here: it would deadlock. CASIC settings are re-sent
+ * a second later (CONFIG_ZEPHCORE_GPS_REAPPLY). */
 static void gps_start_acquiring(void)
 {
 	LOG_INF("GPS: Waking for %s", gps_repeater_mode ? "time sync" : "position fix");
@@ -664,18 +622,9 @@ static int gnss_init(void)
 	}
 
 	if (!device_is_ready(gnss_dev)) {
-		/* Root cause: GPS transmits NMEA immediately at power-up before
-		 * modem_chat opens its DMA pipe. UARTE accumulates overrun/framing
-		 * errors, causing modem_pipe_open() to fail and device_init to return
-		 * an error.
-		 *
-		 * Strategy: use UARTE ERRORSRC as a real signal. Wait until errors
-		 * appear (GPS is transmitting), clear them, then call device_init.
-		 * This avoids arbitrary delays — we act when the hardware tells us
-		 * conditions are ready, not after a fixed sleep.
-		 *
-		 * IMPORTANT: Do NOT use uart_poll_in() — it corrupts nRF52840 UARTE
-		 * DMA state and breaks modem_pipe async receive. */
+		/* The module sends NMEA before the modem pipe opens, and the UARTE errors
+		 * that causes make device_init fail. Wait for those errors, clear them, then
+		 * init. Do not use uart_poll_in() here. */
 		LOG_INF("GNSS device not ready — waiting for GPS activity on UART");
 		gps_power_control(true);
 
@@ -748,13 +697,9 @@ static int gnss_init(void)
 	}
 
 #ifdef CONFIG_PM_DEVICE
-	/* Some upstream GNSS drivers (gnss-nmea-generic) start suspended under
-	 * CONFIG_PM_DEVICE and never open their modem pipe until resumed — no
-	 * NMEA would ever flow (the old "PM broke GPS" trap). Resume once
-	 * here: main thread at boot, the one safe context for the modem_chat
-	 * scripts a resume may run. PM-less drivers (luatos,air530z) return
-	 * -ENOSYS. Retried like device_init above — opening the pipe while
-	 * the module is mid-sentence can fail transiently. */
+	/* Some GNSS drivers start suspended under CONFIG_PM_DEVICE: resume once,
+	 * here on the main thread. PM-less drivers return -ENOSYS. Retried like
+	 * device_init above. */
 	int pm_ret = pm_device_action_run(gnss_dev, PM_DEVICE_ACTION_RESUME);
 	for (int attempt = 1; pm_ret != 0 && pm_ret != -EALREADY &&
 	     pm_ret != -ENOSYS && attempt < 3; attempt++) {
@@ -1073,14 +1018,8 @@ void gps_request_fresh_fix(void)
 		k_work_cancel_delayable(&gps_wake_work);
 		gps_start_acquiring();
 	} else if (gps_current_state == GPS_STATE_ACQUIRING) {
-		/* Already acquiring — reschedule the timeout so the caller's
-		 * fresh-fix request gets a full window from now. Otherwise, a
-		 * telemetry request that arrives 25s into a 30s acquire window
-		 * only has 5s left, which in marginal signal usually means the
-		 * chip goes to standby before producing a fix the requester
-		 * could use. Each duty phase has a bounded window
-		 * (gps_acquire_window_ms); in always-on there's no timeout to extend
-		 * (GPS is continuously acquiring and current_pos is always fresh). */
+		/* Already acquiring: restart the timeout so the request gets a full window.
+		 * Always-on has no timeout to extend. */
 		if (gps_duty_cycling()) {
 			uint32_t timeout_ms = gps_acquire_window_ms();
 			LOG_INF("GPS: Fresh fix requested, extending acquire timeout to %u s",

@@ -39,14 +39,8 @@ struct gps_state_info {
 };
 
 /* ===== GPS configuration diagnostics (runtime toggle, RAM only) =====
- *
- * Module configuration (PMTK/UBX or the GNSS API) is sent blind at boot and
- * runs exactly once. With diag on, the next GPS enable re-runs it and records
- * what actually happened, so an operator can power-cycle the GPS ("gps off"
- * then "gps on") and read the outcome back over the CLI on a release build —
- * no debug logging, no reflash.
- *
- * Not persisted: a diagnostic, not a setting. Clears on reboot. */
+ * With diag on, the next GPS enable re-runs the module configuration and
+ * records the outcome for `get gps diag`. Not persisted. */
 void gps_set_diag(bool on);
 
 /* Render the last configuration attempt as a single CLI line. Always
@@ -70,17 +64,9 @@ void gps_set_enable_callback(gps_enable_callback_t cb);
 typedef void (*gps_fix_callback_t)(double lat, double lon, int64_t utc_time);
 void gps_set_fix_callback(gps_fix_callback_t cb);
 
-/* GPS event callback - called when the GPS state machine needs the main thread
- * to process a state transition (wake from standby, timeout, etc.).
- *
- * IMPORTANT: GNSS drivers use modem_chat_run_script() which blocks on a
- * semaphore signaled from the system work queue. GPS timer work items also
- * run on the system work queue → calling blocking GNSS APIs from a timer
- * work handler deadlocks the system work queue.
- *
- * Solution: timer work handlers signal this callback, which posts an event
- * to the main mesh thread. The main thread then calls gps_process_event()
- * which safely executes the blocking GNSS configuration. */
+/* GPS event callback: the state machine needs the main thread. Timer work
+ * handlers must not call blocking GNSS APIs (they would deadlock the system
+ * work queue), so they signal here and main calls gps_process_event(). */
 typedef void (*gps_event_callback_t)(void);
 void gps_set_event_callback(gps_event_callback_t cb);
 

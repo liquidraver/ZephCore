@@ -21,17 +21,9 @@ static bool gps_diag_on = false;
 
 #if HAS_GNSS
 
-/* Multi-constellation configuration — runs ONCE at boot.
- * modem_chat_run_script() blocks on a semaphore signaled from the system
- * work queue. Calling it after a GPIO power cycle can deadlock because:
- * 1. The L76K needs ~300ms to boot after power restore
- * 2. Meanwhile the modem_chat may be processing stale UART data
- * 3. The script completion callback competes with NMEA processing
- *
- * Safe to call at boot because the driver init already ran and the chip
- * is powered and outputting NMEA. PCAS settings are NOT persisted (nothing
- * sends PCAS00), so what a power cut loses is re-sent blind after every
- * power-on instead (gps_module_reapply_step, CONFIG_ZEPHCORE_GPS_REAPPLY). */
+/* Multi-constellation configuration, run once at boot: the one moment a
+ * modem_chat script is safe (the chip is up and streaming). Settings a power
+ * cut loses are re-sent blind after each power-on (gps_module_reapply_step). */
 static bool gnss_configured = false;
 
 /* ========== Configuration Diagnostics ==========
@@ -57,14 +49,9 @@ static struct {
 } gps_cfg_diag;
 
 
-/* Module identification string, captured by the GNSS driver from the reply to
- * its version query (CASIC parts answer in-band as a $GPTXT sentence).
- * Weak so that boards whose driver has no version query still link — an
- * absent symbol and an empty string mean the same thing to the report.
- *
- * Its real value is not the version text: on a transport where every command
- * is written blind, a captured reply is the only positive proof that the
- * MCU's TX line reaches the module at all. */
+/* Module identification string from the driver's version query; weak, so
+ * boards whose driver has none still link. A captured reply is also the only
+ * proof that our TX line reaches the module. */
 extern "C" int zephcore_gnss_version_get(char *buf, size_t len) __attribute__((weak));
 
 /* Count of NMEA sentences the GNSS driver has parsed. This is the one signal
@@ -79,16 +66,8 @@ extern "C" uint32_t zephcore_gnss_rx_count(void) __attribute__((weak));
 static bool gps_cfg_counting = false;
 
 /* ========== Vendor-Specific Configuration Commands ==========
- *
- * The RAK WisBlock GPS slot accepts multiple modules (L76K, ZOE-M8Q, etc.)
- * and we use gnss-nmea-generic which is a passive NMEA listener — it has no
- * GNSS API for configuration.
- *
- * Strategy: send BOTH Quectel PMTK and u-blox UBX configuration commands.
- * Each module ignores the protocol it doesn't understand.
- *
- * This runs once at boot. Both modules persist config to internal flash,
- * so these are effectively no-ops on subsequent boots. */
+ * The generic-NMEA boards' GPS slot can hold any module, so the PMTK, PCAS and
+ * UBX configuration are all sent; each module ignores the others' protocol. */
 
 #if HAS_GPS_UART
 
@@ -96,15 +75,8 @@ static bool gps_cfg_counting = false;
  * regardless of compatible string. */
 const struct device *const gps_uart_dev = DEVICE_DT_GET(DT_BUS(DT_NODELABEL(gnss)));
 
-/* Send raw bytes to the GPS UART using blocking poll_out.
- * Safe to call even though modem_chat/modem_ubx owns the UART pipe:
- * uart_poll_out writes one byte at a time through the TX register,
- * and GNSS modules are receive-only (no TX contention).
- *
- * Gated on HAS_GPS_UART alone — writing to the module is safe on every
- * UART-attached GNSS. The narrower power-control gate below applies to the
- * software *sleep* commands, which are only a fallback for boards that
- * cannot cut GPS power. */
+/* Send raw bytes to the GPS UART with blocking poll_out. Safe beside the
+ * driver's pipe: GNSS modules do not contend for our TX line. */
 void gps_uart_send(const uint8_t *data, size_t len)
 {
 	if (!device_is_ready(gps_uart_dev)) {
@@ -122,13 +94,7 @@ void gps_uart_send(const uint8_t *data, size_t len)
 }
 
 /* --- MediaTek-family (PMTK) configuration ---
- *
- * PMTK is MediaTek's protocol. It applies to genuine MTK parts (L76B and
- * relatives). It does NOT apply to the Quectel L76K/L76KB or Air530Z, which
- * are CASIC silicon and speak PCAS — their protocol specification contains no
- * PMTK command at all, so these sentences are inert there. Those modules are
- * driven by the air530z driver via the GNSS API instead and never reach this
- * path. Kept because the RAK WisBlock GPS slot can hold an MTK part. */
+ * For genuine MTK parts (L76B). Inert on CASIC parts (L76K, Air530Z). */
 
 /* PMTK353: Enable GPS + GLONASS + Galileo + BeiDou (no QZSS).
  * Default is GPS-only. Multi-constellation dramatically improves TTFF
@@ -148,15 +114,8 @@ static const char pmtk_easy[] = "$PMTK869,1,1*35\r\n";
 static const char pmtk_aic[] = "$PMTK286,1*23\r\n";
 
 /* --- CASIC (PCAS) configuration ---
- *
- * The Quectel L76K/L76KB (RAK12501) and Air530Z are CASIC silicon: they speak
- * neither PMTK nor UBX, so without these sentences such a module in a
- * WisBlock slot receives no configuration at all and sits on its factory
- * defaults. Boards that always carry one use the air530z driver and the GNSS
- * API instead; these are for the generic-NMEA boards whose GPS slot can hold
- * any module.
- *
- * Inert on the other families, same as PMTK and UBX are here. */
+ * For an L76K/L76KB or Air530Z in a generic-NMEA slot; boards that always
+ * carry one use the air530z driver instead. Inert on the other families. */
 
 /* PCAS03: NMEA sentence selection. Field order is
  * GGA,GLL,GSA,GSV,RMC,VTG,ZDA,ANT,... — keep GGA + RMC (position, time) and
@@ -210,23 +169,8 @@ static const char pcas_version_query[] = "$PCAS06,0*1B\r\n";
 static const char pubx_version_query[] = "$PUBX,04*37\r\n";
 
 /* --- u-blox NMEA output trim ($PUBX,40) ---
- *
- * THE LINK BUDGET IS THE CONSTRAINT, and it is easy to blow past it. At 9600
- * baud only ~960 bytes/s fit. With multi-GNSS enabled a u-blox emits, per
- * second: GGA + RMC + GLL + VTG, one GSA per constellation, and a GSV burst
- * that grows with satellite count — roughly 1030 bytes/s at ~26 SVs. The
- * stream then cannot fit in the second it is generated in, sentences are
- * truncated or dropped, and the symptom is not "slow GPS" but a receiver
- * that appears to have stopped: no parseable GGA, so no fix, so no position.
- *
- * Enabling constellations without trimming output is therefore actively
- * harmful on a 9600-baud link. We already do exactly this trim for CASIC
- * parts via $PCAS03; u-blox had no equivalent, which is the asymmetry this
- * fixes. GLL, GSA and VTG are dropped outright — nothing in the driver parses
- * them — and GSV is kept only when the satellite tally needs it.
- *
- * Dropping GLL/GSA/VTG takes ~1030 -> ~650 bytes/s; dropping GSV as well
- * takes it to ~160. */
+ * At 9600 baud the multi-GNSS sentence set does not fit in a second, so GLL,
+ * GSA and VTG are switched off, and GSV unless the satellite tally needs it. */
 static const char pubx_off_gll[] = "$PUBX,40,GLL,0,0,0,0,0,0*5C\r\n";
 static const char pubx_off_gsa[] = "$PUBX,40,GSA,0,0,0,0,0,0*4E\r\n";
 static const char pubx_off_vtg[] = "$PUBX,40,VTG,0,0,0,0,0,0*5E\r\n";
@@ -236,60 +180,18 @@ static const char pubx_off_gsv[] = "$PUBX,40,GSV,0,0,0,0,0,0*59\r\n";
 
 /* --- u-blox ZOE-M8Q (UBX binary) configuration --- */
 
-/* UBX-CFG-PRT: force UART1 to 9600 8N1 with BOTH UBX and NMEA enabled in and
- * out. Sent first, before anything that depends on the module talking to us.
- *
- * This exists because the module's port configuration is persistent and not
- * necessarily ours. RAK's own RAK12500 example — and any host using the
- * SparkFun u-blox library — calls setUART1Output(COM_TYPE_UBX) followed by
- * saveConfiguration(), which stores "UBX only, NMEA off" in the module's
- * flash. A module that has ever been driven that way stays silent on an
- * NMEA-only host forever after, through power cycles and reflashes, and
- * presents as a completely dead receiver: no GGA, no fix, no reply to any
- * query. Re-asserting the port configuration costs one frame and removes a
- * failure mode that is otherwise almost impossible to diagnose from the host.
- *
- * Limitation: if the module was also saved at a different baud rate, it will
- * not parse this frame either. Recovering from that needs a baud scan, which
- * the devicetree's fixed current-speed does not currently allow. */
+/* UBX-CFG-PRT: force UART1 to 9600 8N1 with UBX and NMEA in and out, sent
+ * first. A module saved as "UBX only" by another host is otherwise silent. */
 static const uint8_t ubx_cfg_prt_uart1[] = {
 	0xB5, 0x62, 0x06, 0x00, 0x14, 0x00, 0x01, 0x00, 0x00, 0x00, 0xC0, 0x08,
 	0x00, 0x00, 0x80, 0x25, 0x00, 0x00, 0x03, 0x00, 0x03, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x8E, 0x95
 };
 
-/* UBX-CFG-GNSS: Enable GPS + Galileo + GLONASS (+ QZSS) on u-blox M8.
- *
- * Config block layout is gnssId, resTrkCh, maxTrkCh, reserved0, flags[4] —
- * EIGHT bytes, and the payload length must be exactly 4 + 8*numConfigBlocks
- * or the receiver rejects the whole message. The previous version of this
- * frame omitted reserved0, giving 7-byte blocks and a 39-byte payload where
- * numConfigBlocks=5 demanded 44, so no u-blox module ever accepted it.
- *
- * Only THREE major GNSS (GPS/Galileo/GLONASS/BeiDou) can run concurrently on
- * M8, so BeiDou is explicitly disabled rather than left alone: if the module
- * came up with BeiDou on, enabling three others would make four and the
- * message would be refused.
- *
- * QZSS is enabled even though it is Japan-regional and costs ~3 channels —
- * u-blox require GPS and QZSS to be both enabled or both disabled (they
- * share L1 C/A), and a mismatch is grounds for rejection.
- *
- * SBAS stays off: it needs 30-60 s to download corrections, useless for our
- * quick-fix-then-sleep pattern (companions 30 s, repeaters 5 min).
- *
- * numTrkChHw = 0 and numTrkChUse = 0xFF (read-only / "use max available").
- *
- * resTrkCh MUST be 0 on the disabled blocks. Reserving tracking channels for
- * a system whose enable bit is clear is self-contradictory, and the receiver
- * validates CFG-GNSS atomically — one bad block rejects all six. An earlier
- * revision left SBAS at 1 and BeiDou at 8 and the whole frame was refused
- * (observed on hardware: RAK12500/ZOE-M8Q stayed GPS-only, sys=G8/R0/E0/B0).
- *
- * NOTE — this is an M8 frame. u-blox 7 parts (MAX-7Q on the RAK1910) have no
- * Galileo or BeiDou and use a different sigCfgMask, so they will refuse it
- * and stay GPS-only. Sending an M7 frame as well is NOT safe blind: its
- * sigCfgMask of 0 would be a signal-disabling value on M8. */
+/* UBX-CFG-GNSS for u-blox M8: GPS + Galileo + GLONASS + QZSS on, BeiDou and
+ * SBAS off. Blocks are 8 bytes each (payload 4 + 8*n); resTrkCh must be 0 on
+ * the disabled blocks, and GPS and QZSS go together. The receiver rejects
+ * the whole message for one bad block. u-blox 7 parts refuse it. */
 static const uint8_t ubx_cfg_gnss[] = {
 	0xB5, 0x62, 0x06, 0x3E, 0x34, 0x00, 0x00, 0x00, 0xFF, 0x06, 0x00, 0x08,
 	0x10, 0x00, 0x01, 0x00, 0x01, 0x01, 0x01, 0x00, 0x03, 0x00, 0x00, 0x00,
@@ -298,33 +200,16 @@ static const uint8_t ubx_cfg_gnss[] = {
 	0x01, 0x01, 0x06, 0x08, 0x0E, 0x00, 0x01, 0x00, 0x01, 0x01, 0xEE, 0x64
 };
 
-/* UBX-CFG-NMEA: switch the NMEA output to version 4.10.
- *
- * Without this, Galileo and BeiDou satellites cannot be reported at all: the
- * $GAGSV and $GBGSV talker IDs only exist from NMEA 4.10, and M8 firmware
- * defaults lower. So a fully successful CFG-GNSS would still show zero
- * Galileo in "get gps diag" — a reporting limit masquerading as a config
- * failure. Mirrors Meshtastic's "enable NMEA 4.10" step (src/gps/ubx.h).
- *
- * gsvTalkerId = 0 (use the GNSS-specific talker per constellation) is what
- * makes the per-constellation tally work — do not set it to 1, which forces
- * every GSV onto the main talker and would collapse the tally into GPS. */
+/* UBX-CFG-NMEA: NMEA 4.10, without which Galileo and BeiDou cannot be
+ * reported. gsvTalkerId must stay 0 for the per-constellation tally. */
 static const uint8_t ubx_cfg_nmea_410[] = {
 	0xB5, 0x62, 0x06, 0x17, 0x14, 0x00, 0x00, 0x41, 0x00, 0x02, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 	0x00, 0x00, 0x75, 0x57
 };
 
-/* UBX-CFG-NAV5: Set 5° minimum satellite elevation.
- * Ignore satellites below 5° elevation — they have more atmospheric
- * noise and multipath, degrading fix quality. The default 0° lets in
- * everything including horizon-level junk.
- * Dynamic model left at factory default (Portable) — works for fixed
- * repeaters, walking companions, and vehicles alike.
- * apply mask 0x0002 = minEl(bit1) only
- *
- * The trailing checksum was CK_B=0x37 (should be 0xE7) — a one-byte typo
- * that made every receiver drop this frame silently, with no NAK. */
+/* UBX-CFG-NAV5: 5 degree minimum satellite elevation (apply mask 0x0002);
+ * the dynamic model stays at the factory default. */
 static const uint8_t ubx_cfg_nav5_minelev[] = {
 	0xB5, 0x62, 0x06, 0x24, 0x24, 0x00, 0x02, 0x00, 0x00, 0x03, 0x00, 0x00,
 	0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05, 0x00, 0x00, 0x00, 0x00, 0x00,
@@ -450,13 +335,8 @@ static void gps_configure_via_uart(void)
 	LOG_INF("GPS: PCAS config sent (sentences, constellations, nav mode, version query)");
 
 	/* --- u-blox ZOE-M8Q (UBX) ---
-	 * NMEA 4.10 goes first: it governs whether the constellations enabled
-	 * by the next frame can be *reported* at all. CFG-GNSS restarts the
-	 * navigation engine, so it gets the long settle before the frames that
-	 * follow it — at 50 ms they were being issued into a restarting
-	 * receiver. CFG-CFG stays last so it only persists whatever was
-	 * actually accepted; note that makes a rejected configuration sticky
-	 * too, which is why a frame bug here survives power cycles. */
+	 * Order matters: NMEA 4.10 first, CFG-GNSS with a long settle (it restarts
+	 * the navigation engine), CFG-CFG last so only accepted settings are saved. */
 	/* Make sure NMEA output is even switched on before anything else — a
 	 * module saved as UBX-only by a previous host is otherwise mute. */
 	gps_send_ubx(ubx_cfg_prt_uart1, sizeof(ubx_cfg_prt_uart1), GPS_CFG_RESTART_MS);
@@ -487,14 +367,9 @@ static void gps_configure_via_uart(void)
 }
 #endif /* HAS_GPS_UART */
 
-/* Re-run module configuration on a GPS enable, but only when diagnostics are
- * armed — this is a deliberate, operator-triggered action, not a normal path.
- *
- * Only the raw-UART path is re-runnable. gps_module_configure()'s API path goes
- * through modem_chat_run_script(), which is safe at boot only: after a GPIO
- * power restore the chip needs ~300 ms and calling it here deadlocks the main
- * thread. So on API-driver boards this records nothing new and "get gps diag"
- * keeps reporting the boot-time result, which is the honest answer. */
+/* Re-run module configuration on a GPS enable, only when diagnostics are
+ * armed. Only the raw-UART path can be re-run; on API-driver boards
+ * `get gps diag` keeps the boot-time result. */
 void gps_diag_maybe_reconfigure(void)
 {
 	if (!gps_diag_on || gnss_configured || gnss_dev == NULL) {
@@ -568,25 +443,9 @@ void gps_module_configure(void)
 }
 
 #if HAS_GPS_UART && defined(CONFIG_ZEPHCORE_GPS_REAPPLY)
-/* The boot-time settings a power cut loses (see the Kconfig help). One
- * sentence per step, written with gps_uart_send() directly and no settle
- * sleep: the caller waits each entry's gap with a work item, so the main
- * thread only spends the UART time.
- *
- * Kept boot-only on purpose:
- * - UBX: already saved to BBR + flash by CFG-CFG at boot, and repeating it
- *   would rewrite the module's flash on every wake;
- * - PCAS02 (1 Hz is the default) and PCAS06 (a query, no state).
- *
- * Both constellation commands restart their chip's navigation engine, and a
- * sentence written into a restarting engine is lost, so each is followed by
- * the boot sequence's restart settle: PMTK353 first, PCAS04 last. Each only
- * restarts its own family's chip (the other ignores it). On a MediaTek part
- * that merely slept this costs one engine restart per wake, accepted
- * (architect, 2026-09-27): one that lost power is otherwise left searching
- * GPS-only, which is slower than a restart with every constellation. The
- * PMTK sentences go only where the module is unknown (the generic-NMEA
- * path); an API-driver board's module is known CASIC. */
+/* The boot-time settings a power cut loses, one sentence per step; the caller
+ * waits each entry's gap with a work item. UBX, PCAS02 and PCAS06 stay
+ * boot-only. Each constellation command is followed by its restart settle. */
 struct reapply_cmd {
 	const char *sentence;
 	uint16_t gap_ms;        /* wait before the next one */

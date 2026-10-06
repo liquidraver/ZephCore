@@ -22,34 +22,12 @@ LOG_MODULE_DECLARE(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
 #include "ble_internal.h"
 
 /* ========== Legacy Nordic/Adafruit buttonless DFU service ==========
+ * As Adafruit BLEDfu: a paired phone writes 0x01 to the control point and the
+ * node resets into the bootloader's BLE OTA mode (GPREGRET 0xA8). All three
+ * characteristics are present because iOS requires them; Packet is a no-op.
  *
- * Mirrors Adafruit BLEDfu (Arduino MeshCore >=1.15.0) so the same DFU tools
- * interoperate: a paired phone writes 0x01 to the control point and the device
- * resets into the bootloader's BLE OTA mode. We use the *unbonded* OTA reset
- * (GPREGRET 0xA8, same as `start ota`): the bootloader comes up as a fresh DFU
- * target and the tool re-scans for it (the legacy buttonless flow). Adafruit's
- * 0xB1 bonded-resume path needs SoftDevice peer-data enrollment we can't
- * replicate on Zephyr, so the phone makes a fresh connection to the bootloader.
- *
- * The service exposes the FULL legacy DFU shape Adafruit ships (not just the
- * control point): iOS's LegacyDFUService treats the DFU Packet (1532) char as
- * a *required* characteristic — discovery fails (DFU "instantly fails") without
- * it — and reads the DFU Revision (1534 = 0x0001 "app mode") to classify the
- * device as an application that supports the buttonless jump (missing → the app
- * can't identify the device → shows it nameless). Packet is a no-op here: the
- * real image upload happens in the bootloader, not the running app. All three
- * chars sit behind AUTHEN, matching the Arduino companion's service-wide MITM
- * floor (`bledfu.setPermission(SECMODE_ENC_WITH_MITM, ...)`); a bonded phone's
- * DFU app reuses the OS-level bond, an unpaired stranger is rejected.
- *
- * NOTE on the service symbol name: Zephyr registers static GATT services in
- * the order ld's SORT_BY_NAME emits them — i.e. alphabetically by the symbol
- * passed to BT_GATT_SERVICE_DEFINE. This service MUST sort *after*
- * `secure_nus_svc` so the NUS attribute handles stay fixed; otherwise every
- * NUS handle shifts and bonded phones with cached handles get ATT 0x03
- * (Write Not Permitted) on the NUS RX write. Hence the `secure_nus_svc_dfu`
- * name (a string sorts before its own extensions, so NUS keeps the low range).
- */
+ * The service symbol must sort after secure_nus_svc (static services are
+ * registered in symbol order), or the NUS handles shift under bonded phones. */
 static struct bt_uuid_128 dfu_svc_uuid = BT_UUID_INIT_128(
 	BT_UUID_128_ENCODE(0x00001530, 0x1212, 0xefde, 0x1523, 0x785feabcd123));
 static struct bt_uuid_128 dfu_ctrl_uuid = BT_UUID_INIT_128(

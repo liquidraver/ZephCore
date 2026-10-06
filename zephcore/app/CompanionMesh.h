@@ -338,16 +338,9 @@ private:
 	int64_t _dirty_channels_expiry;
 	static constexpr int64_t LAZY_WRITE_DELAY_MS = 5000;  /* as upstream */
 
-	/* Deadline for a liveness-only change (a known contact re-advertised with
-	 * nothing but a newer timestamp): only last_advert_timestamp and lastmod
-	 * moved. saveContacts() rewrites the whole file (~40 KB, ten 4 KB blocks
-	 * on a T1000-E's 128 KB /lfs); on a busy mesh something is always
-	 * re-advertising, so this deadline IS the rewrite rate. 5 s (upstream)
-	 * was a rewrite per advert, 10 min was 144 a day, and one hour is 24,
-	 * below the adv_blobs write per advert. Every clean reboot and power-off
-	 * flushes first (flushPendingWrites()), so only a crash or a pulled
-	 * battery loses the last hour of "last heard" times. A substantive
-	 * change still pulls the deadline in. */
+	/* Deadline for a liveness-only change (a known contact re-advertised): each
+	 * flush rewrites the whole contacts file, so this is the rewrite rate on a
+	 * busy mesh. Clean reboots and power-offs flush first. */
 	static constexpr int64_t LAZY_WRITE_LIVENESS_MS = 3600000;  /* 1 hour */
 
 	void markContactsDirty(bool substantive = true);

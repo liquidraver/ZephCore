@@ -152,15 +152,8 @@ void ContentionTracker::tick(uint32_t now_ms)
 	if (_last_retransmit_ms != 0 && now_ms - _last_retransmit_ms > STALE_MS &&
 	    _ema_x256 > 0) {
 		if (_last_decay_ms == 0) {
-			/* Arm one full period in the PAST, so the loop below
-			 * applies a step on this very call.  The old code decayed
-			 * immediately on the first tick that observed staleness;
-			 * arming at now_ms instead would make the first check
-			 * (0 < DECAY_PERIOD_MS) break without decaying, deferring
-			 * onset by a whole period on every stale transition — and
-			 * would let the reset branch below starve decay entirely
-			 * for traffic that goes stale and un-stale repeatedly.
-			 * Unsigned wraparound makes this exact even near zero. */
+			/* Arm one full period in the past, so the loop below applies a step on
+			 * this call. Unsigned wraparound keeps it exact near zero. */
 			_last_decay_ms = now_ms - DECAY_PERIOD_MS;
 		}
 		for (int n = 0; n < MAX_DECAY_CATCHUP; n++) {

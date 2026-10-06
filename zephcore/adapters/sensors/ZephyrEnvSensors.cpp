@@ -53,20 +53,9 @@ struct sensor_entry {
 static struct sensor_entry s_sensors[MAX_SENSORS];
 static uint8_t s_count;
 
-/* Is this sensor usable — bringing it up first if its node deferred init?
- *
- * A part behind a switched rail cannot be probed at POST_KERNEL. Regulators
- * come up at priority 75 and sensors at 90, typically microseconds later, and a
- * regulator-boot-on rail never applies its startup-delay-us (regulator_common_init
- * takes the refcount-only branch, so regulator_delay() never runs). Such a node
- * is marked zephyr,deferred-init and initialised from here instead, where the
- * rail has had the whole boot to settle. See the i2c0 comment in the
- * MeshTracker X1 DTS for the failure this prevents.
- *
- * Safe to call for every candidate on every board: do_device_init() marks a
- * device initialized even when its init function failed, so device_init()
- * answers -EALREADY for anything that already ran at POST_KERNEL and this
- * reduces to a plain device_is_ready() check. */
+/* Is this sensor usable? A node marked zephyr,deferred-init (a part behind a
+ * switched rail) is initialised here first. For any other device
+ * device_init() answers -EALREADY and this is a device_is_ready() check. */
 static bool sensor_ready(const struct device *dev)
 {
 	if (dev == NULL) {

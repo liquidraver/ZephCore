@@ -301,19 +301,10 @@ bool ZephyrDataStore::hasOldSettingsFile() const
 
 void ZephyrDataStore::adoptVolume()
 {
-	/* /lfs/_zc_init is written after the first clean boot of ZephCore, so
-	 * this runs once per volume.
-	 *
-	 *  - No prefs, or prefs whose radio preset is implausible (a file in
-	 *    some other layout): format everything, bonds included.
-	 *  - Our prefs plus /lfs/settings: an upgrade from ZephCore <= 1.16.1 on
-	 *    nRF52, whose file-based bond store left old app code where the NVS
-	 *    bond partition now is. Bytes there can pass NVS sector validation
-	 *    and hang settings_load(), so BLE never advertises: erase the NVS
-	 *    only; identity, prefs and contacts stay, the phone re-pairs.
-	 *    (On nRF54L and MG24 /lfs/settings is the live bond store, but a
-	 *    volume that has booted this firmware once has the marker.)
-	 *  - Our prefs, no /lfs/settings: bonds already live in NVS, keep all. */
+	/* Runs once per volume (/lfs/_zc_init marks a clean first boot): no prefs or
+	 * implausible prefs = format everything; our prefs plus /lfs/settings (an
+	 * upgrade from <= 1.16.1 on nRF52) = erase the bond NVS only; our prefs and no
+	 * /lfs/settings = keep all. See docs/ARCHITECTURE.md 7.2. */
 	if (hasInitMarker()) {
 		return;
 	}
@@ -499,23 +490,8 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 {
 	const char *path = contactsFile();
 
-	/* Atomic replace ONLY where there is external flash — deliberately, and
-	 * not to be "fixed" later.
-	 *
-	 * zephcore_fs_atomic_write() needs room for a second full copy before the
-	 * rename.  contacts3 is by far the largest store here (152 B per record,
-	 * ~47 KB at 313 contacts) and internal /lfs on these boards is 128 KB
-	 * total, shared with identity, prefs and channels2.  Two copies would sit
-	 * at ~94 KB of 128 KB before LittleFS metadata, so the atomic path could
-	 * fail with ENOSPC exactly when it is most needed — a worse failure than
-	 * the one it prevents.
-	 *
-	 * channels2, identity and prefs are atomic everywhere because they are
-	 * small enough for the second copy to be free.  Only contacts is gated.
-	 *
-	 * The non-atomic branch below is therefore the constrained-board path,
-	 * and it writes in place and truncates rather than unlinking first — see
-	 * the note there. */
+	/* Atomic replace only where there is external flash: internal /lfs (128 KB)
+	 * cannot hold a second copy of the contacts file. Deliberate. */
 	bool use_atomic = _has_ext_fs;
 	const char *save_mode = use_atomic ? "atomic" : "direct";
 
@@ -555,21 +531,8 @@ void ZephyrDataStore::saveContacts(DataStoreHost *host)
 		};
 		write_ok = zephcore_fs_atomic_write(path, atomic_contacts_writer, &ctx, "saveContacts");
 	} else {
-		/* Overwrite in place, then truncate — never unlink first.
-		 *
-		 * This branch runs on boards with no external flash, i.e. the ones
-		 * that cannot afford the atomic temp-file dance.  It used to
-		 * fs_unlink() the contacts file before recreating it, which left a
-		 * window spanning the whole ~47 KB write where contacts3 did not
-		 * exist at all: a power cut there lost every contact rather than
-		 * corrupting some.  The unlink was only ever a way to truncate.
-		 *
-		 * Truncating afterwards is the same guarantee without the window —
-		 * the file is always present, and at worst briefly longer than its
-		 * new contents (stale records past the end, which the truncate then
-		 * removes).  FS_O_TRUNC is NOT usable here: Zephyr's LittleFS
-		 * backend maps only CREATE/READ/WRITE/APPEND and drops TRUNC
-		 * silently, so asking for it would leave the stale tail in place. */
+		/* Overwrite in place, then truncate; never unlink first (a power cut would
+		 * lose every contact). FS_O_TRUNC is dropped by Zephyr's LittleFS backend. */
 		fs_file_t_init(&file);
 		int rc = fs_open(&file, path, FS_O_CREATE | FS_O_WRITE);
 		if (rc < 0) {

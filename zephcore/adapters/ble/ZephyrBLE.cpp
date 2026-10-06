@@ -117,17 +117,9 @@ static bool fast_adv_active;
  * Cleared by recycled() itself (both run on the cooperative system work queue). */
 static bool adv_stop_for_interval_change;
 
-/* Ground truth for "controller is currently broadcasting adv PDUs":
- *   set TRUE  : bt_le_adv_start() returned success
- *   set FALSE : bt_le_adv_stop() called explicitly  (set_enabled(false),
- *               adv_slow_work interval change, update_name restart)
- *   set FALSE : a phone connected — Zephyr stops adv internally to consume
- *               the BT_MAX_CONN=1 slot (no slot left to advertise from).
- *               Re-set TRUE later when recycled() → start_adv() runs.
- * Exposed via zephcore_ble_is_advertising() for the companion advertising
- * watchdog (main_companion.cpp housekeeping) that catches transient
- * bt_le_adv_start failures.  Arduino nrf52 has an equivalent 10s watchdog
- * (SerialBLEInterface.cpp:343). */
+/* True while the controller is advertising: set when bt_le_adv_start()
+ * succeeds, cleared on an explicit stop and when a central connects. Read by
+ * the companion's advertising watchdog. */
 static bool adv_running;
 
 /* Administrative BLE state */
@@ -159,13 +151,8 @@ static void kick_tx_drain(void);
 /* ========== GATT Service ========== */
 
 /*
- * NUS service — secured with AUTHEN permissions.
- * Matches Arduino's SECMODE_ENC_WITH_MITM on bleuart.
- *
- * When the phone tries to subscribe (CCC write) or send data (RX write),
- * Zephyr returns ATT_ERR_AUTHENTICATION. The phone's BLE stack then
- * initiates pairing (PIN dialog). After pairing succeeds,
- * security_changed() fires at L3+ and the phone retries the operation.
+ * NUS service; every attribute needs an authenticated link. An unpaired
+ * phone gets ATT_ERR_AUTHENTICATION, pairs, and retries.
  */
 BT_GATT_SERVICE_DEFINE(secure_nus_svc,
 	BT_GATT_PRIMARY_SERVICE(BT_UUID_NUS_SERVICE),
@@ -191,23 +178,9 @@ K_WORK_DELAYABLE_DEFINE(tx_drain_work, tx_drain_work_fn);
 K_WORK_DELAYABLE_DEFINE(adv_slow_work, adv_slow_work_fn);
 
 /* ========== Unpaired-connection timeout ==========
- *
- * A connection that never reaches L2 holds the node's only peripheral slot.
- * With CONFIG_BT_MAX_CONN=1 Zephyr stops advertising while that slot is taken,
- * and the companion's advertising watchdog (main_companion.cpp) deliberately
- * skips any state where a connection exists — so a client that connects and
- * never pairs makes the node invisible to everyone else until it is power
- * cycled.  A BLE scanner app left connected does it by accident; iOS does it
- * routinely.  Nothing else times the connection out: pairing here is reactive
- * by design (Apple §55 — we never send a Security Request, we wait for the
- * phone to hit ATT insufficient-authentication and start pairing itself), so
- * "connected but idle forever" is a state the node otherwise accepts happily.
- *
- * Dropping it costs a legitimate client nothing: every characteristic on both
- * services is *_AUTHEN, so an unsecured connection cannot read, write or
- * subscribe to anything.  The window has to cover discovery plus the phone's
- * own pairing dialog — 15 s matches upstream MeshCore PR #3263, which measured
- * a real unpaired connection being dropped at ~13 s. */
+ * A connection that never reaches security L2 holds the only peripheral slot
+ * and stops advertising, so it is dropped after this long. An unsecured
+ * connection can do nothing here, so the drop costs a real client nothing. */
 #define BLE_SECURITY_TIMEOUT_MS 15000
 
 static void sec_timeout_conn_cb(struct bt_conn *conn, void *user_data)
@@ -278,15 +251,9 @@ static void build_device_name_and_adv(const char *name_from_prefs)
 		/* Prepend "MeshCore-" prefix so apps that filter on it can find us */
 		snprintf(device_name, sizeof(device_name), "MeshCore-%s", name_from_prefs);
 
-		/* Sanitize the BLE-advertised name to printable ASCII, compacting
-		 * in place (write index w never outpaces read index r):
-		 *   - ':' / ';'        -> '-'  (Apple Accessory Design Guidelines)
-		 *   - non-ASCII bytes  -> dropped (e.g. emoji in the node name).
-		 *     iOS's BLE scanner blanks the WHOLE advertised name if it
-		 *     contains any non-ASCII byte, showing the device nameless.
-		 * This only sanitizes the BLE/GAP copy; the mesh node name (emoji
-		 * and all) is untouched and still shown by the companion app.
-		 */
+		/* Sanitize the advertised name to printable ASCII, in place: ':' and ';'
+		 * become '-', non-ASCII bytes are dropped (iOS blanks a name containing
+		 * any). The mesh node name is untouched. */
 		size_t w = 0;
 		for (size_t r = 0; device_name[r]; r++) {
 			unsigned char c = (unsigned char)device_name[r];
@@ -357,15 +324,8 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	 * with a fallback in security_changed() if PHY update never fires. */
 	dle_requested = false;
 
-	/* Do NOT proactively request security here.
-	 *
-	 * Apple Accessory Design Guidelines §55 (Pairing): the accessory should
-	 * not request pairing until an ATT request is rejected with "Insufficient
-	 * Authentication."  Pairing is triggered reactively when the phone tries
-	 * to access our AUTHEN-secured GATT attributes (CCC write / RX write).
-	 *
-	 * For bonded reconnects, Zephyr auto-encrypts with stored keys when
-	 * CONFIG_BT_SMP and CONFIG_BT_BONDABLE are enabled. */
+	/* Do NOT request security here (ADR 0004): pairing starts when the phone
+	 * hits an AUTHEN attribute. Bonded reconnects are encrypted by the stack. */
 
 	/* Notify main of BLE connection */
 	if (ble_cbs && ble_cbs->link.on_connected) {
@@ -636,13 +596,8 @@ static void tx_drain_work_fn(struct k_work *work)
 	int err;
 
 	/*
-	 * BLE TX path - Event-driven (like Arduino's HVN_TX_COMPLETE)
-	 * Uses bt_gatt_notify_cb() callback to chain TX without polling.
-	 * Re-entrancy guard prevents concurrent notify calls.
-	 *
-	 * IMPORTANT: Must wait for ble_tx_ready before sending. This is set in
-	 * security_changed() after encryption is established. Sending before the
-	 * connection is fully secured causes "No ATT channel for MTU" errors.
+	 * Event-driven TX: the notify-complete callback chains the next frame.
+	 * Nothing is sent before ble_tx_ready (set once the link is encrypted).
 	 */
 	if (!current_conn || !nus_notif_enabled || !ble_tx_ready) {
 		LOG_DBG("tx_drain[BLE]: not ready (conn=%p notif=%d ready=%d)",

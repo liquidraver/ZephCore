@@ -170,13 +170,8 @@ void CompanionMesh::vcontactFlushConfirm()
 void CompanionMesh::deriveVContactKey()
 {
 	/* The Ed25519 public point of a keypair seeded from
-	 * SHA256("zc-vcontact" || self prv_key || counter).
-	 *  - A real point: strict clients decompress peer keys and reject the ~50%
-	 *    of random 32-byte strings that are not valid points.
-	 *  - Seeded from the private key, so nobody else can link the v-contact to
-	 *    this node or derive its private half, which is dropped here unused.
-	 *  - The counter skips pub_key[0] of 0x00/0xFF, which MeshCore reserves
-	 *    (P = 2/256 per try, so still deterministic). */
+	 * SHA256("zc-vcontact" || self prv_key || counter): a real point, unlinkable
+	 * to this node; the counter skips a reserved 0x00/0xFF first byte. */
 	static const char vc_salt[] = "zc-vcontact";
 	uint8_t material[PRV_KEY_SIZE + 1];
 	uint8_t seed[SEED_SIZE];

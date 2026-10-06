@@ -61,16 +61,9 @@ void ObserverMesh::begin(RepeaterDataStore *store, struct ObserverCreds *creds)
 	 * saves these defaults as they are. */
 	_store->loadPrefs(_prefs);
 
-	/* Load or generate node identity.
-	 *
-	 * Use ZephyrRNG::generateFirstBootIdentity — the SAME hardened path the
-	 * companion and repeater use (bootloader_random-seeded HWRNG + two-clock
-	 * beat, conditioned via AES-256-CTR) — NOT LocalIdentity(_rng). The old
-	 * form drew straight from ZephyrRNG::random() / sys_csrand_get, which on
-	 * an ESP32 observer is unseeded (BLE never comes up to seed WDEV_RANDOM),
-	 * so it derived a permanent key from a weak PRNG. generateFirstBootIdentity
-	 * also owns the reserved-prefix retry (100 attempts + panic backstop),
-	 * replacing the weaker 10-try loop that silently kept a reserved prefix. */
+	/* Load or generate the node identity, through
+	 * ZephyrRNG::generateFirstBootIdentity like the other roles: on an ESP32
+	 * observer the plain RNG is unseeded (BLE never comes up). */
 	if (!_store->loadIdentity(_self_id)) {
 		LOG_INF("No identity found — generating new keypair");
 		mesh::ZephyrRNG::generateFirstBootIdentity(_self_id);

@@ -197,14 +197,9 @@ static bool rtc_all_ff(const uint8_t blk[7])
 	return true;
 }
 
-/* Decide whether the device at d is the RTC it declares. A first read that
- * fails means nothing is there, and one that is all 0xFF is an erased EEPROM,
- * though a real RTC can power up that way, so it is skipped for now.
- * Otherwise the device is ruled out only when two reads each rule it out: a
- * failed second read does not, an all-0xFF second read does, and an
- * unreadable power-loss flag cannot vouch for the fields. RTC_FOUND leaves
- * the block to decode in blk; RTC_FOUND_GARBLED is this RTC with no clean
- * read to take a time from. */
+/* Decide whether the device at d is the RTC it declares: ruled out only when
+ * two reads each rule it out. RTC_FOUND leaves the block to decode in blk;
+ * RTC_FOUND_GARBLED is this RTC with no clean read to take a time from. */
 static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 {
 	uint8_t again[7];
@@ -386,16 +381,10 @@ static uint8_t rv3028_cfg_backup_ram(const struct rtc_desc *d, uint8_t ram)
 	return ram;
 }
 
-/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM. The
- * EEPROM is only touched with automatic refresh held off (4.6.7) and backup
- * switchover disabled in RAM (3.15.6: BSM 00 for any EEPROM read or write).
- * Each byte is compared against the EEPROM itself (4.6.6) and written only if
- * it differs (4.6.5). A closing Refresh (4.6.4) reloads RAM from the EEPROM,
- * switching back to the stored BSM, and the config is read back on every run.
- * A triplet outside 35h-37h, masking an unimplemented bit, or repeating a
- * register is ignored, so a devicetree mistake cannot write on every boot.
- * Reports whether the config was confirmed, and if so whether EERD, which
- * also stops the daily refresh, was cleared afterwards. */
+/* Store the descriptor's rv3028-eeprom-config in the chip's EEPROM, writing
+ * only bytes that differ, with refresh and backup switchover held off as the
+ * data sheet requires. Reports whether the config was confirmed, and if so
+ * whether EERD was cleared afterwards. */
 enum rv3028_store { RV3028_STORED, RV3028_EERD_SET, RV3028_NOT_STORED };
 
 static enum rv3028_store rv3028_store_config(const struct rtc_desc *d)

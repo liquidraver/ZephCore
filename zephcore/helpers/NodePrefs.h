@@ -17,27 +17,11 @@
  * and this header is C++; see the note there. */
 #include "led_gate.h"
 
-/* ── Accepted radio parameter ranges ──────────────────────────────────
- *
- * One definition, used by everything that accepts or validates a radio
- * preset: the USB CLI, the BLE companion protocol, the observer CLI, and the
- * load-time sanity checks in both datastores.
- *
- * It lives here because these ranges were previously copy-pasted into six
- * places and drifted. That drift was not theoretical: when 2.4 GHz support
- * landed, the setters were widened and the *loaders* were not, so a node
- * accepted `set freq 2450`, saved it, and then silently reverted to factory
- * defaults on the next boot because the load-time guard still capped at
- * 960 MHz. A setter must never accept what the loader will throw away.
- *
- * FREQ spans both LR2021 RF paths — the sub-GHz one (150-960 MHz) and the
- * high band (1.9-2.5 GHz). Boards whose radio cannot reach the high band are
- * limited by their own driver, not by this range.
- *
- * BW_MAX is the one value that is per-build. Only the LR2021 implements the
- * wide 203/406/812/1000 kHz set; every other driver here maps an unknown
- * bandwidth to 125 kHz instead of refusing it, so accepting 812 on those
- * boards would put a node on a channel width it never reported. */
+/* ── Accepted radio parameter ranges ──
+ * One definition for everything that accepts or validates a radio preset
+ * (CLIs, the companion protocol, the load-time checks): a setter must never
+ * accept what the loader throws away. FREQ spans both LR2021 RF paths;
+ * BW_MAX is per build (only the LR2021 has the wide bandwidths). */
 #define ZC_RADIO_FREQ_MIN_MHZ   150.0f
 #define ZC_RADIO_FREQ_MAX_MHZ   2500.0f
 #define ZC_RADIO_BW_MIN_KHZ     7.0f
@@ -62,31 +46,15 @@
 #define LOOP_DETECT_MODERATE  2
 #define LOOP_DETECT_STRICT    3
 
-/* Adaptive-CAD operating detPeak offset range (levels from the family base).
- * Wide on purpose: a dense hilltop can need a much higher detPeak than a quiet
- * valley node.  The per-family absolute clamp inside the driver (SX126x 15-40,
- * LR11xx/LR20xx 48-90) is a firmware guardrail, NOT a chip limit — cadDetPeak
- * is a full uint8_t (0-255).  It just keeps the staircase from wandering into
- * "CAD never fires" (too high) or "CAD always busy" (too low) territory.  This
- * offset range limits how far the staircase / manual offset may roam; MUST
- * match CAD_LEVEL_MIN/MAX in adapters/radio/radio_common.h (they index the
- * per-level stats array). */
+/* Adaptive-CAD detPeak offset range (levels from the family base): how far
+ * the staircase or a manual offset may roam. Must match CAD_LEVEL_MIN/MAX in
+ * adapters/radio/radio_common.h. */
 #define CAD_OFFSET_MIN  (-8)
 #define CAD_OFFSET_MAX  12
 
-/* leds_disabled, as stored in the repeater/room-server/observer prefs layout.
- *
- * It occupies the byte that used to hold agc_reset_interval (offset 120),
- * retired when periodic AGC recalibration was removed.  That byte is NOT
- * reusable as a plain 0/1 boolean: the old command stored seconds/4, so a node
- * upgrading from a build that had it configured has an arbitrary small integer
- * sitting there, and a bare non-zero test would silently kill its LEDs.  Hence
- * a magic encoding — anything that is not one of these two values is a legacy
- * AGC interval and decodes to the default (LEDs on).  The first savePrefs()
- * claims the byte for good.
- *
- * The companion layout is unaffected: it has always stored leds_disabled as a
- * plain 0/1 at its own offset 93. */
+/* leds_disabled in the server prefs layout sits in the byte that held
+ * agc_reset_interval (offset 120), so it is magic-encoded: any other value is
+ * a legacy AGC interval and decodes to LEDs on. */
 #define LEDS_PREF_ON    0xA0
 #define LEDS_PREF_OFF   0xA1
 
@@ -152,14 +120,8 @@ struct NodePrefs {
 	uint8_t rx_boost;               // 1 = boosted RX gain (+3dB), 0 = power save
 	uint8_t fem_rxgain;             // 1 = external FEM LNA active during RX, 0 = off (power save)
 	uint8_t rx_duty_cycle;          // 1 = RX duty cycle, 0 = continuous RX
-	/* RESERVED — formerly apc_enabled / apc_margin (Adaptive Power Control,
-	 * removed in 1.16.6). These two bytes are still read and written at their
-	 * original offsets in both prefs layouts (companion new_prefs 94/95, server
-	 * prefs 292/293; helpers/PrefsCodec.cpp) because every field after them
-	 * is positional: dropping them would shift the rest of the layout and make
-	 * every already-deployed node misparse its saved prefs on upgrade.
-	 * Do not reuse for a new setting — an upgraded node still has the old APC
-	 * values sitting in these bytes. */
+	/* RESERVED: formerly apc_enabled / apc_margin. Still read and written at
+	 * their offsets in both legacy layouts; do not reuse. */
 	uint8_t _reserved_apc_enabled;
 	uint8_t _reserved_apc_margin;
 	uint8_t meshtimesync;           // 1 = mesh time-sync clock correction on (default off)
@@ -180,49 +142,20 @@ struct NodePrefs {
 	 * driver rejects anything else.  Ignored on non-LR2021 radios. */
 	uint8_t extra_sf[EXTRA_SF_MAX];
 
-	/* Physical mounting orientation.  Common to both roles: a repeater board
-	 * with an OLED (RAK4631, Heltec) can be mounted upside down just as a
-	 * companion can, and the joystick boards ship a repeater artifact too.
-	 *
-	 * display_rotate rotates the panel 180 degrees in hardware and is only
-	 * honoured on SSD1306/SH1106 (see MC_DISPLAY_ROTATE_SUPPORTED); other
-	 * panels report it unsupported rather than silently ignoring it.
-	 * input_rotate swaps the joystick/D-pad axes to match, and is kept
-	 * separate because the two are not always wanted together — a screen can
-	 * be remounted without moving the stick. */
+	/* Physical mounting orientation, both roles. display_rotate turns the panel
+	 * 180 degrees where the panel supports it; input_rotate swaps the
+	 * joystick/D-pad axes and is separate on purpose. */
 	uint8_t display_rotate;         // 1 = panel rotated 180 degrees
 	uint8_t input_rotate;           // 1 = joystick up/down and left/right swapped
 
-	/* Whole-hour offset from UTC, -12..+14, applied ONLY when formatting a
-	 * clock for the local display.  It must never reach RTCClock or any
-	 * timestamp that leaves this node: a negative offset applied to the clock
-	 * itself reads as a backward jump to every timestamp consumer at once
-	 * (advert timestamps, the repeater ACL's monotonic sender_timestamp gate,
-	 * discovery_mod_timestamp, MeshTimeSync), and a backward clock is a silent
-	 * mesh-wide mute.  The CLI's `clock` / `time` commands stay UTC for the
-	 * same reason -- they round-trip with each other and apps parse them.
-	 *
-	 * Whole hours only, matching upstream's `set tz.offset` so an app that
-	 * speaks to both trees behaves the same.  Half-hour zones (India +5:30,
-	 * Newfoundland -3:30) therefore cannot be expressed.
-	 *
-	 * Common to both roles: a repeater with an OLED shows a clock too.  On a
-	 * headless repeater the field is simply inert. */
+	/* Whole-hour offset from UTC, -12..+14, applied only when formatting a clock
+	 * for the local display. It must never reach RTCClock or any timestamp that
+	 * leaves this node. */
 	int8_t tz_offset;
 
 	/* The family base detPeak that cad_offset was learned against (0 = never
-	 * stored, i.e. a node upgrading from a build without this field).
-	 *
-	 * cad_offset is a SIGNED OFFSET from a per-SF/per-bandwidth base table
-	 * that lives in the driver, so changing that table silently re-points a
-	 * stored offset at a different absolute detPeak.  The probe statistics
-	 * behind the offset are RAM-only and die at the reboot a firmware upgrade
-	 * involves, but the offset itself is persisted and survives — so after a
-	 * table change a converged node quietly starts operating somewhere it
-	 * never measured.  Recording the base turns that into something the
-	 * firmware can correct at boot (see LoRaRadio::setCadParams), instead
-	 * of a "run set cad.reset after upgrading" line in the release notes that
-	 * most users will not read. */
+	 * stored). Lets the firmware re-anchor the offset at boot when the driver's
+	 * base table changes (LoRaRadio::setCadParams). */
 	uint8_t cad_base;
 
 	/* ---- Companion-only fields ---- */
@@ -264,19 +197,10 @@ struct NodePrefs {
 	uint8_t wifi_enabled;           // 1 = join wifi_ssid when set (upstream default)
 };
 
-/* Range guards for prefs that came off flash.
- *
- * The atomic replace in every savePrefs() plus littlefs's own CRCs make a torn
- * write impossible, so this is not about power loss — it is about a blob that
- * is structurally intact and semantically wrong.  Several of these fields make
- * a node look bricked when they are: auto_shutdown_mv powers it off seconds
- * after boot, ble_pin locks pairing out, and the char fields are stored as
- * fixed-size blocks with no terminator in the file format, so an unterminated
- * one runs every later %s off the end of the struct.
- *
- * Called by both prefs decoders (PrefsCodec.cpp).  Fields whose whole range is
- * legal (autoadd_config bitmask, discovery_mod_timestamp, the v_contact_*
- * sentinels) are deliberately left alone. */
+/* Range guards for prefs that came off flash: a blob can be intact and
+ * semantically wrong, and several fields make a node look bricked then.
+ * Called by both prefs decoders. Fields whose whole range is legal are left
+ * alone. */
 template <typename T>
 static inline T clampPref(T v, T lo, T hi) { return v < lo ? lo : (v > hi ? hi : v); }
 
@@ -483,14 +407,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->flood_max_unscoped = 64;  // un-scoped flood hop limit (defaults to flood_max)
 	prefs->flood_max_advert = 8;     // ADVERT flood hop limit (upstream default)
 	/* 2-byte path hashes (mode + 1 = hash size) for everything this node
-	 * originates.  ZephCore's default, not upstream's -- Arduino MeshCore
-	 * ships 0 (1-byte) for every role, which collides far more often on a
-	 * dense mesh.  It lived only in the RepeaterMesh and RoomServerMesh
-	 * constructors until now, so a fresh companion quietly originated 1-byte
-	 * floods and reported mode 0 to the app, and `set path.hash.mode default`
-	 * wrote 0 even on a repeater that had booted at 1.  Deployed nodes keep
-	 * whatever they stored: path_hash_mode sits at a fixed prefs offset that
-	 * always loads, so this only changes a factory-fresh node. */
+	 * originates. ZephCore's default for every role; upstream ships 0. Only
+	 * affects a factory-fresh node. */
 	prefs->path_hash_mode = 1;       // 2-byte path hashes
 	prefs->interference_threshold = 0;
 	prefs->leds_disabled = 0;         // LEDs on
@@ -521,14 +439,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->v_contact_enabled = 1;     // Default ON — v-contact loopback admin chat (companion)
 	prefs->v_battery_alert_mv = 0xFFFF; // Sentinel: derive from board auto-shutdown threshold
 	prefs->wifi_enabled = 1;          // as upstream: WiFi still stays off until an SSID is set
-	/* Companion-only feature, and main_companion.cpp used to assign this by
-	 * hand right after calling us — so no node ever ran without it.  It lives
-	 * here now because a default listed only at one call site is invisible to
-	 * every other caller of initNodePrefs(), which is the exact drift that
-	 * zeroed probe_interval and cad_auto in the past.  Matches what
-	 * sanitizeNodePrefs() already uses.
-	 * 0 means disabled and is a legal stored value, so sanitize passes it
-	 * through untouched — this default only applies to a fresh prefs struct. */
+	/* Companion-only default, set here so every caller of initNodePrefs() sees
+	 * it. 0 means disabled and is a legal stored value. */
 #ifdef CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS
 	prefs->auto_shutdown_mv = CONFIG_ZEPHCORE_AUTO_SHUTDOWN_MILLIVOLTS;
 	prefs->auto_shutdown_set = 1;

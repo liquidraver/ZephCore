@@ -9,27 +9,12 @@
 #pragma once
 
 /* ===== Key codes =====
- *
- * These are the UI's INTERNAL codes, carried as a single char through
- * JoystickUITask::enqueueKey().  They are deliberately NOT the Zephyr
- * INPUT_KEY_* codes — joystick_ui_input_cb() translates between the two — and
- * they are never persisted or transmitted, so they can be renumbered freely.
- *
- * Key-space contract (keep this true):
+ * The UI's internal codes, one char through JoystickUITask::enqueueKey();
+ * not the Zephyr INPUT_KEY_* codes, never persisted or transmitted.
  *   0x01-0x1F  control keys (navigation, enter, cancel)
- *   0x20-0x7E  RESERVED for printable characters typed on a keyboard
+ *   0x20-0x7E  reserved for printable characters typed on a keyboard
  *   0xF1-0xFF  long-press and global action keys
- *
- * The printable range is reserved so a keyboard board (ThinkNode M9's STC8H
- * matrix MCU at I2C 0x6C) can enqueue characters directly without colliding
- * with a control code.  The multi-tap action keys below used to sit at
- * 0x42-0x45 — i.e. on 'B'..'E' — which would have made typing "BCDE" fire a
- * flood advert, toggle GPS, mute the buzzer and kill the LED.
- *
- * Note KEY_ENTER and KEY_CANCEL are already ASCII CR and ESC, so a keyboard
- * that reports plain ASCII (the convention for this class of I2C matrix MCU)
- * produces correct enter/cancel with no translation at all.
- */
+ * KEY_ENTER and KEY_CANCEL are ASCII CR and ESC. */
 #define KEY_ENTER       0x0D   /* center/OK button click */
 #define KEY_LEFT        0x01   /* joystick left */
 #define KEY_RIGHT       0x02   /* joystick right */

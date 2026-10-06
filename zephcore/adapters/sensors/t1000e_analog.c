@@ -26,18 +26,9 @@ LOG_MODULE_REGISTER(t1000e_analog, CONFIG_SENSOR_LOG_LEVEL);
  * 10 ms settle, so a few extra conversions are free noise rejection. */
 #define T1000E_ADC_SAMPLES 4
 
-/* ================================================================
- *  NTC thermistor
- *
- *  Resistance in ohms at each degree from -30 C (index 0) to +105 C
- *  (index 135) — a 10k-at-25C part, effective beta about 3250. Seeed's
- *  firmware carries a parallel array of temperatures, which is just the
- *  index minus 30, so only the resistances are stored here.
- *
- *  (Seeed's source also defines a beta of 4250 next to this table. It is
- *  dead code there — nothing reads it — and it does not describe this
- *  curve, so do not "simplify" the table into a beta formula with it.)
- * ================================================================ */
+/* NTC thermistor: resistance in ohms at each degree from -30 C (index 0) to
+ * +105 C (index 135), a 10k-at-25C part. Do not replace the table by a beta
+ * formula. */
 
 #define NTC_TABLE_LEN   136
 #define NTC_TABLE_T_MIN (-30)
@@ -59,17 +50,8 @@ static const uint32_t ntc_res[NTC_TABLE_LEN] = {
 	974,    949,    925,    902,   880,   858,
 };
 
-/* ================================================================
- *  Photocell
- *
- *  Seeed maps the divider voltage onto 0-100 with a dead band at each end.
- *  LIGHT_SPAN_MV happens to equal LIGHT_MAX_MV - LIGHT_MIN_MV today, but it is
- *  kept as its own constant rather than derived from them: the stock firmware
- *  treats the divisor as an independent number (subtract the 80 mV floor,
- *  divide by 2400, clamp at the top rather than reach it). Deriving it would
- *  let a future tweak to either endpoint silently move the scale factor away
- *  from what the stock firmware uses, and the readings would stop matching.
- * ================================================================ */
+/* Photocell: the divider voltage mapped onto 0-100 with a dead band at each
+ * end, as Seeed's firmware. LIGHT_SPAN_MV is its own constant on purpose. */
 
 #define LIGHT_MIN_MV  80
 #define LIGHT_MAX_MV  2480

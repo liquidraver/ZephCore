@@ -490,27 +490,10 @@ void CompanionMesh::confirmOfflineMessage()
 	_offline_queue_count--;
 }
 
-/* How long CMD_APP_START may suppress v-contact notice prompts.
- *
- * This deadline is also the worst-case freeze a mid-session CMD_APP_START can
- * impose, because the app is under no obligation to follow one with the
- * message sync that clears the latch — so it must be short enough that nobody
- * notices, not merely short enough to recover eventually.
- *
- * It only has to cover the handoff between CMD_APP_START and the
- * CMD_GET_CONTACTS that normally follows it, which is where a prompt could
- * make the app fetch a message from a contact it has not been told about yet.
- * The dump itself is gated directly by _contact_iter_active below, for however
- * long it takes, and once the dump is done a prompt is harmless. Measured on
- * hardware, a full 350-contact initial sync runs APP_START to
- * PACKET_NO_MORE_MSGS in ~2.9 s, so the handoff is a small fraction of that.
- *
- * History, because the sizing is the whole bug: 60 s produced the ~54 s
- * "v-contact is frozen" reports. 10 s only looked fixed — hardware logs showed
- * the user's own settings-screen-to-message time landing at 10.5-11.7 s, so
- * the latch was expiring inline microseconds before the prompt and the feature
- * was winning a race by half a second. Do not raise this to "be safe"; raising
- * it re-creates the bug, and the thing it guards does not need the time. */
+/* How long CMD_APP_START may suppress v-contact notice prompts: just the
+ * handoff to the CMD_GET_CONTACTS that follows (the dump has its own gate).
+ * It is also the worst freeze a mid-session APP_START can cause, so it stays
+ * short; do not raise it. */
 #define VCONTACT_HOLD_MAX_MS 3000
 
 bool CompanionMesh::vcontactMsgWaitHeld()
@@ -543,16 +526,8 @@ void CompanionMesh::pushMsgWaiting()
 	sendPush(PUSH_CODE_MSG_WAITING);
 }
 
-/* Re-prompt cadence.
- *
- * Observed on hardware: the app ignores the first MSG_WAITING after a settings
- * write (the GPS toggle) but honours a later identical one, so the reply is
- * recovered rather than lost — it just arrives one cadence late. At the
- * original 15 s that was a ~20 s wait with the 5 s housekeeping granularity on
- * top, which reads as broken even though nothing is. The prompt is a 1-byte
- * idempotent frame, so the cost of asking again sooner is nil, and the 5 s tick
- * puts the real floor here anyway: 4 s means the first re-prompt lands on the
- * first tick at least 4 s after the original, i.e. 4-5 s. */
+/* Re-prompt cadence: the app can ignore a first MSG_WAITING, and asking
+ * again is free. With the 5 s tick the first re-prompt lands at 4-5 s. */
 #define MSGWAIT_REPROMPT_MS 4000
 
 void CompanionMesh::msgWaitingWatchdog()
@@ -736,16 +711,9 @@ void CompanionMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8
 	LOG_INF("onDiscoveredContact: '%s' is_new=%d path_len=%d num_contacts=%d",
 		contact.name, is_new, path_len, getNumContacts());
 
-	/* is_new is upstream's "NOT in contacts[]": auto-add declined it (type
-	 * filter, hop limit, or a full table), so nothing that is stored changed
-	 * and there is nothing to write -- upstream schedules its lazy write only
-	 * for !is_new. A contact the base class has just added arrives with
-	 * is_new false.
-	 *
-	 * Of those, an addition or a changed name, type or position is
-	 * substantive and flushes on the short deadline; a known contact
-	 * re-advertising (only the timestamps moved) is liveness and waits the
-	 * long one, rather than costing a full-file rewrite per advert. */
+	/* is_new is upstream's "not in contacts[]": nothing stored changed, so
+	 * nothing to write. Otherwise an addition or a changed name, type or position
+	 * flushes on the short deadline, a bare re-advert on the long one. */
 	if (!is_new) {
 		bool substantive = !_advert_prev.known ||
 				   _advert_prev.type != contact.type ||
@@ -760,13 +728,7 @@ void CompanionMesh::onDiscoveredContact(ContactInfo &contact, bool is_new, uint8
 	// Update advert path table
 	if (path && mesh::Packet::isValidPathLen(path_len)) {
 		/* Update this node's existing slot if it has one, else take the least
-		 * recently heard (an empty slot has recv_timestamp 0 and wins first).
-		 *
-		 * This used to round-robin into a write cursor with no lookup, so a
-		 * node heard N times occupied N of the slots, evicting other nodes,
-		 * and findAdvertPath() -- which returns the first array match, not the
-		 * newest -- could hand the app a stale path for a node whose route had
-		 * since changed. */
+		 * recently heard (an empty slot has recv_timestamp 0 and wins first). */
 		AdvertPath *ap = &_advert_paths[0];
 		uint32_t oldest = 0xFFFFFFFF;
 		for (int i = 0; i < ADVERT_PATH_TABLE_SIZE; i++) {
@@ -1844,14 +1806,9 @@ bool CompanionMesh::handleCmdAppStart(const uint8_t *data, size_t len)
 		return true;
 	}
 	LOG_INF("CMD_APP_START: session reset, %d queued", _offline_queue_count);
-	// Reset per-session state for a fresh app session. BLE/USB also run
-	// this cleanup on disconnect, but the serial transport has no
-	// disconnect event, so APP_START is its authoritative session-reset
-	// point: drop a stale contact iteration (a leftover PACKET_CONTACT_END
-	// would confuse the new session's sync state machine), a half-finished
-	// message sync, and free an abandoned Ed25519 sign buffer (else an 8KB
-	// leak if the previous session dropped mid-CMD_SIGN). Idempotent — all
-	// no-ops when the state is already clean.
+	// Reset per-session state: APP_START is the session reset for a transport
+	// with no disconnect event. Drops a stale contact iteration, a half-finished
+	// message sync and an abandoned sign buffer. Idempotent.
 	_contact_iter_active = false;
 	cancelSyncPending();
 	cleanupSignState();
@@ -1875,17 +1832,8 @@ bool CompanionMesh::handleCmdAppStart(const uint8_t *data, size_t len)
 	 * deferred v-contact and flush buffered notices for this session. */
 	vcontactClockSynced();
 
-	/* Re-stamp the v-contact once per app session so it stays "fresh".
-	 * _vcontact_lastmod feeds both lastmod and last_advert_timestamp, and
-	 * it used to move only on boot / rename / identity import: the app
-	 * showed an ever-growing "last seen" age, and — worse — the contact
-	 * sync gate is `_vcontact_lastmod > _contact_iter_since`, so after the
-	 * first sync the v-contact was never streamed again and app-side state
-	 * (flags, name) could never be corrected. Bumping here, before the
-	 * CMD_GET_CONTACTS that follows APP_START, means every session's sync
-	 * carries a current timestamp; deferring it to the end of sync would
-	 * always land one session late. Silent on purpose — no NEW_ADVERT push
-	 * mid-handshake; the sync itself delivers it. */
+	/* Re-stamp the v-contact once per app session, before the CMD_GET_CONTACTS
+	 * that follows, so every sync carries it with a current timestamp. No push. */
 	if (vcontactReady() && vcontactClockValid()) {
 		_vcontact_lastmod = (uint32_t)getRTCClock()->getCurrentTime();
 	}
@@ -2699,14 +2647,8 @@ bool CompanionMesh::handleCmdImportPrivateKey(const uint8_t *data, size_t len)
 
 bool CompanionMesh::handleCmdSendRawData(const uint8_t *data, size_t len)
 {
-	/* Raw data packet: [cmd][path_len][path...][payload...]
-	 *
-	 * path_len is the encoded 2-bit (hash_size - 1) + 6-bit hop count, not
-	 * a byte count, so it has to be decoded rather than added to an offset.
-	 * Treating it as a length rejected every path with a hash size above 1:
-	 * hash_size 2 sets bit 6 (path_len 0x42 for two hops read as 66 bytes,
-	 * failing the length check) and hash_size 3 sets bit 7, which used to
-	 * read back as a negative int8_t. */
+	/* Raw data packet: [cmd][path_len][path...][payload...]. path_len is the
+	 * encoded 2-bit (hash_size - 1) + 6-bit hop count, not a byte count. */
 	if (len >= 6) {  /* min: cmd + path_len + 4 byte payload */
 		size_t i = 1;
 		uint8_t path_len = data[i++];

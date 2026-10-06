@@ -41,21 +41,9 @@ void ZephyrRNG::random(uint8_t *dest, size_t sz)
 	Utils::cryptoPanicReboot("CSPRNG unavailable after retries");
 }
 
-/* ===== Timing-entropy health check =======================================
- *
- * Online health check (NIST SP 800-90B style) for the two-clock beat source
- * below: repetition count + a distinct-value check tracked across all samples
- * in the window with scalar state — no per-sample buffer needed. Detects
- * stuck-source catastrophic failure (e.g. a frozen slow clock). Does not
- * statistically prove entropy quality — that's what the selftest
- * output-diversity run is for.
- *
- * (The former CPU-jitter fallback — Stephan Müller style k_cycle_get_32()
- * delta sampling — was removed: it only ever carried entropy where the cycle
- * counter was already cross-domain from the CPU, and every such board is
- * exactly a board the beat covers. Where the beat is unavailable the counter
- * is same-domain, the loop is deterministic, and jitter yields ~0 bits —
- * measured dead on ESP32 hardware.) */
+/* ===== Timing-entropy health check =====
+ * Repetition count plus a distinct-value check over the window, with scalar
+ * state. Detects a stuck source; it does not prove entropy quality. */
 
 /* Health statistics for one beat window.  Timing statistics only — never
  * pool contents or derived key material.  Reporting these is standard practice
@@ -90,45 +78,11 @@ struct beat_stats {
 	bool     ok;
 };
 
-/* ===== Universal two-clock beat entropy ==================================
- *
- * One physical entropy source for every board: count CPU cycles elapsed across
- * a fixed interval of an INDEPENDENT low-frequency oscillator. The two clocks
- * come from different sources, so the count fluctuates with the slow
- * oscillator's phase noise — real physical entropy, not the deterministic
- * same-domain loop that CPU-jitter degenerates to where the cycle counter and
- * CPU share a clock (measured dead on ESP32: thousands of identical deltas).
- *
- * FAST counter = timing_counter_get() — portable CPU cycle counter (DWT on
- *   Cortex-M, CCOUNT on Xtensa; both at CPU frequency). Needs
- *   CONFIG_TIMING_FUNCTIONS and a one-time timing_init()/timing_start().
- *
- * SLOW clock = an oscillator in a DIFFERENT domain from the CPU, selected by a
- *   principled rule so the choice is coherent across boards:
- *     - ESP32: the RTC-slow oscillator via esp_rtc_get_time_us() (internal
- *       ~136 kHz RC, independent of the XTAL->PLL CPU path).
- *     - Any board whose Zephyr system timer runs < 1 MHz: that timer IS a
- *       low-frequency oscillator cross-domain from the CPU (e.g. nRF's
- *       32.768 kHz RTC off LFXO/LFRC), so k_cycle_get_32() is a valid slow
- *       clock. REQUIRES the LF clock to be LFXO/LFRC, not synthesised from
- *       HFCLK — true for every BLE-capable nRF config; the health check below
- *       catches it if a board ever violates that.
- *     - Otherwise (system timer at CPU frequency, e.g. bare SysTick): no
- *       independent slow clock is identified and the timing stages are
- *       SKIPPED — a same-domain counter measures a deterministic loop
- *       (~0 bits, measured), so sampling it would only pretend to add
- *       entropy. Such boards (STM32WL SysTick, nRF54L 1 MHz GRTC) rely on
- *       their true TRNG via the CSPRNG stages, which is what the removed
- *       CPU-jitter fallback effectively did anyway.
- *
- * Window = 500 us, from an on-hardware ESP32 sweep (memory/findings.md):
- * 120/250/500/1000 us gave 1.85/3.04/3.81/5.14 bits/sample; 500 us is the knee.
- * Full 32-bit delta is mixed. On ESP32 this is a SECONDARY source (the
- * bootloader_random-seeded HWRNG is primary); on nRF it is the strong
- * non-HWRNG leg.
- *
- * CAVEAT (memory/findings.md): the health stats show the beat VARIES, not that
- * it is random — the selftest output-diversity run is what validates it. */
+/* ===== Universal two-clock beat entropy =====
+ * CPU cycles counted across a fixed interval of an independent slow
+ * oscillator: ESP32's RTC-slow clock, or a system timer below 1 MHz (nRF's
+ * 32.768 kHz RTC). Where no independent slow clock exists the timing stages
+ * are skipped and the board relies on its TRNG. Window 500 us. */
 #if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
 #define BEAT_SLOW_HZ        1000000ULL
 static inline uint64_t beat_slow_ticks(void) { return esp_rtc_get_time_us(); }
@@ -236,15 +190,9 @@ static int distinct_bytes(const uint8_t *buf, size_t len)
 	return n;
 }
 
-/* One line per beat window.  `distinct` is capped at 8 by the sampler, so 8/8
- * means "at least 8" — the pass threshold is 5.  `maxrep` is the longest run of
- * identical deltas; >=32 fails.  The span/distinct/maxrep line IS the beat's
- * health — per-sample entropy is characterised offline by the selftest window
- * sweep, not estimated here (an in-path MCV estimate would need a 16k-slot
- * histogram).  Deliberately no statistics on the conditioned output:
- * AES-256-CTR makes any input look uniform, so output statistics would read
- * perfect even for a near-zero-entropy seed.  Entropy is a property of the
- * source. */
+/* One line per beat window: `distinct` is capped at 8 (pass at 5), `maxrep`
+ * is the longest run of identical deltas (fail at 32). No statistics on the
+ * conditioned output: AES-CTR makes any input look uniform. */
 #ifdef HAVE_TWO_CLOCK_BEAT
 static void report_beat(const char *label, const struct beat_stats *st)
 {
@@ -255,31 +203,10 @@ static void report_beat(const char *label, const struct beat_stats *st)
 }
 #endif /* HAVE_TWO_CLOCK_BEAT */
 
-/* ===== Entropy extraction via AES-256-CTR ================================
- *
- * Per crypto consultant (MeshCore upstream PR#2280 author): the
- * conditioning step is most correctly an XOF or stream cipher, not a
- * truncated hash. For our 32-byte Ed25519-seed output the difference
- * is design hygiene rather than security, but the cost is the same
- * order of magnitude (~one SHA-512 vs SHA-256 + two AES-ECB blocks).
- *
- * Construction (NIST SP 800-108 KDF-in-Counter-Mode style):
- *   1. Extract: SHA-256(pool) → 32-byte AES-256 key.
- *   2. Expand:  AES-256-ECB(counter_i) for counter_i = 0, 1, 2 ...
- *               output = concatenation of ciphertext blocks.
- * Plaintext-XOR (true CTR mode) is omitted because plaintext would be
- * all-zero — we want just the keystream.
- *
- * Uses PSA crypto API (already enabled via PSA_WANT_KEY_TYPE_AES +
- * PSA_WANT_ALG_ECB_NO_PADDING in zephcore_common.conf).
- *
- * Every failure path fills `err` with the failing step and the raw
- * psa_status_t.  Failure here is a panic-reboot loop the user sees as a
- * dead board (GH #88 on ttgo_tbeam), and the status code is the only
- * thing that says WHICH step failed — a bare "extraction failed" costs a
- * round trip to the reporter for a build that prints it.  Sized for the
- * caller's stack buffer; truncation is harmless.
- */
+/* ===== Entropy extraction via AES-256-CTR =====
+ * Extract: SHA-256(pool) = AES-256 key. Expand: AES-256-ECB over a counter,
+ * the ciphertext blocks concatenated. Every failure path fills `err` with the
+ * failing step and the psa_status_t. */
 static int extract_via_aes_ctr(const uint8_t *pool, size_t pool_len,
 			       uint8_t *out, size_t out_len,
 			       char *err, size_t err_len)
@@ -372,28 +299,9 @@ void ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t out_len,
 	uint8_t pool[512];
 	memset(pool, 0, sizeof(pool));
 
-	/* ESP32 only: give the HWRNG a real entropy source for the duration of
-	 * this function.
-	 *
-	 * WDEV_RANDOM is a PRNG that receives hardware entropy only "provided
-	 * Wi-Fi or BT are enabled" (Zephyr drivers/entropy/entropy_esp32.c), and
-	 * sys_csrand_get() maps straight to it. Every caller of this function
-	 * runs before RF is up, and repeater / room-server builds never enable
-	 * RF at all — so stages 1 and 5 below contributed NOTHING on ESP32,
-	 * leaving CPU jitter as the only real source. That was observed failing
-	 * its health check on ThinkNode M9 hardware while deriving a permanent
-	 * identity key.
-	 *
-	 * bootloader_random_enable() puts the SAR ADC into continuous sampling
-	 * and mixes its noise into the HWRNG; Espressif's header explicitly
-	 * sanctions calling it from app code when RF is not up. It must be
-	 * disabled again before anything else touches the ADC or RF — done at
-	 * the end of the collection phase, before AES extraction, so the ADC is
-	 * held for as short a window as possible.
-	 *
-	 * WARNING for future callers: this is unsafe if RF or the ADC is already
-	 * in use. Do not call mixIdentitySeed() after bt_enable() or alongside a
-	 * battery read on ESP32. */
+	/* ESP32 only: bootloader_random_enable() feeds the HWRNG for the collection
+	 * phase, because without RF it gets no hardware entropy. Unsafe once RF or
+	 * the ADC is in use: do not call mixIdentitySeed() after bt_enable(). */
 #if defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
 	bootloader_random_enable();
 	RNG_RPT("[RNG] === identity seed health ===\n");
@@ -435,18 +343,9 @@ void ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t out_len,
 		RNG_RPT("[RNG] stage3 extra    : %d bytes\n", (int)n);
 	}
 
-	/* Stage 4: hardware-timing entropy, 200ms — the two-clock beat.
-	 *
-	 * Skipped where no independent slow clock exists (see the beat header
-	 * comment): a same-domain counter would sample a deterministic loop and
-	 * only pretend to add entropy. Those boards rely on their true TRNG via
-	 * stages 1 and 5.
-	 *
-	 * Also skipped on POSIX arch (native_sim / Linux): the simulated clock
-	 * only advances when Zephyr threads yield, so k_uptime_get() is frozen
-	 * while this loop spins → infinite loop.  On Linux we have /dev/urandom
-	 * (via sys_csrand_get in stages 1 and 5) which is a far stronger source
-	 * than this sampling anyway. */
+	/* Stage 4: hardware-timing entropy, 200 ms of the two-clock beat. Skipped
+	 * where no independent slow clock exists, and on POSIX (the simulated clock
+	 * does not advance while this loop spins). */
 #if defined(HAVE_TWO_CLOCK_BEAT) && !defined(CONFIG_ARCH_POSIX)
 	struct beat_stats js = {};
 	bool health_ok = sample_two_clock_beat(pool, sizeof(pool), 112, 200, &js);

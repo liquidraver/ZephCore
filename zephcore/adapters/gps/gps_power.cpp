@@ -15,44 +15,14 @@
 LOG_MODULE_DECLARE(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
 
 /* ========== GPS Power Strategy ==========
- * Module power is GPIO/regulator controlled — GNSS driver PM is not used
- * for the module itself:
- * - Wio Tracker L1 (L76K): P1.09 is the module's WAKEUP pin, not a supply
- *   switch. Per the L76K hardware design: WAKEUP is a digital input, active
- *   low with an internal pull-up, that "enters or exits Standby mode". In
- *   Standby the RF is powered off but the internal core and I/O power domain
- *   stay active, so VCC is never removed and ephemeris/almanac/RTC survive —
- *   every wake is a warm start, not a cold one. (Backup mode, the deeper
- *   state, requires cutting VCC while V_BCKP holds the RTC domain; this
- *   board has no VCC switch, so Standby is the floor available to us.)
- * - T1000-E, MeshTracker X1 (AG3335): RTC backup sleep ($PAIR650,0), then
- *   GPS_EN de-asserted with VRTC kept; a GPS_RTC_INT pulse wakes it
- * - All boards: gps-enable alias → GPIO power control
- *
- * CONFIG_PM_DEVICE is on globally, but nothing suspends automatically —
- * system-managed suspend is compiled only under CONFIG_PM (off everywhere).
- * This manager makes exactly two kinds of PM calls, both main-thread only:
- * - a one-time RESUME of the GNSS device at boot (gnss-nmea-generic inits
- *   suspended under CONFIG_PM_DEVICE and never opens its pipe otherwise);
- * - suspend/resume of the GNSS UARTE around standby/off (an armed UARTE RX
- *   holds HFCLK ≈0.5-1 mA on nRF52840 even with the module powered off).
- * The old "PM broke GPS" deadlock was modem_chat_run_script() being reached
- * from the system workqueue via driver PM hooks — the air530z driver is
- * PM-less now and every PM call here stays on the main thread. */
+ * The module is switched by GPIO or regulator, not by GNSS driver PM. The two
+ * PM calls made here, both on the main thread: a one-time RESUME of the GNSS
+ * device at boot, and suspend/resume of the GNSS UARTE around standby/off. */
 
 /* ========== GPS Power GPIO Control ==========
- * These are unconditional (not gated by HAS_GNSS) because
- * gps_power_off_for_shutdown() must be available for System OFF
- * even on boards without a GNSS driver.
- *
- * IMPORTANT: Do NOT touch GPIO during init! The GNSS driver needs the GPS
- * to be powered and outputting NMEA for the modem pipe to work.
- * We only configure GPIO lazily on first power-off request.
- *
- * Board-specific pins (defined in board overlays as gps-enable alias):
- * - T1000-E: P1.11 (GPS_EN), P0.8 (GPS_VRTC_EN), P1.15 (GPS_RESET), P1.12 (GPS_SLEEP_INT)
- * - Wio Tracker L1: P1.09 (GPS power, shared with luatos,air530z on-off-gpios)
- */
+ * Not gated by HAS_GNSS: gps_power_off_for_shutdown() must exist for System
+ * OFF on every board. No GPIO is touched during init (the GNSS driver needs
+ * the module powered); the lines are configured on the first power-off. */
 #if HAS_GPS_POWER_CONTROL
 static const struct gpio_dt_spec gps_enable_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_enable), gpios);
 #endif
@@ -144,13 +114,9 @@ static const struct gpio_dt_spec gps_resetb_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps
 #define HAS_GPS_RESETB 0
 #endif
 
-/* Module standby pin (L76K WAKEUP: asserted = run, de-asserted = Standby, RF
- * off with the core powered) on a board that ALSO has a supply switch
- * (gps-enable): standby uses this pin and keeps the supply, so a wake is a
- * hot start; a full off (`gps off`, a standby past prefs.gps_standby_max,
- * boot with GPS disabled, System OFF) cuts the supply, since Standby still
- * draws. A board whose only control is the standby pin (Wio Tracker L1)
- * declares it as gps-enable instead. */
+/* Module standby pin (asserted = run) on a board that also has a supply
+ * switch: standby uses the pin, a full off cuts the supply. A board whose only
+ * control is the standby pin declares it as gps-enable instead. */
 #if HAS_GPS_WAKEUP
 static const struct gpio_dt_spec gps_wakeup_gpio = GPIO_DT_SPEC_GET(DT_ALIAS(gps_wakeup), gpios);
 #endif
@@ -192,16 +158,9 @@ static void gps_enter_backup_sleep(void)
 #endif
 
 /* The off levels, shared by gps_power_control(false) and System OFF: reset
- * and resetb asserted (the module held in reset while its supply is gated,
- * so it starts cleanly on the next power-on), the enable and rtcint
- * de-asserted, VRTC de-asserted unless keep_vrtc (warm standby).
- *
- * The sleep line is the one difference: runtime standby/off leaves it
- * asserted, System OFF drops it -- as upstream, whose T1000-E sleep_gps() and
- * stop_gps() drive GPS_SLEEP_INT HIGH and only powerOff() drives it LOW.
- *
- * gpio_pin_configure_dt() on every line: a boot with the GPS off never ran
- * the power-on path, so the pins may not be outputs yet. */
+ * asserted, enable and rtcint de-asserted, VRTC de-asserted unless keep_vrtc.
+ * The sleep line stays asserted at runtime and is dropped for System OFF.
+ * Every line is configured here: a boot with the GPS off never ran power-on. */
 static void gps_drive_off_levels(bool keep_vrtc, bool system_off)
 {
 #if HAS_GPS_WAKEUP
@@ -249,15 +208,11 @@ static void gps_drive_off_levels(bool keep_vrtc, bool system_off)
 #endif
 }
 
-/* GPS power control with warm standby support.
+/* GPS power control.
  * @param on        true = power on, false = power off
- * @param keep_vrtc When powering off: true = the state-keeping off this board
- *                  has (AG3335 backup sleep, the gps-wakeup standby pin, VRTC
- *                  left on: ephemeris/almanac/RTC survive for a fast
- *                  re-acquisition), false = full power-off (cold start on
- *                  next wake). The caller decides from the standby length
- *                  alone (prefs.gps_standby_max), never from the board; a
- *                  board with one off state lands in it either way. */
+ * @param keep_vrtc when powering off: true = the state-keeping off this board
+ *                  has, false = full power-off. A board with one off state
+ *                  lands in it either way. */
 void gps_power_control(bool on, bool keep_vrtc)
 {
 #if HAS_GPS_POWER_REGULATOR
@@ -275,15 +230,7 @@ void gps_power_control(bool on, bool keep_vrtc)
 	}
 #endif
 #if HAS_GPS_POWER_CONTROL
-	/* Direct GPIO power control — works on all boards.
-	 * We toggle the GPS power pin ourselves rather than using driver PM
-	 * (driver PM can hang on modem_pipe_close / modem_chat_run_script).
-	 * The GNSS driver's modem pipe stays open.
-	 *
-	 * T1000-E / X1 (HAS_GPS_BACKUP_SLEEP): standby up to
-	 *   prefs.gps_standby_max uses the AG3335 RTC backup sleep, as Arduino
-	 *   stop_gps(); a longer standby and `gps off` cut VRTC too.
-	 * Simple boards (Wio etc.): Full power off/on via GPS_EN. */
+	/* We switch the module ourselves; the GNSS driver's modem pipe stays open. */
 	if (on) {
 #if HAS_GPS_WAKEUP
 		if (gpio_is_ready_dt(&gps_wakeup_gpio)) {
@@ -291,22 +238,9 @@ void gps_power_control(bool on, bool keep_vrtc)
 		}
 #endif
 #if HAS_T1000_GPS_CONTROL
-		/* T1000-E power-on sequence (from Arduino target.cpp start_gps())
-		 * Must follow this exact order with delays. Levels are ASSERTED /
-		 * DE-ASSERTED, not physical: Arduino states them as HIGH/LOW because
-		 * its pins are all active-high, while this block is also reached by
-		 * boards whose lines are active-low (see the gate below).
-		 * 1. GPS_EN asserted, delay 10ms
-		 * 2. GPS_VRTC_EN asserted, delay 10ms (critical - RTC power)
-		 * 3. GPS_RESET asserted, delay 10ms, then released
-		 * 4. GPS_SLEEP_INT asserted
-		 *
-		 * Despite the name this is not a T1000-E-only path:
-		 * HAS_T1000_GPS_CONTROL is (HAS_GPS_VRTC || HAS_GPS_RESET ||
-		 * HAS_GPS_SLEEP), so a bare gps-reset alias is enough to route a
-		 * board here. heltec_wifi_lora32_v4, _v43 and thinknode_m9 all arrive
-		 * this way, and all three declare gps-enable active-low.
-		 */
+		/* Power-on sequence, in this order with delays (Arduino start_gps()):
+		 * enable, VRTC, reset pulse, sleep line. Levels are asserted/de-asserted, not
+		 * physical; a bare gps-reset alias is enough to route a board here. */
 		if (gpio_is_ready_dt(&gps_enable_gpio)) {
 			gpio_pin_configure_dt(&gps_enable_gpio, GPIO_OUTPUT_ACTIVE);
 		}
@@ -431,66 +365,18 @@ void gps_power_off_for_shutdown(void)
 #if HAS_GNSS
 
 /* ========== Software Sleep/Wake (no GPIO required) ==========
- *
- * On boards without dedicated GPS power control (e.g. RAK3401 where the
- * 3V3_S rail is shared with the LoRa FEM), we send vendor-specific UART
- * commands to put the GPS module into low-power mode.
- *
- * Strategy: send BOTH MediaTek and u-blox sleep commands — the module that
- * isn't present simply ignores the bytes it doesn't understand.
- *
- * - MediaTek (e.g. L76B):      $PMTK161,0*28\r\n → standby (~1mA), wake on UART
- * - u-blox ZOE-M8Q (RAK12500): UBX-RXM-PMREQ    → backup  (~7µA), wake on UART
- *
- * Neither reaches a CASIC part (L76K/L76KB/Air530Z): those ignore PMTK, UBX
- * and PCAS12 sleep commands alike — verified on hardware, which is why the
- * boards carrying them duty-cycle with a power GPIO instead. Note also that
- * the RAK1910 is a u-blox MAX-7Q, not an L76K, despite older comments here.
- *
- * Wake: any byte on UART wakes both modules from their low-power modes.
- * After wake, the module resumes outputting NMEA autonomously.
- */
+ * Boards without GPS power control: both the MediaTek and the u-blox sleep
+ * command are sent, and the absent module ignores the other's bytes. Any byte
+ * on the UART wakes either. CASIC parts ignore both. */
 
 /* HAS_GPS_UART, gps_uart_dev and gps_uart_send are defined near the top of
  * this file (see "GPS Feature Detection") — they are needed by the boot-time
  * module configuration, which runs long before this section. */
 
 /* ========== GNSS UART Suspend/Resume (device PM) ==========
- * nRF UARTE only. An armed UARTE RX holds HFCLK (~0.5-1 mA on nRF52840)
- * even when the GPS module is powered off or silent, so standby/off
- * suspends the UART device and every wake resumes it first.
- *
- * Verified symmetric in uart_nrfx_uarte.c under the still-open modem pipe:
- * suspend saves the RX-interrupt state, STOPRXes, disables the peripheral
- * and applies the sleep pinctrl; resume restores all of it. Other UART
- * drivers (legacy nordic,nrf-uart on RAK4631, ESP32) are deliberately not
- * gated in — their suspend/resume round-trip is unverified and the HFCLK
- * cost is UARTE-specific.
- *
- * Every GPS UART node must carry a sleep pinctrl state (all boards do):
- * without one, suspend fails *after* disabling RX while the PM state stays
- * ACTIVE, so the next resume no-ops with -EALREADY — a dead GPS.
- *
- * Safe on boards WITHOUT GPS power control too, since patch 0010.
- * uarte_pm_suspend() used to busy-wait for RXTO with no timeout after
- * triggering STOPRX. In interrupt-driven mode RX runs on a 1-byte buffer
- * with no ENDRX_STARTRX short, so the receiver stops after every byte until
- * the ISR re-arms it — and suspend disables the ENDRX interrupt *before*
- * STOPRX, removing the re-arm. Land in that window with bytes still arriving
- * and STOPRX hits an already-stopped receiver, no RXTO is generated, and the
- * caller spun forever on the main thread (observed: RAK3401 1W repeater on
- * 1.16.6, CLI answering only "-> busy"). That is why this gate once required
- * power control: boards with it cut the module first, so the line is quiet.
- * Boards without it send gps_software_sleep()'s PMTK/UBX commands, which the
- * module may ignore (CASIC parts; a MAX-7Q is protocol 14/15, older than the
- * UBX-RXM-PMREQ we send) and keep streaming NMEA straight into the suspend.
- *
- * Patch 0010 bounds that wait (4 ms, then the unconditional
- * nrf_uarte_disable() force-stops the receiver) and clears the RX events, so
- * the race can no longer hang the caller, and resume re-arms RX from a clean
- * state. So every nRF UARTE GPS board releases its UART in standby/off now,
- * including an optional GPS port with nothing fitted (xiao_nrf54l15 uart21).
- * Bench-tested by the streaming-into-suspend case: devdocs/lld/13. */
+ * nRF UARTE only: an armed UARTE RX holds HFCLK even with the module off, so
+ * standby/off suspends the UART and every wake resumes it first. Every GPS
+ * UART node needs a sleep pinctrl state. Relies on patch 0010. */
 #if HAS_GPS_UART && defined(CONFIG_PM_DEVICE) && \
 	DT_NODE_HAS_COMPAT(DT_BUS(DT_NODELABEL(gnss)), nordic_nrf_uarte)
 #define HAS_GPS_UART_PM 1
@@ -509,18 +395,8 @@ void gps_uart_set_power(bool on)
 		return;
 	}
 	if (!on) {
-		/* Let the GNSS line go quiet before suspending. Every caller
-		 * cuts module power (GPS_EN low / reset asserted / regulator
-		 * off) immediately before this, but a byte can still be in
-		 * flight. Settle so it finishes and the driver's RX ISR re-arms,
-		 * leaving the receiver armed-and-idle when the suspend's STOPRX
-		 * fires — that state yields RXTO, whereas a just-stopped,
-		 * un-rearmed receiver can produce none and (pre-0010) hung the
-		 * main thread. ~5 ms comfortably covers one character time at
-		 * GNSS baud plus ISR latency; standby happens at most every few
-		 * minutes, so the cost is negligible. Backstop: patch 0010
-		 * bounds the driver's RXTO wait so a missed RXTO can never hang
-		 * us even if a byte still lands in the race window. */
+		/* Let a byte in flight finish and the RX ISR re-arm before the suspend's
+		 * STOPRX. */
 		k_msleep(5);
 	}
 	int ret = pm_device_action_run(gps_uart_dev,
@@ -546,29 +422,9 @@ void gps_uart_set_power(bool on) { ARG_UNUSED(on); }
  * Inert on CASIC parts (L76K and relatives) — they have no such command. */
 static const uint8_t pmtk_standby[] = "$PMTK161,0*28\r\n";
 
-/* u-blox ZOE-M8Q: UBX-RXM-PMREQ → enter backup mode
- * UBX frame: B5 62 | 02 41 | 10 00 | payload(16) | CK_A CK_B
- * Payload (protocol 23+, 16 bytes):
- *   version=0, reserved[3]=0,
- *   duration=0x00000000 (infinite),
- *   flags=0x00000006 (backup + force),
- *   wakeupSources=0x00000028 (uartrx bit3 | extint0 bit5)
- *
- * THE WAKE SOURCE BIT IS LOAD-BEARING. wakeupSources bit 3 is uartrx; bit 5
- * is extint0. This frame previously sent 0x20 — extint0 only — with a comment
- * claiming that was "UART RX (bit 5)". It is not. EXTINT is not routed to the
- * WisBlock connector on the RAK12500 (RAK's datasheet: only UART/I2C, 1PPS,
- * RESET, VDD and GND are connected), so the module was told to sleep forever
- * with a wake source that can never be asserted. duration=0 means infinite,
- * so it never came back: no NMEA at any baud, and no I2C either, because
- * backup mode powers down the DDC interface too. Only a physical power cycle
- * recovered it — a reboot does not, since the 3V3_S rail stays up.
- * Confirmed on hardware: reseat -> module answers -> one fix -> first standby
- * -> gone again.
- *
- * 0x28 sets both, so a board that does wire EXTINT keeps that path as well.
- * Module stops all output and draws ~20µA (ZOE-M8Q at 3V, datasheet Table 13;
- * the 15µA hardware-backup figure needs VCC removed entirely). */
+/* u-blox ZOE-M8Q: UBX-RXM-PMREQ, enter backup mode until a wake source fires.
+ * wakeupSources = 0x28: uartrx (bit 3) | extint0 (bit 5). uartrx must be set:
+ * EXTINT is not wired on the RAK12500, and without it the module never wakes. */
 static const uint8_t ubx_pmreq_backup[] = {
 	0xB5, 0x62,             /* UBX sync chars */
 	0x02, 0x41,             /* Class: RXM, ID: PMREQ */

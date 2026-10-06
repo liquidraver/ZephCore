@@ -35,18 +35,11 @@ LOG_MODULE_REGISTER(ui_pages, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
  * the joystick UI's splash. See display.h for declaration. */
 
 /* ========== Layout ========== */
-/* All layout is derived from the actual display and font dimensions
- * queried at runtime, so the UI adapts to any resolution/font size.
- *
- * Naming convention: UPPER_CASE macros call display getters (cheap —
- * they just return a cached static).  This keeps page renderers
- * readable while being resolution-independent.
- *
- * Layout (top to bottom):
- *   Row 0..FONT_H-1:  Top bar (node name left, battery right)
- *   DOTS_Y..SEP_Y:    Page indicator dots + separator line
- *   CONTENT_Y..end:    Page-specific content
- */
+/* Layout is derived from the display and font dimensions at run time. The
+ * UPPER_CASE macros call cached display getters.
+ *   Row 0..FONT_H-1:  top bar (node name left, battery right)
+ *   DOTS_Y..SEP_Y:    page indicator dots + separator line
+ *   CONTENT_Y..end:   page-specific content */
 /* Full-scale end of the radio page's TX power bar.  The board's configured
  * ceiling when it has one (same symbol CommonCLI clamps "set tx" against),
  * else the common SX126x/LR11xx maximum. */
@@ -601,17 +594,9 @@ static void render_tiny_title(void)
 }
 
 /*
- * Per-page renderer split (UI profile pattern)
- * --------------------------------------------
- * Each page's capability-divergent bodies live in dedicated _mono / _color
- * functions.  render_<page>() is a thin dispatcher that picks one:
- *   - Mono / tiny / e-ink panels use render_<page>_mono().
- *   - RGB565 color panels use render_<page>_color(), which is compiled ONLY
- *     when a `tft` node exists in devicetree (MC_DISPLAY_COLOR_PANEL).  On a
- *     mono board the color body — and every color-only helper it references —
- *     drops out entirely, so no color RAM/flash is spent.
- * The bodies are moved verbatim from the old combined function, so on-screen
- * output is byte-identical to before.
+ * Per-page renderer split: render_<page>() dispatches to render_<page>_mono()
+ * or, on an RGB565 panel, render_<page>_color(), which is compiled only when
+ * a `tft` node exists (MC_DISPLAY_COLOR_PANEL).
  */
 static void render_messages_mono(void)
 {

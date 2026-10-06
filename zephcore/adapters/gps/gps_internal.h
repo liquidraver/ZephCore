@@ -29,16 +29,8 @@
 #endif
 
 /* ========== GPS Feature Detection ==========
- * Every HAS_GPS_* predicate is defined HERE, before first use. They are pure
- * devicetree tests with no side effects, kept apart from the variables they
- * gate so that ordering can never drift again.
- *
- * Why this block exists: HAS_GPS_UART used to be defined ~500 lines below its
- * first `#if`, and an undefined identifier in `#if` is silently 0 — so the
- * entire PMTK/UBX module-configuration path compiled to nothing on every
- * board, and GPS ran at module defaults (GPS-only constellations, no AOP).
- * If you add another HAS_GPS_* macro, define it in this block.
- */
+ * Every HAS_GPS_* predicate is defined here, before first use: an undefined
+ * identifier in #if is silently 0. Add new ones to this block. */
 
 /* GNSS module hangs off a UART we can write to (any compatible). */
 #if HAS_GNSS && DT_NODE_HAS_STATUS(DT_NODELABEL(gnss), okay) && \

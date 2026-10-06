@@ -39,19 +39,9 @@ static void flatten(uint8_t id, const char *tag)
 }
 
 #if PARTITION_EXISTS(qspi_storage_partition)
-/* qspi-ext.dtsi makes the flash under /ext zephyr,deferred-init, so nothing
- * probes it at boot. The flash sits behind a GPIO-switched rail on several
- * boards, and the boot-time JEDEC read went out before a cold rail had come
- * up: the driver failed, /ext stayed unmounted and contacts silently fell
- * back to internal flash. A warm reboot keeps the rail charged; the first
- * boot after a UF2 update (seconds in the bootloader, rail off) did not.
- * Bringing the part up here, on first use, is long after the rail. Each role
- * reaches this on its own path, so it is idempotent: -EALREADY means an
- * earlier call already ran the init, whatever the result was.
- *
- * A role that does not use /ext parks the part in deep power-down
- * (zephcore_fs_ext_power_down()); a format still has to reach it, so a
- * suspended flash is resumed here. */
+/* Bring up the deferred-init flash under /ext on first use (a boot-time probe
+ * can beat a cold rail). Idempotent: -EALREADY means an earlier call ran the
+ * init. A flash parked in deep power-down is resumed. */
 static void ext_flash_init(void)
 {
 	const struct device *dev = PARTITION_DEVICE(qspi_storage_partition);
@@ -143,14 +133,8 @@ bool zephcore_fs_format_all(bool *out_ext_mounted)
 		*out_ext_mounted = false;
 	}
 
-	/* Properly unmount from Zephyr's VFS before erasing flash.  Clearing a
-	 * local "mounted" flag is not enough — Zephyr would still hold /lfs
-	 * mounted, so flash_area_flatten destroys the on-flash superblock while
-	 * LittleFS considers itself active.  Every subsequent file op then hits
-	 * the erased blocks and logs "Corrupted dir pair at {0x0, 0x1}".
-	 * FS_FSTAB_DECLARE_ENTRY exposes the non-static mount struct generated
-	 * from the DTS fstab; fs_mount() on a blank partition auto-formats
-	 * (littlefs_fs.c: lfs_mount fail -> lfs_format -> lfs_mount). */
+	/* Unmount through the VFS before erasing: flattening under a mounted LittleFS
+	 * corrupts it. fs_mount() on the blank partition then formats it. */
 	FS_FSTAB_DECLARE_ENTRY(DT_NODELABEL(lfs));
 	fs_unmount(&FS_FSTAB_ENTRY(DT_NODELABEL(lfs)));
 
@@ -186,13 +170,8 @@ bool zephcore_fs_format_all(bool *out_ext_mounted)
 	}
 
 #if DT_NODE_EXISTS(DT_NODELABEL(qspi_lfs))
-	/* Remount external QSPI too.  We unmounted it above and flattened its
-	 * partition, so it must be re-mounted here — otherwise a runtime format
-	 * (factory reset, or the first-boot "no prefs" auto-format) leaves /ext
-	 * unmounted for the rest of the session.  begin() then reads
-	 * ext_lfs_mounted=false and the store falls back to internal /lfs, so
-	 * contacts/channels save to /lfs and get needlessly migrated back to
-	 * /ext on the next boot ("Migrating contacts to external storage"). */
+	/* Remount /ext too, or a runtime format leaves it down for the session and
+	 * the store falls back to /lfs. */
 	{
 		bool ext_mounted = zephcore_fs_mount_ext();
 

@@ -71,20 +71,12 @@ extern void ui_led_flash_msg(void);
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(ui_task, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
-/* Action feedback melodies.
- * b=200, d=16 → each chirp ~75ms, rest ~75ms = clear separation.
- *
- * The chirp count identifies the action, not the tap count — the two are only
- * equal on boards using the stock tap-codes order, and LED already differs
- * there (2 taps, 5 chirps).  Do not "fix" a count to match a gesture.
- *
- * advert sent (zero-hop or flood): chirp-chirp
- * buzzer / notification mode:      chirp×3 + high(ON) or low(OFF)
- * GPS toggle:                      chirp×4 + high(ON) or low(OFF)
- * LED heartbeat toggle:            chirp×5 + high(ON) or low(OFF)
- *
- * ON tail:  high E7 (~2637Hz) = "enabled"
- * OFF tail: low G5 (~784Hz)   = "disabled"  */
+/* Action feedback melodies (b=200, d=16: ~75 ms chirps). The chirp count
+ * identifies the action, not the tap count.
+ *   advert sent:                 chirp x2
+ *   buzzer / notification mode:  chirp x3 + high (on) or low (off)
+ *   GPS toggle:                  chirp x4 + high or low
+ *   LED heartbeat toggle:        chirp x5 + high or low */
 #define MELODY_BEEP_2     "b2:d=16,o=7,b=200:c,p,c"
 
 #define MELODY_BUZZER_ON  "bon:d=16,o=7,b=200:c,p,c,p,c,p,p,8e"
@@ -542,28 +534,10 @@ static void action_deep_sleep(void)
 /* ========== Input Event Handler ========== */
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-/* Set when a button press woke the display; consumed by the resolved action
- * code so the wake-up press does not also run its normal action.
- *
- * The display wakes on the raw press event (INPUT_KEY_0 from gpio-keys), but
- * the action it maps to is emitted later by the longpress / multi-tap filters
- * (up to tap-delay-ms or long-delay-ms afterwards).  By then the display
- * reports as on, so the resolved code used to fall through and run normally —
- * a single tap woke the screen and immediately paged forward.
- *
- * The flag is matched against real action codes rather than "the next event"
- * because the multi-tap filter passes an unhandled raw KEY_A through per tap
- * before it resolves; swallowing that would leave a double tap still acting.
- *
- * No expiry is needed, but the flag must only be armed when the wake press was
- * a raw code that still has an action code coming.  ZEPHCORE_UI_DESIGN_JOYSTICK
- * depends on ZEPHCORE_ROLE_COMPANION, so the repeater build of a joystick board
- * (wio_tracker_l1, gat562_30s — both shipped as repeater artifacts) falls back
- * to ZEPHCORE_UI_DESIGN_BUTTON and *does* reach this callback, with its
- * joystick GPIOs wired straight to INPUT_KEY_UP/DOWN/LEFT/RIGHT/ENTER and no
- * filter in between.  There the wake press is already an action code and is
- * consumed at the wake, so the flag stays clear and the next press acts.
- */
+/* Set when a button press woke the display; the action code that press
+ * resolves to (emitted later by the longpress / multi-tap filters) is then
+ * swallowed. Armed only when the wake press was a raw code with an action
+ * code still to come. */
 static bool display_woken_pending;
 
 static bool is_ui_action_code(uint16_t code)
@@ -650,16 +624,8 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 	}
 
 #ifdef CONFIG_ZEPHCORE_UI_DISPLAY
-	/* If display is off, wake it and consume the event.  The action this
-	 * press resolves to arrives later from the longpress / multi-tap filter;
-	 * display_woken_pending makes the switch below swallow it.
-	 *
-	 * Only arm that flag when this press really does resolve into a *later*
-	 * action code, i.e. when the code we just consumed is a raw one.  Boards
-	 * that wire an action code straight to the GPIO (joystick lines on
-	 * wio_tracker_l1 / gat562_30s in repeater builds) already consumed their
-	 * action here — arming the flag would make the next, genuinely separate
-	 * press get swallowed instead. */
+	/* Display off: wake it and consume the event. Arm display_woken_pending only
+	 * if the consumed code is a raw one, whose action code arrives later. */
 	if (!mc_display_is_on()) {
 		mc_display_on();
 		display_woken_pending = !is_ui_action_code(code);
@@ -697,20 +663,9 @@ static void ui_input_cb(struct input_event *evt, void *user_data)
 	}
 #endif
 
-	/* Map input key codes to UI actions.
-	 *
-	 * Two-code boards (RAK4631 / WisMesh Pocket / Heltec V3–V4.3 / T-Echo /
-	 * ThinkNode M1 / T-Impulse): 1 tap KEY_1, 2 taps KEY_LEFT; long press
-	 * KEY_ENTER (page enter).  Five-code boards emit KEY_B/D/C/E as well, and
-	 * KEY_POWER or KEY_F long → deep sleep.  The gesture behind each code is
-	 * the board's business (see the tap-codes note at the top of this file).
-	 * KEY_RIGHT/LEFT/ENTER/UP/DOWN: joystick (Wio Tracker)
-	 *
-	 * NOTE: KEY_A (raw short-press from longpress filter) is NOT handled
-	 * here. It feeds into the multi-tap filter which emits the tap codes.
-	 * Since INPUT_CALLBACK_DEFINE(NULL) sees events from all devices,
-	 * the raw KEY_A events fall through to default: break.
-	 */
+	/* Map input key codes to UI actions. Which gesture produces which code is
+	 * the board's business (tap-codes note at the top of this file). Raw KEY_A
+	 * is not handled here: it feeds the multi-tap filter. */
 	switch (code) {
 	/* ===== Multi-tap outputs ===== */
 	case INPUT_KEY_1:

@@ -21,15 +21,9 @@ LOG_MODULE_REGISTER(zephcore_haptic, CONFIG_ZEPHCORE_SENSORS_LOG_LEVEL);
 #define HAPTIC_NODE DT_COMPAT_GET_ANY_STATUS_OKAY(ti_drv2605)
 
 #if DT_PROP(HAPTIC_NODE, zephyr_deferred_init)
-/* Wake a deferred-init DRV2605 and run its init here, where the part's supply
- * rail has been up since boot instead of microseconds.
- *
- * The enable pin is asserted *before* device_init() on purpose. Upstream's
- * drv2605_init() spends its DRV2605_POWER_UP_DELAY_US before it configures the
- * GPIOs, so EN rises and the very next thing it does is read the status
- * register over I2C — no settling time at all between the two. Raising EN
- * ourselves and waiting turns that race into a plain sequence; the driver's own
- * gpio_pin_configure_dt() to OUTPUT_ACTIVE afterwards is then a no-op. */
+/* Wake a deferred-init DRV2605 and run its init here. The enable pin is
+ * asserted, with a wait, before device_init(): the driver reads the status
+ * register right after raising EN. */
 static void haptic_deferred_init(const struct device *dev)
 {
 	static const struct gpio_dt_spec en =
