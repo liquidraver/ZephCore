@@ -224,8 +224,9 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* The 7-byte time block for an epoch, in d's register order. */
-static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
+/* The 7-byte time block for an epoch, in d's register order. False outside
+ * 2000-2099: ZephCore writes the year as two BCD digits and no century bit. */
+static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
 	unsigned m, day;
@@ -236,6 +237,9 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	unsigned sec  = rem % 60;
 	unsigned dow  = (unsigned)(((epoch / 86400) + 4) % 7);  /* 1970-01-01 = Thu */
 
+	if (y < 2000 || y > 2099) {
+		return false;
+	}
 	blk[0] = BIN2BCD(sec);
 	blk[1] = BIN2BCD(min);
 	blk[2] = BIN2BCD(hour);
@@ -244,6 +248,7 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	blk[d->date_index == 4 ? 3 : 4] = d->week_one_hot ? (uint8_t)BIT(dow) : (uint8_t)dow;
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
+	return true;
 }
 
 /* Clear the power-loss flag (for chips whose flag is a separate reg;
@@ -276,15 +281,27 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_REG_CFG_FIRST  0x35  /* EEPROM Clkout */
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
+#define RV3028_YEAR_UNSET     0xA0  /* not BCD; a year of A0h-FEh reads "not set" */
 
-/* Year 00h first and the real year last: a power loss, which no retry can
- * repeat, cutting the write after the first byte and before the last leaves
- * year 2000, so the next boot takes no time from it. */
+/* Mark the year A0h, then write all seven registers in one access (4.5):
+ * a write cut between the mark and the year byte leaves the mark. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
-	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
-	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 6) == 0 &&
-	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, blk[6]) == 0;
+	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
+	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 7) == 0;
+}
+
+/* Mark the year alone, for a time outside 2000-2099, with the same BSF
+ * check as a time write. */
+static bool rv3028_mark_year(const struct rtc_desc *d)
+{
+	uint8_t st;
+
+	return i2c_reg_update_byte(d->bus, d->addr, RV3028_REG_STATUS,
+				   RV3028_STATUS_BSF, 0) == 0 &&
+	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, RV3028_YEAR_UNSET) == 0 &&
+	       i2c_reg_read_byte(d->bus, d->addr, RV3028_REG_STATUS, &st) == 0 &&
+	       !(st & RV3028_STATUS_BSF);
 }
 
 /* Read or write the time block with BSF cleared before and checked after. A
@@ -529,6 +546,7 @@ static void rv3028_cfg_retry_fn(struct k_work *work)
 static uint32_t s_save_epoch;
 static int64_t s_save_at;
 static uint8_t s_save_tries;
+static bool s_save_mark;  /* the repeat writes the year mark, not a time */
 static void rv3028_save_retry_fn(struct k_work *work);
 static K_WORK_DELAYABLE_DEFINE(s_save_retry, rv3028_save_retry_fn);
 
@@ -537,15 +555,23 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	uint8_t blk[7];
 
 	ARG_UNUSED(work);
-	rtc_time_block(s_active, s_save_epoch +
-		       (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk);
-	if (!rv3028_steady(s_active, blk, true)) {
+	if (!s_save_mark &&
+	    !rtc_time_block(s_active, s_save_epoch +
+			    (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk)) {
+		s_save_mark = true;  /* the run-on time left 2000-2099 */
+	}
+	if (s_save_mark ? !rv3028_mark_year(s_active) : !rv3028_steady(s_active, blk, true)) {
 		if (++s_save_tries < RTC_SAVE_RETRIES) {
 			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
 		} else {
-			LOG_WRN("RTC %s: time write not confirmed after %u tries",
+			LOG_WRN("RTC %s: save not confirmed after %u tries",
 				s_active->name, s_save_tries + 1U);
 		}
+		return;
+	}
+	if (s_save_mark) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written, year marked unset",
+			s_active->name);
 		return;
 	}
 	rtc_clear_power_flag(s_active);
@@ -617,6 +643,14 @@ static bool rtc_probe(uint32_t *epoch_out)
 		uint8_t sb = blk[0] & 0x7F, mb = blk[1] & 0x7F, hb = blk[2] & 0x3F;
 		uint8_t db = blk[d->date_index] & 0x3F, ob = blk[5] & 0x1F, yb = blk[6];
 
+#if RTC_RV3028_CFG
+		/* A0h-FEh holds the A0h mark. */
+		if (d->cfg != NULL && yb >= RV3028_YEAR_UNSET && yb != 0xFF) {
+			LOG_INF("%s present, time not yet set (year %02Xh)", d->name, yb);
+			continue;
+		}
+#endif
+
 		/* Identity leaves the hours and year unchecked, and may have let the
 		 * other fields pass on a flag read since; a time needs them all. */
 		if (!rtc_fields_ok(d, blk) || !bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
@@ -675,22 +709,31 @@ void zephcore_rtc_save(uint32_t epoch)
 	const struct rtc_desc *d = s_active;
 	uint8_t blk[7];
 
-	rtc_time_block(d, epoch, blk);
+	bool in_range = rtc_time_block(d, epoch, blk);
 #if RTC_RV3028_CFG
 	if (d->cfg != NULL) {
 		(void)k_work_cancel_delayable(&s_save_retry);
 		s_save_epoch = epoch;
 		s_save_at = k_uptime_get();
 		s_save_tries = 0;
-		if (!rv3028_steady(d, blk, true)) {
-			LOG_WRN("RTC %s: time write not confirmed, repeating every 5 s",
-				d->name);
+		s_save_mark = !in_range;
+		if (s_save_mark ? !rv3028_mark_year(d) : !rv3028_steady(d, blk, true)) {
+			LOG_WRN("RTC %s: %s not confirmed, repeating every 5 s", d->name,
+				s_save_mark ? "year mark" : "time write");
 			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
+			return;
+		}
+		if (s_save_mark) {
+			LOG_WRN("RTC %s: time outside 2000-2099 not written, year marked "
+				"unset", d->name);
 			return;
 		}
 	} else
 #endif
-	if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+	if (!in_range) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written", d->name);
+		return;
+	} else if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
 		LOG_WRN("RTC %s: time write failed", d->name);
 		return;
 	}

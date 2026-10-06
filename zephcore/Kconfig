@@ -911,8 +911,9 @@ config ZEPHCORE_RTC_AUTODISCOVER
 	  backed RTC opt in by including boards/common/rtc-i2c.dtsi or
 	  declaring their own node; if a chip holds a valid time it is
 	  restored at boot — shown tagged "L" until the next external sync.
-	  On every GPS/app/CLI sync the time is written back so it survives
-	  power-off. A node with rv3028-eeprom-config has its time read and
+	  On every GPS/app/CLI sync to a time within 2000-2099 the time is
+	  written back so it survives power-off. A node with
+	  rv3028-eeprom-config has its time read and
 	  written with the chip's backup switch flag cleared before and
 	  checked after, and, when its chip is the one adopted, a read
 	  identifies it, and a checked time read just before the store shows

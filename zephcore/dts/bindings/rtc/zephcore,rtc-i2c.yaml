@@ -82,9 +82,11 @@ properties:
       identifying the chip again first; a boot whose read could not
       identify it cleanly waits for those retries. The time is read at
       boot and written on each sync with the chip's backup switch flag
-      cleared before and checked after. A write sets year 00h first and
-      the real year last, so a write cut by a power loss reads as "time
-      not yet set", and a write not confirmed is repeated every 5 s, up
-      to 12 times. Set it only on a board whose backup supply is known:
+      cleared before and checked after. A write sets the year to A0h,
+      then all seven registers in one burst, year last, so a write cut
+      between the mark and the year byte gives no time at the next boot,
+      and a write not confirmed is repeated every 5 s, up to 12 times. A
+      time outside 2000-2099 is not written; the year is marked A0h
+      instead. Set it only on a board whose backup supply is known:
       trickle charging suits a supercapacitor or rechargeable cell,
       never a primary cell.
