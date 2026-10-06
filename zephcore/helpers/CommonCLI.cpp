@@ -1295,28 +1295,17 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			snprintf(reply, CLI_REPLY_SIZE, "OK - leds.brightness=%ld%%", pct);
 		}
 	} else if (memcmp(config, "leds ", 5) == 0) {
-		/* Master switch (persisted) for every LED on the node: heartbeat,
-		 * unread-message and LoRa TX activity, plus the message and
-		 * shutdown flashes. Not the display backlight — that has its own
-		 * UI brightness setting. "on"/"off" words only, no "1"/"0"
-		 * aliases (removed from led.tx/led.hb on 2026-08-16 for the same
-		 * reason: they used to collide with the 1% and 0% brightness
-		 * values on that branch — moot here since brightness now lives
-		 * under "leds.brightness" instead, but kept out anyway for
-		 * consistency and to reject typos cleanly). */
-		const char* val = &config[5];
-		if (memcmp(val, "on", 2) == 0 && val[2] == '\0') {
-			_prefs->leds_disabled = 0;
-			zephcore_leds_set_disabled(false);
-			savePrefs();
-			strcpy(reply, "OK");
-		} else if (memcmp(val, "off", 3) == 0 && val[3] == '\0') {
-			_prefs->leds_disabled = 1;
-			zephcore_leds_set_disabled(true);
-			savePrefs();
-			strcpy(reply, "OK");
+		/* Master switch for every LED on the node: heartbeat, unread-message
+		 * and LoRa TX activity, plus the message and shutdown flashes. Not
+		 * the display backlight (that has its own UI brightness setting). */
+		int on = cliOnOff(&config[5], cliDefaults()->leds_disabled ? 0 : 1);
+		if (on < 0) {
+			strcpy(reply, "Error: must be on, off or default");
 		} else {
-			strcpy(reply, "Error: must be on or off");
+			_prefs->leds_disabled = on ? 0 : 1;
+			zephcore_leds_set_disabled(_prefs->leds_disabled != 0);
+			savePrefs();
+			strcpy(reply, "OK");
 		}
 #ifndef ZEPHCORE_REPEATER
 	} else if (memcmp(config, "buzzer ", 7) == 0) {
