@@ -23,7 +23,7 @@ multiple MCU families.
    bounded recovery (§8.7).
 3. **Upstream portability** — most new mesh features arrive from Arduino MeshCore, so code that mirrors upstream
    stays structurally identical to it (§9).
-4. **Hardware breadth** — one codebase across nRF52840, nRF54L15, the ESP32 family, EFR32MG24, STM32WL and native
+4. **Hardware breadth** — one codebase across nRF52840, nRF54L15/LM20A, the ESP32 family, EFR32MG24, STM32WL and native
    Linux, with four radio families.
 5. **Resource discipline** — static allocation for the packet path; companion builds are RAM-bound.
 
@@ -104,7 +104,7 @@ flowchart LR
 
 | Dimension | Values | Selected by |
 |---|---|---|
-| Platform | nRF52840, nRF54L15, ESP32 classic, ESP32-S3/C3/C6, EFR32MG24, STM32WL, native Linux | board directory |
+| Platform | nRF52840, nRF54L15, nRF54LM20A, ESP32 classic, ESP32-S3/C3/C6, EFR32MG24, STM32WL, native Linux | board directory |
 | Radio | SX126x family (default), LR1110, LR2021, SX127x | devicetree / board conf |
 | Role | companion (default), repeater, room server, observer | user `EXTRA_CONF_FILE` |
 | UI | none, button UI, joystick/keypad UI (companion) | board Kconfig select |
