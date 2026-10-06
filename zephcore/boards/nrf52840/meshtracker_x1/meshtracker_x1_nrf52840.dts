@@ -354,6 +354,8 @@
 		date-index = <4>;
 		status-reg = <0x0e>;
 		status-mask = <0x02>;
+		/* RX8900 Application Manual ETM45E-11, 8.2.2 Table 15, p. 16 */
+		weekday-one-hot;
 	};
 };
 
