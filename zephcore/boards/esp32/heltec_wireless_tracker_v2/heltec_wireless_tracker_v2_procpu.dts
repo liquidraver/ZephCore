@@ -74,11 +74,10 @@
 
 	/* Same GPIO18 net as status_led above, driven through the LEDC PWM
 	 * peripheral instead of a raw GPIO write. Single LED doubling as
-	 * heartbeat, message/shutdown flash and LoRa TX indicator (same
-	 * "Option 1" shared-brightness pattern as T096, see helpers/ui/ui_common.c
-	 * and adapters/board/ZephyrBoard.cpp: heartbeat-pwm-led/lora-tx-pwm-led
-	 * aliases give every one of those events a single 0-100 brightness knob,
-	 * RAM-only, on top of the existing persisted on/off gate. */
+	 * heartbeat, message/shutdown flash and LoRa TX indicator: the
+	 * heartbeat-pwm-led/lora-tx-pwm-led aliases give every one of those
+	 * events a single persisted 0-100 brightness knob, on top of the
+	 * existing persisted on/off gate. */
 	pwm_leds {
 		compatible = "pwm-leds";
 
