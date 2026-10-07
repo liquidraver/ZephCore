@@ -878,6 +878,7 @@ void JoystickUITask::loop()
 		bool consumed = false;
 		if (key == KEY_BUZZ_TOGGLE) {
 			toggleBuzzer();
+			showAlert(isBuzzerQuiet() ? "Buzzer off" : "Buzzer on", 1000);
 			consumed = true;
 		} else if (key == KEY_GPS_TOGGLE) {
 			toggleGPS();
@@ -995,8 +996,15 @@ bool JoystickUITask::getGPSState() const
 
 void JoystickUITask::toggleGPS()
 {
-	if (!gps_is_available()) return;
-	mesh_gps_set_enabled(!gps_is_enabled());
+	if (!gps_is_available()) {
+		showAlert("No GPS", 1000);
+		return;
+	}
+	/* The mesh loop applies the change later, so getGPSState() is still
+	 * the old state here: the alert names the requested one. */
+	bool enable = !gps_is_enabled();
+	mesh_gps_set_enabled(enable);
+	showAlert(enable ? "GPS enabled" : "GPS disabled", 1000);
 }
 
 uint32_t JoystickUITask::getGpsDutySec() const

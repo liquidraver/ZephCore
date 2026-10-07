@@ -874,7 +874,6 @@ bool GPSSettingsScreen::handleInput(char key)
 	if (key == KEY_ENTER) {
 		if (_selected == 0) {
 			_task->toggleGPS();
-			_task->showAlert(_task->getGPSState() ? "GPS enabled" : "GPS disabled", 1000);
 		} else {
 			_task->adjustGpsDuty(1);
 		}

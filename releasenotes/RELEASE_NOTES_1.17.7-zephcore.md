@@ -167,6 +167,10 @@ matches the SoftDevice version of your bootloader.
   measurement the chip rejected the command that puts it back into its duty cycle. The next channel
   check recovered it and no packets were lost; the driver now returns the chip to standby first, and
   the command is accepted.
+- **Joystick UI** (Wio Tracker L1 and other joystick boards): switching the GPS on from the GPS
+  screen showed "GPS disabled", and switching it off showed "GPS enabled". The GPS itself switched
+  correctly; the message now matches. The 3-tap buzzer and 4-tap GPS shortcuts now show a message
+  too, like the LED and advert shortcuts.
 - **New board**: Seeed LR2021 LoRa Plus EVK with a XIAO nRF54LM20A. Build it from source; there is no
   published firmware for it yet.
 - **Zephyr** updated to `74b7173e9c9`. One change in it would have been visible and is handled:

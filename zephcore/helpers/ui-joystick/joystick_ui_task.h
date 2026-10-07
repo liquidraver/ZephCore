@@ -114,6 +114,7 @@ public:
 	void toggleBuzzer();
 	bool isGPSAvailable() const;
 	bool getGPSState() const;
+	/* Requests the opposite state and shows the alert for it. */
 	void toggleGPS();
 	/* GPS duty-cycle interval, seconds (0 = always on). Steps through a fixed
 	 * preset ladder (step = +1/-1) rather than raw seconds, since the valid
