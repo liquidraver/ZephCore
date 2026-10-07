@@ -40,6 +40,9 @@ struct rtc_desc {
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
 	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
+	uint8_t  h12_reg;      /* register of the 12-hour mode bit */
+	uint8_t  h12_mask;     /* that bit, or 0 if the chip has no 12-hour mode */
+	uint8_t  h12_zero;     /* bits of h12_reg that always read 0 */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -57,6 +60,27 @@ struct rtc_desc {
 				 "zero-mask is one byte per time register");))
 
 DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_ZERO_ARRAY)
+
+#define RTC_H12_REG(node)  DT_PROP_BY_IDX(node, twelve_hour_bit, 0)
+#define RTC_H12_CHECK(node)                                           \
+	IF_ENABLED(DT_NODE_HAS_PROP(node, twelve_hour_bit),           \
+		   (BUILD_ASSERT(DT_PROP_LEN(node, twelve_hour_bit) == 3, \
+				 "twelve-hour-bit is [register mask zero]"); \
+		    BUILD_ASSERT(DT_PROP_BY_IDX(node, twelve_hour_bit, 1) != 0, \
+				 "twelve-hour-bit needs a mode bit"); \
+		    BUILD_ASSERT(!(RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
+				   RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
+				 RTC_H12_REG(node) == DT_PROP(node, time_reg) + 2, \
+				 "twelve-hour-bit in the time block must be in hours"); \
+		    BUILD_ASSERT((RTC_H12_REG(node) >= DT_PROP(node, time_reg) && \
+				  RTC_H12_REG(node) < DT_PROP(node, time_reg) + 7) || \
+				 (DT_PROP_BY_IDX(node, twelve_hour_bit, 2) & 0x01), \
+				 "twelve-hour-bit outside the time block needs bit 0 as a zero bit"); \
+		    BUILD_ASSERT((DT_PROP_BY_IDX(node, twelve_hour_bit, 1) & \
+				  DT_PROP_BY_IDX(node, twelve_hour_bit, 2)) == 0, \
+				 "twelve-hour-bit zero bits overlap the mode bit");))
+
+DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_H12_CHECK)
 
 #if RTC_RV3028_CFG
 #define RTC_CFG_NAME(node) _CONCAT(rtc_cfg_, DT_DEP_ORD(node))
@@ -91,6 +115,15 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
 		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
+		.h12_reg     = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 0)), (0)), \
+		.h12_mask    = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 1)), (0)), \
+		.h12_zero    = COND_CODE_1(                           \
+			DT_NODE_HAS_PROP(node, twelve_hour_bit),       \
+			(DT_PROP_BY_IDX(node, twelve_hour_bit, 2)), (0)), \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -259,6 +292,63 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 	}
 }
 
+/* Read an out-of-block 12-hour mode register. False if the read failed or
+ * shows a bit that always reads 0, as a read cut short (ending in 1s) does. */
+static bool rtc_read_h12_reg(const struct rtc_desc *d, uint8_t *v)
+{
+	return i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, v) == 0 &&
+	       !(*v & d->h12_zero);
+}
+
+/* 1 in 12-hour mode, 0 in 24-hour mode or with none, -1 if unreadable. */
+static int rtc_12h(const struct rtc_desc *d, const uint8_t blk[7])
+{
+	uint8_t v;
+
+	if (d->h12_mask == 0) {
+		return 0;
+	}
+	if (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7) {
+		v = blk[d->h12_reg - d->time_reg];
+	} else if (!rtc_read_h12_reg(d, &v)) {
+		return -1;
+	}
+	if (v & d->h12_zero) {
+		return -1;
+	}
+	return (v & d->h12_mask) != 0;
+}
+
+/* Select 24-hour mode: clear an out-of-block bit (the RV3028 converts its
+ * Hours itself, 02h); an in-block one (DS3231 hours bit 6) is cleared by the
+ * time write's hours byte. The clear is read back and written once more if
+ * it differs, which repairs a write torn by a switchover (5.10). */
+static bool rtc_select_24h(const struct rtc_desc *d)
+{
+	uint8_t v, w, r;
+
+	if (d->h12_mask == 0 ||
+	    (d->h12_reg >= d->time_reg && d->h12_reg < d->time_reg + 7)) {
+		return true;
+	}
+	if (!rtc_read_h12_reg(d, &v)) {
+		return false;
+	}
+	if (!(v & d->h12_mask)) {
+		return true;
+	}
+	w = v & (uint8_t)~d->h12_mask;
+	for (int tries = 0; tries < 2; tries++) {
+		if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, w) != 0) {
+			return false;
+		}
+		if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) == 0 && r == w) {
+			return true;
+		}
+	}
+	return false;
+}
+
 #if RTC_RV3028_CFG
 
 /* RV3028 registers for reading and writing its configuration EEPROM. */
@@ -277,12 +367,14 @@ static void rtc_clear_power_flag(const struct rtc_desc *d)
 #define RV3028_REG_CFG_LAST   0x37  /* EEPROM Backup */
 #define RV3028_BACKUP_BSM     0x0C  /* 37h switchover mode; 00 = disabled */
 
-/* Year 00h first and the real year last: a power loss, which no retry can
- * repeat, cutting the write after the first byte and before the last leaves
- * year 2000, so the next boot takes no time from it. */
+/* Year 00h before the other time bytes and the real year last (24-hour mode
+ * is selected before both): a power loss, which no retry can repeat, cutting
+ * the write after the first byte and before the last leaves year 2000, so
+ * the next boot takes no time from it. */
 static bool rv3028_write_time(const struct rtc_desc *d, const uint8_t blk[7])
 {
-	return i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
+	return rtc_select_24h(d) &&
+	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, 0x00) == 0 &&
 	       i2c_burst_write(d->bus, d->addr, d->time_reg, blk, 6) == 0 &&
 	       i2c_reg_write_byte(d->bus, d->addr, d->time_reg + 6, blk[6]) == 0;
 }
@@ -599,18 +691,26 @@ static bool rtc_probe(uint32_t *epoch_out)
 			}
 #endif
 		}
+		/* Only the write-back target is set by a later sync. */
+		const char *then = d == s_active ?
+			" — clock will be set on the next GPS/app/CLI sync" : "";
 
 		if (v == RTC_FOUND_GARBLED) {
-			LOG_WRN("%s present, time unreadable — clock will be set on the "
-				"next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, time unreadable%s", d->name, then);
+			continue;
+		}
+		int h12 = rtc_12h(d, blk);
+
+		if (h12 != 0) {
+			LOG_WRN("%s present, %s%s", d->name,
+				h12 > 0 ? "12-hour mode" : "hour mode unreadable", then);
 			continue;
 		}
 		int flag = rtc_power_flag(d, blk);
 
 		if (flag != 0) {
-			LOG_WRN("%s present, power-loss flag %s — clock will be set "
-				"on the next GPS/app/CLI sync", d->name,
-				flag > 0 ? "set" : "unreadable");
+			LOG_WRN("%s present, power-loss flag %s%s", d->name,
+				flag > 0 ? "set" : "unreadable", then);
 			continue;
 		}
 
@@ -620,8 +720,7 @@ static bool rtc_probe(uint32_t *epoch_out)
 		/* Identity leaves the hours and year unchecked, and may have let the
 		 * other fields pass on a flag read since; a time needs them all. */
 		if (!rtc_fields_ok(d, blk) || !bcd_field_ok(hb, 23) || !bcd_field_ok(yb, 99)) {
-			LOG_WRN("%s present, time unreadable — clock will be set on the "
-				"next GPS/app/CLI sync", d->name);
+			LOG_WRN("%s present, time unreadable%s", d->name, then);
 			continue;
 		}
 
@@ -690,7 +789,8 @@ void zephcore_rtc_save(uint32_t epoch)
 		}
 	} else
 #endif
-	if (i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
+	if (!rtc_select_24h(d) ||
+	    i2c_burst_write(d->bus, d->addr, d->time_reg, blk, sizeof(blk)) != 0) {
 		LOG_WRN("RTC %s: time write failed", d->name);
 		return;
 	}

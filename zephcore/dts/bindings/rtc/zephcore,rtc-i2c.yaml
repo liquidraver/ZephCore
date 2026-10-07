@@ -62,6 +62,21 @@ properties:
       bit 6) rather than a number 0-6. Set it for a chip whose data sheet
       says so, such as the RX8130CE.
 
+  twelve-hour-bit:
+    type: uint8-array
+    description: >
+      [register mask zero]: the bit that reads set while the chip counts
+      hours in 12-hour mode, and the bits of that register that always
+      read 0, which must not include the mode bit. Leave it out for a
+      chip with no 12-hour mode. Inside the time block it must be the
+      hours register. Outside it, the zero bits must include bit 0 (the
+      build checks these): a read cut short ends in 1s, so it always
+      shows bit 0 set, and such a read is never written back. While the
+      mode bit reads set, or cannot be read cleanly, no time is taken
+      from the chip. Each time write selects 24-hour mode first: a bit
+      outside the time block is cleared, and one in hours is cleared by
+      the write's own hours byte.
+
   rv3028-eeprom-config:
     type: uint8-array
     description: >
@@ -82,9 +97,9 @@ properties:
       identifying the chip again first; a boot whose read could not
       identify it cleanly waits for those retries. The time is read at
       boot and written on each sync with the chip's backup switch flag
-      cleared before and checked after. A write sets year 00h first and
-      the real year last, so a write cut by a power loss reads as "time
-      not yet set", and a write not confirmed is repeated every 5 s, up
-      to 12 times. Set it only on a board whose backup supply is known:
-      trickle charging suits a supercapacitor or rechargeable cell,
-      never a primary cell.
+      cleared before and checked after. A write sets year 00h before the
+      other time bytes and the real year last, so a write cut by a power
+      loss reads as "time not yet set", and a write not confirmed is
+      repeated every 5 s, up to 12 times. Set it only on a board whose
+      backup supply is known: trickle charging suits a supercapacitor or
+      rechargeable cell, never a primary cell.

@@ -39,6 +39,9 @@ rtc_ds3231: rtc-ds3231@68 {
 	date-index = <4>;
 	status-reg = <0x0F>;   /* control/status */
 	status-mask = <0x80>;  /* OSF — oscillator stopped */
+	/* Hours bit 6, 12-hour mode: DS3231 (p. 12), DS1307 (p. 8). Hours
+	 * bit 7 is left to zero-mask below. */
+	twelve-hour-bit = [02 40 00];
 	/* Bits shown as 0 in all three parts: DS3231 (19-5170 Rev 10, Figure 1,
 	 * p. 11) and DS3232 (19-5337 Rev 5, Figure 1, p. 11), where 05h bit 7 is
 	 * Century, and DS1307 (Rev 3/15, Table 2, p. 8, "always reads back as
@@ -65,6 +68,7 @@ rtc_rv3028: rtc-rv3028@52 {
 	date-index = <4>;
 	status-reg = <0x0e>;   /* status */
 	status-mask = <0x01>;  /* PORF — power-on reset */
+	twelve-hour-bit = [10 02 01];  /* Control 2 12_24; RESET reads 0, p. 24 */
 	/* RV-3028-C7 Application Manual Rev. 1.4, 3.2, p. 12 */
 	zero-mask = [80 80 c0 f8 c0 e0 00];
 };
