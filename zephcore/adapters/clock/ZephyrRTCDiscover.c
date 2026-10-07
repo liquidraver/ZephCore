@@ -224,8 +224,9 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	return RTC_FOUND;
 }
 
-/* The 7-byte time block for an epoch, in d's register order. */
-static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
+/* The 7-byte time block for an epoch, in d's register order. False outside
+ * 2000-2099: the year is written as two BCD digits with no century. */
+static bool rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk[7])
 {
 	int y;
 	unsigned m, day;
@@ -236,6 +237,9 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	unsigned sec  = rem % 60;
 	unsigned dow  = (unsigned)(((epoch / 86400) + 4) % 7);  /* 1970-01-01 = Thu */
 
+	if (y < 2000 || y > 2099) {
+		return false;
+	}
 	blk[0] = BIN2BCD(sec);
 	blk[1] = BIN2BCD(min);
 	blk[2] = BIN2BCD(hour);
@@ -244,6 +248,7 @@ static void rtc_time_block(const struct rtc_desc *d, uint32_t epoch, uint8_t blk
 	blk[d->date_index == 4 ? 3 : 4] = d->week_one_hot ? (uint8_t)BIT(dow) : (uint8_t)dow;
 	blk[5] = BIN2BCD(m);
 	blk[6] = BIN2BCD((unsigned)(y % 100));
+	return true;
 }
 
 /* Clear the power-loss flag (for chips whose flag is a separate reg;
@@ -537,8 +542,11 @@ static void rv3028_save_retry_fn(struct k_work *work)
 	uint8_t blk[7];
 
 	ARG_UNUSED(work);
-	rtc_time_block(s_active, s_save_epoch +
-		       (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk);
+	if (!rtc_time_block(s_active, s_save_epoch +
+			    (uint32_t)((k_uptime_get() - s_save_at) / 1000), blk)) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written", s_active->name);
+		return;
+	}
 	if (!rv3028_steady(s_active, blk, true)) {
 		if (++s_save_tries < RTC_SAVE_RETRIES) {
 			k_work_schedule(&s_save_retry, RTC_SAVE_RETRY);
@@ -675,7 +683,10 @@ void zephcore_rtc_save(uint32_t epoch)
 	const struct rtc_desc *d = s_active;
 	uint8_t blk[7];
 
-	rtc_time_block(d, epoch, blk);
+	if (!rtc_time_block(d, epoch, blk)) {
+		LOG_WRN("RTC %s: time outside 2000-2099 not written", d->name);
+		return;
+	}
 #if RTC_RV3028_CFG
 	if (d->cfg != NULL) {
 		(void)k_work_cancel_delayable(&s_save_retry);

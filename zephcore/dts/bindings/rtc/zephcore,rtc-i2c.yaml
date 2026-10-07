@@ -81,10 +81,10 @@ properties:
       refresh. The store is retried up to 3 times, 10 minutes apart,
       identifying the chip again first; a boot whose read could not
       identify it cleanly waits for those retries. The time is read at
-      boot and written on each sync with the chip's backup switch flag
-      cleared before and checked after. A write sets year 00h first and
-      the real year last, so a write cut by a power loss reads as "time
-      not yet set", and a write not confirmed is repeated every 5 s, up
-      to 12 times. Set it only on a board whose backup supply is known:
-      trickle charging suits a supercapacitor or rechargeable cell,
-      never a primary cell.
+      boot and written on each sync within 2000-2099 with the chip's
+      backup switch flag cleared before and checked after. A write sets
+      year 00h first and the real year last, so a write cut by a power
+      loss reads as "time not yet set", and a write not confirmed is
+      repeated every 5 s, up to 12 times. Set it only on a board whose
+      backup supply is known: trickle charging suits a supercapacitor or
+      rechargeable cell, never a primary cell.

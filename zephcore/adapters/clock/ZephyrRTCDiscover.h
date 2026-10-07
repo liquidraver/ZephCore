@@ -10,8 +10,8 @@
  *
  * If a present chip holds a valid time, zephcore_rtc_restore() returns it so
  * the soft clock can be seeded at boot (shown tagged "L" — local). Every
- * ZephyrRTCClock::setCurrentTime() writes it back via zephcore_rtc_save(), so
- * time survives the next power-off.
+ * ZephyrRTCClock::setCurrentTime() within 2000-2099 writes it back via
+ * zephcore_rtc_save(), so time survives the next power-off.
  */
 
 #pragma once
@@ -40,7 +40,7 @@ bool zephcore_rtc_restore(uint32_t *epoch_out);
  * power-loss flag. No-op if no RTC was discovered. Intended for real syncs
  * (GPS/app/CLI), not per-packet clock nudges. Call only from the system work
  * queue: an unconfirmed write is repeated there and shares state with this
- * call.
+ * call. A time outside 2000-2099 is not written.
  */
 void zephcore_rtc_save(uint32_t epoch);
 
