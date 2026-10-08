@@ -600,7 +600,7 @@ Handles the binary BLE protocol with ~50 command opcodes. Key features:
 - **ACK tracking**: 8-slot table, computes expected ACK = SHA256(secret + hash)[0:4]
 - **Contact iteration**: Streaming protocol with `lastmod` filtering for incremental sync. The dump advances only
   while a client is connected and every connected transport has room; it is cancelled when the last client leaves
-- **Lazy write batching**: Dirty contacts/channels flush after 5-second delay
+- **Lazy write batching**: dirty contacts and channels are written 5 s after the last change, so a burst (a contacts import) is written once; a contact change that only refreshes liveness waits up to an hour (`LAZY_WRITE_LIVENESS_MS`)
 - **Protocol versioning**: V2/V3 frame format negotiation with phone app
 - **Ed25519 signing**: 3-phase flow (start→data→finish) for signing up to 8KB
 - **Flood scope**: Transport key filtering for region-scoped sends
@@ -850,7 +850,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 
 ### 7.5 Board (`adapters/board/`)
 
-- Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled)
+- Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled). A board with a fuel gauge (AXP2101) reads voltage and charge from it instead; one with an nPM1300 charger (XIAO nRF54LM20A) reads the voltage from the PMIC's own ADC through the sensor API and takes the percentage from the discharge curve
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan

@@ -66,6 +66,20 @@ valid.
 Thanks to **ptr727** for finding and fixing this
 ([PR #99](https://github.com/liquidraver/ZephCore/pull/99)).
 
+Four more clock-chip fixes, also from **ptr727**:
+
+- **RAK4631 with a RAK12002 clock module**: the module is now used, and its switchover to the backup
+  supply is stored in the chip, so the clock keeps running when the board loses power
+  ([PR #98](https://github.com/liquidraver/ZephCore/pull/98)).
+- **RX8130CE**: the weekday was written in the wrong encoding. Time and date were not affected
+  ([PR #101](https://github.com/liquidraver/ZephCore/pull/101)).
+- **A time outside 2000-2099 is no longer written to a clock chip.** The chip stores only two digits
+  of the year, so a time before 2000 came back after a reboot as a date late in this century
+  ([PR #105](https://github.com/liquidraver/ZephCore/pull/105)).
+- **RV-3028 left in 12-hour mode by other firmware**: it is switched back to 24-hour mode at boot, so
+  the hours are read correctly
+  ([PR #106](https://github.com/liquidraver/ZephCore/pull/106)).
+
 ## USB companion: a hang right after boot
 
 A companion on USB could stop responding when the host sent it a command straight after opening the
@@ -161,6 +175,8 @@ matches the SoftDevice version of your bootloader.
   puts it back to 47 hours.
 - **Malformed encrypted packets are rejected earlier**, before any cryptography runs.
 - **Large contact lists**: up to 24 contacts can share the same one-byte hash, up from 8.
+- **`sensor list`** with a negative start index is rejected instead of being used
+  ([PR #100](https://github.com/liquidraver/ZephCore/pull/100), thanks to **ptr727**).
 - **T1000-E**: a pin that was wrongly driven as a sensor enable is left alone. Sensor readings are
   unchanged.
 - **LR2021 with `rxduty` on** (MeshTracker X1, both LR2021 EVK kits): after every noise-floor
