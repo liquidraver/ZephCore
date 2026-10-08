@@ -12,6 +12,7 @@
 #include <zephyr/sys/reboot.h>
 #include <zephyr/drivers/sensor.h>
 #include <zephyr/drivers/gpio.h>
+#include <zephyr/drivers/pwm.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -57,22 +58,24 @@
 #endif
 #endif
 
-/* LoRa radio activity LED (optional — defined per-board via DT alias).  Still
- * called tx_led after "set leds.radio" gave it an RX mode, because the DT alias
- * it comes from is named lora-tx-led on every board that has one. */
-#if DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
+/* LoRa activity LED, optional per board. The PWM alias wins over the GPIO one. */
+#if DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led))
+static const struct pwm_dt_spec tx_led_pwm = PWM_DT_SPEC_GET(DT_ALIAS(lora_tx_pwm_led));
+#define HAS_TX_LED_PWM 1
+#define HAS_TX_LED 0
+/* Initialised in tx_led_init() below, with the GPIO path. */
+#elif DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
 static const struct gpio_dt_spec tx_led =
 	GPIO_DT_SPEC_GET(DT_ALIAS(lora_tx_led), gpios);
+#define HAS_TX_LED_PWM 0
 #define HAS_TX_LED 1
 #else
+#define HAS_TX_LED_PWM 0
 #define HAS_TX_LED 0
 #endif
 
-/* True when this board wires the activity LED to the same pin as the heartbeat
- * (8 of the supported boards do).  Only those pay for the arbitration hold in
- * led_gate.c — everywhere else the two LEDs are independent and the calls
- * compile out.  led1 is checked as well because ui_common.c falls back to it
- * when a board has no led0. */
+/* Heartbeat and activity LED on one pin: only then is the arbitration hold in
+ * led_gate.c needed. led1 counts too, since ui_common.c falls back to it. */
 #if HAS_TX_LED && DT_NODE_EXISTS(DT_ALIAS(led0)) && \
 	DT_SAME_NODE(DT_ALIAS(led0), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
@@ -80,8 +83,24 @@ static const struct gpio_dt_spec tx_led =
 	  DT_NODE_EXISTS(DT_ALIAS(led1)) && \
 	  DT_SAME_NODE(DT_ALIAS(led1), DT_ALIAS(lora_tx_led))
 #define ZEPHCORE_LED_PIN_SHARED 1
+/* Same for one PWM LED node shared by both (T096, Wireless Tracker V2). */
+#elif HAS_TX_LED_PWM && DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led)) && \
+      DT_SAME_NODE(DT_ALIAS(heartbeat_pwm_led), DT_ALIAS(lora_tx_pwm_led))
+#define ZEPHCORE_LED_PIN_SHARED 1
 #else
 #define ZEPHCORE_LED_PIN_SHARED 0
+#endif
+
+#if HAS_TX_LED_PWM
+static inline void tx_led_write(bool on)
+{
+	zephcore_led_pwm_write(&tx_led_pwm, on);
+}
+#elif HAS_TX_LED
+static inline void tx_led_write(bool on)
+{
+	gpio_pin_set_dt(&tx_led, on ? 1 : 0);
+}
 #endif
 
 #include <zephyr/logging/log.h>
@@ -139,8 +158,8 @@ static const struct device *const pmic_charger_dev =
 #define HAS_PMIC_CHARGER 0
 #endif
 
-/* Initialize activity LED GPIO at boot */
-#if HAS_TX_LED
+/* Initialize activity LED (PWM or GPIO) at boot */
+#if HAS_TX_LED_PWM || HAS_TX_LED
 /* Width of the receive blink.  A transmit holds the LED for its whole airtime,
  * but a receive is a single edge — the packet is over by the time the driver
  * hands it up — so RX has to be a fixed one-shot.  30 ms is deliberately longer
@@ -165,7 +184,7 @@ static void rx_pulse_off_handler(struct k_work *work)
 	if (atomic_get(&s_tx_lit)) {
 		return;
 	}
-	gpio_pin_set_dt(&tx_led, 0);
+	tx_led_write(false);
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(false);
 #endif
@@ -173,9 +192,15 @@ static void rx_pulse_off_handler(struct k_work *work)
 
 static int tx_led_init(void)
 {
+#if HAS_TX_LED_PWM
+	if (device_is_ready(tx_led_pwm.dev)) {
+		pwm_set_pulse_dt(&tx_led_pwm, 0);  /* start dark, same as GPIO_OUTPUT_INACTIVE */
+	}
+#else
 	if (gpio_is_ready_dt(&tx_led)) {
 		gpio_pin_configure_dt(&tx_led, GPIO_OUTPUT_INACTIVE);
 	}
+#endif
 	k_work_init_delayable(&s_rx_pulse_off, rx_pulse_off_handler);
 	return 0;
 }
@@ -364,12 +389,12 @@ const char *ZephyrBoard::getManufacturerName() const
 
 void ZephyrBoard::onBeforeTransmit()
 {
-#if HAS_TX_LED
 	/* Honour the LED master gate ("set leds off") and then the activity mode
 	 * ("set leds.radio"). On a headless repeater this is the only LED that ever
 	 * lights, so both have to be checked here and not just in the UI layer.
 	 * onAfterTransmit() still clears the pin unconditionally, so a gate or mode
 	 * flipped mid-transmit can't strand it lit. */
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (!zephcore_leds_disabled() &&
 	    (mode == LEDS_RADIO_TX || mode == LEDS_RADIO_ALL)) {
@@ -380,16 +405,16 @@ void ZephyrBoard::onBeforeTransmit()
 #if ZEPHCORE_LED_PIN_SHARED
 		zephcore_led_radio_hold_pin(true);
 #endif
-		gpio_pin_set_dt(&tx_led, 1);
+		tx_led_write(true);
 	}
 #endif
 }
 
 void ZephyrBoard::onAfterTransmit()
 {
-#if HAS_TX_LED
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	atomic_set(&s_tx_lit, 0);
-	gpio_pin_set_dt(&tx_led, 0);
+	tx_led_write(false);
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(false);
 #endif
@@ -398,7 +423,7 @@ void ZephyrBoard::onAfterTransmit()
 
 void ZephyrBoard::onPacketReceived()
 {
-#if HAS_TX_LED
+#if HAS_TX_LED_PWM || HAS_TX_LED
 	uint8_t mode = zephcore_leds_radio_mode();
 	if (zephcore_leds_disabled() ||
 	    (mode != LEDS_RADIO_RX && mode != LEDS_RADIO_ALL)) {
@@ -414,7 +439,7 @@ void ZephyrBoard::onPacketReceived()
 #if ZEPHCORE_LED_PIN_SHARED
 	zephcore_led_radio_hold_pin(true);
 #endif
-	gpio_pin_set_dt(&tx_led, 1);
+	tx_led_write(true);
 	/* Reschedule rather than schedule: back-to-back packets should extend the
 	 * blink, not have the first one's handler cut the second one short. */
 	k_work_reschedule(&s_rx_pulse_off, K_MSEC(RX_PULSE_MS));

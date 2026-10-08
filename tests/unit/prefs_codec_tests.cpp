@@ -13,7 +13,7 @@ namespace {
 struct Field { size_t file_off; size_t size; size_t struct_off; };
 #define F(off, member) { off, sizeof(NodePrefs::member), offsetof(NodePrefs, member) }
 
-// Companion /lfs/new_prefs, 272 bytes. Pads at 36-39 and 79.
+// Companion /lfs/new_prefs, 273 bytes. Pads at 36-39 and 79.
 const Field kCompanion[] = {
     F(0, airtime_factor), F(4, node_name), F(40, node_lat), F(48, node_lon), F(56, freq),
     F(60, sf), F(61, cr), F(62, client_repeat), F(63, manual_add_contacts), F(64, bw),
@@ -30,10 +30,10 @@ const Field kCompanion[] = {
     F(158, cad_busycap), F(159, adc_multiplier), F(163, extra_sf), F(166, v_contact_flags),
     F(167, fem_rxgain), F(168, display_rotate), F(169, input_rotate), F(170, cad_base),
     F(171, tz_offset), F(172, leds_radio_mode), F(173, leds_hb_mode), F(174, wifi_enabled),
-    F(175, wifi_ssid), F(208, wifi_pwd),
+    F(175, wifi_ssid), F(208, wifi_pwd), F(272, led_brightness),
 };
 
-// Server /lfs/repeater/prefs, 311 bytes. Offset 120 is leds_disabled as a
+// Server /lfs/repeater/prefs, 312 bytes. Offset 120 is leds_disabled as a
 // magic byte (checked separately); pads at 36-39, 79, 123, 127-151 (bridge),
 // 153-155.
 const Field kServer[] = {
@@ -50,7 +50,7 @@ const Field kServer[] = {
     F(295, flood_max_advert), F(296, meshtimesync), F(297, cad_auto), F(298, cad_offset),
     F(299, probe_interval), F(300, cad_busycap), F(301, extra_sf), F(304, fem_rxgain),
     F(305, display_rotate), F(306, input_rotate), F(307, cad_base), F(308, tz_offset),
-    F(309, leds_radio_mode), F(310, leds_hb_mode),
+    F(309, leds_radio_mode), F(310, leds_hb_mode), F(311, led_brightness),
 };
 #undef F
 
@@ -80,7 +80,7 @@ NodePrefs sample() {
     p.backoff_multiplier = 0.6f; p.allow_read_only = 1; p.multi_acks = 1;
     p.flood_max = 20; p.flood_max_unscoped = 10; p.flood_max_advert = 4;
     p.interference_threshold = 7; p.leds_disabled = 1; p.leds_radio_mode = LEDS_RADIO_RX;
-    p.leds_hb_mode = LEDS_HB_UNREAD; p.powersaving_enabled = 1; p.gps_enabled = 1;
+    p.leds_hb_mode = LEDS_HB_UNREAD; p.led_brightness = 42; p.powersaving_enabled = 1; p.gps_enabled = 1;
     p.gps_interval = 600; p.advert_loc_policy = ADVERT_LOC_SHARE; p.discovery_mod_timestamp = 123456;
     p.adc_multiplier = 1.25f; strcpy(p.owner_info, "owner info");
     p.rx_boost = 0; p.fem_rxgain = 0; p.rx_duty_cycle = 1;
@@ -125,7 +125,7 @@ NodePrefs expectShort(const NodePrefs &file_p, size_t len, const Field (&table)[
 
 }  // namespace
 
-TEST(prefs_companion_layout, "UNIT-PREFS-001", "Companion prefs encode to the documented 272-byte layout") {
+TEST(prefs_companion_layout, "UNIT-PREFS-001", "Companion prefs encode to the documented 273-byte layout") {
     NodePrefs p = sample();
     uint8_t buf[COMPANION_PREFS_SIZE + 8];
     std::memset(buf, 0xEE, sizeof(buf));
@@ -154,7 +154,7 @@ TEST(prefs_companion_short, "UNIT-PREFS-003", "Short companion files keep the ca
     // Every field boundary: each length the format has had ends on one.
     const size_t lens[] = { 91, 92, 93, 94, 95, 96, 127, 143, 144, 145, 146, 148, 150, 151,
                             152, 153, 155, 156, 157, 158, 159, 163, 166, 167, 168, 169, 170,
-                            171, 172, 173, 174, 175, 208, 272 };
+                            171, 172, 173, 174, 175, 208, 272, 273 };
     for (size_t len : lens) {
         NodePrefs got = defaults();
         CHECK(companionPrefsDecode(got, full, len));
@@ -215,7 +215,7 @@ TEST(prefs_companion_corrupt, "UNIT-PREFS-005", "Corrupt companion bytes fall ba
     CHECK(got.leds_radio_mode == 0);
 }
 
-TEST(prefs_server_layout, "UNIT-PREFS-006", "Server prefs encode to the documented 311-byte layout") {
+TEST(prefs_server_layout, "UNIT-PREFS-006", "Server prefs encode to the documented 312-byte layout") {
     NodePrefs p = sample();
     uint8_t buf[SERVER_PREFS_SIZE + 8];
     std::memset(buf, 0xEE, sizeof(buf));
@@ -248,7 +248,7 @@ TEST(prefs_server_short, "UNIT-PREFS-008", "Short server files keep the caller's
     uint8_t full[SERVER_PREFS_SIZE];
     serverPrefsEncode(p, full, sizeof(full));
     // Every length the format has had.
-    const size_t lens[] = { 290, 292, 294, 296, 297, 300, 301, 304, 305, 307, 308, 309, 311 };
+    const size_t lens[] = { 290, 292, 294, 296, 297, 300, 301, 304, 305, 307, 308, 309, 311, 312 };
     for (size_t len : lens) {
         NodePrefs got = defaults();
         serverPrefsDecode(got, full, len);

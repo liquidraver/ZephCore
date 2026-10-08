@@ -374,7 +374,7 @@
     },
     {
       "id": "UNIT-PREFS-001",
-      "name": "Companion prefs encode to the documented 272-byte layout",
+      "name": "Companion prefs encode to the documented 273-byte layout",
       "source": "tests/unit/prefs_codec_tests.cpp"
     },
     {
@@ -399,7 +399,7 @@
     },
     {
       "id": "UNIT-PREFS-006",
-      "name": "Server prefs encode to the documented 311-byte layout",
+      "name": "Server prefs encode to the documented 312-byte layout",
       "source": "tests/unit/prefs_codec_tests.cpp"
     },
     {

@@ -6,6 +6,7 @@
 
 #include "led_gate.h"
 
+#include <zephyr/drivers/pwm.h>
 #include <zephyr/kernel.h>
 #include <zephyr/sys/atomic.h>
 
@@ -73,4 +74,27 @@ bool zephcore_led_radio_holds_pin(void)
 void zephcore_led_radio_hold_pin(bool held)
 {
 	atomic_set(&s_radio_holds_pin, held ? 1 : 0);
+}
+
+static atomic_t s_led_brightness_pct = ATOMIC_INIT(ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT);
+
+uint8_t zephcore_led_brightness_pct(void)
+{
+	return (uint8_t)atomic_get(&s_led_brightness_pct);
+}
+
+void zephcore_led_set_brightness_pct(uint8_t pct)
+{
+	if (pct > 100) {
+		pct = 100;
+	}
+	atomic_set(&s_led_brightness_pct, pct);
+}
+
+void zephcore_led_pwm_write(const struct pwm_dt_spec *led, bool on)
+{
+	uint32_t pulse = on ? (uint32_t)((uint64_t)led->period *
+					 zephcore_led_brightness_pct() / 100)
+			    : 0;
+	pwm_set_pulse_dt(led, pulse);
 }

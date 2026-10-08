@@ -71,8 +71,16 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include "wifi_ota.h"
 #endif
 
+/* True when a board aliases its heartbeat or TX-activity LED to a PWM node.
+ * On ESP32, configuring led0 as plain GPIO after the PWM driver has already
+ * routed the pin takes the pin back from the LEDC peripheral (the GPIO
+ * matrix only serves one signal at a time), so on those boards led0 must be
+ * left to the PWM driver instead of reconfigured here. */
+#define ZEPHCORE_HAS_PWM_SHARED_LED \
+	(DT_NODE_EXISTS(DT_ALIAS(heartbeat_pwm_led)) || DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led)))
+
 /* LED configuration */
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !ZEPHCORE_HAS_PWM_SHARED_LED
 #define LED0_NODE DT_ALIAS(led0)
 static const struct gpio_dt_spec led0 = GPIO_DT_SPEC_GET(LED0_NODE, gpios);
 #endif
@@ -610,7 +618,7 @@ int server_main(const ServerRole &role)
 #endif
 
 	/* Configure LEDs */
-#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios)
+#if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !ZEPHCORE_HAS_PWM_SHARED_LED
 	if (gpio_is_ready_dt(&led0)) {
 		gpio_pin_configure_dt(&led0, GPIO_OUTPUT_INACTIVE);
 	}

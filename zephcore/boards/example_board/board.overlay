@@ -65,6 +65,9 @@
  *     led0             heartbeat LED
  *     led1             second LED (unread messages on a companion)
  *     lora-tx-led      blinks while transmitting
+ *     heartbeat-pwm-led, lora-tx-pwm-led
+ *                      same two roles, brightness-adjustable (leds.brightness);
+ *                      point both at one pwm-leds node to share a physical LED
  *     sw0              user button; also the wake source from nRF System OFF
  *                      and from ESP32 light sleep
  *     buzzer           PWM buzzer (the node must also be LABELLED buzzer)
@@ -600,6 +603,51 @@ zephyr_udc0: &usbd {
 			gpios = <&gpio1 4 GPIO_ACTIVE_HIGH>;
 			label = "Blue LED";
 		};
+	};
+};
+#endif
+
+#if 0 /* ---- Heartbeat/TX LED, brightness-adjustable (heltec_t096, heltec_wifi_lora32_v43) ----
+       * One physical LED standing in for both led0 and lora-tx-led, but wired
+       * through a pwm-leds node instead of gpio-leds so leds.brightness can
+       * dim it. Point heartbeat-pwm-led and lora-tx-pwm-led at the same node
+       * to share it, same as the plain-GPIO led0/lora-tx-led pair above.
+       *
+       * ESP32 only: also declare a plain led0 (gpio-leds) for this pin if the
+       * board wants one, but do NOT add GPIO setup for it in the board's
+       * main() -- src/server_main_common.cpp and app/main_observer.cpp skip
+       * that already (ZEPHCORE_HAS_PWM_SHARED_LED) when either PWM alias is
+       * present, because on ESP32 configuring the pin as plain GPIO after
+       * the PWM driver has claimed it takes the pin back from the LEDC
+       * peripheral: the GPIO matrix only routes one signal to a pin at a
+       * time. nRF52 PWM and GPIO don't share hardware that way, so this does
+       * not apply there. */
+/ {
+	aliases {
+		heartbeat-pwm-led = &pwm_led_white;
+		lora-tx-pwm-led = &pwm_led_white;
+	};
+
+	pwmleds {
+		compatible = "pwm-leds";
+
+		pwm_led_white: pwm_led_0 {
+			pwms = <&ledc0 0 PWM_MSEC(10) PWM_POLARITY_NORMAL>;
+			label = "White PWM LED";
+		};
+	};
+};
+
+&ledc0 {
+	status = "okay";
+	pinctrl-0 = <&ledc0_default>;
+	pinctrl-names = "default";
+	#address-cells = <1>;
+	#size-cells = <0>;
+
+	channel0@0 {
+		reg = <0x0>;
+		timer = <0>;
 	};
 };
 #endif

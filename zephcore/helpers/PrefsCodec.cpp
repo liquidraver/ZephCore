@@ -109,6 +109,7 @@ size_t companionPrefsEncode(const NodePrefs &p, uint8_t *buf, size_t cap)
 	w.put(&p.wifi_enabled, 1);
 	w.put(p.wifi_ssid, sizeof(p.wifi_ssid));
 	w.put(p.wifi_pwd, sizeof(p.wifi_pwd));
+	w.put(&p.led_brightness, 1);
 	return w.off;
 }
 
@@ -190,6 +191,8 @@ bool companionPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.take(&p.wifi_enabled, 1);
 	r.take(p.wifi_ssid, sizeof(p.wifi_ssid));
 	r.take(p.wifi_pwd, sizeof(p.wifi_pwd));
+	/* led_brightness at offset 272, after wifi_pwd: a 272-byte file leaves it at the initNodePrefs() default. */
+	r.take(&p.led_brightness, 1);
 
 	/* The one validator: bounds, NaNs, and the unterminated char fields */
 	sanitizeNodePrefs(&p);
@@ -280,6 +283,8 @@ size_t serverPrefsEncode(const NodePrefs &prefs, uint8_t *buf, size_t cap)
 	/* LED activity/heartbeat modes (offsets 309-310) */
 	w.put(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	w.put(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+	/* led_brightness at offset 311. */
+	w.put(&prefs.led_brightness, sizeof(prefs.led_brightness));
 	return w.off;
 }
 
@@ -355,6 +360,8 @@ void serverPrefsDecode(NodePrefs &prefs, const uint8_t *buf, size_t len)
 	r.get(&prefs.tz_offset, sizeof(prefs.tz_offset));
 	r.get(&prefs.leds_radio_mode, sizeof(prefs.leds_radio_mode));
 	r.get(&prefs.leds_hb_mode, sizeof(prefs.leds_hb_mode));
+	/* led_brightness at offset 311: a shorter file leaves the initNodePrefs() default. */
+	r.get(&prefs.led_brightness, sizeof(prefs.led_brightness));
 
 	/* Only the explicit "off" magic disables LEDs; a legacy AGC interval or an
 	 * unwritten byte both mean "on". */
