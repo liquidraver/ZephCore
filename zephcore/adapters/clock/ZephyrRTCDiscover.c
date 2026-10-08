@@ -40,6 +40,8 @@ struct rtc_desc {
 	uint8_t  status_mask;  /* "time unreliable" bit within status_reg */
 	const uint8_t *zero;   /* 7 bytes of bits the data sheet shows as 0, or NULL */
 	bool     week_one_hot; /* weekday as one bit per day, not 0-6 */
+	uint8_t  h12_reg;      /* register of the 12-hour bit */
+	uint8_t  h12_mask;     /* 12-hour bit, or 0 if none */
 #if RTC_RV3028_CFG
 	const uint8_t *cfg;    /* rv3028-eeprom-config triplets, or NULL */
 	uint8_t  cfg_len;
@@ -79,6 +81,10 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 #define RTC_CFG_FIELDS(node)
 #endif
 
+#define RTC_H12(node, i)                                              \
+	COND_CODE_1(DT_NODE_HAS_PROP(node, twelve_hour_bit),          \
+		    (DT_PROP_BY_IDX(node, twelve_hour_bit, i)), (0))
+
 #define RTC_DESC_ENTRY(node)                                          \
 	{                                                             \
 		.bus         = DEVICE_DT_GET(DT_BUS(node)),           \
@@ -91,6 +97,8 @@ DT_FOREACH_STATUS_OKAY(RTC_COMPAT, RTC_CFG_ARRAY)
 			DT_NODE_HAS_PROP(node, zero_mask),             \
 			(RTC_ZERO_NAME(node)), (NULL)),                \
 		.week_one_hot = DT_PROP(node, weekday_one_hot),       \
+		.h12_reg     = (uint8_t)RTC_H12(node, 0),             \
+		.h12_mask    = (uint8_t)RTC_H12(node, 1),             \
 		RTC_CFG_FIELDS(node)                                  \
 		.name        = DT_NODE_FULL_NAME(node),               \
 	},
@@ -222,6 +230,30 @@ static enum rtc_verdict rtc_identify(const struct rtc_desc *d, uint8_t blk[7])
 	}
 	memcpy(blk, again, sizeof(again));
 	return RTC_FOUND;
+}
+
+/* Clear a set 12-hour bit and re-read blk; the chip converts its hours
+ * itself. False on a failed or FFh read of the bit, or a failed clear or
+ * re-read. */
+static bool rtc_clear_12h(const struct rtc_desc *d, uint8_t blk[7])
+{
+	uint8_t r;
+
+	if (d->h12_mask == 0) {
+		return true;
+	}
+	if (i2c_reg_read_byte(d->bus, d->addr, d->h12_reg, &r) != 0 || r == 0xFF) {
+		return false;
+	}
+	if (!(r & d->h12_mask)) {
+		return true;
+	}
+	if (i2c_reg_write_byte(d->bus, d->addr, d->h12_reg, r & ~d->h12_mask) != 0 ||
+	    i2c_burst_read(d->bus, d->addr, d->time_reg, blk, 7) != 0) {
+		return false;
+	}
+	LOG_INF("%s: 12-hour mode cleared", d->name);
+	return true;
 }
 
 /* The 7-byte time block for an epoch, in d's register order. False outside
@@ -583,6 +615,9 @@ static bool rtc_probe(uint32_t *epoch_out)
 		}
 		if (v == RTC_ABSENT) {
 			continue;
+		}
+		if (v == RTC_FOUND && !rtc_clear_12h(d, blk)) {
+			v = RTC_FOUND_GARBLED;
 		}
 
 #if RTC_RV3028_CFG

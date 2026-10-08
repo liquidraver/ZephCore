@@ -62,6 +62,16 @@ properties:
       bit 6) rather than a number 0-6. Set it for a chip whose data sheet
       says so, such as the RX8130CE.
 
+  twelve-hour-bit:
+    type: uint8-array
+    description: >
+      [register mask]: a bit outside the time block that reads set in
+      12-hour mode, where clearing it makes the chip convert its own
+      hours to 24-hour, such as the RV3028's Control 2 12_24. Once the
+      chip is cleanly identified, a set bit is cleared before a time is
+      taken from it. No time is taken if the register cannot be read or
+      reads FFh, or if the write or the re-read fails.
+
   rv3028-eeprom-config:
     type: uint8-array
     description: >
@@ -80,7 +90,8 @@ properties:
       it, off once the store has disabled it, until a retry or that
       refresh. The store is retried up to 3 times, 10 minutes apart,
       identifying the chip again first; a boot whose read could not
-      identify it cleanly waits for those retries. The time is read at
+      identify it cleanly, or whose 12-hour clear failed, waits for those
+      retries. The time is read at
       boot and written on each sync within 2000-2099 with the chip's
       backup switch flag cleared before and checked after. A write sets
       year 00h first and the real year last, so a write cut by a power

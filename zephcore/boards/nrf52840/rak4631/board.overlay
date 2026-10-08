@@ -228,6 +228,7 @@
 		date-index = <4>;
 		status-reg = <0x0e>;   /* status */
 		status-mask = <0x01>;  /* PORF — power-on reset */
+		twelve-hour-bit = [10 02];  /* Control 2 12_24, p. 24 */
 		/* RV-3028-C7 Application Manual Rev. 1.4, 3.2, p. 12 */
 		zero-mask = [80 80 c0 f8 c0 e0 00];
 		/* The RAK12002's backup is a supercapacitor. As the RV-3028-C7
