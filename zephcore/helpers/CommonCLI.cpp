@@ -68,9 +68,11 @@ static const NodePrefs* cliDefaults() {
 /* ---- leds.radio / leds.hb mode names ----------------------------------- */
 /*
  * Which LEDs this board has, so the CLI can say when a setting it stored
- * does nothing here. Mirrors the aliases the drivers use.
+ * does nothing here. Mirrors the aliases the drivers use: lora-tx-led or
+ * lora-tx-pwm-led, led0 with an led1 fallback.
  */
-#define CLI_HAS_RADIO_LED  DT_NODE_EXISTS(DT_ALIAS(lora_tx_led))
+#define CLI_HAS_RADIO_LED  (DT_NODE_EXISTS(DT_ALIAS(lora_tx_led)) || \
+			     DT_NODE_EXISTS(DT_ALIAS(lora_tx_pwm_led)))
 #define CLI_HAS_HB_LED     (DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) || \
 			    DT_NODE_HAS_PROP(DT_ALIAS(led1), gpios))
 
