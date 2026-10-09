@@ -33,7 +33,7 @@ NodePrefs sample() {
     p.backoff_multiplier = 0.6f; p.allow_read_only = 1; p.multi_acks = 1;
     p.flood_max = 20; p.flood_max_unscoped = 10; p.flood_max_advert = 4;
     p.interference_threshold = 7; p.leds_disabled = 1; p.leds_radio_mode = LEDS_RADIO_RX;
-    p.leds_hb_mode = LEDS_HB_UNREAD; p.powersaving_enabled = 1; p.gps_enabled = 1;
+    p.leds_hb_mode = LEDS_HB_UNREAD; p.led_brightness = 42; p.powersaving_enabled = 1; p.gps_enabled = 1;
     p.gps_interval = 600; p.advert_loc_policy = ADVERT_LOC_SHARE; p.discovery_mod_timestamp = 123456;
     p.adc_multiplier = 1.25f; strcpy(p.owner_info, "owner info");
     p.rx_boost = 0; p.fem_rxgain = 0; p.rx_duty_cycle = 1;
@@ -73,6 +73,8 @@ TEST(pjson_companion_roundtrip, "UNIT-PJSON-001", "Companion prefs survive prefs
     CHECK(companionPrefsFromJson(q, s));
     // Every field of the binary layout, as a legacy file migrated to JSON.
     CHECK(companionBytes(q) == companionBytes(p));
+    // prefs.json only: not in the binary layout.
+    CHECK(q.led_brightness == 42);
 }
 
 TEST(pjson_server_roundtrip, "UNIT-PJSON-002", "Server prefs survive prefs.json field for field") {
@@ -82,6 +84,7 @@ TEST(pjson_server_roundtrip, "UNIT-PJSON-002", "Server prefs survive prefs.json 
     NodePrefs q = defaults();
     CHECK(serverPrefsFromJson(q, s));
     CHECK(serverBytes(q) == serverBytes(p));
+    CHECK(q.led_brightness == 42);
 }
 
 TEST(pjson_upstream_file, "UNIT-PJSON-003", "A companion prefs.json as upstream v1.17 writes it loads") {

@@ -875,7 +875,7 @@ Does not cover the display backlight, which has its own UI brightness setting (`
 `lora-tx-pwm-led` drives that LED through PWM (`zephcore_led_pwm_write()`), and the PWM alias wins over
 `led0` / `lora-tx-led`. `CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and stops
 the server and observer mains from configuring `led0` as a GPIO, because that pin belongs to the PWM
-driver. Persisted in `NodePrefs.led_brightness` (companion offset 272; repeater offset 311).
+driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files.
 
 ### 7.6 WiFi / MQTT / TCP Transports
 

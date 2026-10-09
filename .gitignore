@@ -89,3 +89,4 @@ __pycache__/
 .DS_Store
 Thumbs.db
 desktop.ini
+zephcore/lib/zcpfs/SPEC.md
