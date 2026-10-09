@@ -34,6 +34,8 @@ touch before writing code. Decisions are in `docs/adr/`.
 ## Invariants: do not change without an ADR
 
 - Byte compatibility with Arduino MeshCore on the air and on the companion protocol; `prefs.json` format.
+- Settings persist in `prefs.json` only. The legacy binary prefs files are frozen: no new fields in
+  `PrefsCodec`, no change to its size constants or to the pinned offsets and lengths in its tests.
 - The wall clock only moves forward.
 - Mesh, GPS state and UI run on the main thread; loops are event-driven, no polling.
 - No heap in the packet path. Companion builds are RAM-bound.
@@ -48,10 +50,14 @@ touch before writing code. Decisions are in `docs/adr/`.
 ## Mechanics
 
 - Branch from `dev`, target `dev`, rebase instead of merging.
+- After a rebase, re-read the whole diff against `dev`: a branch older than the code around it can undo newer
+  work without a conflict.
 - Tabs for indentation, except the upstream-ported files.
 - Build with `--pristine` when the board or role changes; ESP32 S3/C-series repeaters need `--sysbuild`.
 - Host tests: `python3 tests/run.py run --profile quick` (Linux or WSL). A new case needs a
-  `tests/catalog.json` entry.
+  `tests/catalog.json` entry. A failing pinned test is a finding: do not edit the pinned values to make it pass.
+- PR CI runs the host tests only. Build every board you touched and one you did not, and run each role you
+  changed. Releases build from `zephcore.yml` alone, so nothing may depend on a hand-passed fragment.
 - New board: `zephcore.yml` without `release:`, then `python zephcore/scripts/board_manifest.py check` and
   `... docs`.
 - Docs in the same PR: a clause in `docs/ARCHITECTURE.md` when behaviour, an interface or a limit changes;
