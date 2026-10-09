@@ -616,7 +616,7 @@ zephyr_udc0: &usbd {
        * ESP32 only: also declare a plain led0 (gpio-leds) for this pin if the
        * board wants one, but do NOT add GPIO setup for it in the board's
        * main() -- src/server_main_common.cpp and app/main_observer.cpp skip
-       * that already (ZEPHCORE_HAS_PWM_SHARED_LED) when either PWM alias is
+       * that already (CONFIG_ZEPHCORE_LED_PWM) when either PWM alias is
        * present, because on ESP32 configuring the pin as plain GPIO after
        * the PWM driver has claimed it takes the pin back from the LEDC
        * peripheral: the GPIO matrix only routes one signal to a pin at a

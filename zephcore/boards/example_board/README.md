@@ -142,7 +142,7 @@ Only `lora0` is required. Everything else enables its feature by being present.
 | `lfs_partition` + `filesystem.dtsi` | `/lfs`: identity, prefs, contacts, channels |
 | chosen `zephyr,settings-partition` | NVS for BLE bonds (nRF52, ESP32). nRF54L and MG24 keep bonds in a file on `/lfs` |
 | aliases `led0`, `led1`, `lora-tx-led` | Heartbeat, unread, TX blink |
-| aliases `heartbeat-pwm-led`, `lora-tx-pwm-led` | Same heartbeat/TX blink, brightness-adjustable (`leds.brightness`). Point both at one `pwm-leds` node to share a single physical LED. On ESP32, leave `led0`/`led1` out of the board's `main()` GPIO setup when either alias is present: configuring the same pin as plain GPIO after the PWM driver has claimed it takes the pin back from the LEDC peripheral (`ZEPHCORE_HAS_PWM_SHARED_LED` in `src/server_main_common.cpp` and `app/main_observer.cpp` already skips this for you) |
+| aliases `heartbeat-pwm-led`, `lora-tx-pwm-led` | Same heartbeat/TX blink, brightness-adjustable (`leds.brightness`). Point both at one `pwm-leds` node to share a single physical LED. On ESP32, leave `led0`/`led1` out of the board's `main()` GPIO setup when either alias is present: configuring the same pin as plain GPIO after the PWM driver has claimed it takes the pin back from the LEDC peripheral (`CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and makes `src/server_main_common.cpp` and `app/main_observer.cpp` skip this for you) |
 | alias `sw0` | User button; wake source from nRF System OFF and ESP32 light sleep |
 | chosen `zephyr,display` | Display UI |
 | node labelled `buzzer` + alias `buzzer` | PWM buzzer |

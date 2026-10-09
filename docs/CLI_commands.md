@@ -497,7 +497,7 @@ four radio parameters together, since they are one interop-critical set.
     the PWM path, dimmable with `leds.brightness` like the boards above. On ESP32, a board in either PWM
     category must not configure that pin as plain GPIO in `main()`, or the GPIO matrix takes the pin back
     from the LEDC peripheral and the PWM output goes dark; `src/server_main_common.cpp` and
-    `app/main_observer.cpp` skip it automatically (`ZEPHCORE_HAS_PWM_SHARED_LED`) whenever a PWM LED alias
+    `app/main_observer.cpp` skip it automatically (`CONFIG_ZEPHCORE_LED_PWM`) whenever a PWM LED alias
     is present.
   - **No radio LED (19)**: including `wio_tracker_l1`, `t1000_e`, `meshtracker_x1`, Heltec V3/V4 and
     both ProMicros. `set leds.radio` is accepted and stored (so the setting survives onto a board that does

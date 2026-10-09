@@ -726,6 +726,14 @@ config ZEPHCORE_VBAT_MV_MULTIPLIER
 
 	  Formula: mv = (raw * multiplier) / 4096
 
+config ZEPHCORE_LED_PWM
+	def_bool $(dt_alias_enabled,heartbeat-pwm-led) || $(dt_alias_enabled,lora-tx-pwm-led)
+	select PWM
+	help
+	  Set when the devicetree has a heartbeat-pwm-led or lora-tx-pwm-led
+	  alias: that LED is driven through PWM and dimmed by leds.brightness.
+	  Pulls in CONFIG_PWM automatically.
+
 endmenu
 
 menu "Debug & Logging"

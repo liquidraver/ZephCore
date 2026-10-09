@@ -871,6 +871,12 @@ hook so a CLI change also stops a lit heartbeat and refreshes the UI's LEDs page
 `NodePrefs.leds_disabled` (companion offset 93; repeater offset 120, magic-encoded — see §13).
 Does not cover the display backlight, which has its own UI brightness setting (`display_brightness`).
 
+**LED brightness** (`set leds.brightness 0-100`): a board that aliases `heartbeat-pwm-led` /
+`lora-tx-pwm-led` drives that LED through PWM (`zephcore_led_pwm_write()`), and the PWM alias wins over
+`led0` / `lora-tx-led`. `CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and stops
+the server and observer mains from configuring `led0` as a GPIO, because that pin belongs to the PWM
+driver. Persisted in `NodePrefs.led_brightness` (companion offset 272; repeater offset 311).
+
 ### 7.6 WiFi / MQTT / TCP Transports
 
 - **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion
