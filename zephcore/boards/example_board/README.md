@@ -207,7 +207,10 @@ Only `lora0` is required. Everything else enables its feature by being present.
 - **Manifest capabilities:** `wifi: true` gives the companion a WiFi transport and belongs only on boards with
   the RAM for WiFi and BLE together ([ADR 0009](../../../docs/adr/0009-wifi-companion-boards.md)).
   `light_sleep: true` makes repeaters light-sleep; the requirements are in `boards/common/pm_esp32.conf`, and
-  it is declared only after it was validated on the hardware. Either way, give NSS, RESET and every MCU-driven
+  it is declared only after it was validated on the hardware. `light_sleep_companion: true` gives the companion
+  build light sleep (off until the user sends `powersaving on`); it needs the same pin holds and wake pins and
+  about 4 KB of free DRAM, which a WiFi + BLE companion without PSRAM pays for in contacts. Being opt-in, it may
+  be declared before `light_sleep`. Either way, give NSS, RESET and every MCU-driven
   RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start.
 - **RAM, not flash, limits the companion.** Boards without PSRAM lower `MAX_CONTACTS`; the classic ESP32 also
   trims channels and the offline queue.

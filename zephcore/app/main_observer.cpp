@@ -403,7 +403,8 @@ int main(void)
 	print_banner();
 
 	/* Start WiFi (non-blocking — MQTT thread waits for WIFI_READY_BIT) */
-	zc_wifi_station_start(s_creds.wifi_ssid, s_creds.wifi_psk, time_sync_cb);
+	zc_wifi_station_start(s_creds.wifi_ssid, s_creds.wifi_psk, time_sync_cb,
+			      true /* WiFi power save */);
 
 	/* Start MQTT publisher thread */
 	char client_id[64];

@@ -22,6 +22,7 @@ LOG_MODULE_REGISTER(zephcore_usb, CONFIG_ZEPHCORE_USB_LOG_LEVEL);
 
 #include "ZephyrCompanionUSB.h"
 #include "ZephyrUSBCDC.h"
+#include <helpers/pm_sleep_guard.h>
 #include "companion_framing.h"
 
 #define USB_RING_BUF_SIZE     512     /* USB RX ring buffer size */
@@ -223,6 +224,11 @@ static void usb_session_begin(uint8_t log_tag, bool is_text)
 	}
 	usb_session_active = true;
 	usb_session_is_text = is_text;
+#if !COMPANION_HAS_DTR
+	/* A plain UART has no DTR: the session never ends, and UART RX cannot
+	 * wake a sleeping SoC. No light sleep from here on. */
+	zc_pm_block_sleep();
+#endif
 	LOG_INF("usb_rx: first traffic 0x%02x, session started (%s)", log_tag,
 		is_text ? "text" : "binary");
 	usb_link_update();

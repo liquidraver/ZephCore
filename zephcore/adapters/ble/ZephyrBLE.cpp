@@ -34,6 +34,7 @@ LOG_MODULE_REGISTER(zephcore_ble, CONFIG_ZEPHCORE_BLE_LOG_LEVEL);
 #include "ZephyrBLE.h"
 #include "ble_internal.h"
 #include "frame_txq.h"
+#include <helpers/pm_sleep_guard.h>
 
 /* ========== Constants ========== */
 
@@ -293,6 +294,22 @@ static void build_device_name_and_adv(const char *name_from_prefs)
 
 /* ========== Connection callbacks ========== */
 
+/* No SoC light sleep from connect until the link is encrypted (or gone):
+ * pairing does not survive it (devdocs/lld/13-power-management.md, section
+ * 13). An encrypted link may sleep between connection events. */
+static atomic_t unencrypted_hold;
+
+static void unencrypted_hold_set(bool hold)
+{
+	if (hold) {
+		if (atomic_cas(&unencrypted_hold, 0, 1)) {
+			zc_pm_block_sleep();
+		}
+	} else if (atomic_cas(&unencrypted_hold, 1, 0)) {
+		zc_pm_unblock_sleep();
+	}
+}
+
 static void connected(struct bt_conn *conn, uint8_t err)
 {
 	char addr[BT_ADDR_LE_STR_LEN];
@@ -304,6 +321,7 @@ static void connected(struct bt_conn *conn, uint8_t err)
 	LOG_INF("connected: %s", addr);
 
 	current_conn = bt_conn_ref(conn);
+	unencrypted_hold_set(true);
 
 	/* Zephyr stops advertising internally when the conn slot is consumed
 	 * (BT_MAX_CONN=1 — there's no slot left to advertise from).  Sync our
@@ -340,6 +358,7 @@ static void disconnected(struct bt_conn *conn, uint8_t reason)
 	LOG_INF("disconnected: %s reason 0x%02x", addr, reason);
 
 	k_work_cancel_delayable(&sec_timeout_work);
+	unencrypted_hold_set(false);
 
 	if (conn == current_conn) {
 		bt_conn_unref(current_conn);
@@ -393,6 +412,7 @@ static void security_changed(struct bt_conn *conn, bt_security_t level, enum bt_
 	 * so stand the unpaired-connection timeout down. */
 	if (level >= BT_SECURITY_L2) {
 		k_work_cancel_delayable(&sec_timeout_work);
+		unencrypted_hold_set(false);
 	}
 
 	/* Enable TX when we have sufficient security (level 2+ = encrypted).

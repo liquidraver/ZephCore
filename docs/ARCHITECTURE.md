@@ -838,6 +838,8 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
   went away is reported as a DTR drop in three cases: DTR low, VBUS removed, and a bus reset. The reset case exists
   because the CDC class keeps the old line state across a reset, so nothing else says that the port the host had open
   is gone (a hub resetting upstream leaves VBUS up). Bus suspend, resume and reset also reach a second callback.
+  While a host is on the bus (from reset, configuration or resume until suspend or VBUS loss) the module blocks
+  ESP32 light sleep: sleep stops the USB clock and the host loses the device without being told.
 - **`ZephyrCompanionUSB`** (companion): the wired companion transport, over the CDC port or a plain UART
   (`zephcore,companion-uart`). Framing: `<` (to the node) or `>` (from it), a little-endian 16-bit length, the payload;
   a first byte that is printable and not `<` starts the text CLI instead. It has its own receive queue and an
@@ -879,8 +881,19 @@ driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the
 
 ### 7.6 WiFi / MQTT / TCP Transports
 
-- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion
-- **`adapters/mqtt/ZephyrMQTTPublisher.c`**: MQTT publisher for observed/uplinked packets
+- **`adapters/wifi/ZephyrWiFiStation.c`**: WiFi STA client (ESP32) used by the observer, the repeater uplink and the WiFi companion.
+  The observer and the uplink run with the driver's WiFi power save (minimum modem sleep: the WiFi radio is off
+  between the access point's DTIM beacons); the WiFi companion requests power save off, as before. On ESP32
+  light-sleep builds the station blocks SoC light sleep until the link is ready (DHCP, SNTP) and its client has
+  reported a session with `zc_wifi_station_session_up()`, and again whenever either is lost. With no such client
+  (the WiFi companion) the block stays for the life of the boot. While the SoC sleeps the WiFi MAC wakes it for
+  each beacon it listens to, and `helpers/pm_esp32_wake.c` refuses a sleep while the MAC's beacon timer is active.
+  On light-sleep companion builds the WiFi companion runs with power save too and reports a session at once, so
+  the station blocks sleep only while the link is not ready.
+- **`adapters/mqtt/ZephyrMQTTPublisher.c`**: MQTT publisher for observed/uplinked packets. It reports its session to
+  the station: up at CONNACK, down when the session ends for any reason. Keepalive: PINGREQ once a quarter of
+  the 60 s keepalive is left, so a broker that enforces the keepalive without grace does not close an idle
+  session.
 - **`adapters/ota/wifi_ota.c`**: WiFi SoftAP + HTTP firmware upload to MCUboot slot1 (ESP32, requires `--sysbuild`)
 
 Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInterface`
@@ -888,7 +901,9 @@ Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInte
 BLE, USB/UART and TCP can all be connected at once; every connected client gets every
 frame (a reply to one app also reaches the other).
 
-- **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS
+- **`adapters/ble/ZephyrBLE.cpp`** (+ `ble_gatt_layout.cpp`, `ble_dfu.cpp`): BLE NUS. Blocks ESP32 light sleep from
+  connect until the link is encrypted (pairing does not survive sleep); an encrypted link and advertising do not
+  block it.
 - **`adapters/usb/ZephyrCompanionUSB.cpp`**: USB CDC-ACM, or a plain UART (`zephcore,companion-uart` chosen node; the only link on the Bluetooth-less LoRa-E5), with the text CLI
 - **`adapters/transport/TcpCompanionTransport.c`**: TCP (port 5000, MeshCore `SerialWifiInterface` framing) on native Linux and on WiFi companions (`app/CompanionWifi.cpp`, `capabilities: wifi: true`)
 - **`adapters/transport/frame_txq.c`**: the TX queue BLE and TCP share (congestion, overflow slot, lossless replies)

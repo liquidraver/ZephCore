@@ -46,8 +46,15 @@
 #include <soc/gpio_struct.h>
 #include <esp_sleep.h>
 #include <esp_timer.h>
+#include <soc/soc_caps.h>
 #if defined(CONFIG_WIFI_ESP32)
 #include <esp_wifi.h>
+#include <esp_private/wifi.h>
+#endif
+
+/* The WiFi MAC keeps its own beacon timer (TSF) and wakes the SoC with it. */
+#if defined(CONFIG_WIFI_ESP32) && SOC_WIFI_HW_TSF
+#define ZC_PM_WIFI_TSF 1
 #endif
 
 #include <stdio.h>
@@ -96,6 +103,7 @@ static struct {
 	uint32_t slept;         /* ... and the SoC actually slept */
 	uint32_t wake_timer;
 	uint32_t wake_gpio;
+	uint32_t wake_wifi;     /* the WiFi MAC, for a beacon */
 	uint32_t wake_other;
 	uint64_t asleep_us;
 } stats;
@@ -146,6 +154,8 @@ static void wake_state_exit(enum pm_state state)
 			stats.wake_gpio++;
 		} else if (causes & BIT(ESP_SLEEP_WAKEUP_TIMER)) {
 			stats.wake_timer++;
+		} else if (causes & BIT(ESP_SLEEP_WAKEUP_WIFI)) {
+			stats.wake_wifi++;
 		} else {
 			stats.wake_other++;
 		}
@@ -223,11 +233,11 @@ int zc_pm_format_stats(char *buf, size_t len)
 	uint32_t pct10 = up_ms ? (uint32_t)(stats.asleep_us / up_ms) : 0; /* 0.1 % units */
 	uint32_t win_s = zc_pm_console_window_remaining_ms() / 1000U;
 	int n = snprintf(buf, len,
-			 "> %s asleep %u.%u%% sleeps %u/%u wake t%u g%u o%u",
+			 "> %s asleep %u.%u%% sleeps %u/%u wake t%u g%u w%u o%u",
 			 atomic_get(&powersave_blocked) ? "off" : "on",
 			 pct10 / 10U, pct10 % 10U,
 			 stats.slept, stats.entries,
-			 stats.wake_timer, stats.wake_gpio, stats.wake_other);
+			 stats.wake_timer, stats.wake_gpio, stats.wake_wifi, stats.wake_other);
 
 	ARRAY_FOR_EACH_PTR(wake_pins, p) {
 		if (n > 0 && (size_t)n < len) {
@@ -240,6 +250,19 @@ int zc_pm_format_stats(char *buf, size_t len)
 	return (n > 0 && (size_t)n < len) ? n : (int)strlen(buf);
 }
 
+/* ========== WiFi station ========== */
+
+#if defined(ZC_PM_WIFI_TSF)
+static atomic_t wifi_station_started;
+#endif
+
+void zc_pm_wifi_station_started(void)
+{
+#if defined(ZC_PM_WIFI_TSF)
+	atomic_set(&wifi_station_started, 1);
+#endif
+}
+
 /* ========== esp_timer deadlines bound the sleep ========== */
 
 #if defined(CONFIG_PM_CUSTOM_TICKS_HOOK)
@@ -248,9 +271,20 @@ int zc_pm_format_stats(char *buf, size_t len)
  * would otherwise be slept through — the BLE controller's modem-sleep wake
  * timer ("btSlp") is the one that matters: miss it and the controller misses
  * its connection event.  ESP-IDF's own tickless idle bounds the sleep the same
- * way (esp_pm/pm_impl.c). */
+ * way (esp_pm/pm_impl.c).
+ *
+ * A WiFi station in power save gives up the WiFi library's sleep lock between
+ * beacons a moment before the MAC's beacon timer (TSF) goes idle.  No sleep in
+ * that moment, as in ESP-IDF: 0 ticks means "an event is due now"
+ * (devdocs/lld/13-power-management.md, section 12). */
 int64_t pm_policy_next_custom_ticks(void)
 {
+#if defined(ZC_PM_WIFI_TSF)
+	if (atomic_get(&wifi_station_started) && esp_wifi_internal_is_tsf_active()) {
+		return 0;
+	}
+#endif
+
 	int64_t next = esp_timer_get_next_alarm_for_wake_up();
 
 	if (next == INT64_MAX) {
@@ -287,7 +321,8 @@ static int pm_wake_init(void)
 
 #if defined(CONFIG_WIFI_ESP32)
 	/* The ESP32 WiFi driver starts WiFi at boot, in NULL mode, "to enable
-	 * coexistence".  Started, the WiFi library holds its modem PM lock
+	 * coexistence".  In NULL mode the WiFi radio stays on, the WiFi library
+	 * holds its modem PM lock for as long as it is
 	 * (pm_policy_state_all_lock_get via esp_pm) and the SoC never
 	 * light-sleeps: measured on the XIAO repeater, zero sleep entries with
 	 * WiFi compiled in, sleeps without it.  Stop it here.  Nothing is lost:

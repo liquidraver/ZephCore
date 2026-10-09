@@ -2,6 +2,7 @@
 target: station_g2/esp32s3/procpu
 capabilities:
   wifi: true
+  light_sleep_companion: true
 release:
   roles: [companion, repeater]
 catalog:

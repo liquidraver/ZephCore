@@ -26,11 +26,10 @@
  * classic) and the single-core RISC-V parts (C3, C6) alike. Referencing
  * &cpu1 here would be a dtc error on the latter.
  *
- * Applied automatically to non-observer ESP32 builds — see the ESP32 CPU
- * clock block in CMakeLists.txt. Kept out of the per-board DTS files on
- * purpose: one place to change, and it makes the observer exception a simple
- * "don't include this" rather than an override that would have to know each
- * SoC's maximum (240 MHz on S3/classic, 160 MHz on C3/C6).
+ * Applied automatically to every ESP32 build — see the ESP32 CPU clock block
+ * in CMakeLists.txt. Kept out of the per-board DTS files on purpose: one place
+ * to change. Without it a build runs at its SoC's maximum (240 MHz on
+ * S3/classic, 160 MHz on C3/C6).
  */
 
 &cpu0 {

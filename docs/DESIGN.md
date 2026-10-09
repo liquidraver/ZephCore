@@ -302,6 +302,10 @@ it polls external state. Repeater and room server share one loop (`server_main_c
 - Low-battery policy for every companion (`PowerPolicy`): three low readings 30 s apart, never on external power,
   never on a reading under 2000 mV (no battery).
 - GPS: duty-cycled; holds the SoC light-sleep lock only while acquiring.
+- ESP32 companions on boards that declare it can light-sleep after `powersaving on` (off by default): never
+  while a USB host is attached, the display is on or a BLE link is not yet encrypted.
+- WiFi uplink and observer: the station uses WiFi modem sleep. On ESP32 light-sleep repeaters it holds the SoC
+  light-sleep lock only until the MQTT session is up, and again whenever the link or the session is lost.
 
 ### 8.4 Security
 - On-air: Ed25519 identities, X25519 ECDH, AES-128 + truncated HMAC (upstream scheme).

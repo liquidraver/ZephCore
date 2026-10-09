@@ -30,6 +30,7 @@
 LOG_MODULE_REGISTER(zephcore_usbd, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
 #include <adapters/board/ZephyrBoard.h>
+#include <helpers/pm_sleep_guard.h>
 
 /* ===== Per-role descriptor strings ====== */
 #define ZEPHCORE_USB_VID         0x2fe3   /* Zephyr Project VID */
@@ -88,6 +89,23 @@ static void enter_bootloader(void)
 	CODE_UNREACHABLE;
 }
 
+/* A host is on the bus (it reset, configured or resumed us and has not
+ * suspended it since). No SoC light sleep while one is: sleep stops the USB
+ * clock, and the host loses the device without being told
+ * (devdocs/lld/13-power-management.md, section 13). */
+static atomic_t s_host_present;
+
+static void host_present(bool present)
+{
+	if (present) {
+		if (atomic_cas(&s_host_present, 0, 1)) {
+			zc_pm_block_sleep();
+		}
+	} else if (atomic_cas(&s_host_present, 1, 0)) {
+		zc_pm_unblock_sleep();
+	}
+}
+
 /* The host went away without a DTR=0: report it as a DTR drop. */
 static void host_gone(void)
 {
@@ -104,6 +122,15 @@ static void usbd_msg_callback(struct usbd_context *const ctx,
 			      const struct usbd_msg *msg)
 {
 	ARG_UNUSED(ctx);
+
+	if (msg->type == USBD_MSG_SUSPEND || msg->type == USBD_MSG_VBUS_REMOVED) {
+		host_present(false);
+	} else if (msg->type == USBD_MSG_RESET || msg->type == USBD_MSG_RESUME ||
+		   msg->type == USBD_MSG_CONFIGURATION ||
+		   msg->type == USBD_MSG_CDC_ACM_LINE_CODING ||
+		   msg->type == USBD_MSG_CDC_ACM_CONTROL_LINE_STATE) {
+		host_present(true);
+	}
 
 	if (msg->type == USBD_MSG_CDC_ACM_LINE_CODING) {
 		uint32_t baudrate = 0;
@@ -309,4 +336,5 @@ extern "C" void zephcore_usbd_detach(void)
 	(void)usbd_disable(&zephcore_usbd);
 	s_initialized = false;
 	s_dtr_active = false;
+	host_present(false);
 }

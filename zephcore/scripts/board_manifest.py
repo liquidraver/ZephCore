@@ -11,6 +11,10 @@ native-Linux preset boards/linux_native/<preset>.conf carries a sibling
       wifi: true                     # WiFi companion: RAM for WiFi + BLE together
       light_sleep: true              # DIO1 on an RTC-wake-capable GPIO AND
                                      # validated on hardware (ESP32 repeaters)
+      light_sleep_companion: true    # the companion build has light sleep
+                                     # (opt-in with `powersaving on`); needs
+                                     # the wake pins and pin holds, and the
+                                     # RAM. Independent of light_sleep
     release:                         # absent = not published (bring-up)
       roles: [companion, repeater]   # REQUIRED in release
       variants:                      # extra published builds of this board
@@ -51,7 +55,7 @@ PLATFORM_DIRS = {"nrf52840": "nrf52", "nrf54l": "nrf54l", "esp32": "esp32",
                  "mg24": "mg24", "stm32wl": "stm32wl"}
 ROLES = ("companion", "repeater", "room_server", "observer")
 KEYS = {"target", "capabilities", "release", "catalog", "linux"}
-CAPS = {"light_sleep", "wifi"}
+CAPS = {"light_sleep", "light_sleep_companion", "wifi"}
 CATALOG_KEYS = {"device", "maker", "new", "img", "own_img", "subtitle"}
 CAP_LINE = re.compile(r"^  (\w+): (true|false)\s*$", re.M)
 

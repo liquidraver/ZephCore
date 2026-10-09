@@ -33,11 +33,24 @@ extern struct k_event g_wifi_events;
  *   ssid, psk     — the network; pointers kept (read at every connect), so they
  *                   must remain valid. psk "" = open network.
  *   time_sync_cb  — called once after SNTP with Unix timestamp; may be NULL.
+ *   power_save    — true: run with the driver's WiFi power save (minimum modem
+ *                   sleep: the WiFi radio is off between the access point's DTIM
+ *                   beacons). false: request power save off at every link-up.
  *
  * Must be called once from main() before any other wifi_station_* calls.
+ *
+ * ESP32 light-sleep builds: the station blocks SoC light sleep until the link
+ * is ready and a client has reported its session up, and again whenever either
+ * is lost. With no such client the block stays for the life of the boot.
  */
 void zc_wifi_station_start(const char *ssid, const char *psk,
-			void (*time_sync_cb)(uint32_t unix_ts));
+			void (*time_sync_cb)(uint32_t unix_ts), bool power_save);
+
+/*
+ * The client's session over the link (the MQTT publisher's broker session) is
+ * up, or has ended. Safe to call from any thread.
+ */
+void zc_wifi_station_session_up(bool up);
 
 /*
  * Trigger an immediate reconnect (e.g. after credential change via CLI).

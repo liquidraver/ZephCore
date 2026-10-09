@@ -13,6 +13,7 @@
 #include <zephyr/logging/log.h>
 #include <helpers/TxtDataHelpers.h>
 #include <ZephyrWiFiStation.h>
+#include <helpers/pm_sleep_guard.h>
 
 LOG_MODULE_REGISTER(zephcore_wifi_companion, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
@@ -35,8 +36,17 @@ void companion_wifi_start(const NodePrefs &prefs)
 	memcpy(s_pwd, prefs.wifi_pwd, sizeof(s_pwd));
 	LOG_INF("WiFi companion: joining %s", s_ssid);
 	/* No SNTP time: the app sets the companion's clock, and time only moves
-	 * forward (see time_sync.h). */
-	zc_wifi_station_start(s_ssid, s_pwd, nullptr);
+	 * forward (see time_sync.h).
+	 *
+	 * Light-sleep builds: WiFi power save on (the WiFi library gives its sleep
+	 * lock up only in power save), and no client session to wait for, so the
+	 * station blocks sleep only while the link is not ready. Other builds:
+	 * power save off, as before (devdocs/lld/13-power-management.md,
+	 * sections 12 and 13). */
+	zc_wifi_station_start(s_ssid, s_pwd, nullptr, ZC_PM_LIGHT_SLEEP != 0);
+	if (ZC_PM_LIGHT_SLEEP) {
+		zc_wifi_station_session_up(true);
+	}
 }
 
 bool companion_wifi_cli(const char *command, NodePrefs &prefs, void (*save)(void), char *reply)

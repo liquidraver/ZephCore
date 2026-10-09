@@ -27,6 +27,10 @@ target: my_board
 #   light_sleep: true   # repeater light-sleeps between events. Declare it only
 #                       # after boards/common/pm_esp32.conf's checks pass on
 #                       # hardware; qualifying wiring alone is not enough
+#   light_sleep_companion: true   # the companion can light-sleep (off until
+#                       # `powersaving on`). Needs the same pin holds and
+#                       # wake pins, and about 4 KB of DRAM. It does not need
+#                       # light_sleep: opt-in, so it may come first
 
 # Leave `release:` out while the board is in bring-up: it then builds locally
 # and is listed as "source-only", but no release carries firmware for it.

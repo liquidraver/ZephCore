@@ -1102,7 +1102,8 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
 
   if (isUplinkEnabled() && _uplink_creds.wifi_ssid[0] && _uplink_creds.mqtt_host[0]) {
     s_uplink_mesh = this;
-    zc_wifi_station_start(_uplink_creds.wifi_ssid, _uplink_creds.wifi_psk, uplink_time_sync_cb);
+    zc_wifi_station_start(_uplink_creds.wifi_ssid, _uplink_creds.wifi_psk, uplink_time_sync_cb,
+              true /* WiFi power save */);
     mqtt_publisher_start(&_uplink_creds, _prefs.node_name,
              _uplink_status_topic, _uplink_packets_topic);
     mqtt_publisher_set_connect_cb([]() {

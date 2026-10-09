@@ -3,6 +3,7 @@ target: heltec_wifi_lora32_v3/esp32s3/procpu
 capabilities:
   wifi: true
   light_sleep: true
+  light_sleep_companion: true
 release:
   roles: [companion, repeater]
 catalog:

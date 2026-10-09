@@ -60,6 +60,10 @@ uint32_t zc_pm_console_window_remaining_ms(void);
 /* One `get pm` line into buf; returns its length. */
 int zc_pm_format_stats(char *buf, size_t len);
 
+/* A WiFi station is in use from now on: no light sleep while the WiFi MAC's
+ * beacon timer (TSF) is active. */
+void zc_pm_wifi_station_started(void);
+
 #ifdef __cplusplus
 }
 #endif
@@ -69,6 +73,7 @@ int zc_pm_format_stats(char *buf, size_t len);
 #else
 
 static inline void zc_pm_set_powersaving(bool on) { (void)on; }
+static inline void zc_pm_wifi_station_started(void) { }
 static inline void zc_pm_console_window_open(void) { }
 static inline uint32_t zc_pm_console_window_remaining_ms(void) { return 0; }
 static inline int zc_pm_format_stats(char *buf, size_t len) { (void)buf; (void)len; return 0; }

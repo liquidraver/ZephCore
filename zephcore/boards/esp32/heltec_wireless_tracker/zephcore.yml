@@ -3,6 +3,7 @@ target: heltec_wireless_tracker/esp32s3/procpu
 capabilities:
   wifi: true
   light_sleep: true
+  light_sleep_companion: true
 release:
   roles: [companion, repeater]
 catalog:

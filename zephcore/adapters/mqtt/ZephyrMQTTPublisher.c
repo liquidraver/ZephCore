@@ -9,6 +9,9 @@
  *   4. Publish retained "online" status (LWT handles "offline" on disconnect)
  *   5. Poll loop: drain publish queue + mqtt_input() keepalive
  *   6. On error/disconnect: publish "offline", back off 5s, goto 1
+ *
+ * The session (CONNACK until the poll loop ends) is reported to the WiFi
+ * station, which blocks SoC light sleep outside it.
  */
 
 #include "ZephyrMQTTPublisher.h"
@@ -320,12 +323,20 @@ static void run_poll_loop(void)
 			}
 		}
 
-		/* Send keepalive ping if needed */
-		int rc = mqtt_live(&s_client);
-		if (rc < 0 && rc != -EAGAIN) {
-			LOG_WRN("mqtt_live error: %d", rc);
-			s_connected = false;
-			return;
+		/* Keepalive ping, a quarter of the keepalive early. mqtt_live()
+		 * pings only once the keepalive has fully elapsed, and a broker
+		 * that enforces it without grace closes the session first
+		 * (devdocs/lld/13-power-management.md, section 12). */
+		int left_ms = mqtt_keepalive_time_left(&s_client);
+
+		if (left_ms >= 0 && left_ms <= (int)s_client.keepalive * 250) {
+			int rc = mqtt_ping(&s_client);
+
+			if (rc < 0 && rc != -EAGAIN) {
+				LOG_WRN("mqtt_ping error: %d", rc);
+				s_connected = false;
+				return;
+			}
 		}
 
 		if (!s_connected) {
@@ -435,11 +446,17 @@ static void mqtt_thread_fn(void *p1, void *p2, void *p3)
 		/* Connected — reset the failure backoff */
 		s_retry_backoff_s = RETRY_BACKOFF_MIN_S;
 
+		/* Session up: the station may let the SoC light-sleep until the
+		 * poll loop ends. */
+		zc_wifi_station_session_up(true);
+
 		/* Publish retained "online" status */
 		publish_status(&s_client, true);
 
 		/* Run poll loop until disconnect or reconnect request */
 		run_poll_loop();
+
+		zc_wifi_station_session_up(false);
 
 		/* Publish "offline" before closing (best-effort) */
 		if (s_connected) {

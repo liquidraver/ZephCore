@@ -16,6 +16,7 @@
 
 #include "display.h"
 #include "doom_game.h"
+#include "pm_sleep_guard.h"
 
 #include <zephyr/device.h>
 #include <zephyr/display/cfb.h>
@@ -47,6 +48,21 @@ LOG_MODULE_REGISTER(zephcore_display, CONFIG_ZEPHCORE_BOARD_LOG_LEVEL);
 
 static const struct device *disp_dev;
 static bool disp_on;
+
+/* The display goes on or off. No SoC light sleep while it is on: someone is
+ * using the UI (devdocs/lld/13-power-management.md, section 13). */
+static void disp_set_on(bool on)
+{
+	if (on == disp_on) {
+		return;
+	}
+	disp_on = on;
+	if (on) {
+		zc_pm_block_sleep();
+	} else {
+		zc_pm_unblock_sleep();
+	}
+}
 static bool disp_initialized;
 static bool disp_rotated;     /* panel flipped 180 degrees (upside-down mount) */
 
@@ -375,7 +391,7 @@ static void auto_off_handler(struct k_work *work)
 	 * mc_display_on() → backlight restore. */
 	if (is_epd) {
 		backlight_set(false);
-		disp_on = false;
+		disp_set_on(false);
 		return;
 	}
 	if (disp_on) {
@@ -546,7 +562,7 @@ int mc_display_init(void)
 	}
 	display_blanking_off(disp_dev);
 	backlight_set(true);
-	disp_on = true;
+	disp_set_on(true);
 	disp_initialized = true;
 
 	/* Set up auto-off timer and schedule initial timeout */
@@ -606,7 +622,7 @@ void mc_display_on(void)
 		if (!is_epd) {
 			display_blanking_off(disp_dev);
 		}
-		disp_on = true;
+		disp_set_on(true);
 	}
 	backlight_set(true);
 
@@ -622,7 +638,7 @@ void mc_display_off(void)
 	if (disp_on) {
 		display_blanking_on(disp_dev);
 		backlight_set(false);
-		disp_on = false;
+		disp_set_on(false);
 	}
 }
 
@@ -908,7 +924,7 @@ void mc_display_epd_full_reset(void)
 	/* After splash handoff, keep frontlight off; next user interaction
 	 * wakes it via mc_display_on(). */
 	backlight_set(false);
-	disp_on = false;
+	disp_set_on(false);
 }
 
 const struct device *mc_display_get_device(void)

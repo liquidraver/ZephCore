@@ -37,10 +37,41 @@ K_EVENT_DEFINE(g_wifi_events);
 static const char *s_ssid;
 static const char *s_psk;
 static void (*s_time_sync_cb)(uint32_t unix_ts);
+static bool s_power_save;
+static bool s_started;
 
 /* Protect link-up vs. SNTP state */
 static volatile bool s_wifi_link_up;   /* WiFi associate event received */
 static volatile bool s_wifi_ready;     /* DHCP + SNTP done */
+
+/* ========== Light-sleep block ========== */
+
+/* Held unless the link is ready and the client's session is up
+ * (devdocs/lld/13-power-management.md, section 12). Called from the net_mgmt
+ * thread and from the client's thread. */
+static K_MUTEX_DEFINE(s_sleep_mutex);
+static volatile bool s_session_up;
+static bool s_sleep_blocked;
+
+static void sleep_block_update(void)
+{
+	if (!s_started) {
+		return;
+	}
+
+	k_mutex_lock(&s_sleep_mutex, K_FOREVER);
+
+	bool block = !(s_wifi_ready && s_session_up);
+
+	if (block && !s_sleep_blocked) {
+		zc_pm_block_sleep();
+	} else if (!block && s_sleep_blocked) {
+		zc_pm_unblock_sleep();
+	}
+	s_sleep_blocked = block;
+
+	k_mutex_unlock(&s_sleep_mutex);
+}
 
 /* ========== Reconnect work ========== */
 
@@ -68,6 +99,7 @@ static void do_sntp_and_signal(void)
 #endif
 
 	s_wifi_ready = true;
+	sleep_block_update();
 	k_event_post(&g_wifi_events, WIFI_READY_BIT);
 	LOG_INF("WiFi ready (DHCP+SNTP done)");
 }
@@ -104,18 +136,19 @@ static void wifi_event_handler(struct net_mgmt_event_callback *cb,
 		if (success) {
 			LOG_INF("WiFi link up (SSID: %s)", s_ssid ? s_ssid : "?");
 			s_wifi_link_up = true;
-			/* Disable power save — WIFI_PS_MIN_MODEM (default) sleeps between
-			 * DTIM beacons, which delays ACKs and causes the MQTT broker's TCP
-			 * stack to retransmit and eventually RST the connection (-ECONNRESET
-			 * in the poll loop). WIFI_PS_DISABLED keeps the radio always awake. */
-			struct wifi_ps_params ps = {
-				.enabled = WIFI_PS_DISABLED,
-				.type    = WIFI_PS_PARAM_STATE,
-			};
-			if (net_mgmt(NET_REQUEST_WIFI_PS, iface, &ps, sizeof(ps)) < 0) {
-				LOG_WRN("Failed to disable WiFi power save");
-			} else {
-				LOG_INF("WiFi power save disabled");
+			if (!s_power_save) {
+				/* Power save off: the WiFi radio stays on between
+				 * beacons. Left alone, the driver runs minimum modem
+				 * sleep. */
+				struct wifi_ps_params ps = {
+					.enabled = WIFI_PS_DISABLED,
+					.type    = WIFI_PS_PARAM_STATE,
+				};
+				if (net_mgmt(NET_REQUEST_WIFI_PS, iface, &ps, sizeof(ps)) < 0) {
+					LOG_WRN("Failed to disable WiFi power save");
+				} else {
+					LOG_INF("WiFi power save disabled");
+				}
 			}
 			/* DHCP will fire ipv4_event_handler when lease is obtained */
 		} else {
@@ -128,6 +161,7 @@ static void wifi_event_handler(struct net_mgmt_event_callback *cb,
 		LOG_INF("WiFi disconnected");
 		s_wifi_link_up = false;
 		s_wifi_ready   = false;
+		sleep_block_update();
 		k_event_clear(&g_wifi_events, WIFI_READY_BIT);
 		/* Reconnect after 5s backoff */
 		k_work_reschedule(&connect_work, K_SECONDS(5));
@@ -181,20 +215,21 @@ static void connect_work_fn(struct k_work *work)
 /* ========== Public API ========== */
 
 void zc_wifi_station_start(const char *ssid, const char *psk,
-			void (*time_sync_cb)(uint32_t unix_ts))
+			void (*time_sync_cb)(uint32_t unix_ts), bool power_save)
 {
 	s_ssid         = ssid;
 	s_psk          = psk;
 	s_time_sync_cb = time_sync_cb;
+	s_power_save   = power_save;
 	s_wifi_link_up = false;
 	s_wifi_ready   = false;
 
-	/* Permanent, and intentionally never released: there is no
-	 * zc_wifi_station_stop() — once an uplink or observer node associates it
-	 * stays associated for the life of the boot. Light sleep would drop the
-	 * association (nothing here coordinates with the WiFi modem's own sleep),
-	 * so a node built with WiFi simply does not light-sleep. */
-	zc_pm_block_sleep();
+	/* No light sleep until the link is ready and the client's session is up.
+	 * There is no zc_wifi_station_stop(): a station stays for the life of the
+	 * boot. */
+	s_started = true;
+	sleep_block_update();
+	zc_pm_wifi_station_started();
 
 	/* Register WiFi event callback */
 	net_mgmt_init_event_callback(&wifi_cb, wifi_event_handler,
@@ -222,8 +257,15 @@ void zc_wifi_station_reconnect(void)
 	/* Clear state and immediately reschedule connect */
 	s_wifi_link_up = false;
 	s_wifi_ready   = false;
+	sleep_block_update();
 	k_event_clear(&g_wifi_events, WIFI_READY_BIT);
 	k_work_reschedule(&connect_work, K_MSEC(200));
+}
+
+void zc_wifi_station_session_up(bool up)
+{
+	s_session_up = up;
+	sleep_block_update();
 }
 
 bool zc_wifi_station_is_connected(void)

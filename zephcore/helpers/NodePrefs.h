@@ -238,10 +238,12 @@ static inline void auto_shutdown_upgrade(NodePrefs *p) {
 }
 
 /* `powersaving` gates ESP32 light sleep (helpers/pm_esp32_wake.c).  On a
- * light-sleep build the default is on: those builds slept unconditionally
- * before the switch existed, and the stored 0 carried no intent.  Elsewhere
- * it is upstream's default, off. */
-#if defined(CONFIG_PM) && defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32)
+ * light-sleep repeater or room server the default is on: those builds slept
+ * unconditionally before the switch existed, and the stored 0 carried no
+ * intent.  Elsewhere, light-sleep companions included, it is upstream's
+ * default, off. */
+#if defined(CONFIG_PM) && defined(CONFIG_SOC_FAMILY_ESPRESSIF_ESP32) && \
+	!defined(CONFIG_ZEPHCORE_ROLE_COMPANION)
 #define POWERSAVING_DEFAULT 1
 #else
 #define POWERSAVING_DEFAULT 0
