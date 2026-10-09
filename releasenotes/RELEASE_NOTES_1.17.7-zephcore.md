@@ -175,6 +175,11 @@ matches the SoftDevice version of your bootloader.
   puts it back to 47 hours.
 - **Malformed encrypted packets are rejected earlier**, before any cryptography runs.
 - **Large contact lists**: up to 24 contacts can share the same one-byte hash, up from 8.
+- **ESP32-S3, ESP32-C3 and ESP32-C6 boards report the MCU temperature** in telemetry, as nRF52 boards
+  already did ([#107](https://github.com/liquidraver/ZephCore/issues/107), thanks to **svenlange2**).
+  The older ESP32 in the TTGO LoRa32 and T-Beam has no usable sensor and still reports none. On the
+  ThinkNode M9 and Meshnology W12 the radio now also recalibrates itself when the temperature has
+  moved by 5 C or more, as it already does on nRF boards with an LR1110 or LR2021.
 - **`sensor list`** with a negative start index is rejected instead of being used
   ([PR #100](https://github.com/liquidraver/ZephCore/pull/100), thanks to **ptr727**).
 - **T1000-E**: a pin that was wrongly driven as a sensor enable is left alone. Sensor readings are

@@ -1,0 +1,16 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * ESP32-S3 / C3 / C6: enable the SoC's internal temperature sensor.
+ *
+ * Every Espressif SoC dtsi that has the sensor declares it as `coretemp`,
+ * disabled, behind the alias `die-temp0`. Enabling the node is all it takes:
+ * CONFIG_ESP32_TEMP defaults on with it, and ZephyrBoard::getMCUTemperature()
+ * finds it through the alias.
+ *
+ * Not for the classic ESP32, which has no such node (a reference to &coretemp
+ * is a dtc error there) and no driver. CMakeLists.txt skips it for that SoC.
+ */
+
+&coretemp {
+	status = "okay";
+};

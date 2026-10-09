@@ -181,6 +181,13 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
         message(STATUS "  ESP32 CPU: 80 MHz (observers keep the SoC maximum)")
     endif()
 
+    # SoC temperature sensor (MCU temperature in telemetry, image-calibration
+    # drift on LR11xx/LR2021): every role, every SoC that has the node. The
+    # classic ESP32 (".../esp32/...") has neither the node nor a driver.
+    if(NOT BOARD MATCHES "/esp32/")
+        zephcore_add_overlay(${_zc}/esp32_coretemp.overlay)
+    endif()
+
     # Light sleep: REPEATERS on boards that declare it. 80 MHz cuts the idle draw;
     # light sleep is what removes it (mechanism and requirements:
     # boards/common/pm_esp32.conf). Repeaters only: the Espressif HCI driver takes

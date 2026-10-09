@@ -368,9 +368,14 @@ float ZephyrBoard::getAdcMultiplier() const
 
 float ZephyrBoard::getMCUTemperature()
 {
-	/* nRF52840 die temperature sensor - "nordic,nrf-temp" at 0x4000c000
-	 * Nodelabel "temp" is defined in nrf52840.dtsi, status="okay" by default */
+	/* SoC die temperature sensor: the `die-temp0` alias where the SoC dtsi
+	 * declares one (Espressif `coretemp`), else the nodelabel `temp` (Nordic).
+	 * NULL when the node is absent or disabled. */
+#if DT_NODE_EXISTS(DT_ALIAS(die_temp0))
+	const struct device *dev = DEVICE_DT_GET_OR_NULL(DT_ALIAS(die_temp0));
+#else
 	const struct device *dev = DEVICE_DT_GET_OR_NULL(DT_NODELABEL(temp));
+#endif
 	if (!dev || !device_is_ready(dev)) {
 		return NAN;
 	}
