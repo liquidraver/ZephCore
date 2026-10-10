@@ -13,6 +13,21 @@
       "source": "tests/unit/advert_tests.cpp"
     },
     {
+      "id": "UNIT-ASCON-001",
+      "name": "Ascon-AEAD128 official known answers, truncated tags and tampering",
+      "source": "tests/unit/ascon_tests.cpp"
+    },
+    {
+      "id": "UNIT-ASCON-002",
+      "name": "Ascon-XOF128 and Ascon-CXOF128 official known answers, whole and in pieces",
+      "source": "tests/unit/ascon_tests.cpp"
+    },
+    {
+      "id": "UNIT-ASCON-003",
+      "name": "Ascon-Hash256 official known answers",
+      "source": "tests/unit/ascon_tests.cpp"
+    },
+    {
       "id": "UNIT-BATTERY-001",
       "name": "Battery endpoints interpolation multicell scaling and monotonicity",
       "source": "tests/unit/helper_tests.cpp"
@@ -581,6 +596,106 @@
       "id": "UNIT-KISS-005",
       "name": "msUntilNextTx reports each timed state and nothing while idle",
       "source": "tests/unit/kiss_modem_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-001",
+      "name": "KDF framing and AUTH reproduce the specification vectors",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-002",
+      "name": "Generator seed, output, key replacement and mixing",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-003",
+      "name": "Handshake packets and keys on both sides; forged and low-order input refused",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-004",
+      "name": "Chain steps, sealed packets and ACK values in both directions",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-005",
+      "name": "Loss and reordering: trial window, skipped keys, their limit and expiry",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-006",
+      "name": "Tampered, misaddressed, replayed and truncated packets do not open or move the chain",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-007",
+      "name": "Path probe packet, and its binding to direction, identities and nonce",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-008",
+      "name": "Channel packets, length limits and the never-block-aligned rule",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-009",
+      "name": "Requests, responses and path returns; reserved and block-aligned lengths avoided",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-010",
+      "name": "Password login: generator, both packets, session keys; a wrong password opens no branch",
+      "source": "tests/unit/zcpfs_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-011",
+      "name": "Two nodes with paths: one handshake, sealed texts both ways, 4-byte ACKs, nothing flooded",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-012",
+      "name": "Without a path only a probe or a sealed text is flooded; a pinned contact never gets legacy",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-013",
+      "name": "Loss, reordering, duplicates and a long outage: confirmed means delivered, a resend is delivered once",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-014",
+      "name": "A reboot of either side is repaired: by the receiver's own handshake, or by the sender's next send",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-015",
+      "name": "Simultaneous open resolves without a retry; a replayed handshake 1 never disturbs the current session",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-016",
+      "name": "A legacy peer gets plain legacy; the hint upgrades two zcpfs nodes but cannot pin; an unpinned contact goes back to legacy",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-017",
+      "name": "A held message is resent a bounded number of times and delivered once; held messages, handshake attempts, old sessions and skipped keys are wiped on time",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-018",
+      "name": "Contacts sharing an address byte are told apart; a full record table gives way only to authenticated or local use",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-019",
+      "name": "Rate limits, the unacknowledged and failure limits, flood-routed handshakes ignored, argument checks",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-020",
+      "name": "A lost confirmation is repeated when the peer still uses the old session, at most once per interval",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
     }
   ]
 }

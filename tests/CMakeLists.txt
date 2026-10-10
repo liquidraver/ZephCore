@@ -10,6 +10,7 @@ add_executable(zephcore_unit
   unit/pool_tests.cpp
   unit/contention_tests.cpp
   unit/advert_tests.cpp
+  unit/ascon_tests.cpp
   unit/dispatcher_tests.cpp
   unit/identity_tests.cpp
   unit/timesync_tests.cpp
@@ -21,6 +22,8 @@ add_executable(zephcore_unit
   unit/lpp_tests.cpp
   unit/telemetry_text_tests.cpp
   unit/kiss_modem_tests.cpp
+  unit/zcpfs_tests.cpp
+  unit/zcpfs_peer_tests.cpp
   support/hash_capture.cpp
   support/identity_utils_boundary.cpp
   ${PRODUCTION}/src/Dispatcher.cpp
@@ -53,10 +56,37 @@ if(MSVC)
 else()
   target_compile_options(zephcore_unit PRIVATE -Wall -Wextra -Wpedantic)
 endif()
+# ascon and zcpfs are portable C99 and build as their own libraries with their own,
+# stricter flags. ascon depends on nothing; zcpfs on ascon and on the Monocypher
+# objects of the executable.
+set(STRICT_C -Wall -Wextra -Wpedantic -Wconversion -Wshadow -Werror)
+add_library(ascon STATIC ${PRODUCTION}/lib/ascon/ascon.c)
+target_include_directories(ascon PUBLIC ${PRODUCTION}/lib/ascon)
+set(ZCPFS "${PRODUCTION}/lib/zcpfs")
+add_library(zcpfs STATIC
+  ${ZCPFS}/zcpfs_prim.c
+  ${ZCPFS}/zcpfs_curve.c
+  ${ZCPFS}/zcpfs_drbg.c
+  ${ZCPFS}/zcpfs_handshake.c
+  ${ZCPFS}/zcpfs_session.c
+  ${ZCPFS}/zcpfs_stateless.c
+  ${ZCPFS}/zcpfs_login.c
+  ${ZCPFS}/zcpfs_peer.c
+)
+set_target_properties(ascon zcpfs PROPERTIES C_STANDARD 99 C_STANDARD_REQUIRED ON C_EXTENSIONS OFF)
+target_include_directories(zcpfs PUBLIC ${ZCPFS}/include ${ZCPFS} PRIVATE ${PRODUCTION}/lib/monocypher)
+if(NOT MSVC)
+  target_compile_options(ascon PRIVATE ${STRICT_C})
+  target_compile_options(zcpfs PRIVATE ${STRICT_C})
+endif()
+target_link_libraries(zcpfs PUBLIC ascon)
+target_link_libraries(zephcore_unit PRIVATE zcpfs)
 if(ZEPHCORE_TEST_SANITIZERS)
   if(WIN32 OR MSVC)
     message(FATAL_ERROR "Use the Linux host target for address/undefined sanitizers")
   endif()
   target_compile_options(zephcore_unit PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
   target_link_options(zephcore_unit PRIVATE -fsanitize=address,undefined -no-pie)
+  target_compile_options(ascon PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
+  target_compile_options(zcpfs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
 endif()

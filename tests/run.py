@@ -172,6 +172,8 @@ def metadata():
     paths = list(TESTS.rglob("*")) + list((ROOT / "zephcore/include").rglob("*.h"))
     paths += list((ROOT / "zephcore/helpers").glob("*.h"))
     paths += list((ROOT / "zephcore/lib/monocypher").glob("*"))
+    for lib in ("ascon", "zcpfs"):
+        paths += [p for p in (ROOT / "zephcore/lib" / lib).rglob("*") if "__pycache__" not in p.parts]
     paths += [ROOT / "zephcore" / p for p in (
         "src/Packet.cpp", "src/StaticPoolPacketManager.cpp", "src/ContentionTracker.cpp",
         "src/Dispatcher.cpp", "src/Identity.cpp", "helpers/AdvertDataHelpers.cpp")]
