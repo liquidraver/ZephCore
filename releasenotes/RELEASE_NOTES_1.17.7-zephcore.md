@@ -5,8 +5,8 @@ could stop responding right after boot or when the port closed during a contact 
 import that no longer stalls every few seconds, more reliable detection of clock chips, repeaters
 that power down an external flash chip they do not use, a formatter that erases that chip on every
 board that has one, ESP32 repeaters with the WiFi uplink and observers that run much cooler and keep
-their broker connection, optional light sleep for ESP32-S3 companions, and a few fixes ported from
-upstream MeshCore.
+their broker connection, light sleep for XIAO ESP32-S3 and Station G2 repeaters, optional light
+sleep for ESP32-S3 companions, and a few fixes ported from upstream MeshCore.
 
 > [!NOTE]
 > A normal upgrade keeps your identity, settings, contacts and phone pairing. One exception:
@@ -161,7 +161,8 @@ which resolves #107:
 - **WiFi power save is on** for the uplink and for observers: the WiFi radio sleeps between the
   access point's beacons. The connection to the access point and to the broker is kept.
 - **Light sleep works with the uplink connected**, on the boards that light-sleep as repeaters
-  (Heltec V3, V4, V4.3, Wireless Tracker, Wireless Tracker V2). The node sleeps between beacons once
+  (Heltec V3, V4, V4.3, Wireless Tracker, Wireless Tracker V2, and from this release the XIAO
+  ESP32-S3 and the Station G2; see the next section). The node sleeps between beacons once
   it is connected to the broker. It stays awake while it is connecting, and for as long as the WiFi
   network or the broker cannot be reached.
 - **Brokers with a current Let's Encrypt certificate can be reached.** An uplink repeater or an
@@ -190,6 +191,22 @@ release".
 A light-sleep repeater with a display now stays awake while the display is on. The display turns
 itself off 10 seconds after boot or after the last button press, as before.
 
+## Repeaters on the XIAO ESP32-S3 and the Station G2 light-sleep
+
+Repeaters on the Seeed XIAO ESP32-S3 and the UnitEng Station G2 now put the processor into light
+sleep between events, like the Heltec boards already do. The radio keeps listening, and a received
+packet wakes the node. It is on by default; `powersaving off` keeps the node awake and
+`powersaving on` allows sleep again, and the setting is kept across reboots. `get pm` shows how
+much of the time the node is asleep.
+
+This is new on both boards, and the Station G2 most of all: reports of how it behaves are welcome.
+
+> [!NOTE]
+> **USB console on a sleeping repeater:** the node stays awake for 10 minutes after boot and after
+> each press of the user button. Outside that window a computer it is plugged into sees the USB
+> port disconnect and reconnect, and what is typed is lost. Press the user button to open the
+> window again, or send `powersaving off` over LoRa to keep the console.
+
 ## Companions can light-sleep on seven ESP32-S3 boards (off by default)
 
 Companions on these boards can now put the processor into light sleep between events:
@@ -202,8 +219,7 @@ It is **off by default**. Turn it on with `powersaving on` from the app's comman
 again with `powersaving off`; the setting is kept across reboots.
 
 This is new, and it is offered for testing: reports of how it behaves on your board are welcome,
-the Station G2 most of all. Repeaters on the XIAO ESP32-S3 and the Station G2 do not light-sleep
-yet.
+the Station G2 most of all.
 
 With it on, the node keeps advertising, stays connected to the app over Bluetooth or WiFi and
 receives LoRa packets as before. It does not sleep:
