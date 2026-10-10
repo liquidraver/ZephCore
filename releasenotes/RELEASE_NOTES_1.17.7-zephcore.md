@@ -287,7 +287,7 @@ matches the SoftDevice version of your bootloader.
   too, like the LED and advert shortcuts.
 - **New board**: Seeed LR2021 LoRa Plus EVK with a XIAO nRF54LM20A. Build it from source; there is no
   published firmware for it yet.
-- **Zephyr** updated to `74b7173e9c9`. One change in it would have been visible and is handled:
+- **Zephyr** updated to `11808e9ea8a`. One change in it would have been visible and is handled:
   e-paper displays would have drawn white text on a black page. The RAK4631's LEDs are now declared
   by ZephCore, since Zephyr's board file no longer describes them; nothing changes on the board.
   It also brings a fix for boards on WiFi: the starting sequence number of a TCP connection (the
