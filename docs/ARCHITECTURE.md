@@ -894,6 +894,8 @@ driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the
   the station: up at CONNACK, down when the session ends for any reason. Keepalive: PINGREQ once a quarter of
   the 60 s keepalive is left, so a broker that enforces the keepalive without grace does not close an idle
   session.
+  TLS is used without certificate verification, but the chain still has to be parsed: the uplink and observer
+  builds carry P-256 and P-384 with SHA-256 and SHA-384 for that.
 - **`adapters/ota/wifi_ota.c`**: WiFi SoftAP + HTTP firmware upload to MCUboot slot1 (ESP32, requires `--sysbuild`)
 
 Companion transports, as upstream's `companion_radio`: each is a `BaseSerialInterface`

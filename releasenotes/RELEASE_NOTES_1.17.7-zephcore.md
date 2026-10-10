@@ -164,6 +164,10 @@ which resolves #107:
   (Heltec V3, V4, V4.3, Wireless Tracker, Wireless Tracker V2). The node sleeps between beacons once
   it is connected to the broker. It stays awake while it is connecting, and for as long as the WiFi
   network or the broker cannot be reached.
+- **Brokers with a current Let's Encrypt certificate can be reached.** An uplink repeater or an
+  observer joined the WiFi network but never connected to a broker whose certificate chain uses
+  P-384 keys or SHA-384 signatures, which Let's Encrypt's ECDSA certificates do. The firmware does
+  not check the certificate, but it has to read it, and it could not read those. It can now.
 - **An idle connection to the broker is no longer dropped every two minutes.** Some brokers, and TLS
   front ends placed before one, close a connection that has been silent for exactly the keepalive
   time (60 seconds). The keepalive message was sent only when that time was already up, so on a
