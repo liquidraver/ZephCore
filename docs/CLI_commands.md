@@ -292,11 +292,13 @@ Companion builds only. Local only: they run from USB and the app's CLI, and a re
 
 ## Observer (ZephCore only)
 
-The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and none of the commands in the other sections: no `reboot`, `ver`, `erase`, `set radio` or `set tx`. USB serial only — an observer never transmits, so there is no remote admin. A `get` replies with the bare value, without the `> ` prefix; a `set` echoes `key=value`; errors start with `ERR`. Every `set` is saved and applied at once, with no reboot.
+The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and, apart from `reboot` and `erase`, none of the commands in the other sections: no `ver`, `set radio` or `set tx`. USB serial only — an observer never transmits, so there is no remote admin. A `get` replies with the bare value, without the `> ` prefix; a `set` echoes `key=value`; errors start with `ERR`. Every `set` is saved and applied at once, with no reboot.
 
 | Command | Description |
 |---------|-------------|
 | `help` | Status banner (node, key, radio, WiFi and MQTT state) followed by the command list. Also printed at boot |
+| `reboot` | Restart the node. Replies `OK - rebooting`, as on a repeater |
+| `erase` | Factory reset, as on a repeater: erases the whole LittleFS volume (identity, name, radio, WiFi and MQTT settings) and restarts onto defaults. Replies `File system erase: OK - rebooting` |
 | `get role` | `observer` |
 | `get name` | Node name. Default `Observer-XXXXXXXX` |
 | `get board` | Board name |

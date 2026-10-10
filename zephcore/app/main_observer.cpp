@@ -207,6 +207,10 @@ static void print_banner(void)
 	cli_println("get mqtt.user              MQTT username");
 	cli_println("get mqtt.iata              Location code");
 	cli_println("get meshtimesync           Time-sync consensus state (dry-run)");
+	cli_println("");
+	cli_println("--- System ---");
+	cli_println("reboot                     Restart the node");
+	cli_println("erase                      Factory reset: erase all settings, then restart");
 	cli_println("help                       Show this screen");
 	cli_println("=========================");
 }
@@ -239,6 +243,10 @@ static void cli_echo_resume(void)
 static inline void cli_echo_resume(void) {}
 #endif
 
+/* `reboot` and `erase`: handled here, beside the board and the data store,
+ * not in ObserverMesh. Defined below the global instances. */
+static bool cli_system_command(const char *line, char *reply, size_t reply_size);
+
 static void process_cli_rx(void)
 {
 	uint8_t byte;
@@ -250,7 +258,9 @@ static void process_cli_rx(void)
 
 				cli_reply[0] = '\0';
 				bool want_banner = false;
-				if (s_mesh_ptr) {
+				if (cli_system_command(cli_line, cli_reply, sizeof(cli_reply))) {
+					/* reply set; the node resets shortly */
+				} else if (s_mesh_ptr) {
 					want_banner = s_mesh_ptr->handleCLI(
 						cli_line, cli_reply,
 						sizeof(cli_reply));
@@ -311,6 +321,39 @@ static mesh::LoRaRadio lora_radio(lora_dev, s_board);
 
 static mesh::ObserverMesh observer_mesh(lora_radio, s_ms_clock, s_rtc_clock);
 static RepeaterDataStore  data_store;
+
+/* ========== reboot / erase ========== */
+
+/* Deferred so the reply reaches the console before the reset. */
+static void cli_reboot_work_fn(struct k_work *work)
+{
+	ARG_UNUSED(work);
+	s_board.reboot();
+}
+
+static K_WORK_DELAYABLE_DEFINE(cli_reboot_work, cli_reboot_work_fn);
+
+/* Same commands and replies as the repeater's CLI (helpers/CommonCLI.cpp).
+ * `erase` is the factory reset: the whole volume, WiFi and MQTT settings
+ * included, then a reboot onto defaults. */
+static bool cli_system_command(const char *line, char *reply, size_t reply_size)
+{
+	if (strcmp(line, "reboot") == 0) {
+		snprintf(reply, reply_size, "OK - rebooting");
+		k_work_schedule(&cli_reboot_work, K_MSEC(500));
+		return true;
+	}
+	if (strcmp(line, "erase") == 0) {
+		if (data_store.formatFileSystem()) {
+			snprintf(reply, reply_size, "File system erase: OK - rebooting");
+			k_work_schedule(&cli_reboot_work, K_MSEC(500));
+		} else {
+			snprintf(reply, reply_size, "File system erase: Err");
+		}
+		return true;
+	}
+	return false;
+}
 
 /* ========== main() ========== */
 

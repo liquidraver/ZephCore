@@ -265,6 +265,10 @@ matches the SoftDevice version of your bootloader.
   The older ESP32 in the TTGO LoRa32 and T-Beam has no usable sensor and still reports none. On the
   ThinkNode M9 and Meshnology W12 the radio now also recalibrates itself when the temperature has
   moved by 5 C or more, as it already does on nRF boards with an LR1110 or LR2021.
+- **Observers have `reboot` and `erase`** on their serial console, with the same replies as on a
+  repeater. `erase` is the factory reset: it wipes the identity, the name and the radio, WiFi and
+  MQTT settings, and restarts the node on defaults. Until now an observer could only be wiped by
+  erasing the flash from a computer.
 - **`sensor list`** with a negative start index is rejected instead of being used
   ([PR #100](https://github.com/liquidraver/ZephCore/pull/100), thanks to **ptr727**).
 - **T1000-E**: a pin that was wrongly driven as a sensor enable is left alone. Sensor readings are
