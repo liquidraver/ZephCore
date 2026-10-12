@@ -513,6 +513,30 @@ endmenu # Companion TCP Transport
 
 endif # ZEPHCORE_ROLE_COMPANION
 
+config ZEPHCORE_ZCPFS
+	bool "Forward-secret messages between ZephCore nodes (zcpfs), experimental"
+	default n
+	help
+	  Builds lib/zcpfs and lib/ascon into the firmware: forward-secret
+	  sealing of direct messages between two nodes that both have it, and
+	  a login that never sends the password. The protocol is
+	  lib/zcpfs/SPEC.md; nodes without it are not affected and are only
+	  ever sent ordinary MeshCore packets.
+
+	  Experimental. Neither the design nor the code has had a
+	  cryptographic review. Off by default.
+
+config ZEPHCORE_ZCPFS_PEERS
+	int "Contacts with zcpfs state at the same time"
+	depends on ZEPHCORE_ZCPFS
+	range 1 64
+	default 4
+	help
+	  Records of the zcpfs contact table, about 2.4 kB of RAM each. A
+	  contact needs one while it has a session or a handshake under way;
+	  when all are taken the least recently used one is given away and that
+	  contact handshakes again on its next message (lib/zcpfs/SPEC.md 9.6).
+
 config ZEPHCORE_HOUSEKEEPING_INTERVAL_MS
 	int "Companion housekeeping interval (ms)"
 	depends on ZEPHCORE_ROLE_COMPANION

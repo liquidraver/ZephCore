@@ -108,6 +108,24 @@ protected:
   */
   virtual void onPeerDataRecv(Packet* packet, uint8_t type, int sender_idx, const uint8_t* secret, uint8_t* data, size_t len) { }
 
+  // ZEPHCORE: zcpfs hooks (lib/zcpfs/SPEC.md 7.1, 18); the glue is helpers/zcpfs/.
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  /**
+   * \brief  A PATH, REQ, RESPONSE or TXT_MSG for this node, offered per matching peer BEFORE legacy decryption.
+   * \returns  SEALED_LEGACY (decrypt as legacy), SEALED_NEXT (not from this peer), SEALED_CONSUMED (handled),
+   *           or SEALED_DATA: 'data' and '*len' hold what legacy decryption would have produced.
+  */
+  virtual int onPeerSealedRecv(Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) { return SEALED_LEGACY; }
+  /** \brief  The packet offered to onPeerSealedRecv() has been dealt with. */
+  virtual void onPeerRecvDone() { }
+  /**
+   * \brief  Chance to build the whole payload of an outgoing datagram or path return in sealed form.
+   * \returns  the payload length; 0 to build it as legacy; -1 if the packet must not be sent.
+  */
+  virtual int sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) { return 0; }
+#endif
+  // ZEPHCORE: end
+
   /**
    * \brief  A TRACE packet has been received. (and has reached the end of its given path)
    *         NOTE: this may have been initiated by another node.
@@ -188,6 +206,9 @@ protected:
   MeshTables* getTables() const { return _tables; }
 
 public:
+  // ZEPHCORE: results of onPeerSealedRecv()
+  enum { SEALED_LEGACY, SEALED_NEXT, SEALED_CONSUMED, SEALED_DATA };
+
   void begin();
   void loop();
 

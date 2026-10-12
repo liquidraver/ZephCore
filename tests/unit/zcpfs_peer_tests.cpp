@@ -1415,6 +1415,15 @@ TEST(zcpfs_peer_limits, "UNIT-ZCPFS-019", "Rate limits, the unacknowledged and f
     b.boot("fresh");
     sim.t = 2000000;
     say(a, b, "hello");
+    for (int i = 0; i < ZCPFS_K_UNACKED - 1; ++i) {         // seven unheard, then the peer is heard from:
+        a.app_send(b.S, "unanswered " + std::to_string(i), 1700000050u + uint32_t(i), 0, &result);
+        CHECK(result == ZCPFS_SENT && a.take().size() == 1);
+    }
+    CHECK(a.record(b.S)->current.unacked == ZCPFS_K_UNACKED - 1);
+    b.app_send(a.S, "still here", 1700000060u, 0);       // any packet of the peer under the session will do,
+    give(a, b.take());                                      // text that nobody acknowledges included
+    a.take();
+    CHECK(a.received(b.S, "still here") == 1 && a.record(b.S)->current.unacked == 0);
     for (int i = 0; i < ZCPFS_K_UNACKED; ++i) {
         a.app_send(b.S, "unheard " + std::to_string(i), 1700000000u + uint32_t(i), 0, &result);
         CHECK(result == ZCPFS_SENT && a.take().size() == 1);
@@ -1581,7 +1590,7 @@ TEST(zcpfs_login_roles, "UNIT-ZCPFS-021", "Login: the password never leaves the 
     }
 }
 
-TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while there is room for the offer, one place kept for known clients, one new login per offer; offers and waits end on time") {
+TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while there is room for the offer, one place kept for known clients, a new login replaces an offer that is a step old; offers and waits end on time") {
     Sim sim(55);
     std::vector<Host *> c;
     for (int i = 0; i < 6; ++i) c.push_back(&login_pair(sim, true, "client " + std::to_string(i)).client);
@@ -1600,13 +1609,21 @@ TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while th
     // the last place is for a client the server knows; nobody can pose as one, the login is signed by its key
     server.acl.insert(c[4]->S);
     CHECK(attempt(*c[4], "hunter2").size() == 1 && server.offers_kept() == 4);
-    // one new login per offer: it replaces the offer; the next is refused until that has run out
+    // a client's new login replaces its offer once that is a step old, as an application's retry always is;
+    // sooner it is not answered, so one key gets one answer per step however fast it sends
+    CHECK(attempt(*c[0], "wrong").empty() && server.logins_dropped == 2);
+    sim.t = (STEP - 1) * 1000;
+    CHECK(attempt(*c[0], "wrong").empty());
+    sim.t = STEP * 1000;
     CHECK(attempt(*c[0], "wrong").size() == 1 && server.offers_kept() == 4);
-    CHECK(attempt(*c[0], "hunter2").empty() && server.logins_dropped == 2);
+    CHECK(attempt(*c[0], "hunter2").empty());
     // offers run out; they never make room
     sim.t = (LOGIN_WAIT - 1) * 1000;
     CHECK(attempt(*c[3], "hunter2").empty());
-    sim.t = LOGIN_WAIT * 1000;
+    sim.t = LOGIN_WAIT * 1000;                              // the others' time is up; c0 retries again, as often as it likes
+    CHECK(attempt(*c[0], "wrong").size() == 1 && server.offers_kept() == 1);
+    CHECK(server.tick() == LOGIN_WAIT);
+    sim.t += LOGIN_WAIT * 1000;
     CHECK(server.tick() == UINT32_MAX && server.offers_kept() == 0);
 
     // a known client's offer does not use up a stranger's place: three strangers still fit beside it
@@ -1637,7 +1654,8 @@ TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while th
     CHECK(give(*c[5], first).empty() && c[5]->logins.empty() && !c[5]->node.login.used);    // too late
     server.tick();
     const std::vector<Packet> stale = attempt(*c[5], "hunter2");
-    const std::vector<Packet> fresh = attempt(*c[5], "hunter2");                             // its one new login
+    sim.t += STEP * 1000;
+    const std::vector<Packet> fresh = attempt(*c[5], "hunter2");                             // the retry
     CHECK(stale.size() == 1 && fresh.size() == 1 && server.offers_kept() == 1);
     CHECK(give(*c[5], stale).empty() && c[5]->logins.empty());                               // answers the login it replaced
     settle(*c[5], server, give(*c[5], fresh));
@@ -1703,6 +1721,7 @@ TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while th
     CHECK(zcpfs_login_answer(&server.node, &req, three, 2, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_OK);
     CHECK(len + 2 == 87 && server.offers_kept() == 1);      // the largest reply there is
     // the offer is kept two steps of the timeout the server gave, here a slower link than the default
+    sim.t += STEP * 1000;
     CHECK(zcpfs_login_answer(&server.node, &req, three, 1, 14300, server.now(), reply.data(), &len) == ZCPFS_OK);
     CHECK(len + 2 == 45 && server.tick() == ZCPFS_LOGIN_STEPS * 23);
     CHECK(zcpfs_login_answer(&server.node, &req, three, 1, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_FULL);

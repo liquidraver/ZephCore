@@ -586,7 +586,7 @@ class Peer:
         self.outstanding_at = 0        # when the newest of them was sent
         self.login_out = None          # client: own login awaiting its reply (section 19)
         self.login_until = 0
-        self.login_repeated = False    # server: the offer already replaced an earlier one
+        self.login_renew = 0           # server: from when a new login replaces the offer
         self.login_known = False       # server: the offer is to a client that was known
         self.login_candidates = []     # server: (Session, role, feed) awaiting confirmation
         self.login_deadline = 0
@@ -716,7 +716,7 @@ class Node:
         if peer.previous and peer.prev_deadline is not None and now >= peer.prev_deadline:
             peer.previous, peer.prev_deadline = None, None
         if peer.login_candidates and now >= peer.login_deadline:
-            peer.login_candidates, peer.login_repeated = [], False
+            peer.login_candidates = []
         if peer.login_out and now >= peer.login_until:
             peer.login_out = None                 # 19.2: the application has stopped waiting
         if peer.outstanding and now - peer.outstanding_at >= self.p.T_HS_WAIT:
@@ -1050,6 +1050,7 @@ class Node:
     def _on_opened(self, peer, slot, plain, ack4, flood, out):
         now = self.clock()
         if slot == "current":
+            peer.current.unacked = 0              # 9.5: the peer still holds the session
             if peer.previous and peer.prev_deadline is None:
                 peer.prev_deadline = now + self.p.T_PREV
         elif slot == "next":                      # 8.5
@@ -1215,8 +1216,8 @@ class Node:
         # offer; that is the limit on password guesses and on reply airtime.
         for other in self.peers.values():
             self._expire(other, now)
-        if peer is not None and peer.login_candidates and peer.login_repeated:
-            return                                # one new login per offer, not more
+        if peer is not None and peer.login_candidates and now < peer.login_renew:
+            return                                # its offer is not yet a step old
         waiting = [q for q in self.peers.values() if q.login_candidates and q.S != S_c]
         strangers = [q for q in waiting if not q.login_known]
         if len(waiting) >= self.p.N_LOGIN or (
@@ -1238,7 +1239,7 @@ class Node:
         if not accepted:
             return
         peer = peer or self.add_contact(S_c)
-        peer.login_repeated = bool(peer.login_candidates)
+        peer.login_renew = now + self.p.T_STEP
         peer.login_known, peer.login_stamp = known, sent
         peer.login_candidates = []
         branches = []
@@ -1299,7 +1300,6 @@ class Node:
         peer.previous = peer.current
         peer.prev_deadline = now + self.p.T_PREV if peer.previous else None
         peer.current, peer.next, peer.login_candidates = session, None, []
-        peer.login_repeated = False
         peer.pinned = True
         self.logged_in.append((peer.S, role))
 

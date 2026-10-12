@@ -221,7 +221,17 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
 
             // decrypt, checking MAC is valid
             uint8_t data[MAX_PACKET_PAYLOAD];
+            // ZEPHCORE: a zcpfs packet is opened before any legacy decryption (lib/zcpfs/SPEC.md 7.1)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+            int len = 0;
+            int sealed = onPeerSealedRecv(pkt, j, secret, data, &len);
+            if (sealed == SEALED_NEXT) continue;
+            if (sealed == SEALED_CONSUMED) { found = true; break; }
+            if (sealed == SEALED_LEGACY) len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
+#else
             int len = Utils::MACThenDecrypt(secret, data, macAndData, pkt->payload_len - i);
+#endif
+            // ZEPHCORE: end
             if (len > 0) {  // success!
               if (pkt->getPayloadType() == PAYLOAD_TYPE_PATH) {
                 int k = 0;
@@ -254,6 +264,9 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
               break;
             }
           }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+          onPeerRecvDone();  // ZEPHCORE
+#endif
           if (found) {
             pkt->markDoNotRetransmit();  // packet was for this node, so don't retransmit
           } else {
@@ -555,6 +568,13 @@ Packet* Mesh::createPathReturn(const uint8_t* dest_hash, const uint8_t* secret, 
       getRNG()->random(&data[data_len], 4); data_len += 4;
     }
 
+    // ZEPHCORE: sealed form towards a zcpfs contact (lib/zcpfs/SPEC.md 18)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    int sealed_len = sealOutgoing(PAYLOAD_TYPE_PATH, dest_hash, secret, data, data_len, packet->payload);
+    if (sealed_len < 0) { releasePacket(packet); return NULL; }
+    if (sealed_len > 0) len = sealed_len; else
+#endif
+    // ZEPHCORE: end
     len += Utils::encryptThenMAC(secret, &packet->payload[len], data, data_len);
   }
 
@@ -580,6 +600,13 @@ Packet* Mesh::createDatagram(uint8_t type, const Identity& dest, const uint8_t* 
   int len = 0;
   len += dest.copyHashTo(&packet->payload[len]);  // dest hash
   len += self_id.copyHashTo(&packet->payload[len]);  // src hash
+  // ZEPHCORE: sealed form towards a zcpfs contact (lib/zcpfs/SPEC.md 18)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  int sealed_len = sealOutgoing(type, packet->payload, secret, data, data_len, packet->payload);
+  if (sealed_len < 0) { releasePacket(packet); return NULL; }
+  if (sealed_len > 0) len = sealed_len; else
+#endif
+  // ZEPHCORE: end
   len += Utils::encryptThenMAC(secret, &packet->payload[len], data, data_len);
 
   packet->payload_len = len;

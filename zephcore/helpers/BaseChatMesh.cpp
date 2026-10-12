@@ -33,6 +33,9 @@ mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name) {
     AdvertDataBuilder builder(ADV_TYPE_CHAT, name);
     app_data_len = builder.encodeTo(app_data);
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  app_data_len = ZcpfsChat::tagAdvert(app_data, app_data_len);  // ZEPHCORE
+#endif
 
   return createAdvert(self_id, app_data, app_data_len);
 }
@@ -44,6 +47,9 @@ mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name, double lat, doubl
     AdvertDataBuilder builder(ADV_TYPE_CHAT, name, lat, lon);
     app_data_len = builder.encodeTo(app_data);
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  app_data_len = ZcpfsChat::tagAdvert(app_data, app_data_len);  // ZEPHCORE
+#endif
 
   return createAdvert(self_id, app_data, app_data_len);
 }
@@ -212,6 +218,9 @@ void BaseChatMesh::onAdvertRecv(mesh::Packet* packet, const mesh::Identity& id, 
   }
   from->last_advert_timestamp = timestamp;
   from->lastmod = getRTCClock()->getCurrentTime();
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zc.onAdvert(*from, app_data, app_data_len);  // ZEPHCORE: the capability tag pins or unpins
+#endif
 
   onDiscoveredContact(*from, is_new, packet->path_len, packet->path);       // let UI know
 }
@@ -262,14 +271,18 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
       // NEW: append (potential) extended attempt byte (to make packethash unique)
       ack_hash[4] = data[5 + text_len + 1];
       getRNG()->random(&ack_hash[5], 1);  // make 6th byte random
+      uint8_t ack_len = 6;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      if (_zc.takeAck(ack_hash)) ack_len = 4;  // ZEPHCORE: a sealed text is acknowledged with its 4 keyed bytes
+#endif
 
       if (packet->isRouteFlood()) {
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the ACK
         mesh::Packet* path = createPathReturn(from.id, secret, packet->path, packet->path_len,
-                                                PAYLOAD_TYPE_ACK, (uint8_t *) &ack_hash, 6);
+                                                PAYLOAD_TYPE_ACK, (uint8_t *) &ack_hash, ack_len);
         if (path) sendFloodScoped(from, path, TXT_ACK_DELAY);
       } else {
-        sendAckTo(from, ack_hash, 6);
+        sendAckTo(from, ack_hash, ack_len);
       }
     } else if (flags == TXT_TYPE_CLI_DATA) {
       char *text = (char *)&data[5];
@@ -294,6 +307,12 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
         memcpy(temp, &timestamp, 4);
         temp[4] = (TXT_TYPE_CLI_DATA << 2);
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+        {  // ZEPHCORE: the reply to a pinned contact goes under the session
+          uint32_t zc_timeout; int zc_rc;
+          if (_zc.sendText(from, temp, 5 + text_len, NULL, zc_timeout, zc_rc)) return;
+        }
+#endif
         auto reply_pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, from.id, secret, temp, 5 + text_len);
         if (reply_pkt) {
           if (from.out_path_len == OUT_PATH_UNKNOWN) {
@@ -312,6 +331,9 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
 
       uint32_t ack_hash;    // calc truncated hash of the message timestamp + text + OUR pub_key, to prove to sender that we got it
       mesh::Utils::sha256((uint8_t *) &ack_hash, 4, data, 9 + strlen((char *)&data[9]), self_id.pub_key, PUB_KEY_SIZE);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      _zc.takeAck((uint8_t *) &ack_hash);  // ZEPHCORE
+#endif
 
       if (packet->isRouteFlood()) {
         // let this sender know path TO here, so they can use sendDirect(), and ALSO encode the ACK
@@ -363,7 +385,14 @@ bool BaseChatMesh::onPeerPathRecv(mesh::Packet* packet, int sender_idx, const ui
 
   ContactInfo& from = contacts[i];
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // ZEPHCORE: the engine learns of the path once it is stored
+  bool send_reciprocal = onContactPathRecv(from, packet->path, packet->path_len, path, path_len, extra_type, extra, extra_len);
+  _zc.onPath(from, packet);
+  return send_reciprocal;
+#else
   return onContactPathRecv(from, packet->path, packet->path_len, path, path_len, extra_type, extra, extra_len);
+#endif
 }
 
 bool BaseChatMesh::onContactPathRecv(ContactInfo& from, uint8_t* in_path, uint8_t in_path_len, uint8_t* out_path, uint8_t out_path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) {
@@ -376,6 +405,14 @@ bool BaseChatMesh::onContactPathRecv(ContactInfo& from, uint8_t* in_path, uint8_
 
   if (extra_type == PAYLOAD_TYPE_ACK && extra_len >= 4) {
     // also got an encoded ACK!
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    {  // ZEPHCORE: the ACK of a sealed text becomes the value the application waits for
+      uint32_t zc_ack;
+      memcpy(&zc_ack, extra, 4);
+      _zc.translateAck(zc_ack);
+      memcpy(extra, &zc_ack, 4);
+    }
+#endif
     if (processAck(extra) != NULL) {
       txt_send_timeout = 0;   // matched one we're waiting for, cancel timeout timer
     }
@@ -386,6 +423,9 @@ bool BaseChatMesh::onContactPathRecv(ContactInfo& from, uint8_t* in_path, uint8_
 }
 
 void BaseChatMesh::onAckRecv(mesh::Packet* packet, uint32_t ack_crc) {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zc.translateAck(ack_crc);  // ZEPHCORE: as in onContactPathRecv()
+#endif
   ContactInfo* from;
   if ((from = processAck((uint8_t *)&ack_crc)) != NULL) {
     txt_send_timeout = 0;   // matched one we're waiting for, cancel timeout timer
@@ -497,6 +537,26 @@ mesh::Packet* BaseChatMesh::composeMsgPacket(const ContactInfo& recipient, uint3
 }
 
 int  BaseChatMesh::sendMessage(const ContactInfo& recipient, uint32_t timestamp, uint8_t attempt, const char* text, uint32_t& expected_ack, uint32_t& est_timeout) {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  {  // ZEPHCORE: text to a pinned contact goes under its session, never as legacy (lib/zcpfs/SPEC.md 6.2)
+    int text_len = strlen(text);
+    if (text_len > MAX_TEXT_LEN || (attempt > 3 && text_len > MAX_TEXT_LEN-2)) return MSG_SEND_FAILED;
+    uint8_t temp[5+MAX_TEXT_LEN+1];
+    memcpy(temp, &timestamp, 4);
+    temp[4] = (attempt & 3);
+    memcpy(&temp[5], text, text_len + 1);
+    int len = 5 + text_len;
+    if (attempt > 3) {
+      temp[len++] = 0;
+      temp[len++] = attempt;
+    }
+    int rc;
+    if (_zc.sendText(recipient, temp, len, &expected_ack, est_timeout, rc)) {
+      if (rc != MSG_SEND_FAILED) txt_send_timeout = futureMillis(est_timeout);
+      return rc;
+    }
+  }
+#endif
   mesh::Packet* pkt = composeMsgPacket(recipient, timestamp, attempt, text, expected_ack);
   if (pkt == NULL) return MSG_SEND_FAILED;
 
@@ -524,6 +584,15 @@ int  BaseChatMesh::sendCommandData(const ContactInfo& recipient, uint32_t timest
   temp[4] = (attempt & 3) | (txt_type << 2);
   memcpy(&temp[5], text, text_len + 1);
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  {  // ZEPHCORE: as in sendMessage()
+    int rc;
+    if (_zc.sendText(recipient, temp, 5 + text_len, NULL, est_timeout, rc)) {
+      if (rc != MSG_SEND_FAILED) txt_send_timeout = futureMillis(est_timeout);
+      return rc;
+    }
+  }
+#endif
   auto pkt = createDatagram(PAYLOAD_TYPE_TXT_MSG, recipient.id, recipient.getSharedSecret(self_id), temp, 5 + text_len);
   if (pkt == NULL) return MSG_SEND_FAILED;
 
@@ -928,6 +997,9 @@ bool BaseChatMesh::removeContact(ContactInfo& contact) {
     idx++;
   }
   if (idx >= num_contacts) return false;   // not found
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zc.forget(contact.id.pub_key);  // ZEPHCORE
+#endif
 
   // remove from contacts array
   num_contacts--;
@@ -1044,4 +1116,7 @@ void BaseChatMesh::loop() {
   }
 
   checkConnections();  // ZEPHCORE: upstream calls this from MyMesh::loop()
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zc.loop();  // ZEPHCORE: handshake repeats, resends, expiry
+#endif
 }

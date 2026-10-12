@@ -704,7 +704,7 @@
     },
     {
       "id": "UNIT-ZCPFS-022",
-      "name": "Login limits: answered only while there is room for the offer, one place kept for known clients, one new login per offer; offers and waits end on time",
+      "name": "Login limits: answered only while there is room for the offer, one place kept for known clients, a new login replaces an offer that is a step old; offers and waits end on time",
       "source": "tests/unit/zcpfs_peer_tests.cpp"
     },
     {

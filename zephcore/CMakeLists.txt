@@ -337,6 +337,18 @@ add_definitions(-DFIRMWARE_VERSION="${ZEPHCORE_FIRMWARE_VERSION}")
 add_subdirectory(lib/monocypher)
 target_link_libraries(app PRIVATE monocypher)
 
+# zcpfs (lib/zcpfs/README.md) and the Ascon it uses: experimental, off by default.
+if(CONFIG_ZEPHCORE_ZCPFS)
+  add_subdirectory(lib/ascon)
+  add_subdirectory(lib/zcpfs)
+  target_link_libraries(app PRIVATE zcpfs ascon)
+  target_include_directories(app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/lib/zcpfs/include)
+  if(CONFIG_ZEPHCORE_ROLE_COMPANION)
+    target_sources(app PRIVATE helpers/zcpfs/ZcpfsChat.cpp)
+  endif()
+endif()
+
 target_include_directories(app PRIVATE
   ${CMAKE_CURRENT_SOURCE_DIR}/include
   ${CMAKE_CURRENT_SOURCE_DIR}
