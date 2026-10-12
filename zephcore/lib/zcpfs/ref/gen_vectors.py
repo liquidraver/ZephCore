@@ -220,9 +220,11 @@ def build():
     G = zcpfs.pake_generator(password, i.S, r.S)
     lout, lbody1 = zcpfs.pake1_make(Drbg(seq(0x41, 32)), ss, i.S, r.S, password, stamp)
     assert lout.y == y_c and lout.Y == x25519(y_c, G)
-    lS, lY_c, lss, lplain = zcpfs.pake1_open(r.a, r.S, lbody1)
-    assert (lS, lY_c, lss) == (i.S, lout.Y, ss)
-    reply_plain = (1_700_000_001).to_bytes(4, "little") + b"admin"
+    lS, lY_c, lss, lplain, lempty = zcpfs.pake1_open(r.a, r.S, lbody1)
+    assert (lS, lY_c, lss, lempty) == (i.S, lout.Y, ss, False)
+    _, lbody_empty = zcpfs.pake1_make(Drbg(seq(0x41, 32)), ss, i.S, r.S, b"", stamp)
+    assert zcpfs.pake1_open(r.a, r.S, lbody_empty)[4] is True
+    reply_plain = (1_700_000_001).to_bytes(4, "little") + b"\x03\x11"   # time, permissions, firmware level
     branch, lck_i2r, lck_r2i, _ = zcpfs.pake_branch_make(Drbg(seq(0x51, 32)), ss, i.S, r.S, lY_c,
                                                           password, reply_plain)
     Y_s = x25519(y_s, G)
@@ -239,8 +241,9 @@ def build():
         "generator_input": hx(gen_in), "generator": hx(G),
         "y_c": hx(y_c), "Y_c": hx(lout.Y), "y_s": hx(y_s), "Y_s": hx(Y_s), "K": hx(K),
         "k_pake1": hx(kdf("pake1", ss, i.S, r.S, lout.Y, n=32)),
-        "login_plaintext": hx(stamp), "sealed_login_plaintext": hx(lplain),
+        "login_plaintext": hx(stamp), "sealed_login_plaintext": hx(b"\x00" + lplain),
         "packet_login": hx(bytes([r.S[0]]) + lbody1),
+        "packet_login_empty_password": hx(bytes([r.S[0]]) + lbody_empty),
         "master": hx(lmaster), "k_pake2": hx(kdf("pake2", lmaster, n=32)),
         "reply_plaintext": hx(reply_plain),
         "branch_right_password": hx(branch), "branch_other_password": hx(wrong),

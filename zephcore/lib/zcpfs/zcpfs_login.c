@@ -4,9 +4,14 @@
  * multiply a one-time scalar onto a curve point derived from the password;
  * the password itself is never sent.
  *
- *   login   dst ‖ S_c ‖ Y_c ‖ C ‖ T8                       (ANON_REQ)
- *   reply   dst ‖ src ‖ count ‖ rlen ‖ branches ‖ zeros     (RESPONSE)
- *   branch  Y_s ‖ C ‖ T8, one per password the server would accept
+ *   login   dst ‖ S_c ‖ Y_c ‖ C ‖ T8        C: a flag byte, the legacy login   (ANON_REQ)
+ *   reply   dst ‖ src ‖ count ‖ branches ‖ zeros                              (RESPONSE)
+ *   branch  Y_s ‖ C ‖ T4, one per password the server would accept; C: 6 bytes
+ *
+ * The flag says whether the typed password is empty, which keeps a reply to
+ * two branches. A branch's tag is 4 bytes: it only tells the client which
+ * branch is its own, and the server trusts nothing but the 8-byte tag of the
+ * first packet under the session (19.5).
  */
 
 #include "zcpfs_internal.h"
@@ -14,7 +19,9 @@
 #include <string.h>
 
 #define LOGIN_HDR	64	/* S_c, Y_c */
+#define LOGIN_AROUND	(ZCPFS_LOGIN_OVERHEAD - 1)	/* dst, S_c, Y_c, tag */
 #define BRANCH_HDR	32	/* Y_s */
+#define FLAG_EMPTY	0x01	/* the typed password is empty */
 
 /* G(pw) = ELL2(KDF("pake.gen", pw, S_c, S_s; 32)), section 19.1 */
 static void generator(const uint8_t *password, size_t password_len, const uint8_t S_c[32],
@@ -73,9 +80,10 @@ int zcpfs_login_make(struct zcpfs_drbg *g, const uint8_t ss[32], const uint8_t S
 {
 	static const uint8_t zero[32];
 	uint8_t G[32], k1[32], ad[66];
-	size_t len = zcpfs_fit(ZCPFS_PT_ANON, plain_len, ZCPFS_LOGIN_OVERHEAD);
+	/* what is sealed: the flag byte, the login plaintext, perhaps a zero byte */
+	size_t len = zcpfs_fit(ZCPFS_PT_ANON, 1 + plain_len, LOGIN_AROUND);
 
-	if (len + ZCPFS_LOGIN_OVERHEAD > ZCPFS_MAX_PAYLOAD) {
+	if (len + LOGIN_AROUND > ZCPFS_MAX_PAYLOAD) {
 		return ZCPFS_ERR_ARG;
 	}
 	if (zcpfs_ct_equal(ss, zero, 32)) {
@@ -88,11 +96,12 @@ int zcpfs_login_make(struct zcpfs_drbg *g, const uint8_t ss[32], const uint8_t S
 
 	memcpy(body, S_c, 32);
 	memcpy(body + 32, out->Y, 32);
+	body[LOGIN_HDR] = password_len == 0 ? FLAG_EMPTY : 0;
 	if (plain_len > 0) {
-		memcpy(body + LOGIN_HDR, login_plain, plain_len);
+		memcpy(body + LOGIN_HDR + 1, login_plain, plain_len);
 	}
-	if (len > plain_len) {
-		body[LOGIN_HDR + plain_len] = 0;
+	if (len > 1 + plain_len) {
+		body[LOGIN_HDR + 1 + plain_len] = 0;
 	}
 	login_key(ss, S_c, S_s, out->Y, k1, ad);
 	zcpfs_aead_seal(k1, k1 + 16, ad, sizeof(ad), body + LOGIN_HDR, len, body + LOGIN_HDR);
@@ -104,14 +113,16 @@ int zcpfs_login_make(struct zcpfs_drbg *g, const uint8_t ss[32], const uint8_t S
 
 int zcpfs_login_open(const uint8_t a_s[32], const uint8_t S_s[32], const uint8_t *body,
 		     size_t body_len, uint8_t S_c[32], uint8_t Y_c[32], uint8_t ss[32],
-		     uint8_t *plain, size_t *plain_len)
+		     uint8_t *plain, size_t *plain_len, int *empty_password)
 {
 	uint8_t A_c[32], k1[32], ad[66];
+	size_t len;
 	int rc;
 
-	if (body_len < LOGIN_HDR + ZCPFS_TAG_LEN || body_len + 1 > ZCPFS_MAX_PAYLOAD) {
+	if (body_len < LOGIN_HDR + 1 + ZCPFS_TAG_LEN || body_len + 1 > ZCPFS_MAX_PAYLOAD) {
 		return ZCPFS_ERR_ARG;
 	}
+	len = body_len - LOGIN_HDR - ZCPFS_TAG_LEN;	/* the flag byte and what follows */
 	memcpy(S_c, body, 32);
 	memcpy(Y_c, body + 32, 32);
 	zcpfs_ed_to_x(A_c, S_c);
@@ -124,16 +135,22 @@ int zcpfs_login_open(const uint8_t a_s[32], const uint8_t S_s[32], const uint8_t
 	zcpfs_wipe(k1, sizeof(k1));
 	if (rc != ZCPFS_OK) {
 		zcpfs_wipe(ss, 32);
+		*plain_len = 0;
+		return rc;
 	}
-	*plain_len = body_len - LOGIN_HDR - ZCPFS_TAG_LEN;
-	return rc;
+	*empty_password = (plain[0] & FLAG_EMPTY) != 0;
+	memmove(plain, plain + 1, len - 1);
+	plain[len - 1] = 0;
+	*plain_len = len - 1;
+	return ZCPFS_OK;
 }
 
 int zcpfs_login_branch_make(struct zcpfs_drbg *g, const uint8_t ss[32],
 			    const uint8_t S_c[32], const uint8_t S_s[32],
 			    const uint8_t Y_c[32], const uint8_t *password,
-			    size_t password_len, const uint8_t *response,
-			    size_t response_len, uint8_t *branch, struct zcpfs_keys *keys)
+			    size_t password_len,
+			    const uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN],
+			    uint8_t branch[ZCPFS_BRANCH_LEN], struct zcpfs_keys *keys)
 {
 	uint8_t y[32], G[32], K[32], k2[32], ad[35];
 	int rc = ZCPFS_ERR_WEAK;
@@ -143,8 +160,9 @@ int zcpfs_login_branch_make(struct zcpfs_drbg *g, const uint8_t ss[32],
 	(void)zcpfs_dh(branch, y, G);			/* Y_s */
 	if (zcpfs_dh(K, y, Y_c) == ZCPFS_OK) {
 		branch_key(ss, K, S_c, S_s, Y_c, branch, k2, ad, keys);
-		zcpfs_aead_seal(k2, k2 + 16, ad, sizeof(ad), response, response_len,
-				branch + BRANCH_HDR);
+		zcpfs_aead_seal_tag(k2, k2 + 16, ad, sizeof(ad), response,
+				    ZCPFS_LOGIN_RESPONSE_LEN, branch + BRANCH_HDR,
+				    ZCPFS_BRANCH_TAG_LEN);
 		zcpfs_wipe(k2, sizeof(k2));
 		rc = ZCPFS_OK;
 	}
@@ -156,20 +174,19 @@ int zcpfs_login_branch_make(struct zcpfs_drbg *g, const uint8_t ss[32],
 
 int zcpfs_login_branch_open(const uint8_t ss[32], const struct zcpfs_login_out *out,
 			    const uint8_t S_c[32], const uint8_t S_s[32],
-			    const uint8_t *branch, size_t branch_len, uint8_t *response,
+			    const uint8_t branch[ZCPFS_BRANCH_LEN],
+			    uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN],
 			    struct zcpfs_keys *keys)
 {
 	const uint8_t *Y_s = branch;
 	uint8_t K[32], k2[32], ad[35];
 	int rc = ZCPFS_ERR_WEAK;
 
-	if (branch_len < ZCPFS_BRANCH_OVERHEAD) {
-		return ZCPFS_ERR_ARG;
-	}
 	if (zcpfs_dh(K, out->y, Y_s) == ZCPFS_OK) {
 		branch_key(ss, K, S_c, S_s, out->Y, Y_s, k2, ad, keys);
-		rc = zcpfs_aead_open(k2, k2 + 16, ad, sizeof(ad), branch + BRANCH_HDR,
-				     branch_len - BRANCH_HDR, response);
+		rc = zcpfs_aead_open_tag(k2, k2 + 16, ad, sizeof(ad), branch + BRANCH_HDR,
+					 ZCPFS_BRANCH_LEN - BRANCH_HDR, response,
+					 ZCPFS_BRANCH_TAG_LEN);
 		zcpfs_wipe(k2, sizeof(k2));
 	}
 	if (rc != ZCPFS_OK) {
@@ -179,20 +196,18 @@ int zcpfs_login_branch_open(const uint8_t ss[32], const struct zcpfs_login_out *
 	return rc;
 }
 
-int zcpfs_login_reply_pack(uint8_t count, uint8_t response_len, const uint8_t *branches,
-			   uint8_t *reply, size_t *reply_len)
+int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *reply,
+			   size_t *reply_len)
 {
-	size_t size = (size_t)response_len + ZCPFS_BRANCH_OVERHEAD;
-	size_t len = 2 + count * size;
+	size_t len = 1 + (size_t)count * ZCPFS_BRANCH_LEN;
 	/* dst and src precede the reply in the RESPONSE payload */
 	size_t padded = zcpfs_fit(ZCPFS_PT_RESPONSE, len, 2);
 
-	if (count < 1 || count > ZCPFS_LOGIN_MAX_BRANCHES || padded + 2 > ZCPFS_MAX_PAYLOAD) {
+	if (count < 1 || count > ZCPFS_LOGIN_MAX_BRANCHES) {
 		return ZCPFS_ERR_ARG;
 	}
 	reply[0] = count;
-	reply[1] = response_len;
-	memcpy(reply + 2, branches, count * size);
+	memcpy(reply + 1, branches, (size_t)count * ZCPFS_BRANCH_LEN);
 	if (padded > len) {
 		reply[len] = 0;
 	}
@@ -200,19 +215,12 @@ int zcpfs_login_reply_pack(uint8_t count, uint8_t response_len, const uint8_t *b
 	return ZCPFS_OK;
 }
 
-int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len,
-			     const uint8_t **branches, size_t *branch_len)
+int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **branches)
 {
-	size_t size;
-
-	if (reply_len < 2 || reply[0] < 1 || reply[0] > ZCPFS_LOGIN_MAX_BRANCHES) {
+	if (reply_len < 1 || reply[0] < 1 || reply[0] > ZCPFS_LOGIN_MAX_BRANCHES ||
+	    reply_len < 1 + (size_t)reply[0] * ZCPFS_BRANCH_LEN) {
 		return ZCPFS_ERR_ARG;
 	}
-	size = (size_t)reply[1] + ZCPFS_BRANCH_OVERHEAD;
-	if (reply_len < 2 + reply[0] * size) {
-		return ZCPFS_ERR_ARG;
-	}
-	*branches = reply + 2;
-	*branch_len = size;
+	*branches = reply + 1;
 	return reply[0];
 }

@@ -117,7 +117,7 @@ class App:
         token, packets = self.node.app_send(peer_S, text, timestamp, attempt)
         self.tries[text] = attempt + 1
         self.sim.transmit(self.node, packets)
-        self.sim.at(self.sim.t + self.timeout * self.node.wait_factor,
+        self.sim.at(self.sim.t + (self.node.held_for or self.timeout),
                     lambda: self._check(peer_S, text, timestamp, attempt, token))
 
     def _check(self, peer_S, text, timestamp, attempt, token):

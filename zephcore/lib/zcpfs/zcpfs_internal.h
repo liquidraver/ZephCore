@@ -21,6 +21,15 @@ void zcpfs_kdf_split(const char *label, const struct zcpfs_part *parts, size_t n
 void zcpfs_aead_seal(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
 		     size_t ad_len, const uint8_t *pt, size_t len, uint8_t *out);
 
+/* The two below with a tag of `tag_len` bytes, 4 to 16: only the branch of a
+ * login reply uses another length than ZCPFS_TAG_LEN (19.3). */
+void zcpfs_aead_seal_tag(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
+			 size_t ad_len, const uint8_t *pt, size_t len, uint8_t *out,
+			 size_t tag_len);
+int zcpfs_aead_open_tag(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
+			size_t ad_len, const uint8_t *body, size_t body_len, uint8_t *pt,
+			size_t tag_len);
+
 /* `body` is ciphertext then tag, at least ZCPFS_TAG_LEN bytes. `pt` receives
  * body_len - ZCPFS_TAG_LEN bytes, all zero if the tag does not verify. */
 int zcpfs_aead_open(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
