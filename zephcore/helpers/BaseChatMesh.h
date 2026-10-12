@@ -8,6 +8,10 @@
 #define MAX_TEXT_LEN    (10*CIPHER_BLOCK_SIZE)  // must be LESS than (MAX_PACKET_PAYLOAD - 4 - CIPHER_MAC_SIZE - 1)
 
 #include "ContactInfo.h"
+// ZEPHCORE: zcpfs glue
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#include "zcpfs/ZcpfsChat.h"
+#endif
 
 #define MAX_SEARCH_RESULTS   24
 
@@ -73,6 +77,11 @@ struct ConnectionInfo {
 class BaseChatMesh : public mesh::Mesh {
 
   friend class ContactsIterator;
+  // ZEPHCORE: zcpfs glue (helpers/zcpfs/ZcpfsChat.h)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  friend class ZcpfsChat;
+  ZcpfsChat _zc{*this};
+#endif
 
   ContactInfo contacts[MAX_CONTACTS+MAX_ANON_CONTACTS];
   int num_contacts;
@@ -155,6 +164,12 @@ protected:
   int searchPeersByHash(const uint8_t* hash) override;
   void getPeerSharedSecret(uint8_t* dest_secret, int peer_idx) override;
   void onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender_idx, const uint8_t* secret, uint8_t* data, size_t len) override;
+  // ZEPHCORE: zcpfs hooks of mesh::Mesh, implemented in helpers/zcpfs/ZcpfsChat.cpp
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  int onPeerSealedRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) override;
+  void onPeerRecvDone() override;
+  int sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) override;
+#endif
   bool onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* path, uint8_t path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) override;
   void onAckRecv(mesh::Packet* packet, uint32_t ack_crc) override;
 #ifdef MAX_GROUP_CHANNELS

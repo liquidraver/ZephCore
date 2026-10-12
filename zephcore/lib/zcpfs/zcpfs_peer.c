@@ -530,6 +530,7 @@ static int rx_data(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpf
 
 	if (p->current.used && zcpfs_open(&p->current.s, ad, sizeof(ad), body, body_len,
 					  out->plain, out->ack4, now) == ZCPFS_OK) {
+		p->current.unacked = 0;		/* 9.5: the peer still holds the session */
 		if (p->previous.used && !p->prev_timed) {
 			p->prev_timed = 1;	/* the peer has switched */
 			p->prev_deadline = now + ZCPFS_T_PREV;
@@ -779,11 +780,12 @@ static void offers_expire(struct zcpfs_node *n, uint32_t now)
 
 /* Where the offer of a login from this client goes: over its own waiting
  * offer, else into a free place. NULL means the login is not answered
- * (19.3 step 2): the client has already had its one new login on this offer,
- * or the table is full, or the client is a stranger and the only place left
+ * (19.3 step 2): the client's own offer is less than a step old, or the
+ * table is full, or the client is a stranger and the only place left
  * is the one kept for clients the server knows. An offer never makes room
  * for another; it leaves by confirmation or by time. */
-static struct zcpfs_offer *offer_slot(struct zcpfs_node *n, const uint8_t S[32], int known)
+static struct zcpfs_offer *offer_slot(struct zcpfs_node *n, const uint8_t S[32], int known,
+				      uint32_t now)
 {
 	struct zcpfs_offer *free_one = NULL;
 	size_t strangers = 0;
@@ -796,7 +798,7 @@ static struct zcpfs_offer *offer_slot(struct zcpfs_node *n, const uint8_t S[32],
 				free_one = o;
 			}
 		} else if (memcmp(o->S, S, 32) == 0) {
-			return o->repeated ? NULL : o;
+			return reached(now, o->renew) ? o : NULL;
 		} else if (!o->known) {
 			strangers++;
 		}
@@ -901,7 +903,7 @@ int zcpfs_login_rx(struct zcpfs_node *n, const uint8_t *payload, size_t len, int
 	offers_expire(n, now);
 	/* The key in the packet is not yet proven, but it is the one the offer
 	 * would be kept under, so a full table is known before any work. */
-	if (offer_slot(n, payload + 1, known) == NULL) {
+	if (offer_slot(n, payload + 1, known, now) == NULL) {
 		return ZCPFS_ERR_FULL;
 	}
 	if (!bucket_take(&n->pre, ZCPFS_R_PRE_PER_SECOND, 1, ZCPFS_R_PRE_BURST, now)) {
@@ -923,18 +925,16 @@ int zcpfs_login_answer(struct zcpfs_node *n, const struct zcpfs_login_req *req,
 {
 	uint8_t packed[ZCPFS_LOGIN_MAX_BRANCHES * ZCPFS_BRANCH_LEN];
 	struct zcpfs_offer *o;
-	uint8_t repeated;
 
 	if (count < 1 || count > ZCPFS_LOGIN_MAX_BRANCHES) {
 		return ZCPFS_ERR_ARG;
 	}
 	offers_expire(n, now);
-	o = offer_slot(n, req->S_c, req->known);
+	o = offer_slot(n, req->S_c, req->known, now);
 	if (o == NULL) {
 		return ZCPFS_ERR_FULL;		/* step 2 */
 	}
-	repeated = o->used;			/* this login replaces the client's last */
-	zcpfs_wipe(o, sizeof(*o));
+	zcpfs_wipe(o, sizeof(*o));		/* a new login replaces the client's last */
 	for (size_t j = 0; j < count; j++) {	/* step 3 */
 		if (zcpfs_login_branch_make(n->drbg, req->ss, req->S_c, n->S, req->Y_c,
 					    branches[j].password, branches[j].password_len,
@@ -951,8 +951,8 @@ int zcpfs_login_answer(struct zcpfs_node *n, const struct zcpfs_login_req *req,
 	}
 	memcpy(o->S, req->S_c, 32);		/* step 5 */
 	o->until = now + ZCPFS_LOGIN_STEPS * step_of(timeout_ms);
+	o->renew = now + step_of(timeout_ms);
 	o->known = req->known;
-	o->repeated = repeated;
 	o->used = 1;
 	return zcpfs_login_reply_pack(o->count, packed, reply, reply_len);
 }

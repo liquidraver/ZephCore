@@ -414,7 +414,7 @@ struct zcpfs_offer {			/* server: a login answered, not yet confirmed (19.3) */
 	uint8_t count;
 	uint8_t used;
 	uint8_t known;			/* the server knew the client before this login */
-	uint8_t repeated;		/* it has replaced an earlier offer to the client */
+	uint32_t renew;			/* from when a new login of the client replaces it */
 	uint32_t until;
 };
 
@@ -503,8 +503,9 @@ void zcpfs_forget(struct zcpfs_node *n, const uint8_t S[32]);
  * by the first packet that opens under it. A login is answered only while
  * there is room for that: the size of the offer table is the limit on
  * password guesses and on reply airtime (19.3). One place of the table is
- * kept for clients the server already knows, and a client gets one new
- * login per offer, not more.
+ * kept for clients the server already knows, and a client's new login
+ * replaces its offer only once that is a step old: an application's retry
+ * after its timeout always is, a sender guessing passwords has to wait.
  */
 
 #define ZCPFS_LOGIN_PLAIN_MAX	(ZCPFS_MAX_PAYLOAD - ZCPFS_LOGIN_OVERHEAD)
