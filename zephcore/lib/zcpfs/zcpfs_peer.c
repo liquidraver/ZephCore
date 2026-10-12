@@ -18,7 +18,7 @@
 #define HDR	2	/* dst, src */
 
 enum {			/* indices of gap_until[] */
-	GAP_START,	/* handshake 1 or probe started by a send, T_HS_RETRY */
+	GAP_START,	/* handshake 1, or probe started by a send: HS_RETRY steps */
 	GAP_RESYNC,	/* T_RESYNC */
 	GAP_HINT,	/* T_HINT */
 	GAP_PROBE,	/* T_PROBE */
@@ -39,6 +39,20 @@ enum {
 static int reached(uint32_t now, uint32_t t)
 {
 	return (int32_t)(now - t) >= 0;
+}
+
+/* The step of 10.4 for a send timeout, in seconds. */
+static uint32_t step_of(uint32_t timeout_ms)
+{
+	uint32_t s = timeout_ms / 1000 + (timeout_ms % 1000 != 0);
+
+	s += (s + 1) / 2;
+	return s < ZCPFS_T_STEP_MIN ? ZCPFS_T_STEP_MIN : s;
+}
+
+static uint32_t step(const struct zcpfs_contact *c)
+{
+	return step_of(c->timeout_ms);
 }
 
 /* At most one event per `gap` seconds: 1 if this one may happen. */
@@ -180,9 +194,10 @@ static int same_message(const struct zcpfs_msg *m, const uint8_t *plain, size_t 
 	       memcmp(m->plain + 5, plain + 5, end - 5) == 0;
 }
 
-/* Keep a message until a session exists. Only called without `current`. */
+/* Keep a message until a session exists, or until `due`. Only called without
+ * `current`. */
 static void hold(struct zcpfs_peer *p, const uint8_t *plain, size_t len, uint32_t token,
-		 uint32_t now)
+		 uint32_t due)
 {
 	struct zcpfs_msg *m;
 
@@ -203,7 +218,7 @@ static void hold(struct zcpfs_peer *p, const uint8_t *plain, size_t len, uint32_
 	m->len = (uint8_t)len;
 	m->sends = 0;
 	m->token = token;
-	m->due = now + ZCPFS_T_HELD;
+	m->due = due;
 }
 
 /* ---- slots (9.1, 9.4) ---------------------------------------------------- */
@@ -275,7 +290,7 @@ static void expire(struct zcpfs_peer *p, uint32_t now)
 	if (p->previous.used) {
 		zcpfs_session_tidy(&p->previous.s, now);
 	}
-	if (p->n_out > 0 && now - p->hs_at > ZCPFS_T_HS_WAIT) {
+	if (p->n_out > 0 && reached(now, p->hs_until)) {
 		drop_outstanding(p);	/* 8.2 */
 	}
 	if (!p->msgs_sent) {
@@ -347,7 +362,7 @@ static unsigned send_held(struct zcpfs_node *n, struct zcpfs_peer *p,
 
 		send_data(n, p, c, m->plain, m->len, m->token, 0, now);
 		m->sends = 0;
-		m->due = now + ZCPFS_T_DATA_RETRY;
+		m->due = now + ZCPFS_DATA_RETRY_STEPS * step(c);
 	}
 	p->msgs_sent = p->n_msgs > 0;
 	p->hs_tries = 0;
@@ -371,7 +386,7 @@ static void resend(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpf
 		} else {
 			send_data(n, p, c, m->plain, m->len, m->token, 0, now);
 			m->sends++;
-			m->due = now + ZCPFS_T_DATA_RETRY;
+			m->due = now + ZCPFS_DATA_RETRY_STEPS * step(c);
 			i++;
 		}
 	}
@@ -399,9 +414,9 @@ static void send_hs1(struct zcpfs_node *n, struct zcpfs_peer *p,
 	}
 	p->out[p->n_out++] = out;
 	zcpfs_wipe(&out, sizeof(out));
-	p->hs_at = now;
-	p->gap_armed |= 1u << GAP_START;	/* T_HS_RETRY counts from the newest */
-	p->gap_until[GAP_START] = now + ZCPFS_T_HS_RETRY;
+	p->hs_until = now + ZCPFS_HS_WAIT_STEPS * step(c);
+	p->gap_armed |= 1u << GAP_START;	/* the retry interval counts from the newest */
+	p->gap_until[GAP_START] = now + ZCPFS_HS_RETRY_STEPS * step(c);
 	if (p->hs_tries < UINT8_MAX) {
 		p->hs_tries++;
 	}
@@ -421,10 +436,12 @@ static void send_probe(struct zcpfs_node *n, struct zcpfs_peer *p,
 }
 
 int zcpfs_send_text(struct zcpfs_node *n, const struct zcpfs_contact *c,
-		    const uint8_t *plain, size_t len, uint32_t token, uint32_t now)
+		    const uint8_t *plain, size_t len, uint32_t token, uint32_t now,
+		    uint32_t *held_for)
 {
 	struct zcpfs_peer *p;
 
+	*held_for = 0;
 	if (!c->pinned || !usable(c)) {
 		return ZCPFS_LEGACY;
 	}
@@ -445,10 +462,11 @@ int zcpfs_send_text(struct zcpfs_node *n, const struct zcpfs_contact *c,
 		return ZCPFS_SENT;
 	}
 
-	/* 10.1 */
-	hold(p, plain, len, token, now);
+	/* 10.1: held exactly as long as the application is told to wait */
+	*held_for = ZCPFS_HELD_STEPS * step(c);
+	hold(p, plain, len, token, now + *held_for);
 	p->hs_tries = 0;		/* a new attempt, a new budget */
-	if (!gap_take(p, GAP_START, ZCPFS_T_HS_RETRY, now)) {
+	if (!gap_take(p, GAP_START, ZCPFS_HS_RETRY_STEPS * step(c), now)) {
 		p->hs_tries = 1;	/* one is under way; the timer repeats it */
 	} else if (c->has_path) {
 		send_hs1(n, p, c, now);
@@ -490,6 +508,18 @@ static int seen_before(struct zcpfs_peer *p, const uint8_t *plain, size_t len, u
 	return 0;
 }
 
+/* A data packet has opened into `out`: what the caller is to do with it. */
+static int delivered(struct zcpfs_peer *p, size_t body_len, uint32_t now,
+		     struct zcpfs_rx_out *out)
+{
+	p->t_used = now;
+	out->len = body_len - ZCPFS_TAG_LEN;
+	if (out->len == 0) {
+		return ZCPFS_RX_CONSUMED;	/* a confirmation */
+	}
+	return seen_before(p, out->plain, out->len, now) ? ZCPFS_RX_DUPLICATE : ZCPFS_RX_TEXT;
+}
+
 /* A TXT_MSG against the three slots (9.2). ZCPFS_RX_NEXT if none opens it. */
 static int rx_data(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpfs_contact *c,
 		   const uint8_t *payload, size_t len, uint32_t now, struct zcpfs_rx_out *out)
@@ -526,12 +556,7 @@ static int rx_data(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpf
 		return ZCPFS_RX_NEXT;
 	}
 
-	p->t_used = now;
-	out->len = body_len - ZCPFS_TAG_LEN;
-	if (out->len == 0) {
-		return ZCPFS_RX_CONSUMED;	/* a confirmation */
-	}
-	return seen_before(p, out->plain, out->len, now) ? ZCPFS_RX_DUPLICATE : ZCPFS_RX_TEXT;
+	return delivered(p, body_len, now, out);
 }
 
 /* 10.2: a text from a pinned contact that nothing opened. */
@@ -596,11 +621,36 @@ done:
 	return ZCPFS_RX_CONSUMED;
 }
 
+/* 8.4 steps 2 to 4: the node holds the keys as initiator, of a handshake or
+ * of a login (19.4). */
+static void become_initiator(struct zcpfs_node *n, struct zcpfs_peer *p,
+			     const struct zcpfs_contact *c, const struct zcpfs_keys *keys,
+			     int flood, uint32_t now)
+{
+	struct zcpfs_session s;
+
+	zcpfs_drbg_mix(n->drbg, keys->feed, sizeof(keys->feed));
+	zcpfs_session_init(&s, keys->ck_i2r, keys->ck_r2i, now);
+	make_current(p, &s);			/* step 3 */
+	drop_next(p);
+	drop_outstanding(p);
+	zcpfs_wipe(&s, sizeof(s));
+	p->t_used = now;
+	if (!flood) {
+		p->path_unconfirmed = 0;	/* the peer answered over the path */
+	}
+	if (!c->pinned) {
+		n->ops->pin(n->user, p->S);
+	}
+	if (send_held(n, p, c, now) == 0) {	/* step 4: the initiator sends first */
+		send_data(n, p, c, NULL, 0, 0, 0, now);
+	}
+}
+
 /* 8.4 */
 static int rx_hs2(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpfs_contact *c,
 		  const uint8_t *body, int flood, uint32_t now)
 {
-	struct zcpfs_session s;
 	struct zcpfs_keys keys;
 	uint8_t i;
 
@@ -617,23 +667,8 @@ static int rx_hs2(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcpfs
 		return ZCPFS_RX_NEXT;
 	}
 
-	zcpfs_drbg_mix(n->drbg, keys.feed, sizeof(keys.feed));
-	zcpfs_session_init(&s, keys.ck_i2r, keys.ck_r2i, now);
-	make_current(p, &s);			/* step 3 */
-	drop_next(p);
-	drop_outstanding(p);
-	zcpfs_wipe(&s, sizeof(s));
+	become_initiator(n, p, c, &keys, flood, now);
 	zcpfs_wipe(&keys, sizeof(keys));
-	p->t_used = now;
-	if (!flood) {
-		p->path_unconfirmed = 0;	/* the peer answered over the path */
-	}
-	if (!c->pinned) {
-		n->ops->pin(n->user, p->S);
-	}
-	if (send_held(n, p, c, now) == 0) {	/* step 4: the initiator sends first */
-		send_data(n, p, c, NULL, 0, 0, 0, now);
-	}
 	return ZCPFS_RX_CONSUMED;
 }
 
@@ -652,6 +687,10 @@ static int rx_probe(struct zcpfs_node *n, struct zcpfs_peer *p, const struct zcp
 	}
 	return ZCPFS_RX_PROBE;
 }
+
+static int rx_offers(struct zcpfs_node *n, const uint8_t *S, const struct zcpfs_contact *c,
+		     const uint8_t *payload, size_t len, uint32_t now, uint8_t who[32],
+		     struct zcpfs_rx_out *out);
 
 int zcpfs_rx(struct zcpfs_node *n, const struct zcpfs_contact *c, uint8_t ptype,
 	     const uint8_t *payload, size_t len, int flood, uint32_t now,
@@ -675,6 +714,13 @@ int zcpfs_rx(struct zcpfs_node *n, const struct zcpfs_contact *c, uint8_t ptype,
 
 			if (r != ZCPFS_RX_NEXT) {
 				return r;
+			}
+		}
+		if (n->n_offers > 0 && len >= ZCPFS_DATA_OVERHEAD && len <= ZCPFS_MAX_PAYLOAD) {
+			int r = rx_offers(n, c->S, c, payload, len, now, NULL, out);
+
+			if (r != ZCPFS_RX_NEXT) {
+				return r;	/* 19.5 */
 			}
 		}
 		if (!c->pinned) {
@@ -703,6 +749,11 @@ int zcpfs_rx(struct zcpfs_node *n, const struct zcpfs_contact *c, uint8_t ptype,
 
 	/* a request, response or path return */
 	if ((len - 4) % 16 != 0) {
+		if (ptype == ZCPFS_PT_RESPONSE && n->login.used &&
+		    zcpfs_rx_login_reply(n, c, payload + HDR, len - HDR, flood, now, out) ==
+			    ZCPFS_RX_LOGIN) {
+			return ZCPFS_RX_LOGIN;		/* 19.4 */
+		}
 		if (zcpfs_pair_open(c->ss, c->S, n->S, ptype, payload, len, out->plain,
 				    &out->len) == ZCPFS_OK) {
 			return ZCPFS_RX_PAIR;		/* section 18 */
@@ -710,6 +761,270 @@ int zcpfs_rx(struct zcpfs_node *n, const struct zcpfs_contact *c, uint8_t ptype,
 		return ZCPFS_RX_NEXT;
 	}
 	return c->pinned ? ZCPFS_RX_NEXT : ZCPFS_RX_LEGACY;
+}
+
+/* ---- 19: login ----------------------------------------------------------- */
+
+static void offers_expire(struct zcpfs_node *n, uint32_t now)
+{
+	for (size_t i = 0; i < n->n_offers; i++) {
+		if (n->offers[i].used && reached(now, n->offers[i].until)) {
+			zcpfs_wipe(&n->offers[i], sizeof(n->offers[i]));
+		}
+	}
+	if (n->login.used && reached(now, n->login.until)) {
+		zcpfs_wipe(&n->login, sizeof(n->login));
+	}
+}
+
+/* Where the offer of a login from this client goes: over its own waiting
+ * offer, else into a free place. NULL means the login is not answered
+ * (19.3 step 2): the client has already had its one new login on this offer,
+ * or the table is full, or the client is a stranger and the only place left
+ * is the one kept for clients the server knows. An offer never makes room
+ * for another; it leaves by confirmation or by time. */
+static struct zcpfs_offer *offer_slot(struct zcpfs_node *n, const uint8_t S[32], int known)
+{
+	struct zcpfs_offer *free_one = NULL;
+	size_t strangers = 0;
+
+	for (size_t i = 0; i < n->n_offers; i++) {
+		struct zcpfs_offer *o = &n->offers[i];
+
+		if (!o->used) {
+			if (free_one == NULL) {
+				free_one = o;
+			}
+		} else if (memcmp(o->S, S, 32) == 0) {
+			return o->repeated ? NULL : o;
+		} else if (!o->known) {
+			strangers++;
+		}
+	}
+	if (!known && n->n_offers > 1 && strangers >= n->n_offers - 1) {
+		return NULL;
+	}
+	return free_one;
+}
+
+int zcpfs_login_send(struct zcpfs_node *n, const struct zcpfs_contact *c,
+		     const uint8_t *password, size_t password_len,
+		     const uint8_t *login_plain, size_t plain_len, uint32_t now,
+		     uint32_t *wait_for)
+{
+	uint8_t payload[ZCPFS_MAX_PAYLOAD];
+	size_t body_len;
+	int rc;
+
+	*wait_for = 0;
+	if (!c->pinned || !usable(c)) {
+		return ZCPFS_LEGACY;
+	}
+	zcpfs_wipe(&n->login, sizeof(n->login));
+	rc = zcpfs_login_make(n->drbg, c->ss, n->S, c->S, password, password_len, login_plain,
+			      plain_len, &n->login.out, payload + 1, &body_len);
+	if (rc != ZCPFS_OK) {
+		zcpfs_wipe(&n->login, sizeof(n->login));
+		return rc;
+	}
+	*wait_for = ZCPFS_LOGIN_STEPS * step(c);
+	memcpy(n->login.S, c->S, 32);
+	n->login.until = now + *wait_for;
+	n->login.used = 1;
+	payload[0] = c->S[0];
+	n->ops->send(n->user, c->S, ZCPFS_PT_ANON, payload, 1 + body_len, !c->has_path);
+	return ZCPFS_SENT;
+}
+
+int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
+			 const uint8_t *reply, size_t reply_len, int flood, uint32_t now,
+			 struct zcpfs_rx_out *out)
+{
+	const uint8_t *branches;
+	struct zcpfs_keys keys;
+	struct zcpfs_peer *p;
+	int count;
+
+	memset(out, 0, sizeof(*out));
+	offers_expire(n, now);
+	if (!n->login.used || memcmp(n->login.S, c->S, 32) != 0 || !usable(c) ||
+	    reply_len > ZCPFS_MAX_PAYLOAD) {
+		return ZCPFS_RX_NEXT;
+	}
+	count = zcpfs_login_reply_unpack(reply, reply_len, &branches);
+	for (int j = 0; j < count; j++) {
+		/* 19.4: a branch opens only if the server used the typed password */
+		if (zcpfs_login_branch_open(c->ss, &n->login.out, n->S, c->S,
+					    branches + (size_t)j * ZCPFS_BRANCH_LEN, out->plain,
+					    &keys) != ZCPFS_OK) {
+			continue;
+		}
+		p = take(n, c->S, RANK_LIVE, now);
+		if (p == NULL) {
+			break;
+		}
+		out->len = ZCPFS_LOGIN_RESPONSE_LEN;
+		zcpfs_wipe(&n->login, sizeof(n->login));
+		become_initiator(n, p, c, &keys, flood, now);
+		zcpfs_wipe(&keys, sizeof(keys));
+		return ZCPFS_RX_LOGIN;
+	}
+	zcpfs_wipe(&keys, sizeof(keys));
+	memset(out, 0, sizeof(*out));
+	return ZCPFS_RX_NEXT;
+}
+
+void zcpfs_node_serve(struct zcpfs_node *n, struct zcpfs_offer *offers, size_t count)
+{
+	n->offers = offers;
+	n->n_offers = count;
+	for (size_t i = 0; i < count; i++) {
+		zcpfs_wipe(&offers[i], sizeof(offers[i]));
+	}
+}
+
+int zcpfs_login_rx(struct zcpfs_node *n, const uint8_t *payload, size_t len, int known,
+		   uint32_t now, struct zcpfs_login_req *req)
+{
+	int empty = 0;
+
+	memset(req, 0, sizeof(*req));
+	if (len < 35 || payload[0] != n->S[0]) {
+		return ZCPFS_ERR_AUTH;
+	}
+	if ((len - 35) % 16 == 0) {
+		return ZCPFS_LEGACY;		/* 19.3: the length tells the two apart */
+	}
+	if (len < ZCPFS_LOGIN_OVERHEAD) {
+		return ZCPFS_ERR_AUTH;
+	}
+	offers_expire(n, now);
+	/* The key in the packet is not yet proven, but it is the one the offer
+	 * would be kept under, so a full table is known before any work. */
+	if (offer_slot(n, payload + 1, known) == NULL) {
+		return ZCPFS_ERR_FULL;
+	}
+	if (!bucket_take(&n->pre, ZCPFS_R_PRE_PER_SECOND, 1, ZCPFS_R_PRE_BURST, now)) {
+		return ZCPFS_ERR_FULL;		/* step 1 */
+	}
+	if (zcpfs_login_open(n->a, n->S, payload + 1, len - 1, req->S_c, req->Y_c, req->ss,
+			     req->plain, &req->plain_len, &empty) != ZCPFS_OK) {
+		zcpfs_wipe(req, sizeof(*req));
+		return ZCPFS_ERR_AUTH;
+	}
+	req->empty_password = empty != 0;
+	req->known = known != 0;
+	return ZCPFS_OK;
+}
+
+int zcpfs_login_answer(struct zcpfs_node *n, const struct zcpfs_login_req *req,
+		       const struct zcpfs_branch *branches, size_t count,
+		       uint32_t timeout_ms, uint32_t now, uint8_t *reply, size_t *reply_len)
+{
+	uint8_t packed[ZCPFS_LOGIN_MAX_BRANCHES * ZCPFS_BRANCH_LEN];
+	struct zcpfs_offer *o;
+	uint8_t repeated;
+
+	if (count < 1 || count > ZCPFS_LOGIN_MAX_BRANCHES) {
+		return ZCPFS_ERR_ARG;
+	}
+	offers_expire(n, now);
+	o = offer_slot(n, req->S_c, req->known);
+	if (o == NULL) {
+		return ZCPFS_ERR_FULL;		/* step 2 */
+	}
+	repeated = o->used;			/* this login replaces the client's last */
+	zcpfs_wipe(o, sizeof(*o));
+	for (size_t j = 0; j < count; j++) {	/* step 3 */
+		if (zcpfs_login_branch_make(n->drbg, req->ss, req->S_c, n->S, req->Y_c,
+					    branches[j].password, branches[j].password_len,
+					    branches[j].response,
+					    packed + o->count * ZCPFS_BRANCH_LEN,
+					    &o->keys[o->count]) == ZCPFS_OK) {
+			o->ids[o->count] = branches[j].id;
+			o->count++;
+		}
+	}
+	if (o->count == 0) {
+		zcpfs_wipe(o, sizeof(*o));
+		return ZCPFS_ERR_WEAK;
+	}
+	memcpy(o->S, req->S_c, 32);		/* step 5 */
+	o->until = now + ZCPFS_LOGIN_STEPS * step_of(timeout_ms);
+	o->known = req->known;
+	o->repeated = repeated;
+	o->used = 1;
+	return zcpfs_login_reply_pack(o->count, packed, reply, reply_len);
+}
+
+/* 19.5: a TXT_MSG against the offers made to the clients whose hash is its
+ * `src`, or to the one client `S` if that is given. The first branch it opens
+ * under becomes that client's `current` and the role is granted.
+ * ZCPFS_RX_NEXT if none opens it. */
+static int rx_offers(struct zcpfs_node *n, const uint8_t *S, const struct zcpfs_contact *c,
+		     const uint8_t *payload, size_t len, uint32_t now, uint8_t who[32],
+		     struct zcpfs_rx_out *out)
+{
+	const uint8_t ad[3] = { payload[0], payload[1], ZCPFS_PT_TXT };
+	struct zcpfs_contact view;
+	struct zcpfs_session s;
+	struct zcpfs_peer *p;
+	uint8_t id;
+
+	offers_expire(n, now);
+	for (size_t i = 0; i < n->n_offers; i++) {
+		struct zcpfs_offer *o = &n->offers[i];
+
+		if (!o->used || o->S[0] != payload[1] || (S != NULL && memcmp(o->S, S, 32) != 0)) {
+			continue;
+		}
+		for (uint8_t j = 0; j < o->count; j++) {
+			/* the client is the initiator of a login's session (19.3) */
+			zcpfs_session_init(&s, o->keys[j].ck_r2i, o->keys[j].ck_i2r, now);
+			if (zcpfs_open(&s, ad, sizeof(ad), payload + HDR, len - HDR, out->plain,
+				       out->ack4, now) != ZCPFS_OK) {
+				continue;
+			}
+			p = take(n, o->S, RANK_LIVE, now);
+			if (p == NULL) {
+				zcpfs_wipe(out, sizeof(*out));	/* nowhere to keep a session */
+				break;
+			}
+			zcpfs_drbg_mix(n->drbg, o->keys[j].feed, sizeof(o->keys[j].feed));
+			id = o->ids[j];
+			if (who != NULL) {
+				memcpy(who, o->S, 32);
+			}
+			zcpfs_wipe(o, sizeof(*o));	/* this and every other branch */
+			make_current(p, &s);
+			zcpfs_wipe(&s, sizeof(s));
+			drop_next(p);
+			p->prev_timed = p->previous.used;
+			p->prev_deadline = now + ZCPFS_T_PREV;
+			if (n->ops->granted != NULL) {
+				n->ops->granted(n->user, p->S, id);
+			}
+			if (c == NULL && n->ops->contact(n->user, p->S, &view)) {
+				c = &view;	/* the client `granted` has just made known */
+			}
+			if (c != NULL) {
+				send_held(n, p, c, now);
+			}
+			return delivered(p, len - HDR, now, out);
+		}
+	}
+	zcpfs_wipe(&s, sizeof(s));
+	return ZCPFS_RX_NEXT;
+}
+
+int zcpfs_rx_offer(struct zcpfs_node *n, const uint8_t *payload, size_t len, uint32_t now,
+		   uint8_t S[32], struct zcpfs_rx_out *out)
+{
+	memset(out, 0, sizeof(*out));
+	if (len < ZCPFS_DATA_OVERHEAD || len > ZCPFS_MAX_PAYLOAD || payload[0] != n->S[0]) {
+		return ZCPFS_RX_NEXT;
+	}
+	return rx_offers(n, NULL, NULL, payload, len, now, S, out);
 }
 
 /* ---- the other events ---------------------------------------------------- */
@@ -812,7 +1127,7 @@ static void sooner_session(uint32_t *wait, uint32_t now, const struct zcpfs_sess
 }
 
 /* 10.1: while messages are held and a path exists, a new handshake 1 every
- * T_HS_RETRY, N_HS_TRIES in all per send. */
+ * HS_RETRY steps, N_HS_TRIES in all per send. */
 static int hs_repeat_wanted(const struct zcpfs_peer *p, const struct zcpfs_contact *c)
 {
 	return p->n_msgs > 0 && !p->msgs_sent && !p->current.used && c->has_path &&
@@ -823,6 +1138,15 @@ uint32_t zcpfs_tick(struct zcpfs_node *n, uint32_t now)
 {
 	uint32_t wait = UINT32_MAX;
 
+	offers_expire(n, now);
+	if (n->login.used) {
+		sooner(&wait, now, n->login.until);
+	}
+	for (size_t i = 0; i < n->n_offers; i++) {
+		if (n->offers[i].used) {
+			sooner(&wait, now, n->offers[i].until);
+		}
+	}
 	for (size_t i = 0; i < n->n_peers; i++) {
 		struct zcpfs_peer *p = &n->peers[i];
 		struct zcpfs_contact c;
@@ -835,7 +1159,8 @@ uint32_t zcpfs_tick(struct zcpfs_node *n, uint32_t now)
 			continue;
 		}
 		expire(p, now);
-		if (hs_repeat_wanted(p, &c) && gap_take(p, GAP_START, ZCPFS_T_HS_RETRY, now)) {
+		if (hs_repeat_wanted(p, &c) &&
+		    gap_take(p, GAP_START, ZCPFS_HS_RETRY_STEPS * step(&c), now)) {
 			send_hs1(n, p, &c, now);
 		}
 		resend(n, p, &c, now);
@@ -854,7 +1179,7 @@ uint32_t zcpfs_tick(struct zcpfs_node *n, uint32_t now)
 			}
 		}
 		if (p->n_out > 0) {
-			sooner(&wait, now, p->hs_at + ZCPFS_T_HS_WAIT + 1);
+			sooner(&wait, now, p->hs_until);
 		}
 		for (uint8_t k = 0; k < p->n_msgs; k++) {
 			sooner(&wait, now, p->msgs[k].due);
@@ -872,6 +1197,14 @@ void zcpfs_forget(struct zcpfs_node *n, const uint8_t S[32])
 
 	if (p != NULL) {
 		zcpfs_wipe(p, sizeof(*p));
+	}
+	if (n->login.used && memcmp(n->login.S, S, 32) == 0) {
+		zcpfs_wipe(&n->login, sizeof(n->login));
+	}
+	for (size_t i = 0; i < n->n_offers; i++) {
+		if (n->offers[i].used && memcmp(n->offers[i].S, S, 32) == 0) {
+			zcpfs_wipe(&n->offers[i], sizeof(n->offers[i]));
+		}
 	}
 }
 

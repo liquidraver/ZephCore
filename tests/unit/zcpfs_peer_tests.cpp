@@ -27,8 +27,15 @@ extern "C" {
 namespace {
 using Bytes = std::vector<uint8_t>;
 
-enum : uint8_t { REQ = ZCPFS_PT_REQ, RESPONSE = ZCPFS_PT_RESPONSE, TXT = ZCPFS_PT_TXT, ACK = 0x03, PATH = ZCPFS_PT_PATH };
+enum : uint8_t { REQ = ZCPFS_PT_REQ, RESPONSE = ZCPFS_PT_RESPONSE, TXT = ZCPFS_PT_TXT, ACK = 0x03, ANON = ZCPFS_PT_ANON, PATH = ZCPFS_PT_PATH };
+enum : uint8_t { ROLE_ADMIN = 1, ROLE_GUEST = 2, ROLE_KNOWN = 3 };
 const uint8_t HINT_BYTE = 0x5A;
+
+// Every contact here reports a send timeout of 5 s, so the step of SPEC 10.4 is 8 s.
+const uint32_t TIMEOUT_MS = 5000, STEP = 8;
+const uint32_t HS_RETRY = ZCPFS_HS_RETRY_STEPS * STEP, HS_WAIT = ZCPFS_HS_WAIT_STEPS * STEP,
+               HELD = ZCPFS_HELD_STEPS * STEP, DATA_RETRY = ZCPFS_DATA_RETRY_STEPS * STEP,
+               LOGIN_WAIT = ZCPFS_LOGIN_STEPS * STEP;
 
 struct Packet { uint8_t type; Bytes payload; bool flood; };
 
@@ -99,6 +106,7 @@ Bytes legacy_ack(const Bytes& plain, const Bytes& sender) {
 struct Contact {
     Bytes S, ss;
     bool pinned = false, has_path = false;
+    uint32_t timeout_ms = TIMEOUT_MS;
     std::vector<std::pair<Bytes, uint32_t>> legacy_expect;
 };
 
@@ -115,8 +123,16 @@ struct Host {
     std::vector<std::pair<Bytes, std::string>> inbox;       // sender, text
     std::vector<uint32_t> confirmed;                        // tokens of acknowledged sends
     std::vector<std::string> violations;                    // rules broken inside a callback
+    std::vector<zcpfs_offer> offers;                        // a server's unconfirmed logins
+    std::string password, guest_password;                   // a server's
+    std::set<Bytes> acl;                                    // clients that may log in with an empty password
+    std::vector<std::pair<Bytes, uint8_t>> logged_in;       // server: client, role granted
+    std::vector<std::pair<Bytes, Bytes>> logins;            // client: server, login response
+    std::map<Bytes, uint32_t> last_login;                   // server: timestamp of the last login answered, per client
+    uint32_t login_wait = 0;
+    int logins_sent = 0, logins_dropped = 0;
     uint32_t token = 0;
-    int wait_factor = 1;
+    uint32_t held_for = 0;                                  // seconds the last send is held, 0 if it was not
     bool in_send = false;
     int floods_in_send = 0;
     int app_attempts = 0, engine_floods = 0, legacy_sent = 0, sealed_sent = 0, hs1_sent = 0, hs2_sent = 0,
@@ -130,6 +146,7 @@ struct Host {
         ops.reciprocal_path = op_reciprocal_path;
         ops.pin = op_pin;
         ops.contact = op_contact;
+        ops.granted = op_granted;
         boot(label);
     }
     Host(const Host&) = delete;
@@ -141,6 +158,7 @@ struct Host {
         const Bytes hw = digest(bytes("hw" + entropy)), saved(32, 0);
         zcpfs_drbg_seed(&drbg, hw.data(), saved.data());
         zcpfs_node_init(&node, S.data(), a.data(), &drbg, records.data(), records.size(), &ops, this);
+        if (!offers.empty()) zcpfs_node_serve(&node, offers.data(), offers.size());
         for (auto& c : contacts) c.legacy_expect.clear();
     }
 
@@ -160,7 +178,7 @@ struct Host {
         return nullptr;
     }
     Contact& contact(const Bytes& peer) { Contact *c = find(peer.data()); CHECK(c != nullptr); return *c; }
-    static zcpfs_contact view(const Contact& c) { return {c.S.data(), c.ss.data(), c.pinned, c.has_path}; }
+    static zcpfs_contact view(const Contact& c) { return {c.S.data(), c.ss.data(), c.pinned, c.has_path, c.timeout_ms}; }
     zcpfs_peer *record(const Bytes& peer) {
         for (auto& r : records) if (r.used && std::memcmp(r.S, peer.data(), 32) == 0) return &r;
         return nullptr;
@@ -180,8 +198,17 @@ struct Host {
 
     static void op_send(void *user, const uint8_t peer[32], uint8_t type, const uint8_t *payload, size_t len, int flood) {
         Host& h = *static_cast<Host *>(user);
-        if ((len - 4) % 16 == 0) h.violations.push_back("a zcpfs payload is block-aligned");
         if (len > ZCPFS_MAX_PAYLOAD) h.violations.push_back("a zcpfs payload is too long");
+        if (type == ANON) {                 // a login: dst, the client's key, and the block rule of SPEC 7 for it
+            if ((len - 35) % 16 == 0) h.violations.push_back("a login is block-aligned");
+            if (payload[0] != peer[0] || std::memcmp(payload + 1, h.S.data(), 32) != 0) h.violations.push_back("wrong login header");
+            if (flood && (!h.in_send || ++h.floods_in_send > 1)) h.violations.push_back("a flood outside the send point");
+            h.engine_floods += flood != 0;
+            h.logins_sent++;
+            h.out.push_back({type, Bytes(payload, payload + len), flood != 0});
+            return;
+        }
+        if ((len - 4) % 16 == 0) h.violations.push_back("a zcpfs payload is block-aligned");
         if (payload[0] != peer[0] || payload[1] != h.S[0]) h.violations.push_back("wrong address bytes");
         if (flood) {
             h.engine_floods++;
@@ -236,16 +263,16 @@ struct Host {
         int r = ZCPFS_LEGACY;
         ++token;
         ++app_attempts;
-        wait_factor = 1;
+        held_for = 0;
         if (zc) {
             const zcpfs_contact v = view(c);
             in_send = true;
             floods_in_send = 0;
-            r = zcpfs_send_text(&node, &v, plain.data(), plain.size(), token, now());
+            r = zcpfs_send_text(&node, &v, plain.data(), plain.size(), token, now(), &held_for);
             in_send = false;
         }
         if (result != nullptr) *result = r;
-        if (r == ZCPFS_HELD) wait_factor = 3;
+        if ((r == ZCPFS_HELD) != (held_for != 0)) violations.push_back("held_for does not match the result");
         if (r == ZCPFS_LEGACY) {
             if (zc) plain = with_hint(timestamp, attempt, text);
             c.legacy_expect.push_back({legacy_ack(plain, S), token});
@@ -268,6 +295,97 @@ struct Host {
         else out.push_back({ACK, ack, !c.has_path});
     }
 
+    // -- login (SPEC 19) --
+
+    // Make this node a server: it accepts logins with these passwords and keeps `room` unconfirmed ones.
+    void serve(const std::string& admin, size_t room = 4) {
+        password = admin;
+        offers.assign(room, zcpfs_offer{});
+        zcpfs_node_serve(&node, offers.data(), offers.size());
+    }
+    size_t offers_kept() const {
+        return size_t(std::count_if(offers.begin(), offers.end(), [](const zcpfs_offer& o) { return o.used != 0; }));
+    }
+
+    // The application logs in. Returns what zcpfs_login_send said.
+    int login(const Bytes& server, const std::string& pw, uint32_t timestamp) {
+        const Contact& c = contact(server);
+        const zcpfs_contact v = view(c);
+        const Bytes stamp{uint8_t(timestamp), uint8_t(timestamp >> 8), uint8_t(timestamp >> 16), uint8_t(timestamp >> 24)};
+        ++app_attempts;
+        in_send = true;
+        floods_in_send = 0;
+        const int r = zcpfs_login_send(&node, &v, reinterpret_cast<const uint8_t *>(pw.data()), pw.size(), stamp.data(),
+                                       stamp.size(), now(), &login_wait);
+        in_send = false;
+        if ((r == ZCPFS_SENT) != (login_wait != 0)) violations.push_back("wait_for does not match the result");
+        return r;
+    }
+
+    // Server: an ANON_REQ for this node. Every password this client could be using gets a branch; the
+    // login says whether one was typed at all, which keeps that to two.
+    void on_login(const Packet& p) {
+        const Bytes claimed(p.payload.begin() + 1, p.payload.begin() + 33);
+        const Contact *listed = find(claimed.data());
+        const bool known = acl.count(claimed) != 0 || (listed != nullptr && listed->pinned);
+        zcpfs_login_req req;
+        if (zcpfs_login_rx(&node, p.payload.data(), p.payload.size(), known, now(), &req) != ZCPFS_OK) {
+            ++logins_dropped;
+            return;
+        }
+        // as legacy: a client the server knows cannot have an old login of its replayed
+        const uint32_t sent = uint32_t(req.plain[0]) | uint32_t(req.plain[1]) << 8 | uint32_t(req.plain[2]) << 16 | uint32_t(req.plain[3]) << 24;
+        if (known && last_login.count(claimed) && sent <= last_login[claimed]) {
+            ++logins_dropped;
+            return;
+        }
+        const uint32_t t = now();
+        const Bytes stamp{uint8_t(t), uint8_t(t >> 8), uint8_t(t >> 16), uint8_t(t >> 24)};
+        const Bytes r_admin = cat(stamp, bytes("ad")), r_guest = cat(stamp, bytes("gu")), r_known = cat(stamp, bytes("kn"));
+        const uint8_t *pw = reinterpret_cast<const uint8_t *>(password.data());
+        const uint8_t *guest = reinterpret_cast<const uint8_t *>(guest_password.data());
+        std::vector<zcpfs_branch> branches;
+        if (req.empty_password) {
+            if (acl.count(claimed)) branches.push_back({pw, 0, r_known.data(), ROLE_KNOWN});
+        } else {
+            branches.push_back({pw, password.size(), r_admin.data(), ROLE_ADMIN});
+            if (!guest_password.empty()) branches.push_back({guest, guest_password.size(), r_guest.data(), ROLE_GUEST});
+        }
+        Bytes reply(ZCPFS_MAX_PAYLOAD);
+        size_t len = 0;
+        if (branches.empty() ||
+            zcpfs_login_answer(&node, &req, branches.data(), branches.size(), TIMEOUT_MS, now(), reply.data(), &len) != ZCPFS_OK) {
+            ++logins_dropped;
+            return;
+        }
+        last_login[claimed] = sent;
+        reply.resize(len);
+        if (p.flood) {
+            // as legacy answers a flooded login: a path return with the reply as its extra, here kind 4 and a length byte
+            uint8_t n6[6];
+            const Bytes plain = cat({4, uint8_t(len)}, reply);
+            Bytes payload(plain.size() + ZCPFS_PAIR_OVERHEAD + 1);
+            size_t sealed = 0;
+            zcpfs_drbg_generate(&drbg, n6, sizeof(n6));
+            if (zcpfs_pair_seal(req.ss, S.data(), req.S_c, PATH, n6, plain.data(), plain.size(), payload.data(), &sealed) != ZCPFS_OK)
+                violations.push_back("the login reply does not fit a path return");
+            payload.resize(sealed);
+            out.push_back({PATH, payload, true});
+        } else {
+            const Bytes payload = cat({req.S_c[0], S[0]}, reply);
+            if ((payload.size() - 4) % 16 == 0 || payload.size() == 42 || payload.size() > ZCPFS_MAX_PAYLOAD)
+                violations.push_back("the login reply has a length it must not have");
+            out.push_back({RESPONSE, payload, listed == nullptr || !listed->has_path});
+        }
+    }
+    static void op_granted(void *user, const uint8_t peer[32], uint8_t id) {
+        Host& h = *static_cast<Host *>(user);
+        Contact *c = h.find(peer);
+        if (c == nullptr) c = &h.add_contact(Bytes(peer, peer + 32), false);    // the server learns its client here
+        c->pinned = true;
+        h.logged_in.push_back({c->S, id});
+    }
+
     // -- receiving --
 
     void receive(const Packet& p) {
@@ -276,9 +394,24 @@ struct Host {
             if (pl.size() >= 4) on_ack(Bytes(pl.begin(), pl.begin() + 4), p.flood);
             return;
         }
+        if (p.type == ANON) {
+            if (zc && !offers.empty() && pl.size() > 35 && pl[0] == S[0]) on_login(p);
+            return;
+        }
         if ((p.type != REQ && p.type != RESPONSE && p.type != TXT && p.type != PATH) || pl.size() <= 4 || pl[0] != S[0]) return;
         for (auto& c : contacts)
-            if (c.S[0] == pl[1] && dispatch(c, p)) break;
+            if (c.S[0] == pl[1] && dispatch(c, p)) return;
+        if (!zc || offers.empty() || p.type != TXT) return;
+        // no contact claimed it: the first packet of a client that has just logged in (SPEC 19.5)?
+        zcpfs_rx_out o;
+        uint8_t who[32];
+        const int r = zcpfs_rx_offer(&node, pl.data(), pl.size(), now(), who, &o);
+        if (r == ZCPFS_RX_NEXT) return;
+        Contact *from = find(who);
+        if (from == nullptr) { violations.push_back("granted did not make the client known"); return; }
+        const Bytes plain(o.plain, o.plain + o.len);
+        if (r == ZCPFS_RX_TEXT) inbox.push_back({from->S, parse_text(plain).text});
+        if (r == ZCPFS_RX_TEXT || r == ZCPFS_RX_DUPLICATE) send_ack(*from, Bytes(o.ack4, o.ack4 + 4), 0, p.flood, true);
     }
 
     // SPEC 7.1: the engine first, legacy only if it says so. True if the packet was consumed.
@@ -303,6 +436,9 @@ struct Host {
                 send_typed(c, PATH, {1}, true, true);   // as a flooded legacy message without ACK is answered
                 return true;
             case ZCPFS_RX_PAIR: return handle(c, p.type, plain, p.flood, true);
+            case ZCPFS_RX_LOGIN:
+                logins.push_back({c.S, plain});
+                return true;
             default: break;
             }
         }
@@ -312,12 +448,20 @@ struct Host {
 
     bool handle(Contact& c, uint8_t type, const Bytes& plain, bool flood, bool sealed) {
         if (type == PATH) {
-            // The stand-in for a path return's content: one kind byte (1), then an ACK or nothing.
+            // The stand-in for a path return's content: a kind byte, then its extra. 1: an ACK or nothing.
+            // 4: a login reply behind a length byte.
+            const uint8_t kind = plain.empty() ? 1 : plain[0];
             c.has_path = true;
-            if (plain.size() >= 5 && std::any_of(plain.begin() + 1, plain.begin() + 5, [](uint8_t b) { return b != 0; }))
+            if (kind == 1 && plain.size() >= 5 && std::any_of(plain.begin() + 1, plain.begin() + 5, [](uint8_t b) { return b != 0; }))
                 on_ack(Bytes(plain.begin() + 1, plain.begin() + 5), false);
             if (flood) send_typed(c, PATH, {1}, false, sealed);     // the reciprocal path
             if (zc) { const zcpfs_contact v = view(c); zcpfs_on_path(&node, &v, flood, now()); }
+            if (zc && kind == 4 && plain.size() >= 2 && plain.size() >= size_t(2 + plain[1])) {
+                const zcpfs_contact v = view(c);
+                zcpfs_rx_out o;
+                if (zcpfs_rx_login_reply(&node, &v, plain.data() + 2, plain[1], flood, now(), &o) == ZCPFS_RX_LOGIN)
+                    logins.push_back({c.S, Bytes(o.plain, o.plain + o.len)});
+            }
             return true;
         }
         if (type != TXT) return true;
@@ -480,7 +624,8 @@ struct App {
         if (n == attempts - 1 && n > 0 && flood_last) host.contact(peer).has_path = false;
         tokens[text].push_back(host.app_send(peer, text, timestamp, unsigned(n)));
         tries[text] = n + 1;
-        const uint64_t wait = uint64_t(timeout * 1000) * uint64_t(host.wait_factor);
+        // a held send is given the time the engine holds it (SPEC 10.4)
+        const uint64_t wait = host.held_for != 0 ? uint64_t(host.held_for) * 1000 : uint64_t(timeout * 1000);
         sim.pump(host);
         sim.at(sim.t + wait, [this, peer, text, timestamp, n] { check(peer, text, timestamp, n); });
     }
@@ -517,7 +662,7 @@ void check_rules(const Sim& sim) {
     for (const Air& x : sim.air) {
         if (!x.flood) continue;
         CHECK(!(x.type == REQ && x.len == 42));         // the flood rule: no handshake 1,
-        CHECK(x.type != RESPONSE);                      // no handshake 2,
+        CHECK(!(x.type == RESPONSE && x.len == 42));    // no handshake 2,
         CHECK(!(x.type == TXT && x.len == 10));         // no confirmation
     }
     for (const auto& n : sim.nodes) {
@@ -652,7 +797,7 @@ TEST(zcpfs_peer_first_contact, "UNIT-ZCPFS-012", "Without a path only a probe or
         CHECK(give(n.a, hs2).empty());
         CHECK(n.a.record(n.b.S)->current.used && n.a.record(n.b.S)->n_msgs == 1);
         n.a.contact(n.b.S).has_path = true;
-        sim.t = ZCPFS_T_DATA_RETRY * 1000;
+        sim.t = DATA_RETRY * 1000;
         const std::vector<Packet> resent = n.a.tick_packets();   // the resend of 10.3 carries it
         CHECK(resent.size() == 1 && resent[0].type == TXT && !resent[0].flood);
         settle(n.a, n.b, resent);
@@ -926,16 +1071,17 @@ TEST(zcpfs_peer_timers, "UNIT-ZCPFS-017", "A held message is resent a bounded nu
         const uint32_t tok = n.a.app_send(n.b.S, "resend me", 1700000000u, 0);
         const std::vector<Packet> first = give(n.a, give(n.b, n.a.take()));    // the held message; "lost"
         CHECK(first.size() == 1 && first[0].type == TXT);
-        CHECK(n.a.tick() == ZCPFS_T_DATA_RETRY && n.a.take().empty());          // not due yet
-        sim.t += ZCPFS_T_DATA_RETRY * 1000;
+        CHECK(n.a.tick() == DATA_RETRY && n.a.take().empty());          // not due yet
+        sim.t += DATA_RETRY * 1000;
         const std::vector<Packet> again = n.a.tick_packets();
         CHECK(again.size() == 1 && again[0].payload != first[0].payload);       // sealed anew
+        CHECK(n.a.tick() == DATA_RETRY);                                        // and once more after another step
         CHECK(again[0].payload.size() == first[0].payload.size());
         settle(n.b, n.a, give(n.b, again));                                     // both copies reach b after all
         settle(n.b, n.a, give(n.b, first));
         CHECK(n.b.inbox.size() == 1 && n.b.received(n.a.S, "resend me") == 1);  // delivered once
         CHECK(std::count(n.a.confirmed.begin(), n.a.confirmed.end(), tok) == 2);    // each copy acknowledged
-        sim.t += 10 * ZCPFS_T_DATA_RETRY * 1000;
+        sim.t += 10 * DATA_RETRY * 1000;
         CHECK(n.a.tick_packets().empty());                                      // nothing more once confirmed
         CHECK(n.a.record(n.b.S)->n_msgs == 0);
     }
@@ -946,7 +1092,7 @@ TEST(zcpfs_peer_timers, "UNIT-ZCPFS-017", "A held message is resent a bounded nu
         give(n.a, give(n.b, n.a.take()));
         size_t sent = 0;
         for (int i = 0; i < 10; ++i) {
-            sim.t += ZCPFS_T_DATA_RETRY * 1000;
+            sim.t += DATA_RETRY * 1000;
             sent += n.a.tick_packets().size();
         }
         CHECK(sent == ZCPFS_N_DATA_TRIES);
@@ -979,24 +1125,49 @@ TEST(zcpfs_peer_timers, "UNIT-ZCPFS-017", "A held message is resent a bounded nu
         n.a.app_send(n.b.S, "nobody home", 1700000000u, 0, &result);
         const std::vector<Packet> first_hs1 = n.a.take();               // kept for the end
         CHECK(result == ZCPFS_HELD && of_type(first_hs1, REQ, 42) == 1);
-        CHECK(n.a.tick() == ZCPFS_T_HS_RETRY);
-        sim.t = 8000;
+        CHECK(n.a.held_for == HELD);                                    // what the application is told to wait
+        CHECK(n.a.tick() == HS_RETRY);
+        sim.t = HS_RETRY * 1000;
         CHECK(of_type(n.a.tick_packets(), REQ, 42) == 1);
-        sim.t = 16000;
+        sim.t = 2 * HS_RETRY * 1000;
         CHECK(of_type(n.a.tick_packets(), REQ, 42) == 1);
         zcpfs_peer *r = n.a.record(n.b.S);
         CHECK(r->n_out == ZCPFS_N_HS_TRIES && r->n_msgs == 1);
-        CHECK(n.a.tick() == ZCPFS_T_HELD - 16 && n.a.take().empty());   // no fourth handshake
-        sim.t = ZCPFS_T_HELD * 1000;
-        CHECK(n.a.tick() == 16 + ZCPFS_T_HS_WAIT + 1 - ZCPFS_T_HELD);
-        CHECK(r->n_msgs == 0 && r->n_out == ZCPFS_N_HS_TRIES);
-        sim.t = (16 + ZCPFS_T_HS_WAIT + 1) * 1000;
-        CHECK(n.a.tick() == UINT32_MAX);                                // nothing left to wait for
-        CHECK(r->n_out == 0 && n.a.take().empty());
+        CHECK(n.a.tick() == HELD - 2 * HS_RETRY && n.a.take().empty()); // no fourth handshake
+        sim.t = (HELD - 1) * 1000;
+        CHECK(n.a.tick() == 1 && r->n_msgs == 1 && r->n_out == ZCPFS_N_HS_TRIES);
+        sim.t = HELD * 1000;                                            // the application gives up now
+        CHECK(n.a.tick() == UINT32_MAX);                                // and nothing is left to wait for
+        CHECK(r->n_msgs == 0 && r->n_out == 0 && n.a.take().empty());
         // a handshake 2 that comes after all of that finds nothing to complete
         const std::vector<Packet> late = give(n.b, first_hs1);
         CHECK(of_type(late, RESPONSE, 42) == 1);
         CHECK(give(n.a, late).empty() && !r->current.used);
+    }
+    for (size_t answered = 0; answered < ZCPFS_N_HS_TRIES; ++answered) {
+        // SPEC 8.2: a handshake 2 that answers any attempt still kept completes the handshake
+        Sim sim(31);
+        Two n = pair(sim);
+        const uint32_t tok = n.a.app_send(n.b.S, "any of three", 1700000000u, 0);
+        std::vector<Packet> attempts = n.a.take();
+        for (uint32_t i = 1; i < ZCPFS_N_HS_TRIES; ++i) {
+            sim.t = uint64_t(i) * HS_RETRY * 1000;
+            for (const Packet& p : n.a.tick_packets()) attempts.push_back(p);
+        }
+        CHECK(attempts.size() == ZCPFS_N_HS_TRIES && of_type(attempts, REQ, 42) == ZCPFS_N_HS_TRIES);
+        settle(n.a, n.b, {attempts[answered]});
+        CHECK(n.b.received(n.a.S, "any of three") == 1 && n.a.is_confirmed(tok));
+    }
+    {   // a handshake nobody answers, with nothing held: the attempt is wiped HS_WAIT steps after it was sent
+        Sim sim(30);
+        Two n = pair(sim);
+        CHECK(of_type(give(n.b, {garbage(n.b, n.a, TXT, 30, 0x21)}), REQ, 42) == 1);   // SPEC 10.2
+        zcpfs_peer *r = n.b.record(n.a.S);
+        CHECK(n.b.tick() == HS_WAIT && r->n_out == 1);
+        sim.t = (HS_WAIT - 1) * 1000;
+        CHECK(n.b.tick() == 1 && r->n_out == 1);
+        sim.t = HS_WAIT * 1000;
+        CHECK(n.b.tick() == UINT32_MAX && r->n_out == 0 && n.b.take().empty());
     }
     {   // `previous` goes T_PREV after the peer switched; an idle session after T_IDLE
         Sim sim(23);
@@ -1103,7 +1274,7 @@ TEST(zcpfs_peer_table, "UNIT-ZCPFS-018", "Contacts sharing an address byte are t
 
         // with nothing held and no handshake waiting that record is idle, and then anybody's
         CHECK(give(b, {garbage(b, *c[2], TXT, 30, 0x78)}).empty());             // still not idle
-        sim.t += uint64_t(ZCPFS_N_HS_TRIES * ZCPFS_T_HS_RETRY + ZCPFS_T_HS_WAIT + 1) * 1000;
+        sim.t += uint64_t(HELD + 1) * 1000;
         b.tick();
         b.take();
         CHECK(b.record(c[0]->S)->n_msgs == 0 && b.record(c[0]->S)->n_out == 0);
@@ -1128,18 +1299,19 @@ TEST(zcpfs_peer_limits, "UNIT-ZCPFS-019", "Rate limits, the unacknowledged and f
     {   // arguments
         const zcpfs_contact v = Host::view(a.contact(b.S));
         const Bytes text(ZCPFS_TEXT_MAX + 1, 'x');
-        CHECK(zcpfs_send_text(&a.node, &v, text.data(), 4, 1, 0) == ZCPFS_ERR_ARG);
-        CHECK(zcpfs_send_text(&a.node, &v, text.data(), ZCPFS_TEXT_MAX + 1, 1, 0) == ZCPFS_ERR_ARG);
+        uint32_t held = 0;
+        CHECK(zcpfs_send_text(&a.node, &v, text.data(), 4, 1, 0, &held) == ZCPFS_ERR_ARG);
+        CHECK(zcpfs_send_text(&a.node, &v, text.data(), ZCPFS_TEXT_MAX + 1, 1, 0, &held) == ZCPFS_ERR_ARG);
         zcpfs_contact weak = v;
         const Bytes zero(32, 0);
         weak.ss = zero.data();
-        CHECK(zcpfs_send_text(&a.node, &weak, text.data(), 20, 1, 0) == ZCPFS_LEGACY);     // SPEC 4
+        CHECK(zcpfs_send_text(&a.node, &weak, text.data(), 20, 1, 0, &held) == ZCPFS_LEGACY);     // SPEC 4
         zcpfs_rx_out o;
         const Packet junk = garbage(a, b, TXT, 30, 0x11);
         CHECK(zcpfs_rx(&a.node, &weak, TXT, junk.payload.data(), junk.payload.size(), 0, 0, &o) == ZCPFS_RX_LEGACY);
         zcpfs_contact unpinned = v;
         unpinned.pinned = 0;
-        CHECK(zcpfs_send_text(&a.node, &unpinned, text.data(), 20, 1, 0) == ZCPFS_LEGACY);
+        CHECK(zcpfs_send_text(&a.node, &unpinned, text.data(), 20, 1, 0, &held) == ZCPFS_LEGACY);
         CHECK(zcpfs_rx(&a.node, &unpinned, TXT, junk.payload.data(), junk.payload.size(), 0, 0, &o) == ZCPFS_RX_LEGACY);
         const Bytes legacy_path = cat({a.S[0], b.S[0]}, legacy_seal(a.contact(b.S).ss, {1}));
         CHECK(zcpfs_rx(&a.node, &unpinned, PATH, legacy_path.data(), legacy_path.size(), 0, 0, &o) == ZCPFS_RX_LEGACY);
@@ -1148,11 +1320,27 @@ TEST(zcpfs_peer_limits, "UNIT-ZCPFS-019", "Rate limits, the unacknowledged and f
         CHECK(a.record(b.S) == nullptr);                    // none of that left a trace
         zcpfs_node none;
         zcpfs_node_init(&none, a.S.data(), a.a.data(), &a.drbg, nullptr, 0, &a.ops, &a);
-        CHECK(zcpfs_send_text(&none, &v, text.data(), 20, 1, 0) == ZCPFS_ERR_FULL);
-        CHECK(zcpfs_send_text(&a.node, &v, text.data(), ZCPFS_TEXT_MAX, 1, 0) == ZCPFS_HELD);   // the longest text
+        CHECK(zcpfs_send_text(&none, &v, text.data(), 20, 1, 0, &held) == ZCPFS_ERR_FULL);
+        CHECK(held == 0);                                   // only a held message has a waiting time
+        CHECK(zcpfs_send_text(&a.node, &v, text.data(), ZCPFS_TEXT_MAX, 1, 0, &held) == ZCPFS_HELD);   // the longest text
+        CHECK(held == HELD);
         a.take();
         a.boot("clean");
     }
+
+    // SPEC 10.4: the step is one and a half times the caller's send timeout, in whole seconds, 5 at least
+    const struct { uint32_t ms, step; } steps[] = {{0, 5}, {1000, 5}, {3400, 6}, {5000, 8}, {6300, 11}, {9200, 15}, {14300, 23}};
+    for (const auto& row : steps) {
+        a.contact(b.S).timeout_ms = row.ms;
+        a.app_send(b.S, "how long", 1700000000u, 0, &result);
+        CHECK(result == ZCPFS_HELD && a.held_for == ZCPFS_HELD_STEPS * row.step);
+        CHECK(a.tick() == ZCPFS_HS_RETRY_STEPS * row.step);         // the next handshake attempt
+        CHECK(a.record(b.S)->msgs[0].due == a.now() + a.held_for);  // held as long as the application waits
+        a.take();
+        a.boot("clean");
+    }
+    a.contact(b.S).timeout_ms = TIMEOUT_MS;
+    CHECK(a.violations.empty());
 
     // a handshake 1 that arrives flood-routed is not answered and leaves nothing behind
     Packet flooded = handshake1(a, b);
@@ -1267,4 +1455,316 @@ TEST(zcpfs_peer_limits, "UNIT-ZCPFS-019", "Rate limits, the unacknowledged and f
     b.tick();
     CHECK(!b.record(a.S)->current.used);
     CHECK(a.violations.empty() && b.violations.empty());
+}
+// ---- login (SPEC 19) ----
+
+struct LoginSetup { Host& client; Host& server; };
+// A client that has the server as a pinned contact; the server does not know the client.
+LoginSetup login_pair(Sim& sim, bool paths = true, const std::string& client_name = "client") {
+    Host& client = sim.node(client_name);
+    Host *server = nullptr;
+    for (const auto& n : sim.nodes) if (!n->offers.empty()) server = n.get();
+    if (server == nullptr) {
+        server = &sim.node("repeater");
+        server->serve("hunter2");
+    }
+    client.add_contact(server->S, paths);
+    client.advert(server->S, true);
+    return {client, *server};
+}
+bool ends_with(const Bytes& b, const std::string& tail) {
+    return b.size() >= tail.size() && std::equal(tail.begin(), tail.end(), b.end() - long(tail.size()));
+}
+bool on_air(const Sim& sim, const std::string& needle) {
+    for (const Packet& p : sim.tap)
+        if (std::search(p.payload.begin(), p.payload.end(), needle.begin(), needle.end()) != p.payload.end()) return true;
+    return false;
+}
+
+TEST(zcpfs_login_roles, "UNIT-ZCPFS-021", "Login: the password never leaves the node; the right one sets up a session and grants its role, a wrong one grants nothing") {
+    {
+        Sim sim(50);
+        LoginSetup n = login_pair(sim);
+        CHECK(n.client.login(n.server.S, "hunter2", 1700000000u) == ZCPFS_SENT && n.client.login_wait == LOGIN_WAIT);
+        sim.pump(n.client);
+        sim.run(30);
+        CHECK(n.client.logins.size() == 1 && n.client.logins[0].second.size() == ZCPFS_LOGIN_RESPONSE_LEN);
+        CHECK(ends_with(n.client.logins[0].second, "ad") && sim.count(ANON, 78) == 1 && sim.count(RESPONSE, 45) == 1);
+        CHECK(n.server.logged_in.size() == 1 && n.server.logged_in[0] == std::make_pair(n.client.S, uint8_t(ROLE_ADMIN)));
+        CHECK(sim.count(ANON) == 1 && sim.count(TXT, 10) == 1);             // one login, the client's confirmation
+        CHECK(!on_air(sim, "hunter2"));
+        CHECK(n.server.record(n.client.S)->current.used && n.server.contact(n.client.S).pinned);
+        CHECK(n.server.offers_kept() == 0 && !n.client.node.login.used);    // nothing of the login is left
+        // admin text both ways under the login's session, without a handshake
+        App app_c(sim, n.client), app_s(sim, n.server);
+        app_c.send(n.server.S, "get radio", 31);
+        app_s.send(n.client.S, "> 869.618,62.5,7,5", 50);
+        sim.run(150);
+        CHECK(app_c.all_ok(1) && app_s.all_ok(1));
+        CHECK(n.server.received(n.client.S, "get radio") == 1 && n.client.received(n.server.S, "> 869.618,62.5,7,5") == 1);
+        CHECK(sim.count(REQ, 42) + sim.count(RESPONSE, 42) == 0);
+        for (const Air& x : sim.air) CHECK(x.type != TXT || (x.len - 4) % 16 != 0);
+        check_rules(sim);
+    }
+    {   // a wrong password: the server answers, because it cannot know, and nothing opens
+        Sim sim(51);
+        LoginSetup n = login_pair(sim);
+        n.client.login(n.server.S, "letmein", 1700000000u);
+        sim.pump(n.client);
+        sim.run(LOGIN_WAIT - 1);
+        CHECK(sim.count(RESPONSE) == 1 && n.client.logins.empty() && n.server.logged_in.empty());
+        CHECK(sim.count(TXT) == 0);                                         // so no confirmation either
+        CHECK(n.client.record(n.server.S) == nullptr && n.server.record(n.client.S) == nullptr);
+        CHECK(n.server.offers_kept() == 1 && n.client.node.login.used);
+        sim.run(LOGIN_WAIT + 3);                                            // both sides give up on time
+        CHECK(n.server.offers_kept() == 0 && !n.client.node.login.used);
+        CHECK(n.server.find(n.client.S.data()) == nullptr);                 // the server never learned the client
+        check_rules(sim);
+    }
+    {   // each password has its role; the empty password only for a client on the list
+        Sim sim(52);
+        Host& guest = login_pair(sim, true, "guest").client;
+        LoginSetup n = login_pair(sim, true, "listed");
+        Host& stranger = login_pair(sim, true, "stranger").client;
+        n.server.guest_password = "visitor";
+        n.server.acl.insert(n.client.S);
+        guest.login(n.server.S, "visitor", 1700000000u);
+        sim.pump(guest);
+        sim.run(20);
+        n.client.login(n.server.S, "", 1700000020u);
+        sim.pump(n.client);
+        sim.run(40);
+        stranger.login(n.server.S, "", 1700000040u);
+        sim.pump(stranger);
+        sim.run(80);
+        CHECK(n.server.logged_in.size() == 2);
+        CHECK(n.server.logged_in[0] == std::make_pair(guest.S, uint8_t(ROLE_GUEST)));
+        CHECK(n.server.logged_in[1] == std::make_pair(n.client.S, uint8_t(ROLE_KNOWN)));
+        CHECK(guest.logins.size() == 1 && ends_with(guest.logins[0].second, "gu"));
+        CHECK(n.client.logins.size() == 1 && ends_with(n.client.logins[0].second, "kn"));
+        CHECK(stranger.logins.empty());
+        // a typed password gets the admin and the guest branch, none typed gets the one for the list, or no answer
+        CHECK(sim.count(RESPONSE, 87) == 1 && sim.count(RESPONSE, 45) == 1 && sim.count(RESPONSE) == 2);
+        CHECK(!on_air(sim, "visitor"));
+        check_rules(sim);
+    }
+    {   // without a path the login floods as a legacy login does, and the reply rides the path return
+        Sim sim(53);
+        LoginSetup n = login_pair(sim, false);
+        n.client.login(n.server.S, "hunter2", 1700000000u);
+        sim.pump(n.client);
+        sim.run(30);
+        CHECK(n.client.logins.size() == 1 && n.server.logged_in.size() == 1);
+        size_t floods = 0;
+        for (const Air& x : sim.air) if (x.flood) { CHECK(x.type == ANON || x.type == PATH); ++floods; }
+        CHECK(floods == 2 && sim.count(RESPONSE) == 0);
+        CHECK(n.client.contact(n.server.S).has_path && n.server.record(n.client.S)->current.used);
+        check_rules(sim);
+    }
+    {   // a replayed login of a client the server now knows is not even answered; the session stays
+        Sim sim(54);
+        LoginSetup n = login_pair(sim);
+        n.client.login(n.server.S, "hunter2", 1700000000u);
+        sim.pump(n.client);
+        sim.run(30);
+        const Packet old_login = sim.first(ANON, 78);
+        sim.seen[sim.index(n.server)].clear();
+        sim.inject(n.server, old_login);
+        sim.run(40);
+        CHECK(sim.count(RESPONSE) == 1 && n.server.logged_in.size() == 1 && n.client.logins.size() == 1);
+        CHECK(n.server.offers_kept() == 0 && n.server.logins_dropped == 1);
+        App app(sim, n.client);
+        app.send(n.server.S, "still here", 41);
+        sim.run(100);
+        CHECK(app.all_ok(1) && n.server.logged_in.size() == 1 && n.server.offers_kept() == 0);
+        check_rules(sim);
+    }
+}
+
+TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while there is room for the offer, one place kept for known clients, one new login per offer; offers and waits end on time") {
+    Sim sim(55);
+    std::vector<Host *> c;
+    for (int i = 0; i < 6; ++i) c.push_back(&login_pair(sim, true, "client " + std::to_string(i)).client);
+    Host& server = *sim.nodes[1];
+    CHECK(server.offers.size() == 4);
+    uint32_t stamp = 1700000000u;
+    auto attempt = [&](Host& client, const std::string& pw) {       // one login; what the server sent back
+        client.login(server.S, pw, ++stamp);
+        return give(server, client.take());
+    };
+
+    // strangers get every place but one: three wrong logins are answered, the fourth costs no airtime
+    for (size_t i = 0; i < 3; ++i) CHECK(of_type(attempt(*c[i], "wrong"), RESPONSE, 45) == 1);
+    CHECK(server.offers_kept() == 3 && server.tick() == LOGIN_WAIT);
+    CHECK(attempt(*c[3], "hunter2").empty() && server.logins_dropped == 1);
+    // the last place is for a client the server knows; nobody can pose as one, the login is signed by its key
+    server.acl.insert(c[4]->S);
+    CHECK(attempt(*c[4], "hunter2").size() == 1 && server.offers_kept() == 4);
+    // one new login per offer: it replaces the offer; the next is refused until that has run out
+    CHECK(attempt(*c[0], "wrong").size() == 1 && server.offers_kept() == 4);
+    CHECK(attempt(*c[0], "hunter2").empty() && server.logins_dropped == 2);
+    // offers run out; they never make room
+    sim.t = (LOGIN_WAIT - 1) * 1000;
+    CHECK(attempt(*c[3], "hunter2").empty());
+    sim.t = LOGIN_WAIT * 1000;
+    CHECK(server.tick() == UINT32_MAX && server.offers_kept() == 0);
+
+    // a known client's offer does not use up a stranger's place: three strangers still fit beside it
+    CHECK(attempt(*c[4], "hunter2").size() == 1);
+    for (size_t i = 0; i < 3; ++i) CHECK(attempt(*c[i], "wrong").size() == 1);
+    CHECK(server.offers_kept() == 4);
+    sim.t += LOGIN_WAIT * 1000;
+    CHECK(server.tick() == UINT32_MAX && server.offers_kept() == 0);
+
+    // a confirmation frees its place at once
+    const std::vector<Packet> good = attempt(*c[3], "hunter2");
+    for (size_t i = 0; i < 2; ++i) CHECK(attempt(*c[i], "wrong").size() == 1);
+    CHECK(good.size() == 1 && server.offers_kept() == 3 && attempt(*c[5], "hunter2").empty());
+    settle(*c[3], server, give(*c[3], good));
+    CHECK(c[3]->logins.size() == 1 && server.logged_in.size() == 1 && server.logged_in[0].first == c[3]->S);
+    CHECK(server.offers_kept() == 2 && attempt(*c[5], "hunter2").size() == 1 && server.offers_kept() == 3);
+
+    // the client: a reply that comes after the wait finds nothing; a new login replaces the one waiting
+    sim.t += 100000;
+    server.tick();
+    c[5]->tick();
+    CHECK(server.offers_kept() == 0 && !c[5]->node.login.used);
+    const std::vector<Packet> first = attempt(*c[5], "hunter2");
+    CHECK(first.size() == 1 && c[5]->tick() == LOGIN_WAIT);
+    sim.t += (LOGIN_WAIT - 1) * 1000;
+    CHECK(c[5]->tick() == 1 && c[5]->node.login.used);
+    sim.t += 1000;
+    CHECK(give(*c[5], first).empty() && c[5]->logins.empty() && !c[5]->node.login.used);    // too late
+    server.tick();
+    const std::vector<Packet> stale = attempt(*c[5], "hunter2");
+    const std::vector<Packet> fresh = attempt(*c[5], "hunter2");                             // its one new login
+    CHECK(stale.size() == 1 && fresh.size() == 1 && server.offers_kept() == 1);
+    CHECK(give(*c[5], stale).empty() && c[5]->logins.empty());                               // answers the login it replaced
+    settle(*c[5], server, give(*c[5], fresh));
+    CHECK(c[5]->logins.size() == 1 && server.logged_in.size() == 2 && server.offers_kept() == 0);
+
+    // a known client's login cannot be replayed into the place kept for it: its timestamp is not new
+    c[3]->login(server.S, "hunter2", ++stamp);
+    const std::vector<Packet> again = c[3]->take();
+    CHECK(give(server, again).size() == 1 && server.offers_kept() == 1);
+    sim.t += LOGIN_WAIT * 1000;
+    server.tick();
+    int dropped = server.logins_dropped;
+    CHECK(give(server, again).empty() && server.logins_dropped == dropped + 1 && server.offers_kept() == 0);
+
+    // R_PRE counts logins too: sixteen that do not verify, and the genuine one after them is dropped
+    sim.t += 100000;
+    server.tick();
+    Packet forged = [&] { c[0]->login(server.S, "hunter2", ++stamp); return c[0]->take()[0]; }();
+    forged.payload[forged.payload.size() - 1] ^= 1;
+    dropped = server.logins_dropped;
+    for (int i = 0; i < ZCPFS_R_PRE_BURST; ++i) CHECK(give(server, {forged}).empty());
+    CHECK(attempt(*c[0], "hunter2").empty() && server.logins_dropped == dropped + ZCPFS_R_PRE_BURST + 1);
+    sim.t += 1000;
+    CHECK(attempt(*c[0], "hunter2").size() == 1);
+
+    // arguments and the cases that are not a zcpfs login at all
+    zcpfs_login_req req, req_empty;
+    uint32_t wait = 7;
+    zcpfs_contact v = Host::view(c[1]->contact(server.S));
+    const Bytes four(4, 1), big(ZCPFS_LOGIN_PLAIN_MAX + 1, 1), zero(32, 0);
+    const uint8_t pw[] = "pw";
+    CHECK(zcpfs_login_send(&c[1]->node, &v, pw, 2, big.data(), big.size(), 0, &wait) == ZCPFS_ERR_ARG && wait == 0);
+    CHECK(!c[1]->node.login.used && c[1]->take().empty());
+    v.pinned = 0;
+    CHECK(zcpfs_login_send(&c[1]->node, &v, pw, 2, four.data(), 4, 0, &wait) == ZCPFS_LEGACY);     // SPEC 19.2
+    v.pinned = 1;
+    v.ss = zero.data();
+    CHECK(zcpfs_login_send(&c[1]->node, &v, pw, 2, four.data(), 4, 0, &wait) == ZCPFS_LEGACY);     // SPEC 4
+    CHECK(c[1]->take().empty());
+    Bytes legacy(1 + 32 + 2 + 16, 0x44);
+    legacy[0] = server.S[0];
+    CHECK(zcpfs_login_rx(&server.node, legacy.data(), legacy.size(), 0, server.now(), &req) == ZCPFS_LEGACY);
+    c[1]->login(server.S, "", ++stamp);
+    const Packet typed_nothing = c[1]->take()[0];
+    c[1]->login(server.S, "hunter2", ++stamp);
+    const Packet genuine = c[1]->take()[0];
+    CHECK(genuine.payload.size() == 78 && typed_nothing.payload.size() == 78);
+    CHECK(zcpfs_login_rx(&c[2]->node, genuine.payload.data(), genuine.payload.size(), 0, 0, &req) != ZCPFS_OK);   // not a server
+    sim.t += LOGIN_WAIT * 1000;
+    server.tick();
+    CHECK(server.offers_kept() == 0);
+    CHECK(zcpfs_login_rx(&server.node, typed_nothing.payload.data(), typed_nothing.payload.size(), 0, server.now(), &req_empty) == ZCPFS_OK);
+    CHECK(zcpfs_login_rx(&server.node, genuine.payload.data(), genuine.payload.size(), 0, server.now(), &req) == ZCPFS_OK);
+    CHECK(Bytes(req.S_c, req.S_c + 32) == c[1]->S && req.plain_len == 4);
+    CHECK(req_empty.empty_password == 1 && req.empty_password == 0);    // all the login says about the password
+    Bytes reply(ZCPFS_MAX_PAYLOAD);
+    size_t len = 0;
+    const Bytes response(ZCPFS_LOGIN_RESPONSE_LEN, 9);
+    const zcpfs_branch three[3] = {{pw, 2, response.data(), 1}, {pw, 1, response.data(), 2}, {pw, 0, response.data(), 3}};
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 0, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 3, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_ARG);
+    CHECK(server.offers_kept() == 0);                       // a refused answer keeps nothing
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 2, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_OK);
+    CHECK(len + 2 == 87 && server.offers_kept() == 1);      // the largest reply there is
+    // the offer is kept two steps of the timeout the server gave, here a slower link than the default
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 1, 14300, server.now(), reply.data(), &len) == ZCPFS_OK);
+    CHECK(len + 2 == 45 && server.tick() == ZCPFS_LOGIN_STEPS * 23);
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 1, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_FULL);
+    zcpfs_forget(&server.node, c[1]->S.data());
+    zcpfs_forget(&c[1]->node, server.S.data());
+    CHECK(server.offers_kept() == 0 && !c[1]->node.login.used);
+    // a table of one has nothing to keep back: a stranger may take it
+    zcpfs_offer single[1];
+    zcpfs_node_serve(&server.node, single, 1);
+    CHECK(zcpfs_login_rx(&server.node, genuine.payload.data(), genuine.payload.size(), 0, server.now(), &req) == ZCPFS_OK);
+    CHECK(zcpfs_login_answer(&server.node, &req, three, 1, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_OK);
+    zcpfs_node_serve(&server.node, server.offers.data(), server.offers.size());
+    for (const auto& h : sim.nodes) CHECK(h->violations.empty());
+}
+
+TEST(zcpfs_login_again, "UNIT-ZCPFS-023", "A client the server already knows logs in again: no handshake is started, the old session stays readable until the new one is used") {
+    Sim sim(56);
+    LoginSetup n = login_pair(sim);
+    Host& client = n.client;
+    Host& server = n.server;
+    client.login(server.S, "hunter2", 1700000000u);
+    settle(client, server, client.take());
+    CHECK(client.logins.size() == 1 && server.logged_in.size() == 1);
+    CHECK(!client.node.login.used && server.offers_kept() == 0);            // used up, not left to run out
+    const uint32_t before = say(client, server, "before", 1700000001u);
+    CHECK(client.is_confirmed(before));
+
+    // the server restarts and has lost the session; the client notices nothing and logs in again
+    server.boot("restart");
+    sim.t = 60000;
+    int result = 0;
+    const uint32_t queued = server.app_send(client.S, "queued", 1700000059u, 0, &result);   // and has something to say
+    CHECK(result == ZCPFS_HELD && of_type(server.take(), REQ, 42) == 1);     // its handshake 1 is lost
+    client.login(server.S, "hunter2", 1700000060u);
+    const std::vector<Packet> reply = give(server, client.take());
+    CHECK(reply.size() == 1 && reply[0].type == RESPONSE && !reply[0].flood);
+    const std::vector<Packet> confirmation = give(client, reply);
+    CHECK(confirmation.size() == 1 && confirmation[0].payload.size() == 10);
+    CHECK(client.record(server.S)->previous.used);                          // the old session, for a late packet
+    // the server knows this client as a pinned contact now: its offer is tried before any resync (SPEC 10.2)
+    // and what it held for the client goes out the moment the login is confirmed
+    const std::vector<Packet> held = give(server, confirmation);
+    CHECK(held.size() == 1 && held[0].type == TXT && held[0].payload.size() > 10 && server.hs1_sent == 1);
+    CHECK(server.logged_in.size() == 2 && server.record(client.S)->current.used && server.offers_kept() == 0);
+    settle(server, client, held);
+    CHECK(client.received(server.S, "queued") == 1 && server.is_confirmed(queued));
+    const uint32_t after = say(client, server, "after", 1700000061u);
+    CHECK(client.is_confirmed(after) && server.received(client.S, "after") == 1);
+
+    // the first packet after a login may be a text instead of the confirmation, if that one was lost
+    sim.t = 200000;
+    client.login(server.S, "hunter2", 1700000200u);
+    give(client, give(server, client.take()));                              // the confirmation is lost
+    const uint32_t tok = client.app_send(server.S, "first after login", 1700000201u, 0);
+    settle(client, server, client.take());
+    CHECK(server.logged_in.size() == 3 && server.received(client.S, "first after login") == 1 && client.is_confirmed(tok));
+    CHECK(server.record(client.S)->previous.used && server.record(client.S)->prev_timed);
+    CHECK(client.violations.empty() && server.violations.empty());
+
+    // a text that opens nowhere, from a hash that has no offer, is still nobody's
+    zcpfs_rx_out o;
+    uint8_t who[32];
+    const Packet junk = garbage(server, client, TXT, 30, 0x66);
+    CHECK(zcpfs_rx_offer(&server.node, junk.payload.data(), junk.payload.size(), server.now(), who, &o) == ZCPFS_RX_NEXT);
 }

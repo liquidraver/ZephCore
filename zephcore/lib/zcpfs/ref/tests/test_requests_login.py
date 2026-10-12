@@ -177,15 +177,16 @@ class LoginCore(unittest.TestCase):
     def client(self, password):
         return pake1_make(Drbg(b"c"), self.ss, self.c.S, self.s.S, password, b"\x01\x02\x03\x04")
 
-    def server(self, body1, password, response=b"\x00\x00\x00\x00admin"):
-        S_c, Y_c, ss, plain = pake1_open(self.s.a, self.s.S, body1)
+    def server(self, body1, password, response=b"\x00\x00\x00\x00ad"):
+        S_c, Y_c, ss, plain, _ = pake1_open(self.s.a, self.s.S, body1)
         return pake_branch_make(Drbg(b"s" + password), ss, S_c, self.s.S, Y_c, password, response)
 
     def test_same_password_gives_the_same_keys(self):
         out, body1 = self.client(b"hunter2")
         branch, ck_i2r, ck_r2i, _ = self.server(body1, b"hunter2")
         plain, a, b, _ = pake_branch_open(self.ss, out, self.c.S, self.s.S, branch)
-        self.assertEqual(plain, b"\x00\x00\x00\x00admin")
+        self.assertEqual(plain, b"\x00\x00\x00\x00ad")
+        self.assertEqual(len(branch), 42)                         # a point, six bytes, a 4-byte tag
         self.assertEqual((a, b), (ck_i2r, ck_r2i))
 
     def test_different_password_gives_nothing(self):
@@ -198,8 +199,9 @@ class LoginCore(unittest.TestCase):
         # whatever the password: the server learns nothing about it here.
         for password in (b"hunter2", b"", b"x" * 15):
             _, body1 = self.client(password)
-            S_c, Y_c, ss, plain = pake1_open(self.s.a, self.s.S, body1)
+            S_c, Y_c, ss, plain, empty = pake1_open(self.s.a, self.s.S, body1)
             self.assertEqual((S_c, plain.rstrip(b"\x00")), (self.c.S, b"\x01\x02\x03\x04"))
+            self.assertEqual(empty, password == b"")           # all it says: whether one was typed
         self.assertNotIn(b"hunter2", self.client(b"hunter2")[1])
 
     def test_a_server_that_guesses_gets_exactly_one_guess(self):
@@ -228,15 +230,15 @@ class LoginCore(unittest.TestCase):
 
     def test_low_order_point_from_the_client_is_refused(self):
         _, body1 = self.client(b"hunter2")
-        S_c, _, ss, _ = pake1_open(self.s.a, self.s.S, body1)
-        self.assertIsNone(pake_branch_make(Drbg(b"s"), ss, S_c, self.s.S, bytes(32), b"hunter2", b"r"))
+        S_c, _, ss, _, _ = pake1_open(self.s.a, self.s.S, body1)
+        self.assertIsNone(pake_branch_make(Drbg(b"s"), ss, S_c, self.s.S, bytes(32), b"hunter2", b"rrrrrr"))
 
     def test_packet_lengths(self):
         _, body1 = self.client(b"hunter2")
         self.assertNotEqual((1 + len(body1) - 35) % 16, 0)
-        self.assertLessEqual(1 + len(body1), 80)                  # 73 + a 4-byte timestamp, padded
+        self.assertEqual(1 + len(body1), 78)                      # 74 + a 4-byte timestamp
         out, body1 = self.client(b"hunter2")
-        for count in (1, 2, 3):
+        for count in (1, 2):
             branches = [self.server(body1, b"pw%d" % i)[0] for i in range(count)]
             reply = pake_reply_pack(branches)
             total = 2 + len(reply)
@@ -244,8 +246,10 @@ class LoginCore(unittest.TestCase):
             self.assertNotEqual(total, 42)
             self.assertLessEqual(total, zcpfs.MAX_PAYLOAD)
             self.assertEqual(pake_reply_unpack(reply), branches)
-        self.assertIsNone(pake_reply_unpack(b"\x04\x09" + bytes(200)))    # too many branches
-        self.assertIsNone(pake_reply_unpack(b"\x02\x09" + bytes(20)))     # truncated
+            self.assertEqual(total, (45, 87)[count - 1])
+        self.assertIsNone(pake_reply_unpack(b"\x03" + bytes(200)))        # too many branches
+        self.assertIsNone(pake_reply_unpack(b"\x02" + bytes(83)))         # truncated
+        self.assertIsNone(pake_reply_unpack(b"\x00" + bytes(83)))
 
 
 class LoginNodes(unittest.TestCase):
@@ -261,7 +265,7 @@ class LoginNodes(unittest.TestCase):
         sim, client, server = self.setup()
         deliver(sim, client, client.login(server.id.S, b"hunter2", 1_700_000_000))
         self.assertEqual(len(client.logins), 1)
-        self.assertTrue(client.logins[0][1].endswith(b"admin"))
+        self.assertTrue(client.logins[0][1].endswith(b"ad"))
         self.assertEqual(server.logged_in, [(client.id.S, b"admin")])
         self.assertEqual(sim.count(ANON), 1)
         self.assertEqual(sim.count(TXT, 10), 1)                   # the client's confirmation
@@ -294,12 +298,12 @@ class LoginNodes(unittest.TestCase):
         server.guest_password = b"visitor"
         deliver(sim, client, client.login(server.id.S, b"visitor", 1_700_000_000))
         self.assertEqual(server.logged_in, [(client.id.S, b"guest")])
-        self.assertTrue(client.logins[-1][1].endswith(b"guest"))
+        self.assertTrue(client.logins[-1][1].endswith(b"gu"))
         server.acl.add(client.id.S)
         deliver(sim, client, client.login(server.id.S, b"", 1_700_000_100))
         self.assertEqual(server.logged_in[-1], (client.id.S, b"known"))
-        reply = [n for _, _, t, n, _ in sim.air if t == RESPONSE][-1]
-        self.assertLessEqual(reply, zcpfs.MAX_PAYLOAD)            # three branches still fit
+        replies = [n for _, _, t, n, _ in sim.air if t == RESPONSE]
+        self.assertEqual(replies, [87, 45])                       # admin and guest; then the empty password alone
 
     def test_a_server_that_does_not_know_the_password_learns_nothing(self):
         """The repeater with a copied name: capable, but with another password."""

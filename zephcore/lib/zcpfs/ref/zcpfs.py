@@ -52,22 +52,28 @@ class Params:
     T_RESYNC: float = 600
     T_HINT: float = 24 * 3600
     T_PROBE: float = 15
-    T_HS_RETRY: float = 8
+    # The step of section 10.4: 1.5 times the node's own send timeout towards the
+    # contact, at least 5 s. The simulator's link is the same for everybody, so
+    # one value stands for all contacts.
+    T_STEP: float = 8
     N_HS_TRIES: int = 3
-    T_HS_WAIT: float = 60          # how long own handshake 1 attempts wait for a reply
-    T_HELD: float = 60             # how long a message waits for a session
     N_HELD: int = 4
     N_DATA_TRIES: int = 2          # extra sends of a held message that stays unacknowledged
-    T_DATA_RETRY: float = 6
     T_DEDUP: float = 120
-    T_LOGIN: float = 30            # how long a server keeps an unconfirmed login
-    R_LOGIN_RATE: float = 0.5      # logins a server answers per second, node-wide
-    R_LOGIN_BURST: int = 3
+    N_LOGIN: int = 2               # unconfirmed logins a server keeps, and so answers, at once
     N_DEDUP: int = 16
     # What is flooded for a pinned contact with neither path nor session:
     # "probe" (14 bytes, handshake follows direct) or "handshake" (handshake 1
     # itself, the reply riding the flooded path return).
     FIRST_CONTACT: str = "probe"
+
+
+# The four intervals section 10.4 derives from the step.
+Params.T_HS_RETRY = property(lambda p: p.T_STEP)
+Params.T_HS_WAIT = property(lambda p: 2 * p.T_STEP)
+Params.T_HELD = property(lambda p: (p.N_HS_TRIES + 1) * p.T_STEP)
+Params.T_DATA_RETRY = property(lambda p: p.T_STEP)
+Params.T_LOGIN = property(lambda p: 2 * p.T_STEP)      # both the client's wait and the server's offer
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +427,13 @@ def pair_open(ss, S_sender, S_receiver, ptype, payload):
 # Section 19: login, a password-authenticated key exchange
 # ---------------------------------------------------------------------------
 
+LOGIN_EMPTY = 0x01        # flag in the login: the typed password is empty
+LOGIN_RESPONSE = 6        # bytes of login response in a branch
+BRANCH_TAG = 4            # a branch's tag only tells the client which branch is its own
+BRANCH = 32 + LOGIN_RESPONSE + BRANCH_TAG
+MAX_BRANCHES = 2
+
+
 @dataclass
 class LoginOut:
     y: bytes
@@ -441,21 +454,23 @@ def _pake_keys(ss, K, S_c, S_s, Y_c, Y_s):
 
 def pake1_make(drbg, ss, S_c, S_s, password, login_plain):
     """Client. Returns (LoginOut, body), body = S_c + Y_c + C + T8. The
-    password is not in the packet; `login_plain` is the rest of the legacy
-    login (timestamp, a room's sync marker)."""
+    password is not in the packet, only whether it is empty; `login_plain`
+    is the rest of the legacy login (timestamp, a room's sync marker)."""
     if ct_equal(ss, ZERO32):
         return None
     y = drbg.generate(32)
     Y = x25519(y, pake_generator(password, S_c, S_s))
     k1 = kdf("pake1", ss, S_c, S_s, Y, n=32)
-    plain = fit(ANON, login_plain, 1 + 32 + 32 + TAG)
+    flags = bytes([0 if password else LOGIN_EMPTY])
+    plain = fit(ANON, flags + login_plain, 1 + 32 + 32 + TAG)
     c, tag = ascon.aead_encrypt(k1[:16], k1[16:], bytes([S_s[0], ANON]) + S_c + Y, plain)
     return LoginOut(y, Y), S_c + Y + c + tag[:TAG]
 
 
 def pake1_open(a_s, S_s, body):
-    """Server. Returns (S_c, Y_c, ss, login plaintext) or None. This proves the
-    sender holds the static key of S_c; it says nothing about the password."""
+    """Server. Returns (S_c, Y_c, ss, login plaintext, password is empty) or
+    None. This proves the sender holds the static key of S_c; of the password
+    it says only whether there is one."""
     if len(body) < 64 + TAG:
         return None
     S_c, Y, c, tag = body[:32], body[32:64], body[64:-TAG], body[-TAG:]
@@ -464,12 +479,15 @@ def pake1_open(a_s, S_s, body):
         return None
     k1 = kdf("pake1", ss, S_c, S_s, Y, n=32)
     plain = ascon.aead_decrypt(k1[:16], k1[16:], bytes([S_s[0], ANON]) + S_c + Y, c, tag)
-    return None if plain is None else (S_c, Y, ss, plain)
+    if plain is None or not plain:
+        return None
+    return S_c, Y, ss, plain[1:], bool(plain[0] & LOGIN_EMPTY)
 
 
 def pake_branch_make(drbg, ss, S_c, S_s, Y_c, password, response_plain):
     """Server, for one password it would accept. Returns
-    (branch, ck_i2r, ck_r2i, feed) or None; branch = Y_s + C + T8."""
+    (branch, ck_i2r, ck_r2i, feed) or None; branch = Y_s + C + T4."""
+    assert len(response_plain) == LOGIN_RESPONSE
     y = drbg.generate(32)
     Y_s = x25519(y, pake_generator(password, S_c, S_s))
     K = x25519(y, Y_c)
@@ -478,13 +496,15 @@ def pake_branch_make(drbg, ss, S_c, S_s, Y_c, password, response_plain):
     k2, ck_i2r, ck_r2i, feed = _pake_keys(ss, K, S_c, S_s, Y_c, Y_s)
     ad = bytes([S_c[0], S_s[0], RESPONSE]) + Y_s
     c, tag = ascon.aead_encrypt(k2[:16], k2[16:], ad, response_plain)
-    return Y_s + c + tag[:TAG], ck_i2r, ck_r2i, feed
+    return Y_s + c + tag[:BRANCH_TAG], ck_i2r, ck_r2i, feed
 
 
 def pake_branch_open(ss, out, S_c, S_s, branch):
     """Client, one branch. Returns (response, ck_i2r, ck_r2i, feed) or None.
     It opens only if the server used the same password."""
-    Y_s, c, tag = branch[:32], branch[32:-TAG], branch[-TAG:]
+    if len(branch) != BRANCH:
+        return None
+    Y_s, c, tag = branch[:32], branch[32:-BRANCH_TAG], branch[-BRANCH_TAG:]
     K = x25519(out.y, Y_s)
     if ct_equal(K, ZERO32):
         return None
@@ -495,21 +515,21 @@ def pake_branch_open(ss, out, S_c, S_s, branch):
 
 
 def pake_reply_pack(branches):
-    """count, response length, the branches, and zero bytes until the RESPONSE
-    payload (two address bytes more) has an allowed length."""
-    body = bytes([len(branches), len(branches[0]) - 32 - TAG]) + b"".join(branches)
+    """count, the branches, and zero bytes until the RESPONSE payload (two
+    address bytes more) has an allowed length."""
+    body = bytes([len(branches)]) + b"".join(branches)
     while (len(body) - 2) % 16 == 0 or len(body) + 2 == 42:
         body += b"\x00"
     return body
 
 
 def pake_reply_unpack(body):
-    if len(body) < 2 or not 1 <= body[0] <= 3:
+    if len(body) < 1 or not 1 <= body[0] <= MAX_BRANCHES:
         return None
-    count, size = body[0], 32 + body[1] + TAG
-    if len(body) < 2 + count * size:
+    count = body[0]
+    if len(body) < 1 + count * BRANCH:
         return None
-    return [body[2 + i * size:2 + (i + 1) * size] for i in range(count)]
+    return [body[1 + i * BRANCH:1 + (i + 1) * BRANCH] for i in range(count)]
 
 
 # ---------------------------------------------------------------------------
@@ -556,6 +576,7 @@ class Peer:
         self.path_confirmed = True     # False while the peer may not have our reciprocal path
         self.pinned = False            # persisted
         self.advert_ts = None          # persisted
+        self.login_stamp = 0           # server: timestamp of the last login answered for a known client
         self.reset_ram(p)
 
     def reset_ram(self, p):
@@ -564,6 +585,9 @@ class Peer:
         self.outstanding = []          # own handshake 1 attempts awaiting a reply, newest last
         self.outstanding_at = 0        # when the newest of them was sent
         self.login_out = None          # client: own login awaiting its reply (section 19)
+        self.login_until = 0
+        self.login_repeated = False    # server: the offer already replaced an earlier one
+        self.login_known = False       # server: the offer is to a client that was known
         self.login_candidates = []     # server: (Session, role, feed) awaiting confirmation
         self.login_deadline = 0
         self.held = []                 # (plaintext, token, expiry), oldest first, at most N_HELD
@@ -616,7 +640,7 @@ class Node:
             "stateless_sent")}
         self.key_log = []              # (key, nonce) of every seal, for the uniqueness test
         self.wakeups = []              # times at which the caller should call tick()
-        self.wait_factor = 1           # how much longer the app should wait for this send
+        self.held_for = None           # the app's timeout for the last send, if it was held
         self._token = 0
 
     # -- boot and contacts ---------------------------------------------------
@@ -625,7 +649,6 @@ class Node:
         self.drbg = Drbg(hw_entropy, self.seed_file)
         self.seed_file = self.drbg.generate(32)
         self.pre_auth = _Bucket(self.p.R_PRE_RATE, self.p.R_PRE_BURST)
-        self.login_limit = _Bucket(self.p.R_LOGIN_RATE, self.p.R_LOGIN_BURST)
 
     def reboot(self, hw_entropy):
         """Sessions and timers are RAM; pins, paths and the seed file survive."""
@@ -693,8 +716,10 @@ class Node:
         if peer.previous and peer.prev_deadline is not None and now >= peer.prev_deadline:
             peer.previous, peer.prev_deadline = None, None
         if peer.login_candidates and now >= peer.login_deadline:
-            peer.login_candidates = []
-        if peer.outstanding and now - peer.outstanding_at > self.p.T_HS_WAIT:
+            peer.login_candidates, peer.login_repeated = [], False
+        if peer.login_out and now >= peer.login_until:
+            peer.login_out = None                 # 19.2: the application has stopped waiting
+        if peer.outstanding and now - peer.outstanding_at >= self.p.T_HS_WAIT:
             peer.outstanding = []                 # 8.2: the ephemeral keys do not wait for ever
         peer.held = [h for h in peer.held if h[2] > now]   # 10.1
 
@@ -745,7 +770,7 @@ class Node:
         out = []
         token = self._new_token()
         self.stats["app_attempts"] += 1
-        self.wait_factor = 1
+        self.held_for = None
 
         if not (self.zcpfs and peer.pinned):
             plain = (with_hint(timestamp, attempt, text) if self.zcpfs
@@ -767,7 +792,7 @@ class Node:
             return token, out
 
         self._hold(peer, plain, token)            # 10.1
-        self.wait_factor = 3
+        self.held_for = self.p.T_HELD             # 10.4: the app gives up when the hold ends
         peer.hs_tries = 0                         # a new attempt, a new budget
         if not peer.start_gap.take(now):
             peer.hs_tries = 1                     # one is already under way; keep retrying it
@@ -807,6 +832,8 @@ class Node:
             if made is None:
                 return out
             peer.login_out, body = made
+            peer.login_until = self.clock() + self.p.T_LOGIN
+            self.held_for = self.p.T_LOGIN        # the application's timeout for this login
             payload = bytes([peer.S[0]]) + body
             assert (len(payload) - 35) % 16 != 0 and len(payload) <= MAX_PAYLOAD
             self._emit(out, ANON, payload, flood)
@@ -1177,21 +1204,46 @@ class Node:
         got = pake1_open(self.id.a, self.id.S, body)
         if got is None:
             return
-        S_c, Y_c, ss, _ = got
-        if not self.login_limit.take(now):
+        S_c, Y_c, ss, login_plain, empty = got
+        peer = self.peers.get(S_c)
+        known = S_c in self.acl or (peer is not None and peer.pinned)
+        # A client the server knows cannot have an old login of its replayed.
+        sent = int.from_bytes(login_plain[:4], "little")
+        if known and peer is not None and sent <= peer.login_stamp:
             return
+        # 19.3 step 2: a login is answered only while there is room to keep its
+        # offer; that is the limit on password guesses and on reply airtime.
+        for other in self.peers.values():
+            self._expire(other, now)
+        if peer is not None and peer.login_candidates and peer.login_repeated:
+            return                                # one new login per offer, not more
+        waiting = [q for q in self.peers.values() if q.login_candidates and q.S != S_c]
+        strangers = [q for q in waiting if not q.login_known]
+        if len(waiting) >= self.p.N_LOGIN or (
+                not known and len(strangers) >= max(1, self.p.N_LOGIN - 1)):
+            return                                # the last place is for a known client
         # Every password this client could be using. The server cannot know
-        # which one, or whether any, before the client confirms.
-        accepted = [(b"admin", self.password)]
-        if self.guest_password is not None:
-            accepted.append((b"guest", self.guest_password))
-        if S_c in self.acl:
-            accepted.append((b"known", b""))
-        peer = self.peers.get(S_c) or self.add_contact(S_c)
+        # which one, or whether any, before the client confirms. It knows
+        # whether one was typed at all, which keeps this to two.
+        accepted = []
+        if empty:
+            if S_c in self.acl:
+                accepted.append((b"known", b""))
+            elif self.guest_password == b"":
+                accepted.append((b"guest", b""))
+        else:
+            accepted.append((b"admin", self.password))
+            if self.guest_password:
+                accepted.append((b"guest", self.guest_password))
+        if not accepted:
+            return
+        peer = peer or self.add_contact(S_c)
+        peer.login_repeated = bool(peer.login_candidates)
+        peer.login_known, peer.login_stamp = known, sent
         peer.login_candidates = []
         branches = []
         for role, password in accepted:
-            made = pake_branch_make(self.drbg, ss, S_c, self.id.S, Y_c, password, stamp + role)
+            made = pake_branch_make(self.drbg, ss, S_c, self.id.S, Y_c, password, stamp + role[:2])
             if made is None:
                 continue
             branches.append(made[0])
@@ -1247,6 +1299,7 @@ class Node:
         peer.previous = peer.current
         peer.prev_deadline = now + self.p.T_PREV if peer.previous else None
         peer.current, peer.next, peer.login_candidates = session, None, []
+        peer.login_repeated = False
         peer.pinned = True
         self.logged_in.append((peer.S, role))
 

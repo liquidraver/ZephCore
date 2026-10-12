@@ -696,6 +696,21 @@
       "id": "UNIT-ZCPFS-020",
       "name": "A lost confirmation is repeated when the peer still uses the old session, at most once per interval",
       "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-021",
+      "name": "Login: the password never leaves the node; the right one sets up a session and grants its role, a wrong one grants nothing",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-022",
+      "name": "Login limits: answered only while there is room for the offer, one place kept for known clients, one new login per offer; offers and waits end on time",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-023",
+      "name": "A client the server already knows logs in again: no handshake is started, the old session stays readable until the new one is used",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
     }
   ]
 }

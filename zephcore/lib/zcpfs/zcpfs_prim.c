@@ -59,26 +59,40 @@ void zcpfs_auth(const uint8_t k[32], const uint8_t *ad, size_t ad_len,
 	zcpfs_wipe(full, sizeof(full));
 }
 
-void zcpfs_aead_seal(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
-		     size_t ad_len, const uint8_t *pt, size_t len, uint8_t *out)
+void zcpfs_aead_seal_tag(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
+			 size_t ad_len, const uint8_t *pt, size_t len, uint8_t *out,
+			 size_t tag_len)
 {
 	uint8_t full[ASCON_AEAD128_TAG_LEN];
 
 	ascon_aead128_encrypt(key, nonce, ad, ad_len, pt, len, out, full);
-	memcpy(out + len, full, ZCPFS_TAG_LEN);
+	memcpy(out + len, full, tag_len);
 	zcpfs_wipe(full, sizeof(full));
+}
+
+int zcpfs_aead_open_tag(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
+			size_t ad_len, const uint8_t *body, size_t body_len, uint8_t *pt,
+			size_t tag_len)
+{
+	size_t len = body_len - tag_len;
+
+	if (ascon_aead128_decrypt(key, nonce, ad, ad_len, body, len, body + len, tag_len,
+				  pt) != 0) {
+		return ZCPFS_ERR_AUTH;
+	}
+	return ZCPFS_OK;
+}
+
+void zcpfs_aead_seal(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
+		     size_t ad_len, const uint8_t *pt, size_t len, uint8_t *out)
+{
+	zcpfs_aead_seal_tag(key, nonce, ad, ad_len, pt, len, out, ZCPFS_TAG_LEN);
 }
 
 int zcpfs_aead_open(const uint8_t key[16], const uint8_t nonce[16], const uint8_t *ad,
 		    size_t ad_len, const uint8_t *body, size_t body_len, uint8_t *pt)
 {
-	size_t len = body_len - ZCPFS_TAG_LEN;
-
-	if (ascon_aead128_decrypt(key, nonce, ad, ad_len, body, len, body + len,
-				  ZCPFS_TAG_LEN, pt) != 0) {
-		return ZCPFS_ERR_AUTH;
-	}
-	return ZCPFS_OK;
+	return zcpfs_aead_open_tag(key, nonce, ad, ad_len, body, body_len, pt, ZCPFS_TAG_LEN);
 }
 
 int zcpfs_ct_equal(const uint8_t *a, const uint8_t *b, size_t len)
