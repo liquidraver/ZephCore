@@ -59,6 +59,8 @@ public:
 
 	void forget(const uint8_t *pub_key);
 	void loop();
+	/* The reply to `get zcpfs`: state, and counters since boot. */
+	void status(char *reply, size_t size);
 
 private:
 	BaseChatMesh &_m;
@@ -83,6 +85,12 @@ private:
 	uint8_t _back_len = 0;
 	bool _back_valid = false;
 	bool _hs_after_path = false;	/* the next handshake follows a path packet */
+
+	struct {			/* since boot, for `get zcpfs` */
+		uint16_t tx_text, tx_confirm, tx_hs1, tx_hs2, tx_probe, tx_pair;
+		uint16_t rx_text, rx_dup, rx_pair, rx_probe;
+		uint16_t held, acked;
+	} _n = {};
 
 	void ensure();
 	static uint32_t now();

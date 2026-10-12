@@ -209,6 +209,9 @@ public:
   ContactInfo* searchContactsByPrefix(const char* name_prefix);
   ContactInfo* lookupContactByPubKey(const uint8_t* pub_key, int prefix_len);
   bool  removeContact(ContactInfo& contact);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  bool  zcpfsCommand(const char* line, char* reply, size_t size);  // ZEPHCORE: the `get zcpfs` CLI line
+#endif
   bool  addContact(const ContactInfo& contact);
   int getTotalContactSlots() const { return num_contacts; }
   int getNumContacts() const { return num_contacts; }  // ZEPHCORE: no reserved slots; anon slots are counted
