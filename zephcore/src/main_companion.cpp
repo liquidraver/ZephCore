@@ -796,6 +796,11 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 	if (power_policy.handleCommand(line, reply, CLI_REPLY_SIZE)) {
 		return;
 	}
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	if (companion_mesh.zcpfsCommand(line, reply, CLI_REPLY_SIZE)) {
+		return;
+	}
+#endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI)
 	if (companion_wifi_cli(line, companion_mesh.prefs, save_prefs_to_flash, reply)) {
 		return;

@@ -5,6 +5,7 @@
 
 #include "ZcpfsChat.h"
 
+#include <stdio.h>
 #include <string.h>
 #include <zephyr/kernel.h>
 
@@ -96,6 +97,13 @@ void ZcpfsChat::opSend(void *user, const uint8_t S[32], uint8_t type, const uint
 
 	if (pkt == nullptr) {
 		return;
+	}
+	if (type == PAYLOAD_TYPE_TXT_MSG) {
+		len == ZCPFS_DATA_OVERHEAD ? z._n.tx_confirm++ : z._n.tx_text++;
+	} else if (type == PAYLOAD_TYPE_RESPONSE) {
+		z._n.tx_hs2++;
+	} else {
+		len == 2 + ZCPFS_HS_BODY_LEN ? z._n.tx_hs1++ : z._n.tx_probe++;
 	}
 	pkt->header = (uint8_t)(type << PH_TYPE_SHIFT);		/* the route type is set by the send */
 	memcpy(pkt->payload, payload, len);
@@ -195,6 +203,7 @@ int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 		uint8_t txt_type = (uint8_t)(out.plain[4] >> 2);
 
 		_in_kind = &from;
+		_n.rx_dup++;
 		if (txt_type == TXT_TYPE_PLAIN || txt_type == TXT_TYPE_SIGNED_PLAIN) {
 			ackOnly(pkt, from, out.ack4);	/* the kinds legacy acknowledges */
 		}
@@ -204,6 +213,7 @@ int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 	case ZCPFS_RX_PROBE: {
 		/* as a flooded message without an ACK is answered (SPEC 11) */
 		_in_kind = &from;
+		_n.rx_probe++;
 		mesh::Packet *path = _m.createPathReturn(from.id, from.getSharedSecret(_m.self_id),
 							 pkt->path, pkt->path_len, 0, NULL, 0);
 		if (path != nullptr) {
@@ -218,6 +228,7 @@ int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 	case ZCPFS_RX_PAIR:
 		/* the legacy view (SPEC 7.1): the plaintext, then zero bytes */
 		_in_kind = &from;
+		r == ZCPFS_RX_TEXT ? _n.rx_text++ : _n.rx_pair++;
 		memcpy(data, out.plain, sizeof(out.plain));
 		*len = (int)out.len;
 		zcpfs_wipe(&out, sizeof(out));
@@ -281,6 +292,7 @@ int ZcpfsChat::sealOutgoing(uint8_t type, const uint8_t *dest_hash, const uint8_
 	    ZCPFS_OK) {
 		return -1;
 	}
+	_n.tx_pair++;
 	return (int)len;
 }
 
@@ -314,6 +326,9 @@ bool ZcpfsChat::sendText(const ContactInfo &to, const uint8_t *plain, size_t len
 	if (expected_ack != nullptr) {
 		*expected_ack = token;
 	}
+	if (r == ZCPFS_HELD) {
+		_n.held++;
+	}
 	/* SPEC 10.4: a held message is dropped when the application gives up */
 	est_timeout = r == ZCPFS_HELD ? held_for * 1000
 				      : timeoutFor(to, len + ZCPFS_DATA_OVERHEAD + 1);
@@ -328,6 +343,7 @@ void ZcpfsChat::translateAck(uint32_t &ack)
 
 	if (_ready && zcpfs_on_ack(&_node, (const uint8_t *)&ack, &token, who)) {
 		ack = token;
+		_n.acked++;
 	}
 }
 
@@ -425,6 +441,33 @@ void ZcpfsChat::loop()
 
 		_next_tick = t + (wait == UINT32_MAX ? 3600 : wait);
 	}
+}
+
+void ZcpfsChat::status(char *reply, size_t size)
+{
+	int records = 0, sessions = 0, pinned = 0;
+
+	for (int i = 0; _ready && i < CONFIG_ZEPHCORE_ZCPFS_PEERS; i++) {
+		records += _peers[i].used ? 1 : 0;
+		sessions += _peers[i].used && _peers[i].current.used ? 1 : 0;
+	}
+	for (int i = 0; i < _m.num_contacts; i++) {
+		pinned += (_m.contacts[i].flags & ZCPFS_PIN_FLAG) ? 1 : 0;
+	}
+	snprintf(reply, size,
+		 "> pinned %d records %d/%d sessions %d tx t%u c%u h%u/%u p%u s%u rx t%u d%u s%u p%u held %u acked %u",
+		 pinned, records, CONFIG_ZEPHCORE_ZCPFS_PEERS, sessions, _n.tx_text, _n.tx_confirm,
+		 _n.tx_hs1, _n.tx_hs2, _n.tx_probe, _n.tx_pair, _n.rx_text, _n.rx_dup, _n.rx_pair,
+		 _n.rx_probe, _n.held, _n.acked);
+}
+
+bool BaseChatMesh::zcpfsCommand(const char *line, char *reply, size_t size)
+{
+	if (strcmp(line, "get zcpfs") != 0) {
+		return false;
+	}
+	_zc.status(reply, size);
+	return true;
 }
 
 /* ---- BaseChatMesh's side of the hooks in mesh::Mesh ---------------------- */
