@@ -2259,6 +2259,12 @@ bool CompanionMesh::handleCmdAddUpdateContact(const uint8_t *data, size_t len)
 		if (existing && existing->last_advert_timestamp > c.last_advert_timestamp) {
 			c.last_advert_timestamp = existing->last_advert_timestamp;
 		}
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+		/* The pin is the firmware's, set by a signed advert or a handshake
+		 * (lib/zcpfs/SPEC.md 6.2): what the app writes neither sets nor clears it. */
+		c.flags = (uint8_t)((c.flags & ~ZCPFS_PIN_FLAG) |
+				    (existing ? (existing->flags & ZCPFS_PIN_FLAG) : 0));
+#endif
 
 		if (existing) {
 			// Update existing
