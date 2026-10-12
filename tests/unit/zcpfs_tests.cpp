@@ -422,8 +422,8 @@ TEST(zcpfs_pairwise_vectors, "UNIT-ZCPFS-009", "Requests, responses and path ret
     CHECK(zcpfs_fit(ZCPFS_PT_TXT, 4, ZCPFS_DATA_OVERHEAD) == 4);
     CHECK(zcpfs_fit(ZCPFS_PT_TXT, 10, ZCPFS_DATA_OVERHEAD) == 11);       // 20 = 4 + 16
     CHECK(zcpfs_fit(ZCPFS_PT_PATH, 4, ZCPFS_PAIR_OVERHEAD) == 5);        // 20
-    CHECK(zcpfs_fit(ZCPFS_PT_ANON, 4, ZCPFS_LOGIN_OVERHEAD) == 4);       // 77
-    CHECK(zcpfs_fit(ZCPFS_PT_ANON, 10, ZCPFS_LOGIN_OVERHEAD) == 11);     // 83 = 35 + 48
+    CHECK(zcpfs_fit(ZCPFS_PT_ANON, 4, ZCPFS_LOGIN_OVERHEAD) == 4);       // 78
+    CHECK(zcpfs_fit(ZCPFS_PT_ANON, 9, ZCPFS_LOGIN_OVERHEAD) == 10);      // 83 = 35 + 48
     const Bytes data = seq(0, ZCPFS_MAX_PAYLOAD);
     Bytes payload(ZCPFS_MAX_PAYLOAD + 1, 0xEE), back(ZCPFS_MAX_PAYLOAD);
     for (uint8_t type : {uint8_t(ZCPFS_PT_REQ), uint8_t(ZCPFS_PT_RESPONSE), uint8_t(ZCPFS_PT_PATH)}) {
@@ -445,7 +445,7 @@ TEST(zcpfs_login_vectors, "UNIT-ZCPFS-010", "Password login: generator, both pac
     const Pair p;
     const Bytes S_c = V("login.client"), S_s = V("login.server"), password = V("login.password");
     const Bytes stamp = V("login.login_plaintext"), reply_plain = V("login.reply_plaintext");
-    CHECK(S_c == p.S_i && S_s == p.S_r);
+    CHECK(S_c == p.S_i && S_s == p.S_r && reply_plain.size() == ZCPFS_LOGIN_RESPONSE_LEN);
 
     // 19.1: the point both sides derive from the password
     for (long long n = 0; n < N("elligator.#"); ++n) {
@@ -460,69 +460,88 @@ TEST(zcpfs_login_vectors, "UNIT-ZCPFS-010", "Password login: generator, both pac
     CHECK(G == V("login.generator"));
 
     // client
-    zcpfs_drbg g_c = generator(0x41), g_s = generator(0x51), g_other = generator(0x52);
-    zcpfs_login_out out;
-    Bytes login(stamp.size() + ZCPFS_LOGIN_OVERHEAD);
-    size_t login_len = 0;
+    zcpfs_drbg g_c = generator(0x41), g_s = generator(0x51), g_other = generator(0x52), g_empty = generator(0x41);
+    zcpfs_login_out out, out_empty;
+    Bytes login(stamp.size() + ZCPFS_LOGIN_OVERHEAD), login_empty(stamp.size() + ZCPFS_LOGIN_OVERHEAD);
+    size_t login_len = 0, empty_len = 0;
     CHECK(zcpfs_login_make(&g_c, p.ss.data(), S_c.data(), S_s.data(), password.data(), password.size(),
                            stamp.data(), stamp.size(), &out, login.data(), &login_len) == ZCPFS_OK);
     login.resize(login_len);
     CHECK(Bytes(out.y, out.y + 32) == V("login.y_c") && Bytes(out.Y, out.Y + 32) == V("login.Y_c"));
     CHECK(cat({S_s[0]}, login) == V("login.packet_login"));
-    CHECK((login_len + 1) % 16 != 3);
+    CHECK(login_len + 1 == stamp.size() + ZCPFS_LOGIN_OVERHEAD && (login_len + 1) % 16 != 3);
+    CHECK(zcpfs_login_make(&g_empty, p.ss.data(), S_c.data(), S_s.data(), password.data(), 0,
+                           stamp.data(), stamp.size(), &out_empty, login_empty.data(), &empty_len) == ZCPFS_OK);
+    login_empty.resize(empty_len);
+    CHECK(cat({S_s[0]}, login_empty) == V("login.packet_login_empty_password"));
 
-    // server: who is asking, and nothing about the password
+    // server: who is asking, and of the password only whether there is one
     Bytes got_S(32), got_Y(32), got_ss(32), got_plain(login_len);
     size_t plain_len = 0;
+    int empty = -1;
     CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), login.data(), login_len, got_S.data(), got_Y.data(),
-                           got_ss.data(), got_plain.data(), &plain_len) == ZCPFS_OK);
+                           got_ss.data(), got_plain.data(), &plain_len, &empty) == ZCPFS_OK);
     got_plain.resize(plain_len);
-    CHECK(got_S == S_c && got_Y == V("login.Y_c") && got_ss == p.ss && got_plain == V("login.sealed_login_plaintext"));
+    CHECK(got_S == S_c && got_Y == V("login.Y_c") && got_ss == p.ss && empty == 0);
+    CHECK(cat({0}, got_plain) == V("login.sealed_login_plaintext") && got_plain == stamp);
+    Bytes scratch(login_len);
+    CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), login_empty.data(), empty_len, got_S.data(), got_Y.data(),
+                           got_ss.data(), scratch.data(), &plain_len, &empty) == ZCPFS_OK);
+    CHECK(empty == 1 && plain_len == stamp.size() && Bytes(scratch.begin(), scratch.begin() + long(plain_len)) == stamp);
     for (size_t byte = 0; byte < login_len; ++byte) {
         Bytes bad = login; bad[byte] ^= 1;
-        Bytes scratch(login_len);
         CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), bad.data(), login_len, got_S.data(), got_Y.data(),
-                               got_ss.data(), scratch.data(), &plain_len) != ZCPFS_OK);
+                               got_ss.data(), scratch.data(), &plain_len, &empty) != ZCPFS_OK);
     }
-    CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), login.data(), 71, got_S.data(), got_Y.data(), got_ss.data(),
-                           got_plain.data(), &plain_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), login.data(), 72, got_S.data(), got_Y.data(), got_ss.data(),
+                           scratch.data(), &plain_len, &empty) == ZCPFS_ERR_ARG);
+    // the longest login plaintext that fits, and one byte more
+    Bytes big(ZCPFS_LOGIN_PLAIN_MAX + 1, 7), big_login(ZCPFS_MAX_PAYLOAD + 8), big_plain(ZCPFS_LOGIN_PLAIN_MAX + 1);
+    zcpfs_login_out big_out;
+    CHECK(zcpfs_login_make(&g_c, p.ss.data(), S_c.data(), S_s.data(), password.data(), password.size(),
+                           big.data(), ZCPFS_LOGIN_PLAIN_MAX + 1, &big_out, big_login.data(), &login_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_make(&g_c, p.ss.data(), S_c.data(), S_s.data(), password.data(), password.size(),
+                           big.data(), ZCPFS_LOGIN_PLAIN_MAX, &big_out, big_login.data(), &login_len) == ZCPFS_OK);
+    CHECK(login_len + 1 == ZCPFS_MAX_PAYLOAD);
+    CHECK(zcpfs_login_open(p.a_r.data(), S_s.data(), big_login.data(), login_len, got_S.data(), got_Y.data(),
+                           got_ss.data(), big_plain.data(), &plain_len, &empty) == ZCPFS_OK && plain_len == ZCPFS_LOGIN_PLAIN_MAX);
 
     // one branch with the right password, one with another
-    const size_t branch_len = reply_plain.size() + ZCPFS_BRANCH_OVERHEAD;
-    Bytes right(branch_len), wrong(branch_len);
+    Bytes right(ZCPFS_BRANCH_LEN), wrong(ZCPFS_BRANCH_LEN);
     zcpfs_keys keys_s, keys_wrong, keys_c;
     CHECK(zcpfs_login_branch_make(&g_s, p.ss.data(), S_c.data(), S_s.data(), V("login.Y_c").data(), password.data(),
-                                  password.size(), reply_plain.data(), reply_plain.size(), right.data(), &keys_s) == ZCPFS_OK);
+                                  password.size(), reply_plain.data(), right.data(), &keys_s) == ZCPFS_OK);
     CHECK(right == V("login.branch_right_password") && sub(right, 0, 32) == V("login.Y_s"));
     CHECK(Bytes(keys_s.ck_i2r, keys_s.ck_i2r + 32) == V("login.ck_i2r") && Bytes(keys_s.ck_r2i, keys_s.ck_r2i + 32) == V("login.ck_r2i"));
     const Bytes hunter3{'h', 'u', 'n', 't', 'e', 'r', '3'};
     CHECK(zcpfs_login_branch_make(&g_other, p.ss.data(), S_c.data(), S_s.data(), V("login.Y_c").data(), hunter3.data(),
-                                  hunter3.size(), reply_plain.data(), reply_plain.size(), wrong.data(), &keys_wrong) == ZCPFS_OK);
+                                  hunter3.size(), reply_plain.data(), wrong.data(), &keys_wrong) == ZCPFS_OK);
     CHECK(wrong == V("login.branch_other_password"));
 
-    Bytes branches = cat(right, wrong), reply(2 + branches.size() + 1);
+    Bytes branches = cat(right, wrong), reply(1 + branches.size() + 1);
     size_t reply_len = 0;
-    CHECK(zcpfs_login_reply_pack(2, uint8_t(reply_plain.size()), branches.data(), reply.data(), &reply_len) == ZCPFS_OK);
+    CHECK(zcpfs_login_reply_pack(2, branches.data(), reply.data(), &reply_len) == ZCPFS_OK);
     reply.resize(reply_len);
     CHECK(cat(p.hdr_ri, reply) == V("login.packet_reply_two_branches"));
-    CHECK((reply_len + 2) % 16 != 4 && reply_len + 2 != 42);
+    CHECK(reply_len + 2 == 87 && (reply_len + 2) % 16 != 4);
+    Bytes single(1 + ZCPFS_BRANCH_LEN + 1);
+    size_t single_len = 0;
+    CHECK(zcpfs_login_reply_pack(1, right.data(), single.data(), &single_len) == ZCPFS_OK);
+    CHECK(single_len + 2 == 45);                            // one branch: 45 bytes as a RESPONSE, not the reserved 42
 
     // client: the branch of its own password opens and gives the server's session keys
     const uint8_t *first = nullptr;
-    size_t each = 0;
-    CHECK(zcpfs_login_reply_unpack(reply.data(), reply_len, &first, &each) == 2 && each == branch_len && first == reply.data() + 2);
-    Bytes response(reply_plain.size() + 1);
-    CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), first, each, response.data(), &keys_c) == ZCPFS_OK);
-    response.resize(reply_plain.size());
+    CHECK(zcpfs_login_reply_unpack(reply.data(), reply_len, &first) == 2 && first == reply.data() + 1);
+    Bytes response(ZCPFS_LOGIN_RESPONSE_LEN);
+    CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), first, response.data(), &keys_c) == ZCPFS_OK);
     CHECK(response == reply_plain && std::memcmp(&keys_c, &keys_s, sizeof(keys_c)) == 0);
     std::memset(&keys_c, 0xEE, sizeof(keys_c));
-    CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), first + each, each, response.data(), &keys_c) == ZCPFS_ERR_AUTH);
+    CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), first + ZCPFS_BRANCH_LEN, response.data(), &keys_c) == ZCPFS_ERR_AUTH);
     CHECK(N("login.other_branch_opens") == 0 && all_zero(reinterpret_cast<const uint8_t *>(&keys_c), sizeof(keys_c)));
-    for (size_t byte = 0; byte < each; ++byte) {
+    for (size_t byte = 0; byte < ZCPFS_BRANCH_LEN; ++byte) {    // the 4-byte tag still covers every byte
         Bytes bad = right; bad[byte] ^= 1;
-        CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), bad.data(), each, response.data(), &keys_c) != ZCPFS_OK);
+        CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), bad.data(), response.data(), &keys_c) != ZCPFS_OK);
     }
-    CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), right.data(), ZCPFS_BRANCH_OVERHEAD - 1, response.data(), &keys_c) == ZCPFS_ERR_ARG);
 
     // a client that typed another password gets a login the server answers, and no branch it can open
     zcpfs_drbg g_typo = generator(0x41);
@@ -531,18 +550,18 @@ TEST(zcpfs_login_vectors, "UNIT-ZCPFS-010", "Password login: generator, both pac
     CHECK(zcpfs_login_make(&g_typo, p.ss.data(), S_c.data(), S_s.data(), hunter3.data(), hunter3.size(),
                            stamp.data(), stamp.size(), &typo, typo_login.data(), &login_len) == ZCPFS_OK);
     CHECK(Bytes(typo.Y, typo.Y + 32) != V("login.Y_c"));
-    CHECK(zcpfs_login_branch_open(p.ss.data(), &typo, S_c.data(), S_s.data(), right.data(), each, response.data(), &keys_c) == ZCPFS_ERR_AUTH);
+    CHECK(zcpfs_login_branch_open(p.ss.data(), &typo, S_c.data(), S_s.data(), right.data(), response.data(), &keys_c) == ZCPFS_ERR_AUTH);
+    // and so does one that typed nothing: the empty password is a password like any other to the key exchange
+    CHECK(zcpfs_login_branch_open(p.ss.data(), &out_empty, S_c.data(), S_s.data(), right.data(), response.data(), &keys_c) == ZCPFS_ERR_AUTH);
 
     // malformed replies
     Bytes bad = reply;
-    for (uint8_t count : {uint8_t(0), uint8_t(4), uint8_t(3)}) {
+    for (uint8_t count : {uint8_t(0), uint8_t(3), uint8_t(255)}) {
         bad[0] = count;
-        CHECK(zcpfs_login_reply_unpack(bad.data(), reply_len, &first, &each) == ZCPFS_ERR_ARG);
+        CHECK(zcpfs_login_reply_unpack(bad.data(), reply_len, &first) == ZCPFS_ERR_ARG);
     }
-    CHECK(zcpfs_login_reply_unpack(reply.data(), 1, &first, &each) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_unpack(reply.data(), 2 + 2 * branch_len - 1, &first, &each) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_pack(0, 9, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_pack(4, 9, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
-    // three branches of 60 bytes do not fit one packet
-    CHECK(zcpfs_login_reply_pack(3, 20, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_unpack(reply.data(), 0, &first) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_unpack(reply.data(), 1 + 2 * ZCPFS_BRANCH_LEN - 1, &first) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_pack(0, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_pack(3, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
 }

@@ -45,9 +45,11 @@ extern "C" {
 #define ZCPFS_PAIR_OVERHEAD	16	/* dst, src, n6, tag */
 #define ZCPFS_CHAN_OVERHEAD	15	/* channel hash, n6, tag */
 #define ZCPFS_CHAN_MAX_PLAIN	(ZCPFS_MAX_PAYLOAD - ZCPFS_CHAN_OVERHEAD)
-#define ZCPFS_LOGIN_OVERHEAD	73	/* dst, S_c, Y_c, tag */
-#define ZCPFS_BRANCH_OVERHEAD	40	/* Y_s, tag */
-#define ZCPFS_LOGIN_MAX_BRANCHES 3
+#define ZCPFS_LOGIN_OVERHEAD	74	/* dst, S_c, Y_c, a flag byte, tag */
+#define ZCPFS_LOGIN_RESPONSE_LEN 6	/* the login response inside a branch */
+#define ZCPFS_BRANCH_TAG_LEN	4
+#define ZCPFS_BRANCH_LEN	42	/* Y_s, response, tag */
+#define ZCPFS_LOGIN_MAX_BRANCHES 2
 
 #define ZCPFS_OK		0
 #define ZCPFS_ERR_AUTH		(-1)	/* tag did not verify, or nothing opened */
@@ -214,44 +216,44 @@ struct zcpfs_login_out {		/* an outstanding login */
 
 /* Client, 19.2. `login_plain` is the legacy login plaintext without the
  * password. `body` (S_c, Y_c, ciphertext, tag; follows dst) must hold
- * plain_len + ZCPFS_LOGIN_OVERHEAD bytes. */
+ * plain_len + ZCPFS_LOGIN_OVERHEAD bytes. The packet says of the password
+ * only whether it is empty. */
 int zcpfs_login_make(struct zcpfs_drbg *g, const uint8_t ss[32], const uint8_t S_c[32],
 		     const uint8_t S_s[32], const uint8_t *password, size_t password_len,
 		     const uint8_t *login_plain, size_t plain_len,
 		     struct zcpfs_login_out *out, uint8_t *body, size_t *body_len);
 
-/* Server, 19.3 step 1. Outputs the client's key, its point, the shared secret
- * and the login plaintext (`plain` must hold body_len - 72 bytes). */
+/* Server, 19.3 step 1. Outputs the client's key, its point, the shared secret,
+ * the login plaintext (`plain` must hold body_len - 72 bytes) and whether the
+ * client typed an empty password. */
 int zcpfs_login_open(const uint8_t a_s[32], const uint8_t S_s[32], const uint8_t *body,
 		     size_t body_len, uint8_t S_c[32], uint8_t Y_c[32], uint8_t ss[32],
-		     uint8_t *plain, size_t *plain_len);
+		     uint8_t *plain, size_t *plain_len, int *empty_password);
 
-/* Server, 19.3 step 3: one branch for one password it would accept. `branch`
- * must hold response_len + ZCPFS_BRANCH_OVERHEAD bytes. */
+/* Server, 19.3 step 3: one branch for one password it would accept. */
 int zcpfs_login_branch_make(struct zcpfs_drbg *g, const uint8_t ss[32],
 			    const uint8_t S_c[32], const uint8_t S_s[32],
 			    const uint8_t Y_c[32], const uint8_t *password,
-			    size_t password_len, const uint8_t *response,
-			    size_t response_len, uint8_t *branch, struct zcpfs_keys *keys);
+			    size_t password_len,
+			    const uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN],
+			    uint8_t branch[ZCPFS_BRANCH_LEN], struct zcpfs_keys *keys);
 
-/* Client, 19.4: opens only if the server used the same password. `response`
- * must hold branch_len - ZCPFS_BRANCH_OVERHEAD bytes. */
+/* Client, 19.4: opens only if the server used the same password, or by a
+ * chance of 2^-32, which costs a login that the server then does not confirm. */
 int zcpfs_login_branch_open(const uint8_t ss[32], const struct zcpfs_login_out *out,
 			    const uint8_t S_c[32], const uint8_t S_s[32],
-			    const uint8_t *branch, size_t branch_len, uint8_t *response,
+			    const uint8_t branch[ZCPFS_BRANCH_LEN],
+			    uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN],
 			    struct zcpfs_keys *keys);
 
-/* The reply of 19.3 step 4, after dst and src: count, response length, the
- * branches, zero bytes. `branches` holds `count` branches of
- * response_len + ZCPFS_BRANCH_OVERHEAD bytes each, back to back. `reply` must
- * hold 2 + count * that + 1 bytes. */
-int zcpfs_login_reply_pack(uint8_t count, uint8_t response_len, const uint8_t *branches,
-			   uint8_t *reply, size_t *reply_len);
+/* The reply of 19.3 step 4, after dst and src: count, the branches back to
+ * back, zero bytes. `reply` must hold 1 + count * ZCPFS_BRANCH_LEN + 1 bytes. */
+int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *reply,
+			   size_t *reply_len);
 
-/* Returns the number of branches (1 to 3) or ZCPFS_ERR_ARG; *branches points
- * into `reply`, *branch_len is the length of each. */
-int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len,
-			     const uint8_t **branches, size_t *branch_len);
+/* Returns the number of branches or ZCPFS_ERR_ARG; *branches points into
+ * `reply`. */
+int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **branches);
 
 /* ---- 7.2, 8.5, 9 to 11: the sessions of each contact ---------------------
  *
@@ -286,10 +288,6 @@ int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len,
 #define ZCPFS_T_CONFIRM		5	/* between repeated confirmations */
 #define ZCPFS_K_UNACKED		8	/* unacknowledged sends before a new handshake */
 #define ZCPFS_F_MAX		1048576U	/* 2^20 failed decryptions end a session */
-#define ZCPFS_T_HS_RETRY	8	/* between handshake 1 messages (or probes) */
-#define ZCPFS_T_HS_WAIT		60	/* own handshake 1 attempts wait for a reply */
-#define ZCPFS_T_HELD		60	/* a message waits for a session */
-#define ZCPFS_T_DATA_RETRY	6	/* between resends of a message that was held */
 #define ZCPFS_N_DATA_TRIES	2	/* resends of a message that was held */
 #define ZCPFS_T_DEDUP		120	/* a delivered plaintext is remembered */
 #define ZCPFS_T_RESYNC		600	/* between receiver-started handshakes */
@@ -300,6 +298,16 @@ int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len,
 #define ZCPFS_R_HS_SECONDS	10	/* one verified handshake 1 acted on per contact */
 #define ZCPFS_R_HS_BURST	3	/* per this many seconds: 3 per 30 s */
 
+/* The intervals of 10.4 are counted in steps. A step is one and a half times
+ * the caller's own send timeout towards the contact (zcpfs_contact.timeout_ms),
+ * in whole seconds, and never less than ZCPFS_T_STEP_MIN. */
+#define ZCPFS_T_STEP_MIN	5
+#define ZCPFS_HS_RETRY_STEPS	1	/* between handshake 1 messages (or probes) */
+#define ZCPFS_HS_WAIT_STEPS	2	/* own handshake 1 attempts wait for a reply */
+#define ZCPFS_HELD_STEPS	(ZCPFS_N_HS_TRIES + 1) /* a message waits for a session */
+#define ZCPFS_DATA_RETRY_STEPS	1	/* between resends of a message that was held */
+#define ZCPFS_LOGIN_STEPS	2	/* a login waits for its reply, an offer to be confirmed */
+
 /* Longest text plaintext of 9.3, with the alignment byte. */
 #define ZCPFS_TEXT_MAX		(ZCPFS_MAX_PAYLOAD - ZCPFS_DATA_OVERHEAD)
 
@@ -309,6 +317,9 @@ struct zcpfs_contact {
 	const uint8_t *ss;		/* MeshCore shared secret, 32 bytes (section 4) */
 	uint8_t pinned;			/* 6.2 */
 	uint8_t has_path;		/* a direct path to it is known */
+	/* How long the caller would wait for the answer to a 42-byte packet sent
+	 * to this contact now: over its path, or flooded if there is none. */
+	uint32_t timeout_ms;
 };
 
 struct zcpfs_ops {
@@ -322,6 +333,10 @@ struct zcpfs_ops {
 	void (*pin)(void *user, const uint8_t S[32]);
 	/* Fill `c` for the contact with this key; 0 if there is none any more. */
 	int (*contact)(void *user, const uint8_t S[32], struct zcpfs_contact *c);
+	/* Server: the client proved the password of the branch the caller named
+	 * `id` (19.5). Grant that role and store the pin; from now on `contact`
+	 * has to know this client. May be NULL on a node that serves no logins. */
+	void (*granted)(void *user, const uint8_t S[32], uint8_t id);
 };
 
 struct zcpfs_bucket {			/* a rate limit; all zero is a full bucket */
@@ -374,7 +389,7 @@ struct zcpfs_peer {
 	uint8_t gap_armed;		/* one bit per gap_until[] */
 	uint32_t gap_until[ZCPFS_N_GAPS];
 	uint32_t prev_deadline;
-	uint32_t hs_at;			/* when the newest out[] was sent */
+	uint32_t hs_until;		/* when out[] is wiped (8.2) */
 	uint32_t t_used;		/* for eviction */
 	struct zcpfs_bucket hs_limit;	/* R_HS */
 	struct zcpfs_slot current;
@@ -383,6 +398,24 @@ struct zcpfs_peer {
 	struct zcpfs_hs_out out[ZCPFS_N_HS_TRIES];	/* newest last (8.2) */
 	struct zcpfs_msg msgs[ZCPFS_N_HELD];		/* oldest first */
 	struct zcpfs_seen seen[ZCPFS_N_DEDUP];		/* oldest first */
+};
+
+struct zcpfs_login_wait {		/* client: the one login awaiting its reply (19.2) */
+	uint8_t S[32];			/* the server */
+	struct zcpfs_login_out out;
+	uint32_t until;
+	uint8_t used;
+};
+
+struct zcpfs_offer {			/* server: a login answered, not yet confirmed (19.3) */
+	uint8_t S[32];			/* the client */
+	struct zcpfs_keys keys[ZCPFS_LOGIN_MAX_BRANCHES];
+	uint8_t ids[ZCPFS_LOGIN_MAX_BRANCHES];	/* the caller's name for each branch */
+	uint8_t count;
+	uint8_t used;
+	uint8_t known;			/* the server knew the client before this login */
+	uint8_t repeated;		/* it has replaced an earlier offer to the client */
+	uint32_t until;
 };
 
 struct zcpfs_node {
@@ -394,6 +427,9 @@ struct zcpfs_node {
 	const struct zcpfs_ops *ops;
 	void *user;
 	struct zcpfs_bucket pre;	/* R_PRE */
+	struct zcpfs_login_wait login;
+	struct zcpfs_offer *offers;	/* n_offers entries, the caller's memory; a server's */
+	size_t n_offers;
 };
 
 /* The pointers must stay valid as long as the node is used. Wipes the records. */
@@ -402,16 +438,18 @@ void zcpfs_node_init(struct zcpfs_node *n, const uint8_t S[32], const uint8_t a[
 		     const struct zcpfs_ops *ops, void *user);
 
 #define ZCPFS_SENT		1	/* sealed and sent under the session */
-#define ZCPFS_HELD		2	/* kept until a session exists; expect a longer wait */
+#define ZCPFS_HELD		2	/* kept until a session exists, for *held_for seconds */
 #define ZCPFS_LEGACY		3	/* not a zcpfs contact: send it the legacy way */
 
 /* One send attempt of a text by the application. `plain` is the plaintext of
  * 9.3 without the alignment byte, 5 to ZCPFS_TEXT_MAX bytes. `token` comes
  * back from zcpfs_on_ack when the message is acknowledged. Returns one of the
- * three values above, ZCPFS_ERR_ARG or ZCPFS_ERR_FULL. The only call that can
- * flood. */
+ * three values above, ZCPFS_ERR_ARG or ZCPFS_ERR_FULL. With ZCPFS_HELD,
+ * *held_for is the number of seconds the message is kept: the timeout to give
+ * the application for this attempt (10.4). The only call that can flood. */
 int zcpfs_send_text(struct zcpfs_node *n, const struct zcpfs_contact *c,
-		    const uint8_t *plain, size_t len, uint32_t token, uint32_t now);
+		    const uint8_t *plain, size_t len, uint32_t token, uint32_t now,
+		    uint32_t *held_for);
 
 /* What zcpfs_rx found (7.2). */
 #define ZCPFS_RX_LEGACY		0	/* not sealed: run legacy processing for this contact */
@@ -421,6 +459,7 @@ int zcpfs_send_text(struct zcpfs_node *n, const struct zcpfs_contact *c,
 #define ZCPFS_RX_DUPLICATE	4	/* out: a text delivered before; acknowledge only */
 #define ZCPFS_RX_PROBE		5	/* answer with a path return without extra (11) */
 #define ZCPFS_RX_PAIR		6	/* out: an opened request, response or path return */
+#define ZCPFS_RX_LOGIN		7	/* out: the login response; the login succeeded (19.4) */
 
 struct zcpfs_rx_out {
 	/* The plaintext, then zero bytes to the end: the legacy view of 7.1. */
@@ -456,6 +495,86 @@ uint32_t zcpfs_tick(struct zcpfs_node *n, uint32_t now);
 
 /* The contact was deleted or lost its pin (6.2): wipe what is kept for it. */
 void zcpfs_forget(struct zcpfs_node *n, const uint8_t S[32]);
+
+/* ---- 19: where a login meets the sessions --------------------------------
+ *
+ * The client keeps one login waiting for its reply. The server keeps, per
+ * login it answered, the session keys of every branch until one is confirmed
+ * by the first packet that opens under it. A login is answered only while
+ * there is room for that: the size of the offer table is the limit on
+ * password guesses and on reply airtime (19.3). One place of the table is
+ * kept for clients the server already knows, and a client gets one new
+ * login per offer, not more.
+ */
+
+#define ZCPFS_LOGIN_PLAIN_MAX	(ZCPFS_MAX_PAYLOAD - ZCPFS_LOGIN_OVERHEAD)
+
+/* Client: the application logs in to a server (19.2). `login_plain` is the
+ * legacy login plaintext without the password. The ANON_REQ leaves through
+ * ops->send, flooded if there is no path: the second and last call that can
+ * flood. Returns ZCPFS_SENT with *wait_for, the seconds the reply is waited
+ * for and the timeout to give the application; ZCPFS_LEGACY if the server is
+ * not pinned (19.6 decides whether a legacy login may go out instead); or an
+ * error. A new login replaces one that is still waiting. For this call
+ * c->timeout_ms is the caller's send timeout for the login packet itself. */
+int zcpfs_login_send(struct zcpfs_node *n, const struct zcpfs_contact *c,
+		     const uint8_t *password, size_t password_len,
+		     const uint8_t *login_plain, size_t plain_len, uint32_t now,
+		     uint32_t *wait_for);
+
+/* Client: a login reply that did not come as a RESPONSE packet but as the
+ * extra of a path return (19.4); zcpfs_rx handles the packet form itself.
+ * ZCPFS_RX_LOGIN with the login response in `out`, or ZCPFS_RX_NEXT. */
+int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
+			 const uint8_t *reply, size_t reply_len, int flood, uint32_t now,
+			 struct zcpfs_rx_out *out);
+
+/* Server: give the node room for `count` answered logins. Without this call
+ * it answers none. */
+void zcpfs_node_serve(struct zcpfs_node *n, struct zcpfs_offer *offers, size_t count);
+
+struct zcpfs_login_req {		/* an authenticated login, between the two calls below */
+	uint8_t S_c[32];
+	uint8_t Y_c[32];
+	uint8_t ss[32];
+	uint8_t plain[ZCPFS_LOGIN_PLAIN_MAX + 1]; /* the login plaintext, then zeros */
+	size_t plain_len;
+	uint8_t empty_password;		/* the client typed none: which branches to offer */
+	uint8_t known;
+};
+
+/* Server, 19.3 step 1: an ANON_REQ addressed to this node. `known` says
+ * whether the key in the packet (payload + 1) is a client the server already
+ * has on its list. ZCPFS_OK with `req` filled; ZCPFS_LEGACY if the length is
+ * a legacy login's; ZCPFS_ERR_FULL if this login cannot be answered now;
+ * ZCPFS_ERR_AUTH otherwise. For a known client the caller then drops a login
+ * whose timestamp (in req->plain) is not newer than the last one it answered. */
+int zcpfs_login_rx(struct zcpfs_node *n, const uint8_t *payload, size_t len, int known,
+		   uint32_t now, struct zcpfs_login_req *req);
+
+struct zcpfs_branch {			/* one password the server would accept from this client */
+	const uint8_t *password;
+	size_t password_len;
+	const uint8_t *response;	/* ZCPFS_LOGIN_RESPONSE_LEN bytes for that role */
+	uint8_t id;			/* comes back through ops->granted */
+};
+
+/* Server, 19.3 steps 2 to 5: build the reply and keep the offer. `reply` (what
+ * follows dst and src, or goes into the path return) must hold
+ * ZCPFS_MAX_PAYLOAD bytes. One or two branches: for an empty password the
+ * one role it would get, otherwise the passwords that are not empty.
+ * `timeout_ms` is the caller's send timeout for this reply; the offer is kept
+ * ZCPFS_LOGIN_STEPS steps of it (10.4). */
+int zcpfs_login_answer(struct zcpfs_node *n, const struct zcpfs_login_req *req,
+		       const struct zcpfs_branch *branches, size_t count,
+		       uint32_t timeout_ms, uint32_t now, uint8_t *reply, size_t *reply_len);
+
+/* Server: a TXT_MSG for this node that no contact claimed. It may be the
+ * first packet of a client that is not a contact yet (19.5). Results as
+ * zcpfs_rx; anything but ZCPFS_RX_NEXT means ops->granted was called, and `S`
+ * is that client. */
+int zcpfs_rx_offer(struct zcpfs_node *n, const uint8_t *payload, size_t len,
+		   uint32_t now, uint8_t S[32], struct zcpfs_rx_out *out);
 
 #ifdef __cplusplus
 }
