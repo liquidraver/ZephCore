@@ -71,6 +71,10 @@ extern "C" void bt_ctlr_assert_handle(char *file, uint32_t line)
 #include "wifi_ota.h"
 #endif
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#include <helpers/zcpfs/ZcpfsCommon.h>
+#endif
+
 /* LED configuration */
 /* With a PWM LED, led0 is the same pin and belongs to the PWM driver. */
 #if DT_NODE_HAS_PROP(DT_ALIAS(led0), gpios) && !IS_ENABLED(CONFIG_ZEPHCORE_LED_PWM)
@@ -723,6 +727,12 @@ int server_main(const ServerRole &role)
 	 * Every role binds this way; begin() refuses to start without it. */
 	data_store.loadPrefs(*role.prefs);
 	lora_radio.setPrefs(role.prefs);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	/* Before WiFi: the seed may need the identity mixer. */
+	if (role.prefs->zcpfs_mode != ZCPFS_MODE_OFF) {
+		zcpfsSeedAtBoot(zephyr_rng);
+	}
+#endif
 
 	/* LED gate and GPS duty from prefs.  After loadPrefs() and ui_init(),
 	 * before begin() -- see boot_prefs.h. */

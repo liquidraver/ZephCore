@@ -155,6 +155,11 @@ protected:
   // ZEPHCORE: every signature-verified advert, before contact filtering and
   // dedup: the mesh time-sync harvesting hook.
   virtual void onAdvertTimeSample(const mesh::Identity& id, uint32_t timestamp, uint8_t hops) { }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // ZEPHCORE: a sealed text or request raised the contact's last_advert_timestamp
+  // (lib/zcpfs/SPEC.md 6.2): a liveness change, to be saved lazily.
+  virtual void onContactAdvertMarkRaised(const ContactInfo& contact) { }
+#endif
 
   // storage concepts, for sub-classes to override/implement
   virtual int  getBlobByKey(const uint8_t key[], int key_len, uint8_t dest_buf[]) { return 0; }  // not implemented

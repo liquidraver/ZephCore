@@ -365,9 +365,10 @@ MeshCore 1.18.0 companion.
   `zc.zcpfs_nolegl`, effective while the mode is on): off on a companion refuses a login to a server that is
   not pinned (error frame `ERR_BAD_STATE` to the app); off on a server drops legacy logins unread.
 - **Generator seed** (`helpers/zcpfs/ZcpfsSeed.cpp`): the zcpfs generator is seeded from `ZephyrRNG` and
-  `/lfs/zcpfs_seed` (on first use without the file, from `ZephyrRNG::mixIdentitySeed`), and the next seed is
-  written before it gives anything else, so a boot with a weak hardware RNG does not repeat an earlier
-  boot's stream.
+  `/lfs/zcpfs_seed` (without the file, from `ZephyrRNG::mixIdentitySeed`), and the next seed is written
+  before it gives anything else, so a boot with a weak hardware RNG does not repeat an earlier boot's
+  stream. Seeding runs at boot (`zcpfsSeedAtBoot`, both composition roots, before WiFi and `bt_enable()`)
+  when the mode is not off; a node set on later seeds at first use without the mixer (status seed bit 8).
 - **Padding hint** (companion, while on): a legacy text to a contact that is not pinned ends in
   `0x00 a 0x5A` when that costs no AES block; a legacy text that carries it makes the receiver start one
   direct handshake (at most one a day per contact), so two zcpfs nodes that missed each other's adverts find

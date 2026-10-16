@@ -21,7 +21,8 @@ uint32_t ZcpfsServer::now()
 	return (uint32_t)(k_uptime_get() / 1000);
 }
 
-/* Set the engine up for the node's identity, again if that has changed. */
+/* Set the engine up for the node's identity, again if that has changed; the
+ * generator is seeded once and kept. */
 void ZcpfsServer::ensure()
 {
 	if (_ready && memcmp(_S, _m.self_id.pub_key, PUB_KEY_SIZE) == 0) {
@@ -35,7 +36,9 @@ void ZcpfsServer::ensure()
 	memcpy(_S, _m.self_id.pub_key, PUB_KEY_SIZE);
 	zcpfs_wipe(keys, sizeof(keys));
 
-	_seed = (uint8_t)zcpfsSeed(&_drbg, *_m.getRNG());
+	if (_seed == 0) {
+		_seed = (uint8_t)zcpfsTakeSeed(&_drbg, *_m.getRNG());	/* never 0 */
+	}
 
 	_ops.send = opSend;
 	_ops.reciprocal_path = opReciprocalPath;
@@ -416,7 +419,7 @@ int ZcpfsServer::rxLogin(mesh::Packet *pkt)
 		/* the reply's own send timeout sets how long the offer is kept:
 		 * count, branches and at most two alignment bytes, in a RESPONSE or
 		 * as the extra (type, length) of a path return */
-		size_t body = 1 + (size_t)count * ZCPFS_BRANCH_LEN + 2;
+		size_t body = 1 + ZCPFS_LOGIN_ECHO_LEN + (size_t)count * ZCPFS_BRANCH_LEN + 2;
 		size_t est = how == PATH_FLOOD || how == PATH_BACK
 				     ? ZCPFS_PAIR_OVERHEAD + 3 + pkt->getPathByteLen() + body
 				     : 2 + body;

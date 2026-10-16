@@ -9,7 +9,7 @@ import unittest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from sim import App, Sim, delivered, pair, scalar  # noqa: E402
-from zcpfs import ACK, PATH, REQ, RESPONSE, TXT, Packet  # noqa: E402
+from zcpfs import ACK, ADVERT_MARK_SLACK, PATH, REQ, RESPONSE, TXT, Packet  # noqa: E402
 
 
 def check_rules(test, sim, handshake_may_flood=False):
@@ -258,6 +258,20 @@ class Scenarios(unittest.TestCase):
         sim.run(140)
         self.assertEqual(app.results[b"legacy again"], "ok")
         self.assertEqual(a.stats["legacy_sent"], 1)
+
+    def test_sealed_text_raises_the_advert_mark(self):
+        sim = Sim(seed=14)
+        a, b = pair(sim)
+        app = App(sim, b)
+        app.send(a.id.S, b"sealed", when=5)                      # timestamp 1_700_000_005
+        sim.run(60)
+        self.assertEqual(app.results[b"sealed"], "ok")
+        mark = 1_700_000_005 - ADVERT_MARK_SLACK
+        self.assertEqual(a.peers[b.id.S].advert_ts, mark)
+        self.assertFalse(a.on_advert(b.id.S, mark, b"bob"))      # signed before: a replay
+        self.assertTrue(a.peers[b.id.S].pinned)
+        self.assertTrue(a.on_advert(b.id.S, mark + 1, b"bob"))   # within the slack: accepted
+        self.assertFalse(a.peers[b.id.S].pinned)
 
     def test_pinned_contact_is_never_sent_legacy(self):
         sim = Sim(seed=15, loss=1.0)                             # nothing ever arrives

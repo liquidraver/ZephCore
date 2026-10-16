@@ -514,22 +514,31 @@ def pake_branch_open(ss, out, S_c, S_s, branch):
     return None if plain is None else (plain, ck_i2r, ck_r2i, feed)
 
 
-def pake_reply_pack(branches):
-    """count, the branches, and zero bytes until the RESPONSE payload (two
-    address bytes more) has an allowed length."""
-    body = bytes([len(branches)]) + b"".join(branches)
+LOGIN_ECHO = 2            # a login reply names its login: the first bytes of Y_c
+ADVERT_MARK_SLACK = 60    # 6.2: a sealed text or request raises the advert mark to its time less this
+
+
+def pake_reply_pack(branches, Y_c):
+    """count, the login's echo, the branches, and zero bytes until the RESPONSE
+    payload (two address bytes more) has an allowed length."""
+    body = bytes([len(branches)]) + Y_c[:LOGIN_ECHO] + b"".join(branches)
     while (len(body) - 2) % 16 == 0 or len(body) + 2 == 42:
         body += b"\x00"
     return body
 
 
 def pake_reply_unpack(body):
+    """(echo, branches), or None if it is not a login reply."""
     if len(body) < 1 or not 1 <= body[0] <= MAX_BRANCHES:
         return None
     count = body[0]
-    if len(body) < 1 + count * BRANCH:
+    if len(body) < 1 + LOGIN_ECHO + count * BRANCH:
         return None
-    return [body[1 + i * BRANCH:1 + (i + 1) * BRANCH] for i in range(count)]
+    at = 1 + LOGIN_ECHO
+    branches = [body[at + i * BRANCH:at + (i + 1) * BRANCH] for i in range(count)]
+    if len({bytes(b[:32]) for b in branches}) != count:
+        return None                       # 19.3: one Y_s twice would be two tag tries under one key
+    return body[1:at], branches
 
 
 # ---------------------------------------------------------------------------
@@ -1013,12 +1022,12 @@ class Node:
             elif ptype == RESPONSE and len(payload) == 42:
                 return bool(peer.outstanding) and self._on_hs2(peer, body, out)
             elif not aligned:
-                if ptype == RESPONSE and peer.login_out and self._on_login_reply(peer, body, out):
-                    return True
-                plain = pair_open(peer.ss, peer.S, self.id.S, ptype, payload)   # section 18
-                if plain is None:
-                    return False
-                return self._handle(peer, ptype, legacy_view(plain), plain, flood, out, True)
+                plain = pair_open(peer.ss, peer.S, self.id.S, ptype, payload)   # section 18, first
+                if plain is not None:
+                    return self._handle(peer, ptype, legacy_view(plain), plain, flood, out, True)
+                if ptype == RESPONSE and peer.login_out:
+                    return self._on_login_reply(peer, body, out)
+                return False
             elif peer.pinned:
                 return False                      # nothing legacy from a pinned contact
         plain = legacy_open(peer.ss, body)
@@ -1032,6 +1041,8 @@ class Node:
         if ptype == PATH:
             return self._on_path(peer, exact, flood, out, sealed)
         if ptype == REQ:
+            if sealed:
+                self._raise_mark(peer, exact)
             self.requests_seen.append((peer.S, plain.rstrip(b"\x00")))
             reply = b"re:" + plain.rstrip(b"\x00")
             if flood:                             # legacy: a path return carrying the response
@@ -1046,6 +1057,13 @@ class Node:
             self.responses.append((peer.S, plain.rstrip(b"\x00")))
             return True
         return self._on_legacy_text(peer, plain, flood, out)
+
+    def _raise_mark(self, peer, plain):
+        """6.2: the sender's time, authenticated, less the slack, raises the
+        advert mark, so an advert signed before it is no longer accepted."""
+        t = int.from_bytes(bytes(plain[:4]).ljust(4, b"\x00"), "little")
+        if t > ADVERT_MARK_SLACK and (peer.advert_ts is None or t - ADVERT_MARK_SLACK > peer.advert_ts):
+            peer.advert_ts = t - ADVERT_MARK_SLACK
 
     def _on_opened(self, peer, slot, plain, ack4, flood, out):
         now = self.clock()
@@ -1062,6 +1080,7 @@ class Node:
             self._send_data(peer, b"", None, out)  # peer has not switched yet
         if not plain:
             return                                # a confirmation
+        self._raise_mark(peer, plain)
         _, flags, text, ext, _ = parse_text(plain)
         attempt = ext if ext > 3 else flags & 3
         peer.recent = [r for r in peer.recent if r[1] > now]
@@ -1253,7 +1272,7 @@ class Node:
         if not branches:
             return
         peer.login_deadline = now + self.p.T_LOGIN
-        reply = pake_reply_pack(branches)
+        reply = pake_reply_pack(branches, Y_c)
         if flood:                                 # legacy: a path return carrying the response
             self.stats["floods_in_reply"] += 1
             self._send_typed(peer, PATH, b"\x04" + bytes([len(reply)]) + reply, True, out,
@@ -1305,10 +1324,16 @@ class Node:
 
     def _on_login_reply(self, peer, body, out, direct=True):
         """Client: one branch opens if, and only if, the server knows the
-        password that was typed."""
-        branches = pake_reply_unpack(body)
-        for branch in branches or []:
-            got = pake_branch_open(peer.ss, peer.login_out, self.id.S, peer.S, branch)
+        password that was typed. One reply per login (19.4): a reply names
+        its login, one for another login is ignored, and the first that names
+        this one ends it, so a server gets no more guesses than its branches."""
+        got = pake_reply_unpack(body)
+        if got is None or got[0] != peer.login_out.Y[:LOGIN_ECHO]:
+            return False
+        branches = got[1]
+        login, peer.login_out = peer.login_out, None
+        for branch in branches:
+            got = pake_branch_open(peer.ss, login, self.id.S, peer.S, branch)
             if got:
                 plain, ck_i2r, ck_r2i, feed = got
                 self.logins.append((peer.S, plain))
