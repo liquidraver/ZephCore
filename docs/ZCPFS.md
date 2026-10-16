@@ -62,6 +62,8 @@ zcpfs changes that for nodes that both have it:
   session without losing messages in flight.
 - **Stateless mode:** requests, responses, path returns and channels are sealed with a key derived
   from a static secret and a random nonce: no state to lose, no forward secrecy.
+- **Random numbers:** one generator per node, a hash-based DRBG over Ascon, seeded from the hardware RNG
+  and a seed file that is replaced on every boot, so a weak RNG at one boot cannot repeat an earlier stream.
 - **Login:** CPace-style PAKE. Client and server each multiply a one-time scalar onto a curve point derived
   from the password; they reach the same key only if they used the same password. The server answers with one
   branch per password it would accept; the client's first packet under the right branch confirms it.
@@ -145,7 +147,10 @@ never eats a retry. No payload exceeds 176 bytes.
 **Capability and pinning.** A node with zcpfs on appends one `0x00` byte after the name in its signed
 advert; legacy parsers stop at it and show the name unchanged. A receiver that sees the tag **pins** the
 contact (bit `0x80` of `ContactInfo.flags` on a companion, a reserved byte of the ACL file on a server). To a
-pinned contact a node never sends legacy text, so an attacker cannot downgrade a conversation. Only an
+pinned contact a node never sends legacy text, so an attacker cannot downgrade a conversation. A legacy
+text to a contact that is not pinned carries a small **padding hint** where it costs no AES block; a zcpfs
+receiver that sees it starts a handshake, so two zcpfs nodes that missed each other's adverts still find
+each other. Only an
 accepted (signed, newer) advert without the tag unpins: the key's owner went back to legacy. A server keeps
 no adverts of its clients; it pins a client on a confirmed zcpfs login and unpins it on a legacy login.
 
@@ -258,7 +263,5 @@ server about 18 kB flash and 11.5 kB RAM.
 
 ## 10. Open
 
-- A persisted seed for the random generator (it is seeded from the hardware RNG at boot only).
-- The padding hint that lets a zcpfs node notice a zcpfs peer whose advert it missed.
 - Host tests of the glue; tests on lossy, multi-hop and SF8 links and with the phone apps over BLE.
 - An ADR before the build switch defaults to on anywhere, and a cryptographic review.

@@ -82,6 +82,14 @@ public:
 	int groupSeal(uint8_t type, const mesh::GroupChannel &ch, const uint8_t *data, size_t len,
 		      uint8_t *payload);
 
+	/* The plaintext of a legacy text to the contact: with the padding hint
+	 * (SPEC 6.3) when on, not pinned, and it costs no AES block. Returns the
+	 * new length; `cap` is the size of `p`. */
+	size_t addHint(const ContactInfo &to, uint8_t *p, size_t len, size_t cap, uint8_t attempt);
+	/* A plain text from the contact was delivered (legacy view in `data`): a
+	 * legacy one with the hint asks for a handshake (SPEC 6.3). */
+	void onText(ContactInfo &from, const uint8_t *data, size_t len);
+
 	/* An ACK value from the air: if it acknowledges a sealed text, replace it
 	 * by the value the application was given for that send. */
 	void translateAck(uint32_t &ack);
@@ -103,6 +111,7 @@ private:
 	uint8_t (*_chan)[ZCPFS_CHAN_ENTRY] = nullptr;	/* ZCPFS_CHAN_SETTINGS entries */
 	ZcpfsHeard _heard;
 	bool _ready = false;
+	uint8_t _seed = 0;		/* ZCPFS_SEED_* of the last seeding */
 	uint8_t _S[PUB_KEY_SIZE];	/* the identity the node was set up for */
 	uint8_t _a[32];			/* its X25519 scalar */
 	zcpfs_drbg _drbg;
@@ -133,6 +142,7 @@ private:
 		uint8_t path_len;	/* the last one's length byte */
 		uint8_t login_path;	/* the path length a login reply found */
 		uint16_t tx_chan, rx_chan;	/* sealed channel packets */
+		uint16_t tx_hint, rx_hint;	/* padding hints */
 	} _n = {};
 
 	bool off() const { return _mode == nullptr || *_mode == ZCPFS_MODE_OFF; }

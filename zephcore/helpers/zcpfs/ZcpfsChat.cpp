@@ -37,18 +37,13 @@ void ZcpfsChat::ensure()
 	}
 
 	uint8_t keys[PRV_KEY_SIZE + PUB_KEY_SIZE];
-	uint8_t hw[32], more[32];
 
 	_m.self_id.writeTo(keys, sizeof(keys));
 	memcpy(_a, keys, sizeof(_a));		/* SPEC 4: the first half of the private key */
 	memcpy(_S, _m.self_id.pub_key, PUB_KEY_SIZE);
 	zcpfs_wipe(keys, sizeof(keys));
 
-	_m.getRNG()->random(hw, sizeof(hw));
-	_m.getRNG()->random(more, sizeof(more));
-	zcpfs_drbg_seed(&_drbg, hw, more);
-	zcpfs_wipe(hw, sizeof(hw));
-	zcpfs_wipe(more, sizeof(more));
+	_seed = (uint8_t)zcpfsSeed(&_drbg, *_m.getRNG());
 
 	_ops.send = opSend;
 	_ops.reciprocal_path = opReciprocalPath;
@@ -716,6 +711,52 @@ int ZcpfsChat::channelCommand(const char *line, char *reply, size_t size)
 	return ZCPFS_CMD_CHANGED;
 }
 
+/* ---- the padding hint (SPEC 6.3) ------------------------------------------- */
+
+#define HINT_BYTE 0x5A
+
+size_t ZcpfsChat::addHint(const ContactInfo &to, uint8_t *p, size_t len, size_t cap, uint8_t attempt)
+{
+	if (!on() || (to.flags & ZCPFS_PIN_FLAG)) {
+		return len;
+	}
+
+	/* text 0x00 a 0x5A; with attempt > 3 the "0x00 attempt" is there already */
+	size_t n = attempt > 3 ? len + 1 : len + 3;
+
+	if (n > cap || (n + CIPHER_BLOCK_SIZE - 1) / CIPHER_BLOCK_SIZE !=
+			       (len + CIPHER_BLOCK_SIZE - 1) / CIPHER_BLOCK_SIZE) {
+		return len;			/* only where it adds no AES block */
+	}
+	if (attempt <= 3) {
+		p[len] = 0;
+		p[len + 1] = 0;
+	}
+	p[n - 1] = HINT_BYTE;
+	_n.tx_hint++;
+	return n;
+}
+
+void ZcpfsChat::onText(ContactInfo &from, const uint8_t *data, size_t len)
+{
+	if (!on() || _in_kind == &from || (from.flags & ZCPFS_PIN_FLAG)) {
+		return;				/* sealed, or pinned already: nothing to learn */
+	}
+
+	size_t t = strnlen((const char *)&data[5], len - 5);
+
+	if (5 + t + 2 >= len || data[5 + t + 2] != HINT_BYTE) {
+		return;
+	}
+	ensure();
+
+	zcpfs_contact v = view(from);
+
+	_n.rx_hint++;
+	zcpfs_on_hint(&_node, &v, now());	/* a handshake once there is a path, once a day */
+	_next_tick = 0;
+}
+
 /* ---- paths, adverts, timers ---------------------------------------------- */
 
 void ZcpfsChat::onPath(ContactInfo &from, const mesh::Packet *pkt)
@@ -789,8 +830,8 @@ void ZcpfsChat::status(char *reply, size_t size)
 		pinned += (_m.contacts[i].flags & ZCPFS_PIN_FLAG) ? 1 : 0;
 	}
 	snprintf(reply, size,
-		 "> %s ch t%u r%u pinned %d records %d/%d sessions %d tx t%u c%u h%u/%u p%u s%u l%u rx t%u d%u s%u p%u l%u held %u acked %u path %u/%u/%u",
-		 zcpfsModeName(_mode != nullptr ? *_mode : ZCPFS_MODE_OFF), _n.tx_chan, _n.rx_chan,
+		 "> %s seed %u ch t%u r%u hint t%u r%u pinned %d records %d/%d sessions %d tx t%u c%u h%u/%u p%u s%u l%u rx t%u d%u s%u p%u l%u held %u acked %u path %u/%u/%u",
+		 zcpfsModeName(_mode != nullptr ? *_mode : ZCPFS_MODE_OFF), _seed, _n.tx_chan, _n.rx_chan, _n.tx_hint, _n.rx_hint,
 		 pinned, records,
 		 CONFIG_ZEPHCORE_ZCPFS_PEERS, sessions, _n.tx_text, _n.tx_confirm,
 		 _n.tx_hs1, _n.tx_hs2, _n.tx_probe, _n.tx_pair, _n.tx_login, _n.rx_text, _n.rx_dup,

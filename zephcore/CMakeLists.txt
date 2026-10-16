@@ -344,6 +344,7 @@ if(CONFIG_ZEPHCORE_ZCPFS)
   target_link_libraries(app PRIVATE zcpfs ascon)
   target_include_directories(app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/lib/zcpfs/include)
+  target_sources(app PRIVATE helpers/zcpfs/ZcpfsSeed.cpp)
   if(CONFIG_ZEPHCORE_ROLE_COMPANION)
     target_sources(app PRIVATE helpers/zcpfs/ZcpfsChat.cpp)
   endif()

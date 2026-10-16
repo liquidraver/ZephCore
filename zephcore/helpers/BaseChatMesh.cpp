@@ -264,6 +264,9 @@ void BaseChatMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int sender
     if (flags == TXT_TYPE_PLAIN) {
       from.lastmod = getRTCClock()->getCurrentTime(); // update last heard time
       onMessageRecv(from, packet, sender_timestamp, (const char *) &data[5]);  // let UI know
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      _zc.onText(from, data, len);  // ZEPHCORE: the padding hint of a legacy text (lib/zcpfs/SPEC.md 6.3)
+#endif
 
       int text_len = strlen((char *)&data[5]);
       uint8_t ack_hash[6];    // calc truncated hash of the message timestamp + text + sender pub_key, to prove to sender that we got it
@@ -535,6 +538,9 @@ mesh::Packet* BaseChatMesh::composeMsgPacket(const ContactInfo& recipient, uint3
     temp[len++] = 0;  // null terminator
     temp[len++] = attempt;  // hide attempt number at tail end of payload
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  len = (int)_zc.addHint(recipient, temp, (size_t)len, sizeof(temp), attempt);  // ZEPHCORE: lib/zcpfs/SPEC.md 6.3
+#endif
 
   return createDatagram(PAYLOAD_TYPE_TXT_MSG, recipient.id, recipient.getSharedSecret(self_id), temp, len);
 }
