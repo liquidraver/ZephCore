@@ -127,6 +127,7 @@ private:
 	ZcpfsHeard _heard;
 
 	bool _ready = false;
+	uint8_t _seed = 0;		/* ZCPFS_SEED_* of the last seeding */
 	uint8_t _S[PUB_KEY_SIZE];
 	uint8_t _a[32];
 	zcpfs_drbg _drbg;

@@ -12,7 +12,20 @@
 #include <string.h>
 
 #include <mesh/MeshCore.h>
+#include <mesh/Utils.h>
 #include <helpers/NodePrefs.h>
+
+extern "C" {
+#include <zcpfs.h>
+}
+
+/* Seed the node's generator (SPEC 5, 5.1): 32 bytes from `rng` and the seed
+ * file, or from the identity mixer when there is none yet; the next seed is
+ * written before the generator gives anything else (ZcpfsSeed.cpp). Returns
+ * ZCPFS_SEED_* bits, for `get zcpfs.status`. */
+#define ZCPFS_SEED_FROM_FILE	1	/* the seed file was read */
+#define ZCPFS_SEED_WRITTEN	2	/* the next seed was stored */
+int zcpfsSeed(zcpfs_drbg *g, mesh::RNG &rng);
 #include <helpers/AdvertDataHelpers.h>
 
 /* Append the tag to the name field of an own advert; returns the new length. */

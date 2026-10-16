@@ -29,18 +29,13 @@ void ZcpfsServer::ensure()
 	}
 
 	uint8_t keys[PRV_KEY_SIZE + PUB_KEY_SIZE];
-	uint8_t hw[32], more[32];
 
 	_m.self_id.writeTo(keys, sizeof(keys));
 	memcpy(_a, keys, sizeof(_a));		/* SPEC 4: the first half of the private key */
 	memcpy(_S, _m.self_id.pub_key, PUB_KEY_SIZE);
 	zcpfs_wipe(keys, sizeof(keys));
 
-	_m.getRNG()->random(hw, sizeof(hw));
-	_m.getRNG()->random(more, sizeof(more));
-	zcpfs_drbg_seed(&_drbg, hw, more);
-	zcpfs_wipe(hw, sizeof(hw));
-	zcpfs_wipe(more, sizeof(more));
+	_seed = (uint8_t)zcpfsSeed(&_drbg, *_m.getRNG());
 
 	_ops.send = opSend;
 	_ops.reciprocal_path = opReciprocalPath;
@@ -712,9 +707,9 @@ int ZcpfsServer::command(const char *line, char *reply, size_t size)
 		pinned += _acl.getClientByIdx(i)->zcpfs_pinned ? 1 : 0;
 	}
 	snprintf(reply, size,
-		 "> %s pinned %d records %d/%d sessions %d offers %d tx t%u c%u h%u/%u s%u rx t%u d%u s%u p%u"
+		 "> %s seed %u pinned %d records %d/%d sessions %d offers %d tx t%u c%u h%u/%u s%u rx t%u d%u s%u p%u"
 		 " login %u refused %u answered %u/%u/%u granted %u legacy refused %u last %02x/%02x/%u/%u/%u",
-		 zcpfsModeName(_mode), pinned, records, CONFIG_ZEPHCORE_ZCPFS_PEERS, sessions, offers,
+		 zcpfsModeName(_mode), _seed, pinned, records, CONFIG_ZEPHCORE_ZCPFS_PEERS, sessions, offers,
 		 _n.tx_text,
 		 _n.tx_confirm, _n.tx_hs1, _n.tx_hs2, _n.tx_pair, _n.rx_text, _n.rx_dup, _n.rx_pair,
 		 _n.rx_probe, _n.login, _n.login_refused, _n.answered, _n.answered_flood,
