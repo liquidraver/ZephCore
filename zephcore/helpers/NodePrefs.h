@@ -65,6 +65,11 @@
  * ConfigureSideDetectors limit of 3. */
 #define EXTRA_SF_MAX    3
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#define ZCPFS_CHAN_SETTINGS 12  /* channels that can be set to sealed: 60 bytes, the most a prefs value holds */
+#define ZCPFS_CHAN_ENTRY    5   /* digest (4), state (1) */
+#endif
+
 struct NodePrefs {
 	/* ---- Common fields (both roles) ---- */
 	float airtime_factor;
@@ -156,6 +161,21 @@ struct NodePrefs {
 	 * stored). Lets the firmware re-anchor the offset at boot when the driver's
 	 * base table changes (LoRaRadio::setCadParams). */
 	uint8_t cad_base;
+
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	/* zcpfs run-time mode, every role: 0 off, 1 passive, 2 on
+	 * (helpers/zcpfs/ZcpfsCommon.h). Default off. */
+	uint8_t zcpfs_mode;
+	/* 1 = `zcpfs.legacylogin off`, while the mode is on: a client never sends
+	 * a legacy login, a server refuses one (lib/zcpfs/SPEC.md 19.6). Stored
+	 * as the refusal so that the zero default allows them. */
+	uint8_t zcpfs_no_legacy_login;
+	/* Companion: the channels set to sealed (lib/zcpfs/SPEC.md 17.3). Each
+	 * entry is 4 bytes of SHA-256 of the channel's 32-byte secret field, then
+	 * the state (1 on, 2 strict); an all-zero entry is free, and a channel
+	 * without an entry is off. */
+	uint8_t zcpfs_chan[ZCPFS_CHAN_SETTINGS][ZCPFS_CHAN_ENTRY];
+#endif
 
 	/* ---- Companion-only fields ---- */
 	uint8_t manual_add_contacts;
@@ -314,6 +334,15 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->leds_hb_mode        = saneEnum(p->leds_hb_mode, LEDS_HB_MAX);
 	p->led_brightness      = clampPref<uint8_t>(p->led_brightness, 0, 100);
 	p->meshtimesync        = saneBool<uint8_t>(p->meshtimesync, 0);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	p->zcpfs_mode          = saneEnum(p->zcpfs_mode, 2);
+	p->zcpfs_no_legacy_login = saneBool<uint8_t>(p->zcpfs_no_legacy_login, 0);
+	for (int i = 0; i < ZCPFS_CHAN_SETTINGS; i++) {
+		if (p->zcpfs_chan[i][4] > 2) {
+			memset(p->zcpfs_chan[i], 0, ZCPFS_CHAN_ENTRY);  /* no intent: off */
+		}
+	}
+#endif
 	/* Fallback must be the initNodePrefs() default (ON).  It was 0, so a byte
 	 * that was neither 0 nor 1 silently switched adaptive CAD off instead of
 	 * restoring the default — left over from when the default was dry-run. */

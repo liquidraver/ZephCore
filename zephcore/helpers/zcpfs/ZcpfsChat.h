@@ -9,6 +9,7 @@
 
 #include <mesh/Mesh.h>
 #include "ContactInfo.h"
+#include "ZcpfsCommon.h"
 
 extern "C" {
 #include <zcpfs.h>
@@ -22,6 +23,24 @@ class BaseChatMesh;
 class ZcpfsChat {
 public:
 	explicit ZcpfsChat(BaseChatMesh &mesh) : _m(mesh) {}
+
+	/* The run-time mode lives in the node's prefs (ZcpfsCommon.h); until it
+	 * is bound the glue is off. */
+	void bind(uint8_t *mode, uint8_t *no_legacy_login, uint8_t (*channels)[ZCPFS_CHAN_ENTRY])
+	{
+		_mode = mode;
+		_no_legacy_login = no_legacy_login;
+		_chan = channels;
+	}
+	/* A login to a server that is not pinned must not go out (SPEC 19.6). */
+	bool refusesLegacyLogin() const
+	{
+		return on() && _no_legacy_login != nullptr && *_no_legacy_login;
+	}
+	bool on() const { return _mode != nullptr && *_mode == ZCPFS_MODE_ON; }
+	/* An own advert is being built: the tag when on (SPEC 6.1); returns the
+	 * new length. */
+	uint8_t advert(uint8_t *app_data, uint8_t len);
 
 	/* A packet for this node, for one contact whose hash matches, before
 	 * legacy decryption. Returns one of mesh::Mesh::SEALED_*; with
@@ -46,6 +65,23 @@ public:
 	bool sendText(const ContactInfo &to, const uint8_t *plain, size_t len,
 		      uint32_t *expected_ack, uint32_t &est_timeout, int &rc);
 
+	/* A login to a server (SPEC 19.2). False: not a pinned server, send the
+	 * legacy login. True: `rc` is the MSG_SEND_* result and `est_timeout`
+	 * the application's timeout in ms. */
+	bool sendLogin(const ContactInfo &to, const char *password, uint32_t &est_timeout, int &rc);
+	/* The RESPONSE extra of a path return from the contact, before the
+	 * application sees it: a login reply (19.4) is replaced by the legacy
+	 * login response. False: drop it, it is a login reply that did not open. */
+	bool pathResponse(const ContactInfo &from, uint8_t *extra, uint8_t &extra_len);
+
+	/* A channel packet, per channel whose hash matches, before legacy
+	 * decryption (SPEC 17.2): one of mesh::Mesh::SEALED_*. */
+	int groupRx(mesh::Packet *pkt, const mesh::GroupChannel &ch, uint8_t *data, int *len);
+	/* The payload of a channel datagram, sealed if the channel is set to it:
+	 * its length, 0 for legacy, -1 if it must not go out. */
+	int groupSeal(uint8_t type, const mesh::GroupChannel &ch, const uint8_t *data, size_t len,
+		      uint8_t *payload);
+
 	/* An ACK value from the air: if it acknowledges a sealed text, replace it
 	 * by the value the application was given for that send. */
 	void translateAck(uint32_t &ack);
@@ -54,16 +90,18 @@ public:
 	void onPath(ContactInfo &from, const mesh::Packet *pkt);
 	/* An advert of the contact was accepted: set or clear the pin (SPEC 6.2). */
 	void onAdvert(ContactInfo &c, const uint8_t *app_data, size_t app_data_len);
-	/* Append the capability tag to the name field of an own advert (SPEC 6.1). */
-	static uint8_t tagAdvert(uint8_t *app_data, uint8_t len);
 
 	void forget(const uint8_t *pub_key);
 	void loop();
-	/* The reply to `get zcpfs`: state, and counters since boot. */
-	void status(char *reply, size_t size);
+	/* `get zcpfs`, `set zcpfs ...`, `get zcpfs.status`: one of ZCPFS_CMD_*. */
+	int command(const char *line, char *reply, size_t size);
 
 private:
 	BaseChatMesh &_m;
+	uint8_t *_mode = nullptr;
+	uint8_t *_no_legacy_login = nullptr;
+	uint8_t (*_chan)[ZCPFS_CHAN_ENTRY] = nullptr;	/* ZCPFS_CHAN_SETTINGS entries */
+	ZcpfsHeard _heard;
 	bool _ready = false;
 	uint8_t _S[PUB_KEY_SIZE];	/* the identity the node was set up for */
 	uint8_t _a[32];			/* its X25519 scalar */
@@ -75,6 +113,7 @@ private:
 
 	/* the packet rx() is handling */
 	const ContactInfo *_in_kind = nullptr;	/* its sender, if it arrived sealed */
+	bool _in_flood = false;			/* it was flooded */
 	uint8_t _rx_ack4[4];
 	bool _rx_ack = false;
 
@@ -87,16 +126,27 @@ private:
 	bool _hs_after_path = false;	/* the next handshake follows a path packet */
 
 	struct {			/* since boot, for `get zcpfs` */
-		uint16_t tx_text, tx_confirm, tx_hs1, tx_hs2, tx_probe, tx_pair;
-		uint16_t rx_text, rx_dup, rx_pair, rx_probe;
+		uint16_t tx_text, tx_confirm, tx_hs1, tx_hs2, tx_probe, tx_pair, tx_login;
+		uint16_t rx_text, rx_dup, rx_pair, rx_probe, rx_login;
 		uint16_t held, acked;
+		uint16_t paths;		/* path returns stored */
+		uint8_t path_len;	/* the last one's length byte */
+		uint8_t login_path;	/* the path length a login reply found */
+		uint16_t tx_chan, rx_chan;	/* sealed channel packets */
 	} _n = {};
 
+	bool off() const { return _mode == nullptr || *_mode == ZCPFS_MODE_OFF; }
+	bool hasSession(const uint8_t *pub_key) const;
+	void wipe();
+	void status(char *reply, size_t size);
+	uint8_t chanState(const uint8_t *secret) const;
+	int channelCommand(const char *line, char *reply, size_t size);
 	void ensure();
 	static uint32_t now();
 	zcpfs_contact view(const ContactInfo &c);
 	uint32_t timeoutFor(const ContactInfo &c, size_t payload_len);
 	void ackOnly(mesh::Packet *pkt, ContactInfo &from, const uint8_t ack4[4]);
+	void legacyLoginResponse(const ContactInfo &server, const uint8_t *r, uint8_t *data);
 
 	static void opSend(void *user, const uint8_t S[32], uint8_t type, const uint8_t *payload,
 			   size_t len, int flood);

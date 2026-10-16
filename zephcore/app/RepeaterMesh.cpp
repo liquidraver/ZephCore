@@ -25,6 +25,9 @@
 #include <ZephyrMQTTPublisher.h>
 #endif
 #include <helpers/PacketLog.h>
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#include <helpers/zcpfs/ZcpfsCommon.h>
+#endif
 
 /* Helper to get radio driver for stats — uses LoRaRadio (works for SX126x and LR1110) */
 static inline mesh::LoRaRadio& getRadioDriver(mesh::Radio* radio) {
@@ -262,6 +265,9 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
   if (is_flood) {
     client->out_path_len = OUT_PATH_UNKNOWN;
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs.onLegacyLogin(*client);  // a legacy login says the client no longer speaks zcpfs
+#endif
 
   uint32_t now = getRTCClock()->getCurrentTimeUnique();
   memcpy(reply_data, &now, 4);
@@ -521,6 +527,9 @@ int RepeaterMesh::handleRequest(ClientInfo* sender, uint32_t sender_timestamp, u
 mesh::Packet *RepeaterMesh::createSelfAdvert() {
   uint8_t app_data[MAX_ADVERT_DATA_SIZE];
   uint8_t app_data_len = _cli.buildAdvertData(ADV_TYPE_REPEATER, app_data);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  app_data_len = _zs.advert(app_data, app_data_len);  // the tag when on (lib/zcpfs/SPEC.md 6.1)
+#endif
 
   return createAdvert(self_id, app_data, app_data_len);
 }
@@ -706,6 +715,9 @@ void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, c
 
     reply_path_len = OUT_PATH_UNKNOWN;
     if (data[4] == 0 || data[4] >= ' ') {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      if (_zs.refuseLegacyLogin()) return;  // the password is never read (lib/zcpfs/SPEC.md 19.6)
+#endif
       reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
     } else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
       reply_len = handleAnonRegionsReq(sender, timestamp, &data[5], (len > 5) ? (len - 5) : 0);
@@ -861,6 +873,9 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender
                            // to sender that we got it
         mesh::Utils::sha256((uint8_t *)&ack_hash, 4, data, 5 + strlen((char *)&data[5]), client->id.pub_key,
                             PUB_KEY_SIZE);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+        _zs.takeAck((uint8_t *)&ack_hash);  // a sealed text has its own ACK value
+#endif
 
         mesh::Packet *ack = createAck(ack_hash);
         if (ack) {
@@ -890,6 +905,9 @@ void RepeaterMesh::onPeerDataRecv(mesh::Packet *packet, uint8_t type, int sender
         memcpy(temp, &timestamp, 4);        // mostly an extra blob to help make packet_hash unique
         temp[4] = (TXT_TYPE_CLI_DATA << 2); // NOTE: legacy was: TXT_TYPE_PLAIN
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+        if (_zs.sendText(*client, temp, 5 + text_len, CLI_REPLY_DELAY_MILLIS)) return;  // under the session
+#endif
         auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, secret, temp, 5 + text_len);
         if (reply) {
           if (client->out_path_len == OUT_PATH_UNKNOWN) {
@@ -917,6 +935,9 @@ bool RepeaterMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const ui
     // store a copy of path, for sendDirect()
     client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len);
     client->last_activity = getRTCClock()->getCurrentTime();
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    _zs.onPath(*client, packet->isRouteFlood());
+#endif
   } else {
     MESH_DEBUG_PRINTLN("onPeerPathRecv: invalid peer idx: %d", i);
   }
@@ -1016,7 +1037,11 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
      * (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
      * Phase 4 (mitigation for upstream MeshCore#2556). */
     login_fail_limiter(4, 180),
-    telemetry(MAX_PACKET_PAYLOAD - 4) {
+    telemetry(MAX_PACKET_PAYLOAD - 4)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login)
+#endif
+{
 
   _store = nullptr;
   last_millis = 0;
@@ -1031,6 +1056,9 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
   memset(default_scope.key, 0, sizeof(default_scope.key));
   pending_discover_tag = 0;
   pending_discover_until = 0;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs_hash_size = 0;
+#endif
 
 #if MAX_NEIGHBOURS > 0
   for (int i = 0; i < MAX_NEIGHBOURS; i++) {
@@ -1346,6 +1374,16 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
   }
 #endif
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  switch (_zs.command(command, reply, CLI_REMOTE_REPLY_SIZE - hdr_used)) {
+  case ZCPFS_CMD_CHANGED:
+    savePrefs();
+    return;
+  case ZCPFS_CMD_DONE:
+    return;
+  }
+#endif
+
   // ACL commands - supports BOTH formats for app compatibility:
   //   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)
   //   MeshCore App: setperm {permissions} {pubkey-hex}  (perms is short 2-char hex, pubkey is long)
@@ -1444,6 +1482,9 @@ void RepeaterMesh::loop() {
     acl.save(_store->getFS());
     dirty_contacts_expiry = 0;
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs.loop();
+#endif
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
   /* MQTT (re)connected — publish the initial "online" status here on the main
@@ -1573,6 +1614,9 @@ uint32_t RepeaterMesh::msUntilNextMaintenance() {
   if (dirty_contacts_expiry) {
     next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, dirty_contacts_expiry));
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  next = mesh::maintenanceSooner(next, _zs.msUntilTick());  /* zcpfs timers */
+#endif
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK) && IS_ENABLED(CONFIG_MQTT_LIB)
   if (_uplink_next_status_at) {
@@ -1617,3 +1661,129 @@ void RepeaterMesh::timeSyncTick() {
   anon_limiter.reset();
   login_fail_limiter.reset();
 }
+
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+// ZEPHCORE: ours. zcpfs: the hooks of mesh::Mesh and what ZcpfsServer asks of
+// the role (helpers/zcpfs/ZcpfsServer.h, devdocs/lld/14-zcpfs.md 8.15).
+
+int RepeaterMesh::onPeerSealedRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) {
+  int i = matching_peer_indexes[sender_idx];
+  (void)secret;
+  if (i < 0 || i >= acl.getNumClients()) return SEALED_LEGACY;
+  _zs_hash_size = packet->getPathHashSize();
+  return _zs.rx(packet, *acl.getClientByIdx(i), data, len);
+}
+
+bool RepeaterMesh::onStrangerSealedRecv(mesh::Packet* packet) {
+  uint8_t data[MAX_PACKET_PAYLOAD];
+  int len = 0;
+  ClientInfo* client = nullptr;
+
+  _zs_hash_size = packet->getPathHashSize();
+  int r = _zs.rxStranger(packet, data, &len, &client);
+  if (r == SEALED_DATA && client != nullptr) {
+    /* the login is confirmed by a text: deliver it as from the client it entered */
+    int n = searchPeersByHash(&packet->payload[1]);
+    for (int j = 0; j < n; j++) {
+      if (acl.getClientByIdx(matching_peer_indexes[j]) == client) {
+        onPeerDataRecv(packet, PAYLOAD_TYPE_TXT_MSG, j, client->shared_secret, data, len);
+        break;
+      }
+    }
+  }
+  return r != SEALED_NEXT;
+}
+
+void RepeaterMesh::onPeerRecvDone() {
+  _zs.rxDone();
+  _zs_hash_size = 0;
+}
+
+int RepeaterMesh::onAnonSealedRecv(mesh::Packet* packet) {
+  _zs_hash_size = packet->getPathHashSize();
+  int r = _zs.rxLogin(packet);
+  _zs_hash_size = 0;
+  return r;
+}
+
+int RepeaterMesh::sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) {
+  return _zs.sealOutgoing(type, dest_hash, secret, data, data_len, payload);
+}
+
+uint32_t RepeaterMesh::zcpfsAirtime(int len) {
+  return _radio->getEstAirtimeFor(len);
+}
+
+void RepeaterMesh::zcpfsFlood(mesh::Packet* pkt, uint32_t delay_ms) {
+  /* in the scope of the packet in hand, with its path hash size, as every reply */
+  sendFloodReply(pkt, delay_ms, _zs_hash_size ? _zs_hash_size : _prefs.path_hash_mode + 1);
+}
+
+/* As handleLoginReq: an empty password logs a known client in with what it
+ * has, else it is the admin or the guest password if that one is empty. */
+int RepeaterMesh::zcpfsRoles(const ClientInfo* known, bool empty_password, ZcpfsRole roles[2]) {
+  static char admin_pw[sizeof(_prefs.password)];
+  static char guest_pw[sizeof(_prefs.guest_password)];
+  uint8_t kept = known != nullptr ? known->permissions : 0;
+  int n = 0;
+
+  strncpy(admin_pw, _prefs.password, sizeof(admin_pw) - 1);
+  admin_pw[sizeof(admin_pw) - 1] = 0;
+  strncpy(guest_pw, _prefs.guest_password, sizeof(guest_pw) - 1);
+  guest_pw[sizeof(guest_pw) - 1] = 0;
+
+  /* role assignment only ever escalates (handleLoginReq) */
+  uint8_t as_admin = (uint8_t)((kept & ~PERM_ACL_ROLE_MASK) | PERM_ACL_ADMIN);
+  uint8_t as_guest = (known != nullptr && known->isAdmin()) ? kept : (uint8_t)((kept & ~PERM_ACL_ROLE_MASK) | PERM_ACL_GUEST);
+
+  if (empty_password) {
+    if (known != nullptr) {
+      roles[n++] = { "", kept };
+    } else if (admin_pw[0] == 0) {
+      roles[n++] = { "", as_admin };
+    } else if (guest_pw[0] == 0) {
+      roles[n++] = { "", as_guest };
+    }
+    return n;
+  }
+  if (admin_pw[0] != 0) {
+    roles[n++] = { admin_pw, as_admin };
+  }
+  if (guest_pw[0] != 0) {
+    roles[n++] = { guest_pw, as_guest };
+  }
+  return n;
+}
+
+/* What handleLoginReq does on a correct password, for a login that is now
+ * confirmed (SPEC 19.5). */
+ClientInfo* RepeaterMesh::zcpfsGrant(const mesh::Identity& id, uint8_t perms, const uint8_t* login, size_t login_len) {
+  ClientInfo* client = acl.putClient(id, 0);
+  uint8_t secret[PUB_KEY_SIZE];
+  uint32_t sent_at = 0;
+
+  self_id.calcSharedSecret(secret, id);
+  if (login_len >= 4) memcpy(&sent_at, login, 4);
+
+  uint8_t prev_perms = client->permissions;
+  bool secret_changed = memcmp(client->shared_secret, secret, PUB_KEY_SIZE) != 0;
+
+  if (sent_at > client->last_timestamp) client->last_timestamp = sent_at;
+  client->last_activity = getRTCClock()->getCurrentTime();
+  if (!client->isAdmin()) client->permissions = perms;
+  memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
+  LOG_INF("zcpfs login granted, permissions %02x", client->permissions);
+
+  if (client->isAdmin() && (client->permissions != prev_perms || secret_changed) && _store) {
+    acl.save(_store->getFS());  /* as handleLoginReq: an admin entry is written at once */
+    dirty_contacts_expiry = 0;
+  }
+  return client;
+}
+
+void RepeaterMesh::zcpfsAclChanged(ClientInfo& c) {
+  if (c.permissions != 0 && !dirty_contacts_expiry) {  /* guests are not stored */
+    dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  }
+}
+#endif

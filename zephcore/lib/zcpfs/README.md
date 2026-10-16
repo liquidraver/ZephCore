@@ -3,9 +3,10 @@
 Forward-secret encryption between ZephCore nodes. `SPEC.md` is the protocol; this directory holds it as a small
 C library, the Python reference model (`ref/`) and the test vectors both must reproduce (`vectors.json`).
 
-**Status, 2026-10-10:** the library reproduces every vector, and its per-contact state machine passes the
-model's whole-node scenarios in host tests. It is not part of any firmware build, nothing calls it yet, and
-neither the design nor the code has had a cryptographic review.
+**Status, 2026-10-16:** the library reproduces every vector, and its per-contact state machine passes the
+model's whole-node scenarios in host tests. ZephCore companions, repeaters and room servers can be built with
+it (`CONFIG_ZEPHCORE_ZCPFS`, off by default; the glue is in `helpers/zcpfs/`), and that glue has run on a
+bench of three nodes. Neither the design nor the code has had a cryptographic review.
 
 ## The library
 

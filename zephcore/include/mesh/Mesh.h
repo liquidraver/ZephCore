@@ -116,13 +116,30 @@ protected:
    *           or SEALED_DATA: 'data' and '*len' hold what legacy decryption would have produced.
   */
   virtual int onPeerSealedRecv(Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) { return SEALED_LEGACY; }
+  /**
+   * \brief  A TXT_MSG for this node that no peer claimed: on a server, maybe the first packet of a login (19.5).
+   * \returns  true if it was handled (it is then not retransmitted).
+  */
+  virtual bool onStrangerSealedRecv(Packet* packet) { return false; }
   /** \brief  The packet offered to onPeerSealedRecv() has been dealt with. */
   virtual void onPeerRecvDone() { }
+  /**
+   * \brief  An ANON_REQ for this node, BEFORE legacy decryption: on a server, maybe a zcpfs login (19.3).
+   * \returns  SEALED_LEGACY (decrypt as legacy), SEALED_NEXT (not for this node) or SEALED_CONSUMED (handled).
+  */
+  virtual int onAnonSealedRecv(Packet* packet) { return SEALED_LEGACY; }
   /**
    * \brief  Chance to build the whole payload of an outgoing datagram or path return in sealed form.
    * \returns  the payload length; 0 to build it as legacy; -1 if the packet must not be sent.
   */
   virtual int sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) { return 0; }
+  /**
+   * \brief  A GRP_TXT or GRP_DATA, offered per channel whose hash matches, BEFORE legacy decryption (17.2).
+   * \returns  SEALED_LEGACY, SEALED_NEXT (not this channel's, or refused), or SEALED_DATA with 'data' and '*len'.
+  */
+  virtual int onGroupSealedRecv(Packet* packet, const GroupChannel& channel, uint8_t* data, int* len) { return SEALED_LEGACY; }
+  /** \brief  As sealOutgoing(), for a channel datagram: the whole payload, its length, 0 or -1. */
+  virtual int sealGroupOutgoing(uint8_t type, const GroupChannel& channel, const uint8_t* data, size_t data_len, uint8_t* payload) { return 0; }
 #endif
   // ZEPHCORE: end
 

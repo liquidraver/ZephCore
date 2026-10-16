@@ -24,6 +24,9 @@
 #include <helpers/RoutingPolicy.h>
 #include <helpers/TransportKeyStore.h>
 #include <helpers/RateLimiter.h>
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#include <helpers/zcpfs/ZcpfsServer.h>  // ZEPHCORE
+#endif
 
 struct RepeaterStats {
   uint16_t batt_milli_volts;
@@ -81,7 +84,11 @@ struct NeighbourInfo {
   #endif
 #endif
 
-class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
+class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+                   , public ZcpfsServerHost  // ZEPHCORE
+#endif
+{
   // ZEPHCORE: our board handle and datastore instead of FILESYSTEM* _fs.
   mesh::MainBoard& _board;
   RepeaterDataStore* _store;
@@ -136,6 +143,11 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
   // Set by the MQTT CONNACK callback (publisher thread), drained on the main
   // thread in maintenanceLoop().
   atomic_t _uplink_connect_pending;
+#endif
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // ZEPHCORE: zcpfs, at the end of RepeaterMesh.cpp (helpers/zcpfs/ZcpfsServer.h)
+  ZcpfsServer _zs;
+  uint8_t _zs_hash_size;  // path hash size of the packet in hand, for flooded replies
 #endif
 
   void putNeighbour(const mesh::Identity& id, uint32_t timestamp, float snr);
@@ -211,6 +223,20 @@ protected:
   void onControlDataRecv(mesh::Packet* packet) override;
 
   void sendFloodReply(mesh::Packet* packet, unsigned long delay_millis, uint8_t path_hash_size);
+
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // ZEPHCORE: zcpfs hooks of mesh::Mesh and what ZcpfsServer asks of the role
+  int onPeerSealedRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) override;
+  bool onStrangerSealedRecv(mesh::Packet* packet) override;
+  void onPeerRecvDone() override;
+  int onAnonSealedRecv(mesh::Packet* packet) override;
+  int sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) override;
+  uint32_t zcpfsAirtime(int len) override;
+  void zcpfsFlood(mesh::Packet* pkt, uint32_t delay_ms) override;
+  int zcpfsRoles(const ClientInfo* known, bool empty_password, ZcpfsRole roles[2]) override;
+  ClientInfo* zcpfsGrant(const mesh::Identity& id, uint8_t perms, const uint8_t* login, size_t login_len) override;
+  void zcpfsAclChanged(ClientInfo& c) override;
+#endif
 
 #if IS_ENABLED(CONFIG_ZEPHCORE_REPEATER_UPLINK)
   // ZEPHCORE: MQTT uplink (app/RepeaterUplink.cpp).

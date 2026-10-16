@@ -44,6 +44,9 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	ZephyrDataStore &store)
 	: BaseChatMesh(radio, ms, rng, rtc, mgr, tables), _store(&store)
 {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	zcpfsBind(&prefs.zcpfs_mode, &prefs.zcpfs_no_legacy_login, prefs.zcpfs_chan);
+#endif
 	_serial = nullptr;
 	_batt_cb = nullptr;
 	_radio_reconfig_cb = nullptr;
@@ -2708,6 +2711,10 @@ bool CompanionMesh::handleCmdSendLogin(const uint8_t *data, size_t len)
 				memcpy(&_pending_login, contact->id.pub_key, 4);  // match this to onContactResponse()
 				LOG_DBG("CMD_SEND_LOGIN: _pending_login set to %08x", _pending_login);
 				sendPacketSent(result, _pending_login, est_timeout);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+			} else if (zcpfsRefusesLegacyLogin() && !(contact->flags & ZCPFS_PIN_FLAG)) {
+				writeErrFrame(ERR_BAD_STATE);  /* refused: a legacy login to a server that is not pinned */
+#endif
 			} else {
 				writeErrFrame(ERR_TABLE_FULL);
 			}

@@ -11,6 +11,7 @@
 // ZEPHCORE: zcpfs glue
 #ifdef CONFIG_ZEPHCORE_ZCPFS
 #include "zcpfs/ZcpfsChat.h"
+#include "zcpfs/ZcpfsCommon.h"
 #endif
 
 #define MAX_SEARCH_RESULTS   24
@@ -169,6 +170,8 @@ protected:
   int onPeerSealedRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) override;
   void onPeerRecvDone() override;
   int sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) override;
+  int onGroupSealedRecv(mesh::Packet* packet, const mesh::GroupChannel& channel, uint8_t* data, int* len) override;
+  int sealGroupOutgoing(uint8_t type, const mesh::GroupChannel& channel, const uint8_t* data, size_t data_len, uint8_t* payload) override;
 #endif
   bool onPeerPathRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* path, uint8_t path_len, uint8_t extra_type, uint8_t* extra, uint8_t extra_len) override;
   void onAckRecv(mesh::Packet* packet, uint32_t ack_crc) override;
@@ -210,7 +213,9 @@ public:
   ContactInfo* lookupContactByPubKey(const uint8_t* pub_key, int prefix_len);
   bool  removeContact(ContactInfo& contact);
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  bool  zcpfsCommand(const char* line, char* reply, size_t size);  // ZEPHCORE: the `get zcpfs` CLI line
+  int   zcpfsCommand(const char* line, char* reply, size_t size);  // ZEPHCORE: zcpfs CLI, one of ZCPFS_CMD_*
+  void  zcpfsBind(uint8_t* mode, uint8_t* no_legacy_login, uint8_t (*channels)[ZCPFS_CHAN_ENTRY]) { _zc.bind(mode, no_legacy_login, channels); }  // ZEPHCORE: settings in the prefs
+  bool  zcpfsRefusesLegacyLogin() const { return _zc.refusesLegacyLogin(); }  // ZEPHCORE: lib/zcpfs/SPEC.md 19.6
 #endif
   bool  addContact(const ContactInfo& contact);
   int getTotalContactSlots() const { return num_contacts; }

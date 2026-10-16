@@ -265,6 +265,7 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
             }
           }
 #ifdef CONFIG_ZEPHCORE_ZCPFS
+          if (!found && pkt->getPayloadType() == PAYLOAD_TYPE_TXT_MSG) found = onStrangerSealedRecv(pkt);  // ZEPHCORE
           onPeerRecvDone();  // ZEPHCORE
 #endif
           if (found) {
@@ -287,7 +288,11 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         MESH_DEBUG_PRINTLN("%s Mesh::onRecvPacket(): incomplete data packet", getLogDateTime());
       } else if (!_tables->wasSeen(pkt)) {
         _tables->markSeen(pkt);
-        if (self_id.isHashMatch(&dest_hash)) {
+        if (self_id.isHashMatch(&dest_hash)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+            && onAnonSealedRecv(pkt) == SEALED_LEGACY  // ZEPHCORE: a zcpfs login first (lib/zcpfs/SPEC.md 19.3)
+#endif
+           ) {
           Identity sender(sender_pub_key);
 
           uint8_t secret[PUB_KEY_SIZE];
@@ -322,7 +327,16 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
         for (int j = 0; j < num; j++) {
           // decrypt, checking MAC is valid
           uint8_t data[MAX_PACKET_PAYLOAD];
+          // ZEPHCORE: a sealed channel packet is opened before any legacy decryption (lib/zcpfs/SPEC.md 17.2)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+          int len = 0;
+          int sealed = onGroupSealedRecv(pkt, channels[j], data, &len);
+          if (sealed == SEALED_NEXT) continue;
+          if (sealed == SEALED_LEGACY) len = Utils::MACThenDecrypt(channels[j].secret, data, macAndData, pkt->payload_len - i);
+#else
           int len = Utils::MACThenDecrypt(channels[j].secret, data, macAndData, pkt->payload_len - i);
+#endif
+          // ZEPHCORE: end
           if (len > 0) {  // success!
             onGroupDataRecv(pkt, pkt->getPayloadType(), channels[j], data, len);
             break;
@@ -654,6 +668,13 @@ Packet* Mesh::createGroupDatagram(uint8_t type, const GroupChannel& channel, con
   packet->header = (type << PH_TYPE_SHIFT);  // ROUTE_TYPE_* set later
 
   int len = 0;
+  // ZEPHCORE: sealed form on a channel set to it (lib/zcpfs/SPEC.md 17)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  int sealed_len = sealGroupOutgoing(type, channel, data, data_len, packet->payload);
+  if (sealed_len < 0) { releasePacket(packet); return NULL; }
+  if (sealed_len > 0) { packet->payload_len = sealed_len; return packet; }
+#endif
+  // ZEPHCORE: end
   memcpy(&packet->payload[len], channel.hash, PATH_HASH_SIZE); len += PATH_HASH_SIZE;
   len += Utils::encryptThenMAC(channel.secret, &packet->payload[len], data, data_len);
 

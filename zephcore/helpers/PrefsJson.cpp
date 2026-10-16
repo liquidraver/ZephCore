@@ -74,6 +74,11 @@ protected:
 		def("in_rot", _p->input_rotate);
 		def("pwr_sav_set", _p->powersaving_set);
 		def("gps_stby", _p->gps_standby_max);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+		def("zcpfs", _p->zcpfs_mode);
+		def("zcpfs_nolegl", _p->zcpfs_no_legacy_login);
+		def("zcpfs_ch", (void *)_p->zcpfs_chan, sizeof(_p->zcpfs_chan));
+#endif
 	}
 
 public:
