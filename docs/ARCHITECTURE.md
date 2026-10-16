@@ -363,7 +363,14 @@ MeshCore 1.18.0 companion.
 - **Legacy logins** (`set zcpfs.legacylogin on|off`, default on, `NodePrefs.zcpfs_no_legacy_login`, key
   `zc.zcpfs_nolegl`, effective while the mode is on): off on a companion refuses a login to a server that is
   not pinned (error frame `ERR_BAD_STATE` to the app); off on a server drops legacy logins unread.
-- **Not there yet**: the padding hint, a persisted generator seed.
+- **Generator seed** (`helpers/zcpfs/ZcpfsSeed.cpp`): the zcpfs generator is seeded from `ZephyrRNG` and
+  `/lfs/zcpfs_seed` (on first use without the file, from `ZephyrRNG::mixIdentitySeed`), and the next seed is
+  written before it gives anything else, so a boot with a weak hardware RNG does not repeat an earlier
+  boot's stream.
+- **Padding hint** (companion, while on): a legacy text to a contact that is not pinned ends in
+  `0x00 a 0x5A` when that costs no AES block; a legacy text that carries it makes the receiver start one
+  direct handshake (at most one a day per contact), so two zcpfs nodes that missed each other's adverts find
+  each other. Legacy receivers see the same text and compute the same ACK.
 - **Cost** on a RAK4631 with the default four contact records (`CONFIG_ZEPHCORE_ZCPFS_PEERS`, about 2.4 kB
   each): companion 14.7 kB of flash and 10.2 kB of RAM (measured before the login glue), repeater 18.0 kB and
   11.5 kB, room server 18.5 kB and 11.5 kB.
