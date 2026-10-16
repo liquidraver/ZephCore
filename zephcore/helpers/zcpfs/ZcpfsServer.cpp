@@ -200,7 +200,7 @@ int ZcpfsServer::rx(mesh::Packet *pkt, ClientInfo &from, uint8_t *data, int *len
 {
 	static zcpfs_rx_out out;	/* 196 bytes; the mesh runs on one thread */
 
-	BUILD_ASSERT(sizeof(out.plain) == MAX_PACKET_PAYLOAD);
+	static_assert(sizeof(out.plain) == MAX_PACKET_PAYLOAD, "legacy view buffer");
 	if (off()) {
 		return mesh::Mesh::SEALED_LEGACY;	/* as firmware without zcpfs */
 	}

@@ -24,6 +24,7 @@ add_executable(zephcore_unit
   unit/kiss_modem_tests.cpp
   unit/zcpfs_tests.cpp
   unit/zcpfs_peer_tests.cpp
+  unit/zcpfs_glue_tests.cpp
   support/hash_capture.cpp
   support/identity_utils_boundary.cpp
   ${PRODUCTION}/src/Dispatcher.cpp
@@ -89,4 +90,43 @@ if(ZEPHCORE_TEST_SANITIZERS)
   target_link_options(zephcore_unit PRIVATE -fsanitize=address,undefined -no-pie)
   target_compile_options(ascon PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
   target_compile_options(zcpfs PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
+endif()
+
+# zcpfs inside the firmware (unit/zcpfs_mesh_tests.cpp): whole companions with the
+# switch on. A separate executable because mesh::Mesh has more virtual methods with
+# it; and the firmware's own src/Utils.cpp, over OpenSSL (support/psa/crypto.h), so
+# that legacy encryption is the real one.
+find_package(OpenSSL REQUIRED COMPONENTS Crypto)
+add_executable(zephcore_zcpfs_mesh
+  unit/main.cpp
+  unit/zcpfs_mesh_tests.cpp
+  ${PRODUCTION}/src/Mesh.cpp
+  ${PRODUCTION}/src/Dispatcher.cpp
+  ${PRODUCTION}/src/Packet.cpp
+  ${PRODUCTION}/src/Identity.cpp
+  ${PRODUCTION}/src/Utils.cpp
+  ${PRODUCTION}/src/ContentionTracker.cpp
+  ${PRODUCTION}/lib/monocypher/monocypher.c
+  ${PRODUCTION}/lib/monocypher/monocypher-ed25519.c
+  ${PRODUCTION}/helpers/BaseChatMesh.cpp
+  ${PRODUCTION}/helpers/AdvertDataHelpers.cpp
+  ${PRODUCTION}/helpers/zcpfs/ZcpfsChat.cpp
+  ${PRODUCTION}/helpers/zcpfs/ZcpfsSeed.cpp
+  ${PRODUCTION}/helpers/zcpfs/ZcpfsServer.cpp
+  ${PRODUCTION}/helpers/ClientACL.cpp
+  support/zephyr_fs_none.cpp
+)
+target_compile_features(zephcore_zcpfs_mesh PRIVATE cxx_std_17)
+target_compile_definitions(zephcore_zcpfs_mesh PRIVATE CONFIG_ZEPHCORE_ZCPFS=1 CONFIG_ZEPHCORE_ZCPFS_PEERS=4
+  CONFIG_ZEPHCORE_PACKET_LOGGING=0 CONFIG_ZEPHCORE_MAIN_LOG_LEVEL=0)
+target_include_directories(zephcore_zcpfs_mesh PRIVATE
+  support unit ${PRODUCTION} ${PRODUCTION}/include ${PRODUCTION}/helpers ${PRODUCTION}/helpers/compat
+  ${PRODUCTION}/lib/monocypher ${PRODUCTION}/adapters/radio)
+if(NOT MSVC)
+  target_compile_options(zephcore_zcpfs_mesh PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+target_link_libraries(zephcore_zcpfs_mesh PRIVATE zcpfs OpenSSL::Crypto)
+if(ZEPHCORE_TEST_SANITIZERS)
+  target_compile_options(zephcore_zcpfs_mesh PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -fno-pie)
+  target_link_options(zephcore_zcpfs_mesh PRIVATE -fsanitize=address,undefined -no-pie)
 endif()

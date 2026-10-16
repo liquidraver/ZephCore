@@ -192,7 +192,7 @@ int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 {
 	static zcpfs_rx_out out;	/* 196 bytes; the mesh runs on one thread */
 
-	BUILD_ASSERT(sizeof(out.plain) == MAX_PACKET_PAYLOAD);
+	static_assert(sizeof(out.plain) == MAX_PACKET_PAYLOAD, "legacy view buffer");
 	if (off()) {
 		return mesh::Mesh::SEALED_LEGACY;	/* as firmware without zcpfs */
 	}
@@ -609,7 +609,7 @@ int ZcpfsChat::channelCommand(const char *line, char *reply, size_t size)
 			state = ZCPFS_CHAN_ON;
 		} else if (strcmp(sp + 1, "strict") == 0) {
 			state = ZCPFS_CHAN_STRICT;
-		} else if (strcmp(sp + 1, "off") != 0) {
+		} else if (strcmp(sp + 1, "off") != 0 && strcmp(sp + 1, "default") != 0) {
 			snprintf(reply, size, "Err - off, on or strict");
 			return ZCPFS_CMD_DONE;
 		}

@@ -711,6 +711,81 @@
       "id": "UNIT-ZCPFS-023",
       "name": "A client the server already knows logs in again: no handshake is started, the old session stays readable until the new one is used",
       "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSG-001",
+      "name": "The advert tag is one zero byte after the name: zcpfs reads the capability, the legacy parser the same name",
+      "source": "tests/unit/zcpfs_glue_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSG-002",
+      "name": "get/set zcpfs: on, passive, off, 1, 0 and default; a change is reported once, anything else is refused",
+      "source": "tests/unit/zcpfs_glue_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSG-003",
+      "name": "get/set zcpfs.legacylogin: stored as the refusal, so the zero default allows legacy logins; default is on",
+      "source": "tests/unit/zcpfs_glue_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSG-004",
+      "name": "Passive mode seals only to a contact heard sealed since the last own advert; the table keeps the newest",
+      "source": "tests/unit/zcpfs_glue_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-001",
+      "name": "Two zcpfs companions pin each other by tagged adverts; a DM goes sealed and its ACK reaches the app",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-002",
+      "name": "A node with zcpfs off is a legacy peer: no tag, nothing pinned on the other side, DMs legacy both ways",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-003",
+      "name": "Passive: sealed while the peer still pins us; after our untagged advert legacy both ways, nothing lost",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-004",
+      "name": "Two zcpfs nodes that missed each other's adverts find each other through the hint of a legacy DM",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-005",
+      "name": "Channels: on sends sealed and reads both, strict drops legacy, off reads sealed; the text is cut, not split",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-006",
+      "name": "A request and its response go sealed in pair mode; the response reaches the app at legacy's length",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-007",
+      "name": "A zcpfs login to a server: the app sees login OK, the server grants on confirmation, CLI goes sealed",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-008",
+      "name": "A wrong password is answered but opens nothing; nothing is granted; the right one then works",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-009",
+      "name": "Flooded login replies to a stranger: four in any 180 s, then over the reverse path; the right password still gets in",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-010",
+      "name": "Legacy logins off: a server drops them unread, a client never sends one to a server that is not pinned",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-011",
+      "name": "A passive server answers a zcpfs login from a client that still pins it; a server switched off answers none",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
     }
   ]
 }

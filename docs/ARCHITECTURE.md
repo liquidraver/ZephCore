@@ -327,7 +327,8 @@ Direct (source-routed) packets bypass adaptive scaling entirely. They use minima
 Forward-secret sealing of direct messages between two nodes that both have it, with Ascon-AEAD128 and a
 handshake over the existing identity keys. Nodes without it are unaffected and are only ever sent ordinary
 MeshCore packets. The protocol is `zephcore/lib/zcpfs/SPEC.md` (kept local, not tracked); the library and its
-host tests are described in `zephcore/lib/zcpfs/README.md`; [ZCPFS.md](ZCPFS.md) is the overview for developers. Neither the design nor the code has had a
+host tests are described in `zephcore/lib/zcpfs/README.md`; [ZCPFS.md](ZCPFS.md) is the overview for developers,
+[ADR 0010](adr/0010-zcpfs-integration.md) the decisions and what must happen before it defaults on. Neither the design nor the code has had a
 cryptographic review; the companion and repeater glue has run on a bench of three nodes, beside an official
 MeshCore 1.18.0 companion.
 

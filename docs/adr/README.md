@@ -14,3 +14,4 @@ restructure; most describe decisions taken earlier. The system view is in [../DE
 | [0007](0007-adaptive-contention-window.md) | Adaptive contention window instead of static tx/rx delays |
 | [0008](0008-storage-and-settings-backend.md) | Storage layout, power-loss writes, BLE bonds in NVS |
 | [0009](0009-wifi-companion-boards.md) | WiFi companion boards and contact counts |
+| [0010](0010-zcpfs-integration.md) | zcpfs: off by default at build and run time, fenced hooks, where its state lives, what must happen before it defaults on |

@@ -365,7 +365,8 @@ CayenneLPP encoder rounds where the library truncates); upstream bugs found this
 
 Recorded as ADRs in [adr/](adr/README.md): ESP32 boot and flash layout (0001), S3 native-USB companion (0002),
 overlay precedence (0003), BLE privacy (0004), the Zephyr `main` pin (0005), SX126x duty cycle and RX-busy gating
-(0006), adaptive contention window (0007), storage and settings backend (0008), WiFi companion boards (0009).
+(0006), adaptive contention window (0007), storage and settings backend (0008), WiFi companion boards (0009),
+zcpfs integration and its defaults (0010).
 
 Principles recorded in this document rather than as ADRs: the single-threaded mesh (§6.1), the heap-free packet
 path (§8.1), no hardware watchdog (§8.7), forward-only wall clock (§8.2), one owner per patched Zephyr file (R4.4),
