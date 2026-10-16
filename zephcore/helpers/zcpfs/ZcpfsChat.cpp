@@ -29,7 +29,8 @@ uint32_t ZcpfsChat::now()
 	return (uint32_t)(k_uptime_get() / 1000);
 }
 
-/* Set the engine up for the node's identity, again if that has changed. */
+/* Set the engine up for the node's identity, again if that has changed; the
+ * generator is seeded once and kept. */
 void ZcpfsChat::ensure()
 {
 	if (_ready && memcmp(_S, _m.self_id.pub_key, PUB_KEY_SIZE) == 0) {
@@ -43,7 +44,9 @@ void ZcpfsChat::ensure()
 	memcpy(_S, _m.self_id.pub_key, PUB_KEY_SIZE);
 	zcpfs_wipe(keys, sizeof(keys));
 
-	_seed = (uint8_t)zcpfsSeed(&_drbg, *_m.getRNG());
+	if (_seed == 0) {
+		_seed = (uint8_t)zcpfsTakeSeed(&_drbg, *_m.getRNG());	/* never 0 */
+	}
 
 	_ops.send = opSend;
 	_ops.reciprocal_path = opReciprocalPath;
@@ -188,6 +191,20 @@ void ZcpfsChat::ackOnly(mesh::Packet *pkt, ContactInfo &from, const uint8_t ack4
 	}
 }
 
+/* SPEC 6.2: a sender time authenticated by zcpfs, less the slack for the
+ * node's clock behind its app's, raises the contact's advert high-water mark,
+ * so an advert signed before it is refused as a replay. */
+void ZcpfsChat::raiseAdvertMark(ContactInfo &c, const uint8_t *plain)
+{
+	uint32_t t;
+
+	memcpy(&t, plain, sizeof(t));
+	if (t > ZCPFS_ADVERT_MARK_SLACK && t - ZCPFS_ADVERT_MARK_SLACK > c.last_advert_timestamp) {
+		c.last_advert_timestamp = t - ZCPFS_ADVERT_MARK_SLACK;
+		_m.onContactAdvertMarkRaised(c);
+	}
+}
+
 int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 {
 	static zcpfs_rx_out out;	/* 196 bytes; the mesh runs on one thread */
@@ -241,6 +258,9 @@ int ZcpfsChat::rx(mesh::Packet *pkt, ContactInfo &from, uint8_t *data, int *len)
 		_rx_ack = true;
 		[[fallthrough]];
 	case ZCPFS_RX_PAIR:
+		if (r == ZCPFS_RX_TEXT || pkt->getPayloadType() == PAYLOAD_TYPE_REQ) {
+			raiseAdvertMark(from, out.plain);	/* both start with the sender's time */
+		}
 		/* the legacy view (SPEC 7.1): the plaintext, then zero bytes */
 		_in_kind = &from;
 		r == ZCPFS_RX_TEXT ? _n.rx_text++ : _n.rx_pair++;
@@ -284,7 +304,7 @@ bool ZcpfsChat::pathResponse(const ContactInfo &from, uint8_t *extra, uint8_t &e
 	if (off() || !_ready || _in_kind != &from || !_node.login.used ||
 	    memcmp(_node.login.S, from.id.pub_key, PUB_KEY_SIZE) != 0 || extra_len < 2 ||
 	    extra[1] < 1 || extra[1] > ZCPFS_LOGIN_MAX_BRANCHES ||
-	    extra[0] < 1 + extra[1] * ZCPFS_BRANCH_LEN || extra[0] > extra_len - 1) {
+	    extra[0] < 1 + ZCPFS_LOGIN_ECHO_LEN + extra[1] * ZCPFS_BRANCH_LEN || extra[0] > extra_len - 1) {
 		return true;
 	}
 

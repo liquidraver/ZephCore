@@ -750,14 +750,18 @@ int zcpfs_rx(struct zcpfs_node *n, const struct zcpfs_contact *c, uint8_t ptype,
 
 	/* a request, response or path return */
 	if ((len - 4) % 16 != 0) {
-		if (ptype == ZCPFS_PT_RESPONSE && n->login.used &&
-		    zcpfs_rx_login_reply(n, c, payload + HDR, len - HDR, flood, now, out) ==
-			    ZCPFS_RX_LOGIN) {
-			return ZCPFS_RX_LOGIN;		/* 19.4 */
-		}
+		/* a sealed request or response first: its 8-byte tag decides, so a
+		 * response that is not the login reply never uses up the login */
 		if (zcpfs_pair_open(c->ss, c->S, n->S, ptype, payload, len, out->plain,
 				    &out->len) == ZCPFS_OK) {
 			return ZCPFS_RX_PAIR;		/* section 18 */
+		}
+		if (ptype == ZCPFS_PT_RESPONSE && n->login.used) {
+			int r = zcpfs_rx_login_reply(n, c, payload + HDR, len - HDR, flood, now, out);
+
+			if (r != ZCPFS_RX_NEXT) {
+				return r;		/* 19.4 */
+			}
 		}
 		return ZCPFS_RX_NEXT;
 	}
@@ -842,7 +846,7 @@ int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
 			 const uint8_t *reply, size_t reply_len, int flood, uint32_t now,
 			 struct zcpfs_rx_out *out)
 {
-	const uint8_t *branches;
+	const uint8_t *branches, *echo;
 	struct zcpfs_keys keys;
 	struct zcpfs_peer *p;
 	int count;
@@ -853,7 +857,12 @@ int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
 	    reply_len > ZCPFS_MAX_PAYLOAD) {
 		return ZCPFS_RX_NEXT;
 	}
-	count = zcpfs_login_reply_unpack(reply, reply_len, &branches);
+	count = zcpfs_login_reply_unpack(reply, reply_len, &echo, &branches);
+	if (count <= 0 || memcmp(echo, n->login.out.Y, ZCPFS_LOGIN_ECHO_LEN) != 0) {
+		return ZCPFS_RX_NEXT;		/* not a reply to this login: it still waits */
+	}
+	/* 19.4: one reply per login, whatever it holds. Its branches are all the
+	 * guesses a server gets, and all the tries a forger gets at their tags. */
 	for (int j = 0; j < count; j++) {
 		/* 19.4: a branch opens only if the server used the typed password */
 		if (zcpfs_login_branch_open(c->ss, &n->login.out, n->S, c->S,
@@ -872,8 +881,9 @@ int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
 		return ZCPFS_RX_LOGIN;
 	}
 	zcpfs_wipe(&keys, sizeof(keys));
+	zcpfs_wipe(&n->login, sizeof(n->login));
 	memset(out, 0, sizeof(*out));
-	return ZCPFS_RX_NEXT;
+	return ZCPFS_RX_CONSUMED;
 }
 
 void zcpfs_node_serve(struct zcpfs_node *n, struct zcpfs_offer *offers, size_t count)
@@ -954,7 +964,7 @@ int zcpfs_login_answer(struct zcpfs_node *n, const struct zcpfs_login_req *req,
 	o->renew = now + step_of(timeout_ms);
 	o->known = req->known;
 	o->used = 1;
-	return zcpfs_login_reply_pack(o->count, packed, reply, reply_len);
+	return zcpfs_login_reply_pack(o->count, req->Y_c, packed, reply, reply_len);
 }
 
 /* 19.5: a TXT_MSG against the offers made to the clients whose hash is its

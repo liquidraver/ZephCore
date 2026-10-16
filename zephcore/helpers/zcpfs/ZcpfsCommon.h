@@ -21,10 +21,25 @@ extern "C" {
 /* Seed the node's generator (SPEC 5, 5.1): 32 bytes from `rng` and the seed
  * file, or from the identity mixer when there is none yet; the next seed is
  * written before the generator gives anything else (ZcpfsSeed.cpp). Returns
- * ZCPFS_SEED_* bits, for `get zcpfs.status`. */
+ * ZCPFS_SEED_* bits, for `get zcpfs.status`. The identity mixer blocks ~450 ms
+ * and on ESP32 must not run once Bluetooth or WiFi is up: with `boot` false
+ * it is replaced by more of `rng`. */
 #define ZCPFS_SEED_FROM_FILE	1	/* the seed file was read */
 #define ZCPFS_SEED_WRITTEN	2	/* the next seed was stored */
-int zcpfsSeed(zcpfs_drbg *g, mesh::RNG &rng);
+#define ZCPFS_SEED_MIXED	4	/* it was not: fresh entropy was mixed in */
+#define ZCPFS_SEED_LATE		8	/* seeded after boot, without the identity mixer */
+int zcpfsSeed(zcpfs_drbg *g, mesh::RNG &rng, bool boot);
+/* At boot, after the identity and prefs are loaded and before Bluetooth or
+ * WiFi start: seed a generator for the engine to take. */
+void zcpfsSeedAtBoot(mesh::RNG &rng);
+/* The engine's first use: the generator seeded at boot, or one seeded now
+ * (ZCPFS_SEED_LATE) when there was none, e.g. zcpfs was off at boot. */
+int zcpfsTakeSeed(zcpfs_drbg *g, mesh::RNG &rng);
+
+/* lib/zcpfs/SPEC.md 6.2: a sealed text or request raises the sender's advert
+ * mark to its time less this many seconds. */
+#define ZCPFS_ADVERT_MARK_SLACK	60u
+
 #include <helpers/AdvertDataHelpers.h>
 
 /* Append the tag to the name field of an own advert; returns the new length. */

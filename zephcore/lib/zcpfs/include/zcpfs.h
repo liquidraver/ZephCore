@@ -50,6 +50,7 @@ extern "C" {
 #define ZCPFS_BRANCH_TAG_LEN	4
 #define ZCPFS_BRANCH_LEN	42	/* Y_s, response, tag */
 #define ZCPFS_LOGIN_MAX_BRANCHES 2
+#define ZCPFS_LOGIN_ECHO_LEN	2	/* in a login reply: the first bytes of the login's Y_c */
 
 #define ZCPFS_OK		0
 #define ZCPFS_ERR_AUTH		(-1)	/* tag did not verify, or nothing opened */
@@ -248,12 +249,13 @@ int zcpfs_login_branch_open(const uint8_t ss[32], const struct zcpfs_login_out *
 
 /* The reply of 19.3 step 4, after dst and src: count, the branches back to
  * back, zero bytes. `reply` must hold 1 + count * ZCPFS_BRANCH_LEN + 1 bytes. */
-int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *reply,
+int zcpfs_login_reply_pack(uint8_t count, const uint8_t Y_c[32], const uint8_t *branches, uint8_t *reply,
 			   size_t *reply_len);
 
 /* Returns the number of branches or ZCPFS_ERR_ARG; *branches points into
  * `reply`. */
-int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **branches);
+int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **echo,
+			     const uint8_t **branches);
 
 /* ---- 7.2, 8.5, 9 to 11: the sessions of each contact ---------------------
  *
@@ -525,7 +527,9 @@ int zcpfs_login_send(struct zcpfs_node *n, const struct zcpfs_contact *c,
 
 /* Client: a login reply that did not come as a RESPONSE packet but as the
  * extra of a path return (19.4); zcpfs_rx handles the packet form itself.
- * ZCPFS_RX_LOGIN with the login response in `out`, or ZCPFS_RX_NEXT. */
+ * ZCPFS_RX_LOGIN with the login response in `out`; ZCPFS_RX_CONSUMED if it was
+ * a login reply and nothing opened (the login is over: one reply per login);
+ * ZCPFS_RX_NEXT if it was not a login reply at all. */
 int zcpfs_rx_login_reply(struct zcpfs_node *n, const struct zcpfs_contact *c,
 			 const uint8_t *reply, size_t reply_len, int flood, uint32_t now,
 			 struct zcpfs_rx_out *out);

@@ -196,10 +196,10 @@ int zcpfs_login_branch_open(const uint8_t ss[32], const struct zcpfs_login_out *
 	return rc;
 }
 
-int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *reply,
+int zcpfs_login_reply_pack(uint8_t count, const uint8_t Y_c[32], const uint8_t *branches, uint8_t *reply,
 			   size_t *reply_len)
 {
-	size_t len = 1 + (size_t)count * ZCPFS_BRANCH_LEN;
+	size_t len = 1 + ZCPFS_LOGIN_ECHO_LEN + (size_t)count * ZCPFS_BRANCH_LEN;
 	/* dst and src precede the reply in the RESPONSE payload */
 	size_t padded = zcpfs_fit(ZCPFS_PT_RESPONSE, len, 2);
 
@@ -207,7 +207,8 @@ int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *repl
 		return ZCPFS_ERR_ARG;
 	}
 	reply[0] = count;
-	memcpy(reply + 1, branches, (size_t)count * ZCPFS_BRANCH_LEN);
+	memcpy(reply + 1, Y_c, ZCPFS_LOGIN_ECHO_LEN);	/* names the login it answers (19.3) */
+	memcpy(reply + 1 + ZCPFS_LOGIN_ECHO_LEN, branches, (size_t)count * ZCPFS_BRANCH_LEN);
 	if (padded > len) {
 		reply[len] = 0;
 	}
@@ -215,12 +216,24 @@ int zcpfs_login_reply_pack(uint8_t count, const uint8_t *branches, uint8_t *repl
 	return ZCPFS_OK;
 }
 
-int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **branches)
+int zcpfs_login_reply_unpack(const uint8_t *reply, size_t reply_len, const uint8_t **echo,
+			     const uint8_t **branches)
 {
+	const uint8_t *b = reply + 1 + ZCPFS_LOGIN_ECHO_LEN;
+
 	if (reply_len < 1 || reply[0] < 1 || reply[0] > ZCPFS_LOGIN_MAX_BRANCHES ||
-	    reply_len < 1 + (size_t)reply[0] * ZCPFS_BRANCH_LEN) {
+	    reply_len < 1 + ZCPFS_LOGIN_ECHO_LEN + (size_t)reply[0] * ZCPFS_BRANCH_LEN) {
 		return ZCPFS_ERR_ARG;
 	}
-	*branches = reply + 1;
+	/* 19.3: two branches with one Y_s would be two tag tries under one key */
+	for (int i = 1; i < reply[0]; i++) {
+		for (int j = 0; j < i; j++) {
+			if (memcmp(b + (size_t)i * ZCPFS_BRANCH_LEN, b + (size_t)j * ZCPFS_BRANCH_LEN, 32) == 0) {
+				return ZCPFS_ERR_ARG;
+			}
+		}
+	}
+	*echo = reply + 1;
+	*branches = b;
 	return reply[0];
 }

@@ -138,7 +138,7 @@ is always whole AES blocks plus a fixed header, a zcpfs payload never is.
 | Probe (finds a path) | `REQ` | 14 |
 | Sealed request, response, path return | `REQ`, `RESPONSE`, `PATH` | plaintext + 16 |
 | Login | `ANON_REQ` | 78 to a repeater, 82 to a room |
-| Login reply | `RESPONSE`, or inside a path return | 45 (one branch), 87 (two) |
+| Login reply | `RESPONSE`, or inside a path return | 47 (one branch), 89 (two) |
 | ACK | `ACK` | 4 (legacy: 6) |
 
 Every packet is unique on the wire (fresh nonce, ephemeral or chain key), so MeshCore's duplicate suppression
@@ -151,7 +151,9 @@ pinned contact a node never sends legacy text, so an attacker cannot downgrade a
 text to a contact that is not pinned carries a small **padding hint** where it costs no AES block; a zcpfs
 receiver that sees it starts a handshake, so two zcpfs nodes that missed each other's adverts still find
 each other. Only an
-accepted (signed, newer) advert without the tag unpins: the key's owner went back to legacy. A server keeps
+accepted (signed, newer) advert without the tag unpins: the key's owner went back to legacy. A sealed text
+or request raises the contact's stored advert timestamp to its own time less 60 s (spec 6.2), so a
+recorded untagged advert from before the peer turned zcpfs on cannot be replayed to unpin. A server keeps
 no adverts of its clients; it pins a client on a confirmed zcpfs login and unpins it on a legacy login.
 
 ## 6. Key flows

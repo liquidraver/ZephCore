@@ -713,6 +713,16 @@
       "source": "tests/unit/zcpfs_peer_tests.cpp"
     },
     {
+      "id": "UNIT-ZCPFS-024",
+      "name": "One reply per login: a server's second reply with another guess is not tried; a sealed response does not end a login",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFS-025",
+      "name": "A login reply whose two branches share one Y_s is not a reply: no tag is tried, and the real reply still opens",
+      "source": "tests/unit/zcpfs_peer_tests.cpp"
+    },
+    {
       "id": "UNIT-ZCPFSG-001",
       "name": "The advert tag is one zero byte after the name: zcpfs reads the capability, the legacy parser the same name",
       "source": "tests/unit/zcpfs_glue_tests.cpp"
@@ -785,6 +795,21 @@
     {
       "id": "UNIT-ZCPFSM-011",
       "name": "A passive server answers a zcpfs login from a client that still pins it; a server switched off answers none",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-012",
+      "name": "The seed file: read and replaced at every seeding; a failed write mixes in fresh entropy, so the next boot cannot repeat the stream",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-013",
+      "name": "A sealed text raises the sender's advert mark: a recorded untagged advert from before can no longer unpin it",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-014",
+      "name": "The identity mixer runs only at boot: a seed taken later uses the RNG, says so, and still mixes on a failed write",
       "source": "tests/unit/zcpfs_mesh_tests.cpp"
     }
   ]

@@ -471,7 +471,7 @@
   "branch_right_password": "eb3ddcbf7bb2f7cbe6bca5f05b95706d3e43dbdf4111610b5dc9e02aee4c0354ffb0ce428c4698af03b7",
   "branch_other_password": "8fbda5e2a641cf21ae3702dfe9733339a16b8a22b2ad1d7b361cd53a46af9951284b09c634b4fc2073c0",
   "other_branch_opens": false,
-  "packet_reply_two_branches": "1a9902eb3ddcbf7bb2f7cbe6bca5f05b95706d3e43dbdf4111610b5dc9e02aee4c0354ffb0ce428c4698af03b78fbda5e2a641cf21ae3702dfe9733339a16b8a22b2ad1d7b361cd53a46af9951284b09c634b4fc2073c0",
+  "packet_reply_two_branches": "1a9902421ceb3ddcbf7bb2f7cbe6bca5f05b95706d3e43dbdf4111610b5dc9e02aee4c0354ffb0ce428c4698af03b78fbda5e2a641cf21ae3702dfe9733339a16b8a22b2ad1d7b361cd53a46af9951284b09c634b4fc2073c0",
   "ck_i2r": "5bb88f9ec8aa84b1bc40b13fb27fda3455210ea4650a7eb7379679b330a453be",
   "ck_r2i": "eae9e4136660801e04021517f61da5f036daa40ee3509ae2228e1b6d2ded9b40"
  },

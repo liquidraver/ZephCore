@@ -39,14 +39,18 @@ extern "C" bool zephcore_fs_read_file(const char *path, uint8_t *buf, size_t cap
     memcpy(buf, f->second.data(), *out_len);
     return true;
 }
+static bool g_write_fails = false;
 extern "C" bool zephcore_fs_atomic_replace(const char *path, const uint8_t *buf, size_t len, const char *) {
+    if (g_write_fails) return false;
     g_files[path].assign(buf, buf + len);
     return true;
 }
 
 // Only the identity mixer's interface; deterministic here.
+static int g_mixes = 0;
 void mesh::ZephyrRNG::mixIdentitySeed(uint8_t *out, size_t len, const uint8_t *, size_t) {
     static uint32_t s = 0x5eed;
+    g_mixes++;
     for (size_t i = 0; i < len; i++) out[i] = (uint8_t)(nextRandom(s) >> 24);
 }
 
@@ -694,4 +698,95 @@ TEST(zcpfs_mesh_server_modes, "UNIT-ZCPFSM-011",
     CHECK(b.s.cli("set zcpfs off") == "OK - zcpfs off");
     CHECK(!b.login("admin1"));
     CHECK(server_counter(b.s, "granted") == 1);         // only the passive one; off wipes sessions, not counters
+}
+
+TEST(zcpfs_mesh_seed_write_fails, "UNIT-ZCPFSM-012",
+     "The seed file: read and replaced at every seeding; a failed write mixes in fresh entropy, so the next boot cannot repeat the stream") {
+    g_files.clear();
+    zcpfs_drbg g{};
+    Rng first_boot(7);
+    CHECK(zcpfsSeed(&g, first_boot, true) == ZCPFS_SEED_WRITTEN);      // no file yet: the identity mixer
+    const std::vector<uint8_t> stale = g_files["/lfs/zcpfs_seed"];
+    CHECK(stale.size() == 32);
+
+    // a boot whose write fails, then a boot that reads the same file and gets the same hardware bytes
+    uint8_t out_a[32], out_b[32];
+    zcpfs_drbg a{}, b{};
+    Rng hw_a(99), hw_b(99);
+    g_write_fails = true;
+    CHECK(zcpfsSeed(&a, hw_a, true) == (ZCPFS_SEED_FROM_FILE | ZCPFS_SEED_MIXED));
+    CHECK(g_files["/lfs/zcpfs_seed"] == stale);
+    g_write_fails = false;
+    CHECK(zcpfsSeed(&b, hw_b, true) == (ZCPFS_SEED_FROM_FILE | ZCPFS_SEED_WRITTEN));
+    zcpfs_drbg_generate(&a, out_a, sizeof(out_a));
+    zcpfs_drbg_generate(&b, out_b, sizeof(out_b));
+    CHECK(memcmp(out_a, out_b, sizeof(out_a)) != 0);
+    CHECK(g_files["/lfs/zcpfs_seed"] != stale);                          // replaced once a write works
+}
+
+TEST(zcpfs_mesh_seed_after_boot, "UNIT-ZCPFSM-014",
+     "The identity mixer runs only at boot: a seed taken later uses the RNG, says so, and still mixes on a failed write") {
+    g_files.clear();
+    zcpfs_drbg g{}, h{}, k{};
+    Rng hw(5);
+    int mixes = g_mixes;
+    CHECK(zcpfsTakeSeed(&g, hw) == (ZCPFS_SEED_LATE | ZCPFS_SEED_WRITTEN));   // nothing seeded at boot, no file
+    g_write_fails = true;
+    CHECK(zcpfsTakeSeed(&h, hw) == (ZCPFS_SEED_LATE | ZCPFS_SEED_FROM_FILE | ZCPFS_SEED_MIXED));
+    g_write_fails = false;
+    CHECK(g_mixes == mixes);
+
+    zcpfsSeedAtBoot(hw);                                                  // at boot: taken once, as seeded
+    CHECK(g_mixes == mixes);                                              // the file was there: no mixer needed
+    CHECK(zcpfsTakeSeed(&k, hw) == (ZCPFS_SEED_FROM_FILE | ZCPFS_SEED_WRITTEN));
+    CHECK(zcpfsTakeSeed(&k, hw) & ZCPFS_SEED_LATE);                       // a second take seeds anew
+    g_files.clear();
+    zcpfsSeedAtBoot(hw);
+    CHECK(g_mixes == mixes + 1);                                          // no file at boot: the mixer
+}
+
+TEST(zcpfs_mesh_advert_mark, "UNIT-ZCPFSM-013",
+     "A sealed text raises the sender's advert mark: a recorded untagged advert from before can no longer unpin it") {
+    Node a("alice", 11), b("bob", 22);
+    Air air{{&a, &b}};
+    a.cli("set zcpfs passive");                 // untagged adverts, then on: pinned by the hint's handshake
+    b.cli("set zcpfs passive");
+    a.advert();
+    b.advert();
+    air.run(3000);
+    air.run(5000);
+    b.advert();                                 // untagged, recorded, never delivered
+    for (int i = 0; i < 1000 && b.radio.sent.empty(); i++) {
+        b.radio.completion = true;
+        b.loop();
+        g_ms += 10;
+    }
+    std::vector<std::vector<uint8_t>> recorded = b.radio.sent;
+    b.radio.sent.clear();
+    CHECK(recorded.size() == 1);
+    a.cli("set zcpfs on");
+    b.cli("set zcpfs on");
+    CHECK(a.dm(b, "legacy, with a hint"));
+    air.run(20000);
+    CHECK(pinned(a, b) && pinned(b, a));
+
+    // a sealed text from bob more than the slack later: alice's mark passes the recording
+    a.rtc.base += 2 * ZCPFS_ADVERT_MARK_SLACK;
+    b.rtc.base += 2 * ZCPFS_ADVERT_MARK_SLACK;
+    CHECK(b.dm(a, "sealed"));
+    air.run(5000);
+    CHECK(a.texts.size() == 1 && counter(b, "tx t") == 1);
+
+    a.radio.incoming.push_back(recorded[0]);    // the replay
+    air.run(3000);
+    CHECK(pinned(a, b));
+    CHECK(a.dm(b, "still sealed"));
+    air.run(5000);
+    CHECK(b.texts.size() == 2 && counter(a, "tx t") == 1);
+
+    // a fresh untagged advert still unpins: within the slack of bob's last text
+    b.cli("set zcpfs passive");
+    b.advert();
+    air.run(3000);
+    CHECK(!pinned(a, b));
 }

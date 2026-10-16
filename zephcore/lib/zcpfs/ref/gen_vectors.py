@@ -235,7 +235,7 @@ def build():
     got = zcpfs.pake_branch_open(ss, lout, i.S, r.S, branch)
     assert got[:3] == (reply_plain, lck_i2r, lck_r2i)
     wrong = zcpfs.pake_branch_make(Drbg(seq(0x52, 32)), ss, i.S, r.S, lY_c, b"hunter3", reply_plain)[0]
-    reply = zcpfs.pake_reply_pack([branch, wrong])
+    reply = zcpfs.pake_reply_pack([branch, wrong], lout.Y)
     v["login"] = {
         "client": hx(i.S), "server": hx(r.S), "password": hx(password),
         "generator_input": hx(gen_in), "generator": hx(G),

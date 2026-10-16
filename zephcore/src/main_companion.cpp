@@ -1064,6 +1064,12 @@ int main(void)
 		data_store.saveMainIdentity(self_identity);
 	}
 	companion_mesh.self_id = self_identity;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	/* Before WiFi and bt_enable(): the seed may need the identity mixer. */
+	if (companion_mesh.prefs.zcpfs_mode != ZCPFS_MODE_OFF) {
+		zcpfsSeedAtBoot(zephyr_rng);
+	}
+#endif
 
 	/* Default node name: the first 4 bytes of the public key. */
 	if (companion_mesh.prefs.node_name[0] == '\0') {
