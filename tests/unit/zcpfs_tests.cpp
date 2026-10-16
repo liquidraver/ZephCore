@@ -518,20 +518,21 @@ TEST(zcpfs_login_vectors, "UNIT-ZCPFS-010", "Password login: generator, both pac
                                   hunter3.size(), reply_plain.data(), wrong.data(), &keys_wrong) == ZCPFS_OK);
     CHECK(wrong == V("login.branch_other_password"));
 
-    Bytes branches = cat(right, wrong), reply(1 + branches.size() + 1);
+    Bytes branches = cat(right, wrong), reply(1 + ZCPFS_LOGIN_ECHO_LEN + branches.size() + 1);
     size_t reply_len = 0;
-    CHECK(zcpfs_login_reply_pack(2, branches.data(), reply.data(), &reply_len) == ZCPFS_OK);
+    CHECK(zcpfs_login_reply_pack(2, V("login.Y_c").data(), branches.data(), reply.data(), &reply_len) == ZCPFS_OK);
     reply.resize(reply_len);
     CHECK(cat(p.hdr_ri, reply) == V("login.packet_reply_two_branches"));
-    CHECK(reply_len + 2 == 87 && (reply_len + 2) % 16 != 4);
-    Bytes single(1 + ZCPFS_BRANCH_LEN + 1);
+    CHECK(reply_len + 2 == 89 && (reply_len + 2) % 16 != 4);
+    Bytes single(1 + ZCPFS_LOGIN_ECHO_LEN + ZCPFS_BRANCH_LEN + 1);
     size_t single_len = 0;
-    CHECK(zcpfs_login_reply_pack(1, right.data(), single.data(), &single_len) == ZCPFS_OK);
-    CHECK(single_len + 2 == 45);                            // one branch: 45 bytes as a RESPONSE, not the reserved 42
+    CHECK(zcpfs_login_reply_pack(1, V("login.Y_c").data(), right.data(), single.data(), &single_len) == ZCPFS_OK);
+    CHECK(single_len + 2 == 47);                            // one branch: 47 bytes as a RESPONSE, not the reserved 42
 
     // client: the branch of its own password opens and gives the server's session keys
-    const uint8_t *first = nullptr;
-    CHECK(zcpfs_login_reply_unpack(reply.data(), reply_len, &first) == 2 && first == reply.data() + 1);
+    const uint8_t *first = nullptr, *echo = nullptr;
+    CHECK(zcpfs_login_reply_unpack(reply.data(), reply_len, &echo, &first) == 2 && first == reply.data() + 3);
+    CHECK(echo == reply.data() + 1 && memcmp(echo, V("login.Y_c").data(), ZCPFS_LOGIN_ECHO_LEN) == 0);
     Bytes response(ZCPFS_LOGIN_RESPONSE_LEN);
     CHECK(zcpfs_login_branch_open(p.ss.data(), &out, S_c.data(), S_s.data(), first, response.data(), &keys_c) == ZCPFS_OK);
     CHECK(response == reply_plain && std::memcmp(&keys_c, &keys_s, sizeof(keys_c)) == 0);
@@ -558,10 +559,10 @@ TEST(zcpfs_login_vectors, "UNIT-ZCPFS-010", "Password login: generator, both pac
     Bytes bad = reply;
     for (uint8_t count : {uint8_t(0), uint8_t(3), uint8_t(255)}) {
         bad[0] = count;
-        CHECK(zcpfs_login_reply_unpack(bad.data(), reply_len, &first) == ZCPFS_ERR_ARG);
+        CHECK(zcpfs_login_reply_unpack(bad.data(), reply_len, &echo, &first) == ZCPFS_ERR_ARG);
     }
-    CHECK(zcpfs_login_reply_unpack(reply.data(), 0, &first) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_unpack(reply.data(), 1 + 2 * ZCPFS_BRANCH_LEN - 1, &first) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_pack(0, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
-    CHECK(zcpfs_login_reply_pack(3, branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_unpack(reply.data(), 0, &echo, &first) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_unpack(reply.data(), 1 + ZCPFS_LOGIN_ECHO_LEN + 2 * ZCPFS_BRANCH_LEN - 1, &echo, &first) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_pack(0, V("login.Y_c").data(), branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
+    CHECK(zcpfs_login_reply_pack(3, V("login.Y_c").data(), branches.data(), reply.data(), &reply_len) == ZCPFS_ERR_ARG);
 }

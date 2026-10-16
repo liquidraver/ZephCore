@@ -218,6 +218,9 @@ protected:
 	void onDiscoveredContact(ContactInfo &contact, bool is_new, uint8_t path_len, const uint8_t *path) override;
 	ContactInfo *processAck(const uint8_t *data) override;
 	void onContactPathUpdated(const ContactInfo &contact) override;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+	void onContactAdvertMarkRaised(const ContactInfo &contact) override { markContactsDirty(false); }
+#endif
 	void onMessageRecv(const ContactInfo &contact, mesh::Packet *pkt, uint32_t sender_timestamp, const char *text) override;
 	void onCommandDataRecv(const ContactInfo &contact, mesh::Packet *pkt, uint32_t sender_timestamp, const char *text) override;
 	void onCLICommandRecv(const ContactInfo &contact, mesh::Packet *pkt, uint32_t sender_timestamp,

@@ -158,6 +158,7 @@ private:
 	uint32_t timeoutFor(const ContactInfo &c, size_t payload_len);
 	void ackOnly(mesh::Packet *pkt, ContactInfo &from, const uint8_t ack4[4]);
 	void legacyLoginResponse(const ContactInfo &server, const uint8_t *r, uint8_t *data);
+	void raiseAdvertMark(ContactInfo &c, const uint8_t *plain);
 
 	static void opSend(void *user, const uint8_t S[32], uint8_t type, const uint8_t *payload,
 			   size_t len, int flood);

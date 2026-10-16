@@ -1498,7 +1498,7 @@ TEST(zcpfs_login_roles, "UNIT-ZCPFS-021", "Login: the password never leaves the 
         sim.pump(n.client);
         sim.run(30);
         CHECK(n.client.logins.size() == 1 && n.client.logins[0].second.size() == ZCPFS_LOGIN_RESPONSE_LEN);
-        CHECK(ends_with(n.client.logins[0].second, "ad") && sim.count(ANON, 78) == 1 && sim.count(RESPONSE, 45) == 1);
+        CHECK(ends_with(n.client.logins[0].second, "ad") && sim.count(ANON, 78) == 1 && sim.count(RESPONSE, 47) == 1);
         CHECK(n.server.logged_in.size() == 1 && n.server.logged_in[0] == std::make_pair(n.client.S, uint8_t(ROLE_ADMIN)));
         CHECK(sim.count(ANON) == 1 && sim.count(TXT, 10) == 1);             // one login, the client's confirmation
         CHECK(!on_air(sim, "hunter2"));
@@ -1524,7 +1524,7 @@ TEST(zcpfs_login_roles, "UNIT-ZCPFS-021", "Login: the password never leaves the 
         CHECK(sim.count(RESPONSE) == 1 && n.client.logins.empty() && n.server.logged_in.empty());
         CHECK(sim.count(TXT) == 0);                                         // so no confirmation either
         CHECK(n.client.record(n.server.S) == nullptr && n.server.record(n.client.S) == nullptr);
-        CHECK(n.server.offers_kept() == 1 && n.client.node.login.used);
+        CHECK(n.server.offers_kept() == 1 && !n.client.node.login.used);   // one reply per login (19.4)
         sim.run(LOGIN_WAIT + 3);                                            // both sides give up on time
         CHECK(n.server.offers_kept() == 0 && !n.client.node.login.used);
         CHECK(n.server.find(n.client.S.data()) == nullptr);                 // the server never learned the client
@@ -1553,7 +1553,7 @@ TEST(zcpfs_login_roles, "UNIT-ZCPFS-021", "Login: the password never leaves the 
         CHECK(n.client.logins.size() == 1 && ends_with(n.client.logins[0].second, "kn"));
         CHECK(stranger.logins.empty());
         // a typed password gets the admin and the guest branch, none typed gets the one for the list, or no answer
-        CHECK(sim.count(RESPONSE, 87) == 1 && sim.count(RESPONSE, 45) == 1 && sim.count(RESPONSE) == 2);
+        CHECK(sim.count(RESPONSE, 89) == 1 && sim.count(RESPONSE, 47) == 1 && sim.count(RESPONSE) == 2);
         CHECK(!on_air(sim, "visitor"));
         check_rules(sim);
     }
@@ -1603,7 +1603,7 @@ TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while th
     };
 
     // strangers get every place but one: three wrong logins are answered, the fourth costs no airtime
-    for (size_t i = 0; i < 3; ++i) CHECK(of_type(attempt(*c[i], "wrong"), RESPONSE, 45) == 1);
+    for (size_t i = 0; i < 3; ++i) CHECK(of_type(attempt(*c[i], "wrong"), RESPONSE, 47) == 1);
     CHECK(server.offers_kept() == 3 && server.tick() == LOGIN_WAIT);
     CHECK(attempt(*c[3], "hunter2").empty() && server.logins_dropped == 1);
     // the last place is for a client the server knows; nobody can pose as one, the login is signed by its key
@@ -1719,11 +1719,11 @@ TEST(zcpfs_login_limits, "UNIT-ZCPFS-022", "Login limits: answered only while th
     CHECK(zcpfs_login_answer(&server.node, &req, three, 3, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_ARG);
     CHECK(server.offers_kept() == 0);                       // a refused answer keeps nothing
     CHECK(zcpfs_login_answer(&server.node, &req, three, 2, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_OK);
-    CHECK(len + 2 == 87 && server.offers_kept() == 1);      // the largest reply there is
+    CHECK(len + 2 == 89 && server.offers_kept() == 1);      // the largest reply there is
     // the offer is kept two steps of the timeout the server gave, here a slower link than the default
     sim.t += STEP * 1000;
     CHECK(zcpfs_login_answer(&server.node, &req, three, 1, 14300, server.now(), reply.data(), &len) == ZCPFS_OK);
-    CHECK(len + 2 == 45 && server.tick() == ZCPFS_LOGIN_STEPS * 23);
+    CHECK(len + 2 == 47 && server.tick() == ZCPFS_LOGIN_STEPS * 23);
     CHECK(zcpfs_login_answer(&server.node, &req, three, 1, TIMEOUT_MS, server.now(), reply.data(), &len) == ZCPFS_ERR_FULL);
     zcpfs_forget(&server.node, c[1]->S.data());
     zcpfs_forget(&c[1]->node, server.S.data());
@@ -1786,4 +1786,91 @@ TEST(zcpfs_login_again, "UNIT-ZCPFS-023", "A client the server already knows log
     uint8_t who[32];
     const Packet junk = garbage(server, client, TXT, 30, 0x66);
     CHECK(zcpfs_rx_offer(&server.node, junk.payload.data(), junk.payload.size(), server.now(), who, &o) == ZCPFS_RX_NEXT);
+}
+
+TEST(zcpfs_login_one_reply, "UNIT-ZCPFS-024",
+     "One reply per login: a server's second reply with another guess is not tried; a sealed response does not end a login") {
+    {   // a server that guesses: its first reply holds a wrong password, its second the right one
+        Sim sim(53);
+        LoginSetup n = login_pair(sim);
+        n.server.password = "guess one";
+        n.client.login(n.server.S, "hunter2", 1700000000u);
+        sim.pump(n.client);
+        sim.run(20);
+        CHECK(sim.count(RESPONSE) == 1 && n.client.logins.empty());
+        CHECK(!n.client.node.login.used);                                   // over, though nothing opened
+        const Packet& login = sim.first(ANON, 78);
+        uint8_t S_c[32], Y_c[32], ss[32], plain[ZCPFS_LOGIN_PLAIN_MAX + 1];
+        size_t plain_len = 0;
+        int empty = 0;
+        CHECK(zcpfs_login_open(n.server.a.data(), n.server.S.data(), login.payload.data() + 1,
+                               login.payload.size() - 1, S_c, Y_c, ss, plain, &plain_len, &empty) == ZCPFS_OK);
+        const uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN] = {0, 0, 0, 0, 3, 2};
+        uint8_t branch[ZCPFS_BRANCH_LEN], reply[ZCPFS_MAX_PAYLOAD];
+        size_t reply_len = 0;
+        zcpfs_keys keys;
+        CHECK(zcpfs_login_branch_make(&n.server.drbg, ss, S_c, n.server.S.data(), Y_c,
+                                      reinterpret_cast<const uint8_t *>("hunter2"), 7, response, branch, &keys) == ZCPFS_OK);
+        CHECK(zcpfs_login_reply_pack(1, Y_c, branch, reply, &reply_len) == ZCPFS_OK);
+        Bytes payload = {n.client.S[0], n.server.S[0]};
+        payload.insert(payload.end(), reply, reply + reply_len);
+        sim.inject(n.client, Packet{RESPONSE, payload, false});
+        sim.run(40);
+        CHECK(n.client.logins.empty() && sim.count(TXT) == 0);              // no confirmation tells the server
+        check_rules(sim);
+    }
+    {   // a request's response that arrives while a login waits, and would parse as a login reply
+        Sim sim(54);
+        LoginSetup n = login_pair(sim);
+        n.client.login(n.server.S, "hunter2", 1700000000u);
+        const Contact *server = n.client.find(n.server.S.data());
+        const uint8_t n6[6] = {1, 0, 0, 0, 0, 0};                         // count byte 1 to the login parser
+        Bytes status(40, 0x24);
+        uint8_t sealed[ZCPFS_MAX_PAYLOAD];
+        size_t sealed_len = 0;
+        CHECK(zcpfs_pair_seal(server->ss.data(), n.server.S.data(), n.client.S.data(), RESPONSE, n6,
+                              status.data(), status.size(), sealed, &sealed_len) == ZCPFS_OK);
+        const uint8_t *branches = nullptr, *echo = nullptr;
+        CHECK(zcpfs_login_reply_unpack(sealed + 2, sealed_len - 2, &echo, &branches) == 1);
+        n.client.receive(Packet{RESPONSE, Bytes(sealed, sealed + sealed_len), false});
+        CHECK(n.client.node.login.used);                                    // opened as a response, the login waits on
+        sim.pump(n.client);
+        sim.run(30);
+        CHECK(n.client.logins.size() == 1);
+    }
+}
+
+TEST(zcpfs_login_duplicate_branch, "UNIT-ZCPFS-025",
+     "A login reply whose two branches share one Y_s is not a reply: no tag is tried, and the real reply still opens") {
+    Sim sim(55);
+    LoginSetup n = login_pair(sim);
+    n.client.login(n.server.S, "hunter2", 1700000000u);
+    sim.pump(n.client);                                                     // on the air, not yet delivered
+    const Packet& login = sim.first(ANON, 78);
+    uint8_t S_c[32], Y_c[32], ss[32], plain[ZCPFS_LOGIN_PLAIN_MAX + 1];
+    size_t plain_len = 0;
+    int empty = 0;
+    CHECK(zcpfs_login_open(n.server.a.data(), n.server.S.data(), login.payload.data() + 1,
+                           login.payload.size() - 1, S_c, Y_c, ss, plain, &plain_len, &empty) == ZCPFS_OK);
+    const uint8_t response[ZCPFS_LOGIN_RESPONSE_LEN] = {0, 0, 0, 0, 3, 2};
+    uint8_t branches[2 * ZCPFS_BRANCH_LEN], reply[ZCPFS_MAX_PAYLOAD];
+    size_t reply_len = 0;
+    zcpfs_keys keys;
+    CHECK(zcpfs_login_branch_make(&n.server.drbg, ss, S_c, n.server.S.data(), Y_c,
+                                  reinterpret_cast<const uint8_t *>("hunter2"), 7, response, branches, &keys) == ZCPFS_OK);
+    memcpy(branches + ZCPFS_BRANCH_LEN, branches, ZCPFS_BRANCH_LEN);
+    branches[2 * ZCPFS_BRANCH_LEN - 1] ^= 1;                                 // same Y_s, another tag
+    CHECK(zcpfs_login_reply_pack(2, Y_c, branches, reply, &reply_len) == ZCPFS_OK);
+    const uint8_t *echo = nullptr, *b = nullptr;
+    CHECK(zcpfs_login_reply_unpack(reply, reply_len, &echo, &b) == ZCPFS_ERR_ARG);
+    Bytes payload = {n.client.S[0], n.server.S[0]};
+    payload.insert(payload.end(), reply, reply + reply_len);
+    n.client.receive(Packet{RESPONSE, payload, false});
+    CHECK(n.client.node.login.used && n.client.logins.empty());             // not a reply: the login waits on
+
+    CHECK(zcpfs_login_reply_pack(1, Y_c, branches, reply, &reply_len) == ZCPFS_OK);
+    payload = {n.client.S[0], n.server.S[0]};
+    payload.insert(payload.end(), reply, reply + reply_len);
+    n.client.receive(Packet{RESPONSE, payload, false});
+    CHECK(n.client.logins.size() == 1 && !n.client.node.login.used);
 }

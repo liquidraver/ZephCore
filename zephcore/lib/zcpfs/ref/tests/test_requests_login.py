@@ -240,15 +240,15 @@ class LoginCore(unittest.TestCase):
         out, body1 = self.client(b"hunter2")
         for count in (1, 2):
             branches = [self.server(body1, b"pw%d" % i)[0] for i in range(count)]
-            reply = pake_reply_pack(branches)
+            reply = pake_reply_pack(branches, out.Y)
             total = 2 + len(reply)
             self.assertNotEqual((total - 4) % 16, 0)
             self.assertNotEqual(total, 42)
             self.assertLessEqual(total, zcpfs.MAX_PAYLOAD)
-            self.assertEqual(pake_reply_unpack(reply), branches)
-            self.assertEqual(total, (45, 87)[count - 1])
+            self.assertEqual(pake_reply_unpack(reply), (out.Y[:2], branches))
+            self.assertEqual(total, (47, 89)[count - 1])
         self.assertIsNone(pake_reply_unpack(b"\x03" + bytes(200)))        # too many branches
-        self.assertIsNone(pake_reply_unpack(b"\x02" + bytes(83)))         # truncated
+        self.assertIsNone(pake_reply_unpack(b"\x02" + bytes(85)))         # truncated
         self.assertIsNone(pake_reply_unpack(b"\x00" + bytes(83)))
 
 
@@ -293,6 +293,60 @@ class LoginNodes(unittest.TestCase):
         server.tick()
         self.assertEqual(server.peers[client.id.S].login_candidates, [])   # and the offer expired
 
+    def test_one_reply_per_login(self):
+        """19.4: a server that guesses gets the branches of one reply per login.
+        A second reply to the same login, here built with the right password,
+        is not tried: the login ended with the first."""
+        sim, client, server = self.setup()
+        server.password = b"guess one"
+        deliver(sim, client, client.login(server.id.S, b"hunter2", 1_700_000_000))
+        self.assertEqual(client.logins, [])
+        self.assertIsNone(client.peers[server.id.S].login_out)       # over, though no branch opened
+        login = next(p for p in sim.tap if p.ptype == ANON)
+        S_c, Y_c, ss, _, _ = pake1_open(server.id.a, server.id.S, login.payload[1:])
+        branch = pake_branch_make(Drbg(b"guess two"), ss, S_c, server.id.S, Y_c, b"hunter2",
+                                  b"\x00\x00\x00\x00ad")[0]
+        reply = bytes([client.id.S[0], server.id.S[0]]) + pake_reply_pack([branch], Y_c)
+        sim.inject(client, zcpfs.Packet(RESPONSE, reply, False))
+        sim.run(sim.t + 30)
+        self.assertEqual(client.logins, [])
+        self.assertEqual(sim.count(TXT), 0)                           # no confirmation tells the server
+
+    def test_a_reply_with_one_Y_s_twice_is_not_a_reply(self):
+        """19.3: two branches with the same Y_s would give a forger two tag
+        tries under one key; such a reply is not parsed, and the real one
+        still opens."""
+        sim, client, server = self.setup()
+        out = client.login(server.id.S, b"hunter2", 1_700_000_000)    # never delivered
+        login = next(p for p in out if p.ptype == ANON)
+        S_c, Y_c, ss, _, _ = pake1_open(server.id.a, server.id.S, login.payload[1:])
+        branch = pake_branch_make(Drbg(b"forger"), ss, S_c, server.id.S, Y_c, b"hunter2",
+                                  b"\x00\x00\x00\x00ad")[0]
+        twin = branch[:-1] + bytes([branch[-1] ^ 1])
+        self.assertIsNone(pake_reply_unpack(pake_reply_pack([branch, twin], Y_c)))
+        head = bytes([client.id.S[0], server.id.S[0]])
+        sim.inject(client, zcpfs.Packet(RESPONSE, head + pake_reply_pack([twin, branch], Y_c), False))
+        self.assertIsNotNone(client.peers[server.id.S].login_out)     # the login waits on
+        self.assertEqual(client.logins, [])
+        sim.inject(client, zcpfs.Packet(RESPONSE, head + pake_reply_pack([branch], Y_c), False))
+        self.assertEqual(len(client.logins), 1)
+
+    def test_a_sealed_response_does_not_end_a_login(self):
+        """A request's response that arrives while a login waits is opened as
+        what it is and leaves the login alone."""
+        sim, client, server = self.setup()
+        out = client.login(server.id.S, b"hunter2", 1_700_000_000)
+        self.assertIsNotNone(client.peers[server.id.S].login_out)
+        ss = client.peers[server.id.S].ss
+        # a nonce that starts with 1 and a length that make it parse as a one-branch login reply too
+        payload = pair_seal(ss, server.id.S, client.id.S, RESPONSE, b"\x01\x02\x03\x04" + b"status" * 6,
+                            b"\x01" + bytes(5))
+        self.assertIsNotNone(pake_reply_unpack(payload[2:]))
+        sim.inject(client, zcpfs.Packet(RESPONSE, payload, False))
+        self.assertIsNotNone(client.peers[server.id.S].login_out)
+        deliver(sim, client, out)
+        self.assertEqual(len(client.logins), 1)
+
     def test_guest_and_known_client_roles(self):
         sim, client, server = self.setup()
         server.guest_password = b"visitor"
@@ -303,7 +357,7 @@ class LoginNodes(unittest.TestCase):
         deliver(sim, client, client.login(server.id.S, b"", 1_700_000_100))
         self.assertEqual(server.logged_in[-1], (client.id.S, b"known"))
         replies = [n for _, _, t, n, _ in sim.air if t == RESPONSE]
-        self.assertEqual(replies, [87, 45])                       # admin and guest; then the empty password alone
+        self.assertEqual(replies, [89, 47])                       # admin and guest; then the empty password alone
 
     def test_a_server_that_does_not_know_the_password_learns_nothing(self):
         """The repeater with a copied name: capable, but with another password."""
