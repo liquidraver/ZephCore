@@ -238,14 +238,21 @@ def main(argv=None):
             (directory / f"{phase}.log").write_text(result["stdout"] + result["stderr"], encoding="utf-8")
             if result["status"] != "PASS":
                 raise ValueError(f"{phase} failed; see {directory / (phase + '.log')}")
-        binary = build / ("zephcore_unit.exe" if os.name == "nt" else "zephcore_unit")
-        report["binary_sha256"] = hashlib.sha256(binary.read_bytes()).hexdigest()
-        listing = command([binary, "--list"], env=env)
-        if listing["status"] != "PASS":
-            raise ValueError("Executable discovery failed: " + listing["stderr"])
-        validate_listing(listing["stdout"], cases)
+        # zephcore_unit, and zephcore_zcpfs_mesh: the firmware's mesh layer built with zcpfs on
+        binaries = [build / (name + (".exe" if os.name == "nt" else ""))
+                    for name in ("zephcore_unit", "zephcore_zcpfs_mesh")]
+        report["binary_sha256"] = {b.name: hashlib.sha256(b.read_bytes()).hexdigest() for b in binaries}
+        owner, listings = {}, []
+        for binary in binaries:
+            listing = command([binary, "--list"], env=env)
+            if listing["status"] != "PASS":
+                raise ValueError("Executable discovery failed: " + listing["stderr"])
+            listings.append(listing["stdout"].rstrip("\n"))
+            for line in listing["stdout"].splitlines():
+                owner[line.split("\t")[0]] = binary
+        validate_listing("\n".join(listings), cases)
         for case in selected:
-            result = execute_case(binary, case, env)
+            result = execute_case(owner[case["id"]], case, env)
             report["results"].append(result)
             (directory / (case["id"] + ".log")).write_text(result["stdout"] + result["stderr"], encoding="utf-8")
             print(f"{result['status']:5} {case['id']} {case['name']}", flush=True)

@@ -257,11 +257,17 @@ server about 18 kB flash and 11.5 kB RAM.
   first), and the legacy view of an opened packet must be padded to whole AES blocks.
 - **Tests:** `tests/unit/zcpfs_tests.cpp` (every specification vector, tampering of every byte) and
   `zcpfs_peer_tests.cpp` (whole nodes over a simulated lossy link), run with ASan and UBSan in CI; the Python
-  model in `lib/zcpfs/ref/` generates the vectors. The glue has no host tests yet; it is verified on the bench.
+  model in `lib/zcpfs/ref/` generates the vectors. `zcpfs_glue_tests.cpp` covers the shared glue logic, and
+  `zcpfs_mesh_tests.cpp` runs whole companions (the firmware's `Mesh`, `BaseChatMesh` and glue, with its real
+  legacy crypto over OpenSSL) on a simulated channel, in a second executable built with zcpfs on, with a
+  server made of the firmware's `ZcpfsServer` and `ClientACL` in a minimal role. The roles' own code
+  (`RepeaterMesh`, `RoomServerMesh`) runs on the bench only.
 - **Changing the protocol:** the specification first, then the model and its vectors, then the C library and
   its tests, then the glue; record the change in the LLD.
 
 ## 10. Open
 
-- Host tests of the glue; tests on lossy, multi-hop and SF8 links and with the phone apps over BLE.
-- An ADR before the build switch defaults to on anywhere, and a cryptographic review.
+- Tests on lossy, multi-hop and SF8 links and with the phone apps over BLE.
+- A cryptographic review; field tests on a live mesh; the phone apps over BLE; a release with the code in
+  and the mode off. [ADR 0010](adr/0010-zcpfs-integration.md) makes these the conditions for any default to
+  change.

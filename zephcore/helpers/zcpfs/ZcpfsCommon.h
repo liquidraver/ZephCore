@@ -13,7 +13,6 @@
 
 #include <mesh/MeshCore.h>
 #include <mesh/Utils.h>
-#include <helpers/NodePrefs.h>
 
 extern "C" {
 #include <zcpfs.h>
@@ -89,7 +88,8 @@ static inline const char *zcpfsModeName(uint8_t mode)
 #define ZCPFS_CMD_DONE		1	/* answered */
 #define ZCPFS_CMD_CHANGED	2	/* answered, and `mode` changed: store it */
 
-/* `get zcpfs` and `set zcpfs on|passive|off` (1 and 0 for on and off). */
+/* `get zcpfs` and `set zcpfs on|passive|off` (1 and 0 for on and off;
+ * `default` is off, as for every `set`). */
 static inline int zcpfsModeCommand(const char *line, uint8_t &mode, char *reply, size_t size)
 {
 	if (strcmp(line, "get zcpfs") == 0) {
@@ -107,7 +107,7 @@ static inline int zcpfsModeCommand(const char *line, uint8_t &mode, char *reply,
 		m = ZCPFS_MODE_ON;
 	} else if (strcmp(v, "passive") == 0) {
 		m = ZCPFS_MODE_PASSIVE;
-	} else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0) {
+	} else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0 || strcmp(v, "default") == 0) {
 		m = ZCPFS_MODE_OFF;
 	} else {
 		snprintf(reply, size, "Err - on, passive or off");
@@ -121,8 +121,8 @@ static inline int zcpfsModeCommand(const char *line, uint8_t &mode, char *reply,
 	return ZCPFS_CMD_CHANGED;
 }
 
-/* `get zcpfs.legacylogin` and `set zcpfs.legacylogin on|off` (1 and 0);
- * `refuse` is the stored flag, 1 for off (SPEC 19.6). */
+/* `get zcpfs.legacylogin` and `set zcpfs.legacylogin on|off` (1 and 0;
+ * `default` is on); `refuse` is the stored flag, 1 for off (SPEC 19.6). */
 static inline int zcpfsLegacyLoginCommand(const char *line, uint8_t &refuse, char *reply, size_t size)
 {
 	if (strcmp(line, "get zcpfs.legacylogin") == 0) {
@@ -136,7 +136,7 @@ static inline int zcpfsLegacyLoginCommand(const char *line, uint8_t &refuse, cha
 	const char *v = line + 22;
 	uint8_t r;
 
-	if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) {
+	if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0 || strcmp(v, "default") == 0) {
 		r = 0;
 	} else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0) {
 		r = 1;

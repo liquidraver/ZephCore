@@ -10,6 +10,7 @@
 #include <mesh/Mesh.h>
 #include "ContactInfo.h"
 #include "ZcpfsCommon.h"
+#include "NodePrefs.h"	/* ZCPFS_CHAN_ENTRY */
 
 extern "C" {
 #include <zcpfs.h>

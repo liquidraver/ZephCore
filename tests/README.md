@@ -76,6 +76,8 @@ and rejects missing, unexpected, renamed or duplicate cases.
 | `app/KissModem.cpp` | KISS escaping both ways and oversized-frame recovery, LBT refusal back to CSMA until the wait-clear bound, TX timeout only after the radio concludes, SetRadio range refusal, `msUntilNextTx()` per state |
 | `lib/ascon` (C library, built with `-Wconversion -Werror`) | Official known answers for Ascon-AEAD128, Hash256, XOF128 and CXOF128 (subsets of the ascon-c files); tag truncation and its limits, every tag byte flipped, wrong key, nonce and associated data, in-place operation, absorbing and squeezing in pieces |
 | `lib/zcpfs` (C library, built with `-Wconversion -Werror`) | Every value of `lib/zcpfs/vectors.json`: KDF, generator, handshake, session packets and ACK values, loss and reordering, probe, channel, pairwise and login packets; tampering of every packet byte; every plaintext length for the length rules. The per-contact state machine as whole nodes with a stand-in for the firmware, over a simulated link with loss, delay, duplication and replay: handshake, first contact through the probe, reboots, simultaneous open, replayed handshakes, resends and duplicates, legacy peers and the hint, the flood rule, the record table, rate limits and timers; logins: roles, wrong passwords, the offer table and its limits, logging in again |
+| `helpers/zcpfs/ZcpfsCommon.h` (built with `CONFIG_ZEPHCORE_ZCPFS` in that file only) | The advert tag against the production `AdvertDataParser` (names of every length, UTF-8, with and without location: the legacy view is the same name or a whole-character prefix; an advert without a name gets an empty one), `get/set zcpfs` and `zcpfs.legacylogin` parsing, and the passive mode's record of contacts heard sealed since the last own advert, including eviction and clock wrap |
+| `src/Mesh.cpp`, `src/Utils.cpp`, `helpers/BaseChatMesh.cpp`, `helpers/zcpfs/ZcpfsChat.cpp`, `ZcpfsSeed.cpp` with `CONFIG_ZEPHCORE_ZCPFS` (second executable `zephcore_zcpfs_mesh`) | Whole companions on a simulated zero-hop channel, each with its own packet queue: first contact by tagged adverts (probe, path return, handshake, sealed text, its ACK mapped back to the app's value), a legacy peer with zcpfs off, passive mode before and after its untagged advert, the padding hint between nodes that missed each other's adverts, sealed and strict channels and the cut of a long text, a pair-mode request whose response reaches the app at legacy's length. A server built from the firmware's `ZcpfsServer` and `ClientACL` (`helpers/zcpfs/ZcpfsServer.cpp`, `helpers/ClientACL.cpp`) inside a minimal role written in the test: the zcpfs login and the app's legacy login response, a sealed CLI reply, a wrong password, the flood budget and the reverse path, legacy logins off on either side, a passive and a switched-off server. Legacy encryption is the firmware's own `Utils.cpp` over OpenSSL's libcrypto through `support/psa/crypto.h`; `support/zephyr_fs_none.cpp` stands in for the file system |
 
 The catalog maps stable case IDs to their test source files. Production paths above
 are relative to `zephcore/`. Generated-case seeds are fixed and documented in the
@@ -165,3 +167,10 @@ Harness self-tests cover empty selection, unknown IDs, catalog disagreement,
 subprocess failures/timeouts, missing executables, false success markers and reports.
 They are part of every quick run. The dedicated CI workflow runs on PRs and pushes
 to master; it uploads reports even when checks fail and has no release permissions.
+
+## Two executables
+
+`zephcore_unit` holds almost everything. `zephcore_zcpfs_mesh` is built with `CONFIG_ZEPHCORE_ZCPFS` on for
+every file, because `mesh::Mesh` has more virtual methods with it and the two layouts must not meet in one
+binary; it needs OpenSSL's libcrypto (`libssl-dev`), for the PSA calls of the firmware's `src/Utils.cpp`.
+`run.py` lists both and runs each case from the executable that has it; the catalog is one list.
