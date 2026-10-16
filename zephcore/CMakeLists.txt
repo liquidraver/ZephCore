@@ -347,6 +347,9 @@ if(CONFIG_ZEPHCORE_ZCPFS)
   if(CONFIG_ZEPHCORE_ROLE_COMPANION)
     target_sources(app PRIVATE helpers/zcpfs/ZcpfsChat.cpp)
   endif()
+  if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
+    target_sources(app PRIVATE helpers/zcpfs/ZcpfsServer.cpp)
+  endif()
 endif()
 
 target_include_directories(app PRIVATE

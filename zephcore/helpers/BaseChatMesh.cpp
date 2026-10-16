@@ -34,7 +34,7 @@ mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name) {
     app_data_len = builder.encodeTo(app_data);
   }
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  app_data_len = ZcpfsChat::tagAdvert(app_data, app_data_len);  // ZEPHCORE
+  app_data_len = _zc.advert(app_data, app_data_len);  // ZEPHCORE: the tag when on
 #endif
 
   return createAdvert(self_id, app_data, app_data_len);
@@ -48,7 +48,7 @@ mesh::Packet* BaseChatMesh::createSelfAdvert(const char* name, double lat, doubl
     app_data_len = builder.encodeTo(app_data);
   }
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  app_data_len = ZcpfsChat::tagAdvert(app_data, app_data_len);  // ZEPHCORE
+  app_data_len = _zc.advert(app_data, app_data_len);  // ZEPHCORE: the tag when on
 #endif
 
   return createAdvert(self_id, app_data, app_data_len);
@@ -417,6 +417,9 @@ bool BaseChatMesh::onContactPathRecv(ContactInfo& from, uint8_t* in_path, uint8_
       txt_send_timeout = 0;   // matched one we're waiting for, cancel timeout timer
     }
   } else if (extra_type == PAYLOAD_TYPE_RESPONSE && extra_len > 0) {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    if (!_zc.pathResponse(from, extra, extra_len)) return true;  // ZEPHCORE: a login reply that did not open
+#endif
     onContactResponse(from, extra, extra_len);
   }
   return true;  // send reciprocal path if necessary
@@ -703,6 +706,13 @@ bool BaseChatMesh::importContact(const uint8_t src_buf[], uint8_t len) {
 }
 
 int BaseChatMesh::sendLogin(const ContactInfo& recipient, const char* password, uint32_t& est_timeout) {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  {  // ZEPHCORE: to a pinned server the password-authenticated login (lib/zcpfs/SPEC.md 19.2)
+    int rc;
+    if (_zc.sendLogin(recipient, password, est_timeout, rc)) return rc;
+    if (_zc.refusesLegacyLogin()) return MSG_SEND_FAILED;  // the password does not leave the node (19.6)
+  }
+#endif
   mesh::Packet* pkt;
   {
     int tlen;

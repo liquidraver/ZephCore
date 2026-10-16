@@ -19,6 +19,9 @@
 #include <string.h>
 #include <time.h>
 #include <helpers/PacketLog.h>
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+#include <helpers/zcpfs/ZcpfsCommon.h>
+#endif
 
 /* Helper to get radio driver for stats — uses LoRaRadio (works for SX126x and LR1110) */
 static inline mesh::LoRaRadio& getRadioDriver(mesh::Radio* radio) {
@@ -139,6 +142,26 @@ void RoomServerMesh::pushPostToClient(ClientInfo *client, PostInfo &post) {
   mesh::Utils::sha256((uint8_t *)&client->extra.room.pending_ack, 4, reply_data, len, client->id.pub_key, PUB_KEY_SIZE);
   client->extra.room.push_post_timestamp = post.post_timestamp;
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  {  // ZEPHCORE: to a pinned client under its session; its ACK comes back as the token (lib/zcpfs/SPEC.md 9.3)
+    uint32_t token, held_ms;
+    do {
+      getRNG()->random((uint8_t *)&token, sizeof(token));
+    } while (token == 0);
+    if (_zs.sendText(*client, reply_data, len, 0, token, &held_ms)) {
+      client->extra.room.pending_ack = token;
+      if (held_ms > 0) {
+        client->extra.room.ack_timeout = futureMillis(held_ms);  // waits for a handshake (10.4)
+      } else if (client->out_path_len == OUT_PATH_UNKNOWN) {
+        client->extra.room.ack_timeout = futureMillis(PUSH_ACK_TIMEOUT_FLOOD);
+      } else {
+        client->extra.room.ack_timeout = futureMillis(PUSH_TIMEOUT_BASE + PUSH_ACK_TIMEOUT_FACTOR * ((client->out_path_len & 63) + 1));
+      }
+      _num_post_pushes++;
+      return;
+    }
+  }
+#endif
   auto reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, client->shared_secret, reply_data, len);
   if (reply) {
     if (client->out_path_len == OUT_PATH_UNKNOWN) {
@@ -170,6 +193,12 @@ uint8_t RoomServerMesh::getUnsyncedCount(ClientInfo *client) {
 }
 
 bool RoomServerMesh::processAck(const uint8_t *data) {
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  uint32_t zc_ack;  // ZEPHCORE: the ACK of a sealed push becomes its token
+  memcpy(&zc_ack, data, 4);
+  _zs.translateAck(zc_ack);
+  data = (const uint8_t *)&zc_ack;
+#endif
   for (int i = 0; i < acl.getNumClients(); i++) {
     auto client = acl.getClientByIdx(i);
     if (client->extra.room.pending_ack && memcmp(data, &client->extra.room.pending_ack, 4) == 0) { // got an ACK from Client!
@@ -185,6 +214,9 @@ bool RoomServerMesh::processAck(const uint8_t *data) {
 mesh::Packet *RoomServerMesh::createSelfAdvert() {
   uint8_t app_data[MAX_ADVERT_DATA_SIZE];
   uint8_t app_data_len = _cli.buildAdvertData(ADV_TYPE_ROOM, app_data);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  app_data_len = _zs.advert(app_data, app_data_len);  // the tag when on (lib/zcpfs/SPEC.md 6.1)
+#endif
 
   return createAdvert(self_id, app_data, app_data_len);
 }
@@ -378,6 +410,9 @@ mesh::DispatcherAction RoomServerMesh::onRecvPacket(mesh::Packet* pkt) {
 // ZEPHCORE: ours. Constant-time password compare and a failed-login rate limit.
 void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) {
   if (packet->getPayloadType() != PAYLOAD_TYPE_ANON_REQ) return;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  if (_zs.refuseLegacyLogin()) return;  // the password is never read (lib/zcpfs/SPEC.md 19.6)
+#endif
 
   /* Room login request layout: [timestamp(4)][sync_since(4)][password...].
    * (This differs from the repeater's ANON_REQ, which has no sync_since.) */
@@ -463,6 +498,9 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
   if (packet->isRouteFlood()) {
     client->out_path_len = OUT_PATH_UNKNOWN;  // need to rediscover the path
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs.onLegacyLogin(*client);  // a legacy login says the client no longer speaks zcpfs
+#endif
 
   uint32_t now = getRTCClock()->getCurrentTimeUnique();
   memcpy(reply_data, &now, 4);
@@ -544,6 +582,9 @@ void RoomServerMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int send
       uint32_t ack_hash;
       mesh::Utils::sha256((uint8_t*)&ack_hash, 4, data, 5 + strlen((char*)&data[5]),
              client->id.pub_key, PUB_KEY_SIZE);
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      _zs.takeAck((uint8_t *)&ack_hash);  // a sealed text has its own ACK value
+#endif
 
       uint8_t temp[5 + CLI_REMOTE_REPLY_SIZE];
       bool send_ack;
@@ -597,6 +638,9 @@ void RoomServerMesh::onPeerDataRecv(mesh::Packet* packet, uint8_t type, int send
         if (now == sender_timestamp) now++;
         memcpy(temp, &now, 4);
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+        if (_zs.sendText(*client, temp, 5 + text_len, delay_millis + SERVER_RESPONSE_DELAY)) return;  // under the session
+#endif
         mesh::Packet* reply = createDatagram(PAYLOAD_TYPE_TXT_MSG, client->id, secret, temp, 5 + text_len);
         if (reply) {
           if (client->out_path_len == OUT_PATH_UNKNOWN) {
@@ -675,6 +719,9 @@ bool RoomServerMesh::onPeerPathRecv(mesh::Packet *packet, int sender_idx, const 
     auto client = acl.getClientByIdx(i);
     client->out_path_len = mesh::Packet::copyPath(client->out_path, path, path_len); // store a copy of path, for sendDirect()
     client->last_activity = getRTCClock()->getCurrentTime();
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    _zs.onPath(*client, packet->isRouteFlood());
+#endif
   } else {
     MESH_DEBUG_PRINTLN("onPeerPathRecv: invalid peer idx: %d", i);
   }
@@ -705,7 +752,11 @@ RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh:
      * rate (not per-sender) — trade-off documented in CRYPTO_AUDIT_INDEX.md
      * Phase 4 (mitigation for upstream MeshCore#2556). */
     login_fail_limiter(4, 180),
-    telemetry(MAX_PACKET_PAYLOAD - 4) {
+    telemetry(MAX_PACKET_PAYLOAD - 4)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login)
+#endif
+{
 
   _store = nullptr;
   last_millis = 0;
@@ -718,6 +769,9 @@ RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh:
   recv_pkt_region = nullptr;
   recv_pkt_unscoped_flood = false;
   memset(default_scope.key, 0, sizeof(default_scope.key));
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs_hash_size = 0;
+#endif
 
   initNodePrefs(&_prefs);
   strcpy(_prefs.node_name, "Room");
@@ -942,6 +996,16 @@ void RoomServerMesh::handleCommand(uint32_t sender_timestamp, char* command, cha
    * Set unconditionally: a stale value would shrink the next reply. */
   _cli.setReplyHeaderUsed(hdr_used);
 
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  switch (_zs.command(command, reply, CLI_REMOTE_REPLY_SIZE - hdr_used)) {
+  case ZCPFS_CMD_CHANGED:
+    savePrefs();
+    return;
+  case ZCPFS_CMD_DONE:
+    return;
+  }
+#endif
+
   // ACL commands - supports BOTH formats for app compatibility:
   //   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)
   //   MeshCore App: setperm {permissions} {pubkey-hex}  (perms is short 2-char hex, pubkey is long)
@@ -1079,6 +1143,9 @@ void RoomServerMesh::loop() {
     acl.save(_store->getFS(), RoomServerMesh::saveFilter);
     dirty_contacts_expiry = 0;
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  _zs.loop();
+#endif
 
   timeSyncTick();
 
@@ -1266,6 +1333,9 @@ uint32_t RoomServerMesh::msUntilNextMaintenance() {
   if (dirty_contacts_expiry) {
     next = mesh::maintenanceSooner(next, mesh::maintenanceUntil(now, dirty_contacts_expiry));
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  next = mesh::maintenanceSooner(next, _zs.msUntilTick());  /* zcpfs timers */
+#endif
 
   /* Mesh time sync evaluates at most every 15 min, and only when enabled. */
   if (_prefs.meshtimesync) {
@@ -1275,3 +1345,137 @@ uint32_t RoomServerMesh::msUntilNextMaintenance() {
 
   return mesh::maintenanceSooner(next, msUntilNextPush());
 }
+
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+// ZEPHCORE: ours. zcpfs: the hooks of mesh::Mesh and what ZcpfsServer asks of
+// the role (helpers/zcpfs/ZcpfsServer.h, devdocs/lld/14-zcpfs.md 8.16).
+
+int RoomServerMesh::onPeerSealedRecv(mesh::Packet* packet, int sender_idx, const uint8_t* secret, uint8_t* data, int* len) {
+  int i = matching_peer_indexes[sender_idx];
+  (void)secret;
+  if (i < 0 || i >= acl.getNumClients()) return SEALED_LEGACY;
+  _zs_hash_size = packet->getPathHashSize();
+  return _zs.rx(packet, *acl.getClientByIdx(i), data, len);
+}
+
+bool RoomServerMesh::onStrangerSealedRecv(mesh::Packet* packet) {
+  uint8_t data[MAX_PACKET_PAYLOAD];
+  int len = 0;
+  ClientInfo* client = nullptr;
+
+  _zs_hash_size = packet->getPathHashSize();
+  int r = _zs.rxStranger(packet, data, &len, &client);
+  if (r == SEALED_DATA && client != nullptr) {
+    /* the login is confirmed by a text: deliver it as from the client it entered */
+    int n = searchPeersByHash(&packet->payload[1]);
+    for (int j = 0; j < n; j++) {
+      if (acl.getClientByIdx(matching_peer_indexes[j]) == client) {
+        onPeerDataRecv(packet, PAYLOAD_TYPE_TXT_MSG, j, client->shared_secret, data, len);
+        break;
+      }
+    }
+  }
+  return r != SEALED_NEXT;
+}
+
+void RoomServerMesh::onPeerRecvDone() {
+  _zs.rxDone();
+  _zs_hash_size = 0;
+}
+
+int RoomServerMesh::onAnonSealedRecv(mesh::Packet* packet) {
+  _zs_hash_size = packet->getPathHashSize();
+  int r = _zs.rxLogin(packet);
+  _zs_hash_size = 0;
+  return r;
+}
+
+int RoomServerMesh::sealOutgoing(uint8_t type, const uint8_t* dest_hash, const uint8_t* secret, const uint8_t* data, size_t data_len, uint8_t* payload) {
+  return _zs.sealOutgoing(type, dest_hash, secret, data, data_len, payload);
+}
+
+uint32_t RoomServerMesh::zcpfsAirtime(int len) {
+  return _radio->getEstAirtimeFor(len);
+}
+
+void RoomServerMesh::zcpfsFlood(mesh::Packet* pkt, uint32_t delay_ms) {
+  if (_zs_hash_size) {
+    sendFloodReply(pkt, delay_ms, _zs_hash_size);  // a reply: in the scope of the packet in hand
+  } else {
+    sendFloodScoped(default_scope, pkt, delay_ms, _prefs.path_hash_mode + 1);  // a push, as pushPostToClient
+  }
+}
+
+/* As onAnonDataRecv: an empty password logs a known client in with what it
+ * has, else it is the admin password if that is empty, else read-only access
+ * if the room allows it; an empty room password grants nothing. A wrong typed
+ * password no longer gets read-only access: there is no branch for it. */
+int RoomServerMesh::zcpfsRoles(const ClientInfo* known, bool empty_password, ZcpfsRole roles[2]) {
+  static char admin_pw[sizeof(_prefs.password)];
+  static char guest_pw[sizeof(_prefs.guest_password)];
+  uint8_t kept = known != nullptr ? known->permissions : 0;
+  uint8_t others = (uint8_t)(kept & ~PERM_ACL_ROLE_MASK);
+  int n = 0;
+
+  strncpy(admin_pw, _prefs.password, sizeof(admin_pw) - 1);
+  admin_pw[sizeof(admin_pw) - 1] = 0;
+  strncpy(guest_pw, _prefs.guest_password, sizeof(guest_pw) - 1);
+  guest_pw[sizeof(guest_pw) - 1] = 0;
+
+  if (empty_password) {
+    if (known != nullptr) {
+      roles[n++] = { "", kept };
+    } else if (admin_pw[0] == 0) {
+      roles[n++] = { "", (uint8_t)(others | PERM_ACL_ADMIN) };
+    } else if (_prefs.allow_read_only) {
+      roles[n++] = { "", (uint8_t)(others | PERM_ACL_GUEST) };
+    }
+    return n;
+  }
+  if (admin_pw[0] != 0) {
+    roles[n++] = { admin_pw, (uint8_t)(others | PERM_ACL_ADMIN) };
+  }
+  if (guest_pw[0] != 0) {
+    roles[n++] = { guest_pw, (uint8_t)(others | PERM_ACL_READ_WRITE) };
+  }
+  return n;
+}
+
+/* What onAnonDataRecv does on a correct password, for a login that is now
+ * confirmed (SPEC 19.5); the login carries the client's sync point. */
+ClientInfo* RoomServerMesh::zcpfsGrant(const mesh::Identity& id, uint8_t perms, const uint8_t* login, size_t login_len) {
+  ClientInfo* client = acl.putClient(id, 0);
+  uint8_t secret[PUB_KEY_SIZE];
+  uint32_t sent_at = 0, sync_since = 0;
+
+  self_id.calcSharedSecret(secret, id);
+  if (login_len >= 4) memcpy(&sent_at, login, 4);
+  if (login_len >= 8) memcpy(&sync_since, &login[4], 4);
+
+  uint8_t prev_perms = client->permissions;
+  uint32_t prev_sync_since = client->extra.room.sync_since;
+  bool secret_changed = memcmp(client->shared_secret, secret, PUB_KEY_SIZE) != 0;
+
+  if (sent_at > client->last_timestamp) client->last_timestamp = sent_at;
+  client->extra.room.sync_since = sync_since;
+  client->extra.room.pending_ack = 0;
+  client->extra.room.push_failures = 0;
+  client->last_activity = getRTCClock()->getCurrentTime();
+  client->permissions = perms;
+  memcpy(client->shared_secret, secret, PUB_KEY_SIZE);
+  LOG_INF("zcpfs room login granted, permissions %02x", client->permissions);
+
+  if ((perms & PERM_ACL_ROLE_MASK) != PERM_ACL_GUEST &&
+      (client->permissions != prev_perms || client->extra.room.sync_since != prev_sync_since || secret_changed)) {
+    if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  }
+  next_push = futureMillis(PUSH_NOTIFY_DELAY_MILLIS);
+  return client;
+}
+
+void RoomServerMesh::zcpfsAclChanged(ClientInfo& c) {
+  if (c.permissions != 0 && !dirty_contacts_expiry) {  /* guests are not stored */
+    dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+  }
+}
+#endif

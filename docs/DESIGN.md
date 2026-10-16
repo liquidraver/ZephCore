@@ -207,6 +207,7 @@ flowchart TB
 | GPS manager | L3 | main-thread state machine, module power and configuration (three files) |
 | ZephyrSensorManager | L3 | upstream `SensorManager`: telemetry (`querySensors`), the `gps` setting |
 | PowerPolicy | L4 | low-battery auto-shutdown and battery alert, every companion |
+| zcpfs library + glue (`lib/zcpfs`, `lib/ascon`, `helpers/zcpfs`) | L2 | experimental sealing of DMs, requests and logins; hooks in `mesh::Mesh` ([ZCPFS.md](ZCPFS.md)) |
 | UI (display, button UI, joystick UI) | Presentation | local interaction |
 
 ---
@@ -315,6 +316,9 @@ it polls external state. Repeater and room server share one loop (`server_main_c
   privacy per platform ([ADR 0004](adr/0004-ble-privacy.md)).
 - Server roles: password login, four permission levels, rate limits on login, anonymous requests and discovery.
 - Entropy: hardware RNG with a seeded fallback.
+- zcpfs (experimental, build switch and run-time mode both off by default): forward-secret direct messages,
+  sealed requests and a password-authenticated login between ZephCore nodes, carried in ordinary MeshCore
+  packets ([ZCPFS.md](ZCPFS.md)).
 
 ### 8.5 Persistence
 - LittleFS `/lfs` (internal) and optional `/ext` (QSPI). BLE bonds in NVS, isolated from LittleFS on nRF52/ESP32.

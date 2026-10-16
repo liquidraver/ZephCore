@@ -20,6 +20,9 @@ struct ClientInfo {
   uint8_t shared_secret[PUB_KEY_SIZE];
   uint32_t last_timestamp;   // by THEIR clock  (transient)
   uint32_t last_activity;    // by OUR clock    (transient)
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  uint8_t  zcpfs_pinned;     // ZEPHCORE: lib/zcpfs/SPEC.md 6.2; kept in the ACL file's first reserved byte
+#endif
   union  {
     struct {
       uint32_t sync_since;  // sync messages SINCE this timestamp (by OUR clock)
@@ -53,6 +56,9 @@ struct ClientInfo {
     memset(shared_secret, 0, sizeof(shared_secret));
     last_timestamp = 0;
     last_activity = 0;
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+    zcpfs_pinned = 0;
+#endif
     memset(&extra, 0, sizeof(extra));
   }
 };

@@ -327,8 +327,9 @@ Direct (source-routed) packets bypass adaptive scaling entirely. They use minima
 Forward-secret sealing of direct messages between two nodes that both have it, with Ascon-AEAD128 and a
 handshake over the existing identity keys. Nodes without it are unaffected and are only ever sent ordinary
 MeshCore packets. The protocol is `zephcore/lib/zcpfs/SPEC.md` (kept local, not tracked); the library and its
-host tests are described in `zephcore/lib/zcpfs/README.md`. Neither the design nor the code has had a
-cryptographic review, and the firmware side has not run on hardware.
+host tests are described in `zephcore/lib/zcpfs/README.md`; [ZCPFS.md](ZCPFS.md) is the overview for developers. Neither the design nor the code has had a
+cryptographic review; the companion and repeater glue has run on a bench of three nodes, beside an official
+MeshCore 1.18.0 companion.
 
 - **Library** (`lib/zcpfs`, portable C99, no Zephyr calls): packets, sessions, and a per-contact state
   machine that owns handshakes, retries, limits and the rule that it never floods on its own. `lib/ascon` is
@@ -336,15 +337,37 @@ cryptographic review, and the firmware side has not run on hardware.
 - **Hooks in `mesh::Mesh`** (compiled only with the switch): `onPeerSealedRecv()` is offered a `PATH`, `REQ`,
   `RESPONSE` or `TXT_MSG` per matching peer before legacy decryption; `sealOutgoing()` may build the payload
   of a datagram or path return in sealed form; `onPeerRecvDone()` ends the handling of one packet.
+  `onAnonSealedRecv()` is offered an `ANON_REQ` for this node before legacy decryption (the zcpfs login), and
+  `onStrangerSealedRecv()` a `TXT_MSG` no peer claimed (the first packet of a confirmed login).
 - **Companion glue** (`helpers/zcpfs/ZcpfsChat`): `BaseChatMesh` routes text to a pinned contact through
   the library, maps the on-air ACK of a sealed text to the value the app was given, and seals requests,
   responses and path returns towards pinned contacts. A contact is pinned by the capability tag in its
   signed advert (one `0x00` after the name) or by a completed handshake; the pin is bit `0x80` of
-  `ContactInfo.flags`, which the companion protocol cannot set or clear.
-- **Not there yet**: repeater and room server roles (they neither tag adverts nor answer the zcpfs login),
-  sealed channels, the padding hint, a persisted generator seed.
-- **Cost** on a RAK4631 companion with the default four contact records: 14.1 kB of flash and 10.2 kB of RAM
-  (`CONFIG_ZEPHCORE_ZCPFS_PEERS`, about 2.4 kB each).
+  `ContactInfo.flags`, which the companion protocol cannot set or clear. A login to a pinned server is the
+  zcpfs login (the password never leaves the node); its reply is turned into the legacy login response.
+- **Server glue** (`helpers/zcpfs/ZcpfsServer`, host methods at the end of `app/RepeaterMesh.cpp` and
+  `app/RoomServerMesh.cpp`): the server tags its advert, answers the zcpfs login with one branch per password it would accept, enters the
+  client only when its first packet opens under one of them, and runs CLI text under the session and
+  requests in pair mode; a room pushes posts to a pinned client under its session and maps the ACK back to
+  the push. Read-only room access goes to an empty password only. Two logins can wait for confirmation at once; flooded replies to unknown clients
+  are limited to four in any 180 s, after that they go back over the reverse path. The client's pin is kept
+  in `ClientInfo.zcpfs_pinned`, stored in a byte of the ACL file that upstream writes as zero and ignores, and
+  is cleared by a legacy login from that client. `ZcpfsCommon.h` holds the tag code for both glues.
+- **Run-time mode** (`set zcpfs on|passive|off`, default off, `NodePrefs.zcpfs_mode`, key `zc.zcpfs`): off is
+  legacy on the air; passive drops the advert tag and starts nothing but reads and answers what arrives
+  sealed, so a node can leave without its peers losing messages; on is everything above. The parser, the
+  mode names and the passive bookkeeping are in `helpers/zcpfs/ZcpfsCommon.h`.
+- **Sealed channels** (companion, `set zcpfs.channel <name|index> off|on|strict`): `onGroupSealedRecv` offers a
+  channel packet per matching channel before legacy decryption, `sealGroupOutgoing` builds the payload in
+  `createGroupDatagram`. Settings are `NodePrefs.zcpfs_chan` (12 entries of a 4-byte secret digest and the
+  state, key `zc.zcpfs_ch`), effective only while the mode is on.
+- **Legacy logins** (`set zcpfs.legacylogin on|off`, default on, `NodePrefs.zcpfs_no_legacy_login`, key
+  `zc.zcpfs_nolegl`, effective while the mode is on): off on a companion refuses a login to a server that is
+  not pinned (error frame `ERR_BAD_STATE` to the app); off on a server drops legacy logins unread.
+- **Not there yet**: the padding hint, a persisted generator seed.
+- **Cost** on a RAK4631 with the default four contact records (`CONFIG_ZEPHCORE_ZCPFS_PEERS`, about 2.4 kB
+  each): companion 14.7 kB of flash and 10.2 kB of RAM (measured before the login glue), repeater 18.0 kB and
+  11.5 kB, room server 18.5 kB and 11.5 kB.
 
 ### 4.9 Mesh Time Sync (Clock Consensus)
 
@@ -1091,7 +1114,7 @@ prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
 - **Role**: `ZEPHCORE_ROLE_COMPANION` (default) vs `ZEPHCORE_ROLE_REPEATER` vs `ZEPHCORE_ROLE_ROOM_SERVER` vs `ZEPHCORE_ROLE_OBSERVER` vs `ZEPHCORE_ROLE_KISS_MODEM` (selected via `repeater.conf` / `room_server.conf` / `observer.conf` / `kiss_modem.conf`)
 - **Radio**: `ZEPHCORE_RADIO_NATIVE` (SX126x, default) vs `ZEPHCORE_RADIO_LR1110` vs `ZEPHCORE_RADIO_LR2021` vs `ZEPHCORE_RADIO_SX127X`
 - **Features**: Display, buzzer, buttons, multi-tap, Doom (auto-enabled from DT); PSRAM auto-enable from DT (`Kconfig.psram`)
-- **Experimental**: `ZEPHCORE_ZCPFS` (default off) builds the zcpfs library and the companion glue (section 4.8.1); `ZEPHCORE_ZCPFS_PEERS` sizes its contact table
+- **Experimental**: `ZEPHCORE_ZCPFS` (default off) builds the zcpfs library and the glue of the companion, repeater or room server (section 4.8.1); `ZEPHCORE_ZCPFS_PEERS` sizes its contact table
 
 ### 9.3 Platform Notes
 

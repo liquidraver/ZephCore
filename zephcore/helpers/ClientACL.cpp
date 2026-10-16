@@ -41,6 +41,9 @@ void ClientACL::load(FILESYSTEM* fs, const mesh::LocalIdentity& self_id) {
         success = success && (file.read(c.shared_secret, PUB_KEY_SIZE) == PUB_KEY_SIZE); // will be recalculated below
 
         if (!success) break; // EOF
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+        c.zcpfs_pinned = unused[0] & 1;  // ZEPHCORE: 0 in files written without zcpfs
+#endif
 
         // ZEPHCORE: a reserved-hash-size out_path_len (0xC0-0xFE) would pass as a
         // usable path, then be rejected in sendDirect(), and the reply would go out
@@ -72,6 +75,9 @@ void ClientACL::save(FILESYSTEM* fs, bool (*filter)(ClientInfo*)) {
     for (int i = 0; i < num_clients; i++) {
       auto c = &clients[i];
       if (c->permissions == 0 || (filter && !filter(c))) continue;    // skip deleted entries, or by filter function
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+      unused[0] = c->zcpfs_pinned ? 1 : 0;  // ZEPHCORE: the pin, in a byte upstream writes as 0 and never reads
+#endif
 
       bool success = (file.write(c->id.pub_key, 32) == 32);
       success = success && (file.write((uint8_t *) &c->permissions, 1) == 1);

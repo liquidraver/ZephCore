@@ -797,7 +797,11 @@ static void companion_cli_exec(const char *line, uint32_t sender_timestamp,
 		return;
 	}
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-	if (companion_mesh.zcpfsCommand(line, reply, CLI_REPLY_SIZE)) {
+	switch (companion_mesh.zcpfsCommand(line, reply, CLI_REPLY_SIZE)) {
+	case ZCPFS_CMD_CHANGED:
+		save_prefs_to_flash();
+		return;
+	case ZCPFS_CMD_DONE:
 		return;
 	}
 #endif
