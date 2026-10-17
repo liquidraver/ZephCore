@@ -152,9 +152,11 @@ text to a contact that is not pinned carries a small **padding hint** where it c
 receiver that sees it starts a handshake, so two zcpfs nodes that missed each other's adverts still find
 each other. Only an
 accepted (signed, newer) advert without the tag unpins: the key's owner went back to legacy. A sealed text
-or request raises the contact's stored advert timestamp to its own time less 60 s (spec 6.2), so a
-recorded untagged advert from before the peer turned zcpfs on cannot be replayed to unpin. A server keeps
-no adverts of its clients; it pins a client on a confirmed zcpfs login and unpins it on a legacy login.
+or request raises the contact's stored advert timestamp to its own time less 60 s, capped at the
+receiver's clock (spec 6.2), so a recorded untagged advert from before the peer turned zcpfs on cannot be
+replayed to unpin. A server keeps no adverts of its clients; it pins a client on a confirmed zcpfs login and
+unpins it on a legacy login whose timestamp is newer than the client's last one. With `zcpfs.enforce on`
+nothing received unpins: untagged adverts leave the pin, and a server drops a pinned client's legacy login.
 
 ## 6. Key flows
 
@@ -240,6 +242,7 @@ adverts reach them; nothing is lost on the way.
 | Diagnostics | `get zcpfs.status`: mode, pins, records, sessions, packets in and out, and on servers the login counters and the last login's route |
 | Channels, companion | `get zcpfs.channel`, `set zcpfs.channel <name\|index> off\|on\|strict`: sends sealed (`on`), or also refuses legacy (`strict`); only while the mode is on |
 | Legacy logins, every role | `get zcpfs.legacylogin`, `set zcpfs.legacylogin on\|off` (default on): off on a client never sends a password to a server without zcpfs; off on a server drops legacy logins unread; only while the mode is on |
+| Keep pins, every role | `get zcpfs.enforce`, `set zcpfs.enforce on\|off` (default off, `zc.zcpfs_enf`): on, nothing received clears a pin (untagged adverts, a pinned client's legacy login, which a server then drops); a peer that leaves zcpfs must be deleted and re-added; only while the mode is on |
 
 Cost with four contact records, RAK4631: companion about 14.7 kB flash and 10.2 kB RAM, repeater and room
 server about 18 kB flash and 11.5 kB RAM.

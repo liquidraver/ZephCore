@@ -27,10 +27,12 @@ public:
 
 	/* The run-time mode lives in the node's prefs (ZcpfsCommon.h); until it
 	 * is bound the glue is off. */
-	void bind(uint8_t *mode, uint8_t *no_legacy_login, uint8_t (*channels)[ZCPFS_CHAN_ENTRY])
+	void bind(uint8_t *mode, uint8_t *no_legacy_login, uint8_t *enforce,
+		  uint8_t (*channels)[ZCPFS_CHAN_ENTRY])
 	{
 		_mode = mode;
 		_no_legacy_login = no_legacy_login;
+		_enforce = enforce;
 		_chan = channels;
 	}
 	/* A login to a server that is not pinned must not go out (SPEC 19.6). */
@@ -39,6 +41,8 @@ public:
 		return on() && _no_legacy_login != nullptr && *_no_legacy_login;
 	}
 	bool on() const { return _mode != nullptr && *_mode == ZCPFS_MODE_ON; }
+	/* `zcpfs.enforce on` while on: no advert clears a pin (SPEC 6.2). */
+	bool enforced() const { return on() && _enforce != nullptr && *_enforce; }
 	/* An own advert is being built: the tag when on (SPEC 6.1); returns the
 	 * new length. */
 	uint8_t advert(uint8_t *app_data, uint8_t len);
@@ -102,13 +106,15 @@ public:
 
 	void forget(const uint8_t *pub_key);
 	void loop();
-	/* `get zcpfs`, `set zcpfs ...`, `get zcpfs.status`: one of ZCPFS_CMD_*. */
+	/* `get/set zcpfs`, `zcpfs.legacylogin`, `zcpfs.enforce`, `zcpfs.channel`,
+	 * `get zcpfs.status`: one of ZCPFS_CMD_*. */
 	int command(const char *line, char *reply, size_t size);
 
 private:
 	BaseChatMesh &_m;
 	uint8_t *_mode = nullptr;
 	uint8_t *_no_legacy_login = nullptr;
+	uint8_t *_enforce = nullptr;
 	uint8_t (*_chan)[ZCPFS_CHAN_ENTRY] = nullptr;	/* ZCPFS_CHAN_SETTINGS entries */
 	ZcpfsHeard _heard;
 	bool _ready = false;

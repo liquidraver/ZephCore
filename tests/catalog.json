@@ -743,6 +743,11 @@
       "source": "tests/unit/zcpfs_glue_tests.cpp"
     },
     {
+      "id": "UNIT-ZCPFSG-005",
+      "name": "get/set zcpfs.enforce: on, off, 1, 0 and default (off); a change is reported once, anything else is refused",
+      "source": "tests/unit/zcpfs_glue_tests.cpp"
+    },
+    {
       "id": "UNIT-ZCPFSM-001",
       "name": "Two zcpfs companions pin each other by tagged adverts; a DM goes sealed and its ACK reaches the app",
       "source": "tests/unit/zcpfs_mesh_tests.cpp"
@@ -810,6 +815,26 @@
     {
       "id": "UNIT-ZCPFSM-014",
       "name": "The identity mixer runs only at boot: a seed taken later uses the RNG, says so, and still mixes on a failed write",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-015",
+      "name": "zcpfs.enforce on: a pinned contact's untagged advert is accepted but keeps the pin; with enforce off a newer one unpins",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-016",
+      "name": "zcpfs.enforce on at a server: a pinned client's legacy login is dropped and the pin kept; an unpinned client logs in as before",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-017",
+      "name": "A recorded empty-password legacy login, replayed after the client's zcpfs login, keeps its pin; a fresh one unpins",
+      "source": "tests/unit/zcpfs_mesh_tests.cpp"
+    },
+    {
+      "id": "UNIT-ZCPFSM-018",
+      "name": "The advert mark is capped at the receiver's clock: a sender's clock running ahead does not freeze its later adverts",
       "source": "tests/unit/zcpfs_mesh_tests.cpp"
     }
   ]

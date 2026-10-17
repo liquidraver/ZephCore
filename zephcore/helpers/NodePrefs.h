@@ -170,6 +170,10 @@ struct NodePrefs {
 	 * a legacy login, a server refuses one (lib/zcpfs/SPEC.md 19.6). Stored
 	 * as the refusal so that the zero default allows them. */
 	uint8_t zcpfs_no_legacy_login;
+	/* 1 = `zcpfs.enforce on`, while the mode is on: no packet from the air
+	 * clears a pin, and a server drops a pinned client's legacy login
+	 * (lib/zcpfs/SPEC.md 6.2, 19.6). Default off. */
+	uint8_t zcpfs_enforce;
 	/* Companion: the channels set to sealed (lib/zcpfs/SPEC.md 17.3). Each
 	 * entry is 4 bytes of SHA-256 of the channel's 32-byte secret field, then
 	 * the state (1 on, 2 strict); an all-zero entry is free, and a channel
@@ -337,6 +341,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 #ifdef CONFIG_ZEPHCORE_ZCPFS
 	p->zcpfs_mode          = saneEnum(p->zcpfs_mode, 2);
 	p->zcpfs_no_legacy_login = saneBool<uint8_t>(p->zcpfs_no_legacy_login, 0);
+	p->zcpfs_enforce       = saneBool<uint8_t>(p->zcpfs_enforce, 0);
 	for (int i = 0; i < ZCPFS_CHAN_SETTINGS; i++) {
 		if (p->zcpfs_chan[i][4] > 2) {
 			memset(p->zcpfs_chan[i], 0, ZCPFS_CHAN_ENTRY);  /* no intent: off */

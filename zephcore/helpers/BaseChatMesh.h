@@ -219,7 +219,7 @@ public:
   bool  removeContact(ContactInfo& contact);
 #ifdef CONFIG_ZEPHCORE_ZCPFS
   int   zcpfsCommand(const char* line, char* reply, size_t size);  // ZEPHCORE: zcpfs CLI, one of ZCPFS_CMD_*
-  void  zcpfsBind(uint8_t* mode, uint8_t* no_legacy_login, uint8_t (*channels)[ZCPFS_CHAN_ENTRY]) { _zc.bind(mode, no_legacy_login, channels); }  // ZEPHCORE: settings in the prefs
+  void  zcpfsBind(uint8_t* mode, uint8_t* no_legacy_login, uint8_t* enforce, uint8_t (*channels)[ZCPFS_CHAN_ENTRY]) { _zc.bind(mode, no_legacy_login, enforce, channels); }  // ZEPHCORE: settings in the prefs
   bool  zcpfsRefusesLegacyLogin() const { return _zc.refusesLegacyLogin(); }  // ZEPHCORE: lib/zcpfs/SPEC.md 19.6
 #endif
   bool  addContact(const ContactInfo& contact);

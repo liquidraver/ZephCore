@@ -609,9 +609,9 @@ void ZcpfsServer::onPath(ClientInfo &c, bool flood)
 	_next_tick = 0;
 }
 
-void ZcpfsServer::onLegacyLogin(ClientInfo &c)
+void ZcpfsServer::onLegacyLogin(ClientInfo &c, bool fresh)
 {
-	if (c.zcpfs_pinned) {
+	if (c.zcpfs_pinned && fresh) {
 		c.zcpfs_pinned = 0;
 		forget(c.id.pub_key);
 		_host.zcpfsAclChanged(c);
@@ -686,6 +686,10 @@ int ZcpfsServer::command(const char *line, char *reply, size_t size)
 	if (strcmp(line, "get zcpfs.status") != 0) {
 		int r = zcpfsLegacyLoginCommand(line, _no_legacy_login, reply, size);
 
+		if (r != ZCPFS_CMD_NONE) {
+			return r;
+		}
+		r = zcpfsEnforceCommand(line, _enforce, reply, size);
 		if (r != ZCPFS_CMD_NONE) {
 			return r;
 		}
