@@ -139,7 +139,7 @@ zephcore/
 │
 ├── lib/monocypher/         # Vendored crypto library (Ed25519/X25519)
 ├── lib/ascon/              # Standalone Ascon (NIST SP 800-232), MIT; only built with zcpfs
-├── lib/zcpfs/              # zcpfs: forward-secret messaging library (experimental, off by default)
+├── lib/zcpfs/              # zcpfs: forward-secret messaging library (experimental, built in by default on this branch)
 ├── tools/                  # Formatter (flash erase) + LR1110 firmware updater
 ├── CMakeLists.txt          # Build orchestration
 ├── Kconfig                 # All ZephCore configuration options
@@ -322,7 +322,7 @@ Direct (source-routed) packets bypass adaptive scaling entirely. They use minima
 - **Advertisements**: Ed25519 signature over (pubkey + timestamp + app_data)
 - **ACKs**: SHA-256(shared_secret + packet_hash) truncated to 4 bytes
 
-#### 4.8.1 zcpfs (experimental, `CONFIG_ZEPHCORE_ZCPFS`, default off)
+#### 4.8.1 zcpfs (experimental, `CONFIG_ZEPHCORE_ZCPFS`, default on on this branch; off on `dev`/`master`)
 
 Forward-secret sealing of direct messages between two nodes that both have it, with Ascon-AEAD128 and a
 handshake over the existing identity keys. Nodes without it are unaffected and are only ever sent ordinary
@@ -1129,7 +1129,7 @@ prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
 - **Role**: `ZEPHCORE_ROLE_COMPANION` (default) vs `ZEPHCORE_ROLE_REPEATER` vs `ZEPHCORE_ROLE_ROOM_SERVER` vs `ZEPHCORE_ROLE_OBSERVER` vs `ZEPHCORE_ROLE_KISS_MODEM` (selected via `repeater.conf` / `room_server.conf` / `observer.conf` / `kiss_modem.conf`)
 - **Radio**: `ZEPHCORE_RADIO_NATIVE` (SX126x, default) vs `ZEPHCORE_RADIO_LR1110` vs `ZEPHCORE_RADIO_LR2021` vs `ZEPHCORE_RADIO_SX127X`
 - **Features**: Display, buzzer, buttons, multi-tap, Doom (auto-enabled from DT); PSRAM auto-enable from DT (`Kconfig.psram`)
-- **Experimental**: `ZEPHCORE_ZCPFS` (default off) builds the zcpfs library and the glue of the companion, repeater or room server (section 4.8.1); `ZEPHCORE_ZCPFS_PEERS` sizes its contact table
+- **Experimental**: `ZEPHCORE_ZCPFS` (default `y` on this branch, `n` on `dev`/`master`) builds the zcpfs library and the glue of the companion, repeater or room server (section 4.8.1); `ZEPHCORE_ZCPFS_PEERS` sizes its contact table
 
 ### 9.3 Platform Notes
 

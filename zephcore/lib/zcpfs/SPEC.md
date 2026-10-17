@@ -3,7 +3,7 @@
 **Draft 0.19, 2026-10-17. A Python reference model and test vectors exist (`ref/`, `vectors.json`), and a C
 library (this directory, see `README.md`) with the cryptographic core, which reproduces the vectors, and the
 per-contact state machine of sections 7.2, 8.5 to 11 and 19. ZephCore companions, repeaters and room servers
-can be built with it (`CONFIG_ZEPHCORE_ZCPFS`, off by default, experimental). No cryptographic audit.**
+can be built with it (`CONFIG_ZEPHCORE_ZCPFS`, on by default on the `zcpfs` branch, experimental). No cryptographic audit.**
 
 Draft 0.19 follows a third review. A server clears a client's pin on a legacy login only if that login's
 timestamp is newer than the client's last one, so a recorded empty-password login, which legacy accepts

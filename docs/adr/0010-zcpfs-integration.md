@@ -12,11 +12,15 @@ to whole nodes over a simulated channel, but no cryptographic review and no fiel
 
 ## Decision
 
-1. **Two switches, both off by default.** `CONFIG_ZEPHCORE_ZCPFS` (Kconfig, default `n`) compiles the library
-   and the glue in; without it the firmware is unchanged. In a build with it, `set zcpfs on|passive|off`
+1. **Two switches.** `CONFIG_ZEPHCORE_ZCPFS` (Kconfig, default `n` on `dev` and `master`) compiles the
+   library and the glue in; without it the firmware is unchanged. In a build with it, `set zcpfs on|passive|off`
    (prefs, default `off`) decides at run time; `off` is legacy on the air. A node leaves through `passive`:
    no advert tag, nothing started, but whatever arrives sealed is read and answered, so peers that still pin
-   it lose nothing until its untagged advert reaches them.
+   it lose nothing until its untagged advert reaches them. On the `zcpfs` branch itself the Kconfig default is
+   `y` (2026-10-17), so a build from this branch needs nothing extra to get the code in — a development
+   convenience, scoped to this branch only, that does not touch the run-time default and is not the decision
+   the gate below is about: `dev` and `master` keep the Kconfig default `n`, and this branch's default is not
+   carried across a merge without going through that gate.
 2. **A portable library, a thin glue.** The protocol and its state machine are `lib/zcpfs` (C99, no Zephyr, no
    MeshCore), with Ascon in `lib/ascon`; the firmware side is `helpers/zcpfs/` (`ZcpfsChat` for companions,
    `ZcpfsServer` for repeaters and rooms, `ZcpfsCommon.h`, `ZcpfsSeed.cpp`). Roles only add fenced calls.
