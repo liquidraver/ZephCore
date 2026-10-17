@@ -53,16 +53,24 @@ class ZcpfsServer {
 public:
 	/* `mode` is the run-time mode in the node's prefs (ZcpfsCommon.h). */
 	ZcpfsServer(mesh::Mesh &mesh, ClientACL &acl, ZcpfsServerHost &host, uint8_t fw_level,
-		    uint8_t &mode, uint8_t &no_legacy_login)
+		    uint8_t &mode, uint8_t &no_legacy_login, uint8_t &enforce)
 		: _m(mesh), _acl(acl), _host(host), _fw_level(fw_level), _mode(mode),
-		  _no_legacy_login(no_legacy_login) {}
+		  _no_legacy_login(no_legacy_login), _enforce(enforce) {}
 
-	/* A legacy login arrived: true if it is to be dropped unread
-	 * (`zcpfs.legacylogin off` while on, SPEC 19.6). */
-	bool refuseLegacyLogin()
+	/* A legacy login from `pub_key` arrived: true if it is to be dropped
+	 * unread, while on: `zcpfs.legacylogin off`, or `zcpfs.enforce on` and the
+	 * client is pinned (SPEC 19.6). */
+	bool refuseLegacyLogin(const uint8_t *pub_key)
 	{
-		if (!on() || !_no_legacy_login) {
+		if (!on()) {
 			return false;
+		}
+		if (!_no_legacy_login) {
+			const ClientInfo *c = _enforce ? client(pub_key) : nullptr;
+
+			if (c == nullptr || !c->zcpfs_pinned) {
+				return false;
+			}
 		}
 		_n.legacy_refused++;
 		return true;
@@ -106,14 +114,16 @@ public:
 
 	/* The client's path return has been stored. */
 	void onPath(ClientInfo &c, bool flood);
-	/* The client logged in the legacy way: it no longer speaks zcpfs. */
-	void onLegacyLogin(ClientInfo &c);
+	/* The client logged in the legacy way: it no longer speaks zcpfs. The pin
+	 * is cleared only if `fresh`: the login's timestamp was newer than the
+	 * client's last one before it (SPEC 6.2). */
+	void onLegacyLogin(ClientInfo &c, bool fresh);
 	void forget(const uint8_t *pub_key);
 	/* Timers. */
 	void loop();
 	/* Milliseconds until loop() has something to do. */
 	uint32_t msUntilTick() const;
-	/* `get zcpfs`, `set zcpfs ...`, `get zcpfs.status`: one of ZCPFS_CMD_*;
+	/* `get/set zcpfs`, `zcpfs.legacylogin`, `zcpfs.enforce`, `get zcpfs.status`: one of ZCPFS_CMD_*;
 	 * with ZCPFS_CMD_CHANGED the caller stores its prefs. */
 	int command(const char *line, char *reply, size_t size);
 
@@ -124,6 +134,7 @@ private:
 	uint8_t _fw_level;
 	uint8_t &_mode;
 	uint8_t &_no_legacy_login;
+	uint8_t &_enforce;
 	ZcpfsHeard _heard;
 
 	bool _ready = false;

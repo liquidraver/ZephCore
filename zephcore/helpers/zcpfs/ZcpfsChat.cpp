@@ -193,12 +193,16 @@ void ZcpfsChat::ackOnly(mesh::Packet *pkt, ContactInfo &from, const uint8_t ack4
 
 /* SPEC 6.2: a sender time authenticated by zcpfs, less the slack for the
  * node's clock behind its app's, raises the contact's advert high-water mark,
- * so an advert signed before it is refused as a replay. */
+ * so an advert signed before it is refused as a replay. The time is capped at
+ * our own clock, so a sender's clock running ahead cannot freeze its adverts. */
 void ZcpfsChat::raiseAdvertMark(ContactInfo &c, const uint8_t *plain)
 {
-	uint32_t t;
+	uint32_t t, own = _m.getRTCClock()->getCurrentTime();
 
 	memcpy(&t, plain, sizeof(t));
+	if (t > own) {
+		t = own;
+	}
 	if (t > ZCPFS_ADVERT_MARK_SLACK && t - ZCPFS_ADVERT_MARK_SLACK > c.last_advert_timestamp) {
 		c.last_advert_timestamp = t - ZCPFS_ADVERT_MARK_SLACK;
 		_m.onContactAdvertMarkRaised(c);
@@ -807,7 +811,7 @@ void ZcpfsChat::onAdvert(ContactInfo &c, const uint8_t *app_data, size_t app_dat
 
 	if (capable) {
 		c.flags |= ZCPFS_PIN_FLAG;
-	} else if (c.flags & ZCPFS_PIN_FLAG) {
+	} else if ((c.flags & ZCPFS_PIN_FLAG) && !enforced()) {
 		c.flags &= (uint8_t)~ZCPFS_PIN_FLAG;	/* its owner went back to legacy */
 		forget(c.id.pub_key);
 	}
@@ -905,6 +909,10 @@ int ZcpfsChat::command(const char *line, char *reply, size_t size)
 			? zcpfsLegacyLoginCommand(line, *_no_legacy_login, reply, size)
 			: ZCPFS_CMD_NONE;
 
+	if (r != ZCPFS_CMD_NONE) {
+		return r;
+	}
+	r = _enforce != nullptr ? zcpfsEnforceCommand(line, *_enforce, reply, size) : ZCPFS_CMD_NONE;
 	if (r != ZCPFS_CMD_NONE) {
 		return r;
 	}

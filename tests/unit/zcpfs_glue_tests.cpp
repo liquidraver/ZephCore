@@ -118,6 +118,25 @@ TEST(zcpfs_glue_legacylogin_cli, "UNIT-ZCPFSG-003",
     CHECK(run(zcpfsLegacyLoginCommand, "set zcpfs on", refuse, &r) == "untouched" && r == ZCPFS_CMD_NONE);
 }
 
+TEST(zcpfs_glue_enforce_cli, "UNIT-ZCPFSG-005",
+     "get/set zcpfs.enforce: on, off, 1, 0 and default (off); a change is reported once, anything else is refused") {
+    uint8_t enforce = 0;
+    int r = 0;
+    CHECK(run(zcpfsEnforceCommand, "get zcpfs.enforce", enforce, &r) == "> off" && r == ZCPFS_CMD_DONE);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce on", enforce, &r) == "OK - zcpfs.enforce on");
+    CHECK(r == ZCPFS_CMD_CHANGED && enforce == 1);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce 1", enforce, &r) == "OK - zcpfs.enforce on");
+    CHECK(r == ZCPFS_CMD_DONE);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce 0", enforce, &r) == "OK - zcpfs.enforce off");
+    CHECK(r == ZCPFS_CMD_CHANGED && enforce == 0);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce on", enforce, &r) == "OK - zcpfs.enforce on");
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce default", enforce, &r) == "OK - zcpfs.enforce off");
+    CHECK(r == ZCPFS_CMD_CHANGED && enforce == 0);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.enforce always", enforce, &r).rfind("Err", 0) == 0);
+    CHECK(enforce == 0);
+    CHECK(run(zcpfsEnforceCommand, "set zcpfs.legacylogin off", enforce, &r) == "untouched" && r == ZCPFS_CMD_NONE);
+}
+
 TEST(zcpfs_glue_heard, "UNIT-ZCPFSG-004",
      "Passive mode seals only to a contact heard sealed since the last own advert; the table keeps the newest") {
     ZcpfsHeard h;

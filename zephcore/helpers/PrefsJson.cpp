@@ -77,6 +77,7 @@ protected:
 #ifdef CONFIG_ZEPHCORE_ZCPFS
 		def("zcpfs", _p->zcpfs_mode);
 		def("zcpfs_nolegl", _p->zcpfs_no_legacy_login);
+		def("zcpfs_enf", _p->zcpfs_enforce);
 		def("zcpfs_ch", (void *)_p->zcpfs_chan, sizeof(_p->zcpfs_chan));
 #endif
 	}

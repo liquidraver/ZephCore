@@ -352,7 +352,9 @@ MeshCore 1.18.0 companion.
   the push. Read-only room access goes to an empty password only. Two logins can wait for confirmation at once; flooded replies to unknown clients
   are limited to four in any 180 s, after that they go back over the reverse path. The client's pin is kept
   in `ClientInfo.zcpfs_pinned`, stored in a byte of the ACL file that upstream writes as zero and ignores, and
-  is cleared by a legacy login from that client. `ZcpfsCommon.h` holds the tag code for both glues.
+  is cleared by a legacy login from that client whose timestamp is newer than the client's last one (the
+  role passes `fresh` to `ZcpfsServer::onLegacyLogin`; a known client's empty-password login has no replay
+  check of its own). `ZcpfsCommon.h` holds the tag code for both glues.
 - **Run-time mode** (`set zcpfs on|passive|off`, default off, `NodePrefs.zcpfs_mode`, key `zc.zcpfs`): off is
   legacy on the air; passive drops the advert tag and starts nothing but reads and answers what arrives
   sealed, so a node can leave without its peers losing messages; on is everything above. The parser, the
@@ -364,6 +366,10 @@ MeshCore 1.18.0 companion.
 - **Legacy logins** (`set zcpfs.legacylogin on|off`, default on, `NodePrefs.zcpfs_no_legacy_login`, key
   `zc.zcpfs_nolegl`, effective while the mode is on): off on a companion refuses a login to a server that is
   not pinned (error frame `ERR_BAD_STATE` to the app); off on a server drops legacy logins unread.
+- **Enforce** (`set zcpfs.enforce on|off`, default off, `NodePrefs.zcpfs_enforce`, key `zc.zcpfs_enf`,
+  effective while the mode is on): no packet clears a pin. `ZcpfsChat::onAdvert` keeps the pin on an
+  untagged advert; `ZcpfsServer::refuseLegacyLogin(pub_key)` drops a pinned client's legacy login before
+  `handleLoginReq`. A pin then goes only with the contact or ACL entry.
 - **Generator seed** (`helpers/zcpfs/ZcpfsSeed.cpp`): the zcpfs generator is seeded from `ZephyrRNG` and
   `/lfs/zcpfs_seed` (without the file, from `ZephyrRNG::mixIdentitySeed`), and the next seed is written
   before it gives anything else, so a boot with a weak hardware RNG does not repeat an earlier boot's
