@@ -1778,7 +1778,14 @@ bool CompanionMesh::handleCmdDeviceQuery(const uint8_t *data, size_t len)
 			"CONFIG_ZEPHCORE_BOARD_NAME must fit in 40 bytes including null terminator");
 		static const uint8_t fw_build[12] = FIRMWARE_BUILD_DATE;
 		static const uint8_t model[40] = CONFIG_ZEPHCORE_BOARD_NAME;
-		static const uint8_t version[20] = FIRMWARE_VERSION;  // injected by CMakeLists.txt
+		/* Wire format reserves 20 bytes here too; FIRMWARE_VERSION may exceed that
+		 * (an experimental-build suffix, or just a future longer tag) and a string-
+		 * literal array initializer would fail to compile rather than truncate, so
+		 * this copies at runtime and cuts it to fit instead. */
+		static uint8_t version[20] = {0};
+		if (version[0] == 0) {
+			strncpy((char *)version, FIRMWARE_VERSION, sizeof(version) - 1);
+		}
 		uint8_t rsp[82];
 		rsp[0] = PACKET_DEVICE_INFO;
 		/* v14 = CMD_RUN_CLI_COMMAND / PACKET_CLI_REPLY, and TXT_TYPE_CLI_COMMAND
