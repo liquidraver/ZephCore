@@ -29,10 +29,12 @@ include(${CMAKE_CURRENT_SOURCE_DIR}/cmake/zephyr_new_files.cmake)
 list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Single source of truth for the firmware version string (vMAJOR.MINOR.PATCH-zephyr).
-# This exact string is what the device reports, what the BLE Device Information
-# Service advertises (CONFIG_BT_DIS_FW_REV_STR, generated from it below), what the
-# GitHub release is tagged/named, and what the Mesh America catalog uses as its
-# version key. The release workflow reads this line directly — keep its form.
+# This exact string is what the BLE Device Information Service advertises
+# (CONFIG_BT_DIS_FW_REV_STR, generated from it below), what the GitHub release
+# is tagged/named, and what the Mesh America catalog uses as its version key.
+# The release workflow reads this line directly — keep its form. What `ver` and
+# the companion protocol report is this string plus an experimental-build suffix
+# when one applies (ZEPHCORE_REPORTED_VERSION, further down).
 set(ZEPHCORE_FIRMWARE_VERSION "1.18.1-zephcore")
 
 # ========== Helpers ==========
@@ -330,9 +332,19 @@ math(EXPR ZEPHCORE_BUILD_EPOCH "${_now} - (${_now} % 86400)")
 add_definitions(-DFIRMWARE_BUILD_EPOCH=${ZEPHCORE_BUILD_EPOCH}u)
 
 # Version string: set once near the top of this file (the release workflow reads
-# that line). The per-app `#ifndef FIRMWARE_VERSION` fallbacks only apply to
-# builds that bypass this injection.
-add_definitions(-DFIRMWARE_VERSION="${ZEPHCORE_FIRMWARE_VERSION}")
+# that line). What `ver` and the companion protocol report can carry a build-flag
+# suffix on top of it (below); the canonical line itself never changes, so the
+# release workflow's parsing and the Mesh America catalog key are unaffected.
+# The BLE DIS firmware-revision string (CONFIG_BT_DIS_FW_REV_STR, generated
+# earlier in this file) is written before Kconfig runs, when CONFIG_ZEPHCORE_ZCPFS
+# isn't yet known here, so it stays the bare canonical string even on a zcpfs build.
+set(ZEPHCORE_REPORTED_VERSION "${ZEPHCORE_FIRMWARE_VERSION}")
+if(CONFIG_ZEPHCORE_ZCPFS)
+  string(APPEND ZEPHCORE_REPORTED_VERSION "+en")
+endif()
+# The per-app `#ifndef FIRMWARE_VERSION` fallbacks only apply to builds that
+# bypass this injection.
+add_definitions(-DFIRMWARE_VERSION="${ZEPHCORE_REPORTED_VERSION}")
 
 add_subdirectory(lib/monocypher)
 target_link_libraries(app PRIVATE monocypher)
