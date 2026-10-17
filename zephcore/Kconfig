@@ -515,7 +515,7 @@ endif # ZEPHCORE_ROLE_COMPANION
 
 config ZEPHCORE_ZCPFS
 	bool "Forward-secret messages between ZephCore nodes (zcpfs), experimental"
-	default n
+	default y
 	help
 	  Builds lib/zcpfs and lib/ascon into the firmware: forward-secret
 	  sealing of direct messages between two nodes that both have it, and
@@ -524,7 +524,10 @@ config ZEPHCORE_ZCPFS
 	  ever sent ordinary MeshCore packets.
 
 	  Experimental. Neither the design nor the code has had a
-	  cryptographic review. Off by default.
+	  cryptographic review. Built in by default on this branch, so a
+	  build needs nothing extra to get it; the run-time mode (`set zcpfs
+	  on|passive|off`) still defaults to off, so nothing changes on the
+	  air until a CLI command turns it on.
 
 config ZEPHCORE_ZCPFS_PEERS
 	int "Contacts with zcpfs state at the same time"
