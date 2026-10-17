@@ -411,7 +411,7 @@ mesh::DispatcherAction RoomServerMesh::onRecvPacket(mesh::Packet* pkt) {
 void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, const mesh::Identity& sender, uint8_t* data, size_t len) {
   if (packet->getPayloadType() != PAYLOAD_TYPE_ANON_REQ) return;
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  if (_zs.refuseLegacyLogin()) return;  // the password is never read (lib/zcpfs/SPEC.md 19.6)
+  if (_zs.refuseLegacyLogin(sender.pub_key)) return;  // legacy logins off, or a pinned client under enforce: never read (lib/zcpfs/SPEC.md 19.6)
 #endif
 
   /* Room login request layout: [timestamp(4)][sync_since(4)][password...].
@@ -425,6 +425,10 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
   if (data[8] == 0) {  // blank password -> must already be a known client
     client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // a login with a password passes the replay check below; a known client's blank one has none
+  bool zc_fresh = client == nullptr || sender_timestamp > client->last_timestamp;
+#endif
 
   if (client == nullptr) {
     /* Constant-time compare against both stored passwords, zero-padded into
@@ -499,7 +503,7 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     client->out_path_len = OUT_PATH_UNKNOWN;  // need to rediscover the path
   }
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  _zs.onLegacyLogin(*client);  // a legacy login says the client no longer speaks zcpfs
+  _zs.onLegacyLogin(*client, zc_fresh);  // a fresh legacy login says the client no longer speaks zcpfs
 #endif
 
   uint32_t now = getRTCClock()->getCurrentTimeUnique();
@@ -754,7 +758,7 @@ RoomServerMesh::RoomServerMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh:
     login_fail_limiter(4, 180),
     telemetry(MAX_PACKET_PAYLOAD - 4)
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login)
+    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login, _prefs.zcpfs_enforce)
 #endif
 {
 

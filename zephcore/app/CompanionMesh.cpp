@@ -45,7 +45,7 @@ CompanionMesh::CompanionMesh(mesh::Radio &radio, mesh::MillisecondClock &ms, mes
 	: BaseChatMesh(radio, ms, rng, rtc, mgr, tables), _store(&store)
 {
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-	zcpfsBind(&prefs.zcpfs_mode, &prefs.zcpfs_no_legacy_login, prefs.zcpfs_chan);
+	zcpfsBind(&prefs.zcpfs_mode, &prefs.zcpfs_no_legacy_login, &prefs.zcpfs_enforce, prefs.zcpfs_chan);
 #endif
 	_serial = nullptr;
 	_batt_cb = nullptr;

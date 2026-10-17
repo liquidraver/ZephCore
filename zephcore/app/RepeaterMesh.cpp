@@ -180,6 +180,10 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
   if (data[0] == 0) {
     client = acl.getClient(sender.pub_key, PUB_KEY_SIZE);
   }
+#ifdef CONFIG_ZEPHCORE_ZCPFS
+  // a login with a password passes the replay check below; a known client's empty one has none
+  bool zc_fresh = client == nullptr || sender_timestamp > client->last_timestamp;
+#endif
 
   if (client == nullptr) {
     uint8_t perms;
@@ -266,7 +270,7 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     client->out_path_len = OUT_PATH_UNKNOWN;
   }
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-  _zs.onLegacyLogin(*client);  // a legacy login says the client no longer speaks zcpfs
+  _zs.onLegacyLogin(*client, zc_fresh);  // a fresh legacy login says the client no longer speaks zcpfs
 #endif
 
   uint32_t now = getRTCClock()->getCurrentTimeUnique();
@@ -716,7 +720,7 @@ void RepeaterMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret, c
     reply_path_len = OUT_PATH_UNKNOWN;
     if (data[4] == 0 || data[4] >= ' ') {
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-      if (_zs.refuseLegacyLogin()) return;  // the password is never read (lib/zcpfs/SPEC.md 19.6)
+      if (_zs.refuseLegacyLogin(sender.pub_key)) return;  // legacy logins off, or a pinned client under enforce: never read (lib/zcpfs/SPEC.md 19.6)
 #endif
       reply_len = handleLoginReq(sender, secret, timestamp, &data[4], packet->isRouteFlood());
     } else if (data[4] == ANON_REQ_TYPE_REGIONS && packet->isRouteDirect()) {
@@ -1039,7 +1043,7 @@ RepeaterMesh::RepeaterMesh(mesh::MainBoard& board, mesh::Radio& radio, mesh::Mil
     login_fail_limiter(4, 180),
     telemetry(MAX_PACKET_PAYLOAD - 4)
 #ifdef CONFIG_ZEPHCORE_ZCPFS
-    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login)
+    , _zs(*this, acl, *this, FIRMWARE_VER_LEVEL, _prefs.zcpfs_mode, _prefs.zcpfs_no_legacy_login, _prefs.zcpfs_enforce)
 #endif
 {
 

@@ -167,6 +167,37 @@ static inline int zcpfsLegacyLoginCommand(const char *line, uint8_t &refuse, cha
 	return ZCPFS_CMD_CHANGED;
 }
 
+/* `get zcpfs.enforce` and `set zcpfs.enforce on|off` (1 and 0; `default` is
+ * off): while on, no packet from the air clears a pin (SPEC 6.2, 19.6). */
+static inline int zcpfsEnforceCommand(const char *line, uint8_t &enforce, char *reply, size_t size)
+{
+	if (strcmp(line, "get zcpfs.enforce") == 0) {
+		snprintf(reply, size, "> %s", enforce ? "on" : "off");
+		return ZCPFS_CMD_DONE;
+	}
+	if (strncmp(line, "set zcpfs.enforce ", 18) != 0) {
+		return ZCPFS_CMD_NONE;
+	}
+
+	const char *v = line + 18;
+	uint8_t e;
+
+	if (strcmp(v, "on") == 0 || strcmp(v, "1") == 0) {
+		e = 1;
+	} else if (strcmp(v, "off") == 0 || strcmp(v, "0") == 0 || strcmp(v, "default") == 0) {
+		e = 0;
+	} else {
+		snprintf(reply, size, "Err - on or off");
+		return ZCPFS_CMD_DONE;
+	}
+	snprintf(reply, size, "OK - zcpfs.enforce %s", e ? "on" : "off");
+	if (e == enforce) {
+		return ZCPFS_CMD_DONE;
+	}
+	enforce = e;
+	return ZCPFS_CMD_CHANGED;
+}
+
 /* Passive mode seals a text only to a contact that has sent something sealed
  * since this node's last advert: that contact has not yet seen the untagged
  * advert and still pins us. One entry per contact record, by key prefix. */

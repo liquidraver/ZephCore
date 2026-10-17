@@ -140,7 +140,7 @@ struct Parts {
 
 struct Node : Parts, BaseChatMesh {
     std::string name;
-    uint8_t mode = ZCPFS_MODE_ON, no_legacy_login = 0;
+    uint8_t mode = ZCPFS_MODE_ON, no_legacy_login = 0, enforce = 0;
     uint8_t channels[ZCPFS_CHAN_SETTINGS][ZCPFS_CHAN_ENTRY] = {};
     std::vector<std::string> texts, channel_texts;
     std::vector<std::pair<uint32_t, ContactInfo *>> expected;
@@ -150,7 +150,7 @@ struct Node : Parts, BaseChatMesh {
         : Parts(seed), BaseChatMesh(radio, clock, rng, rtc, pool, tables), name(n) {
         radio.completion = true;
         self_id = mesh::LocalIdentity(&rng);
-        zcpfsBind(&mode, &no_legacy_login, channels);
+        zcpfsBind(&mode, &no_legacy_login, &enforce, channels);
         begin();
     }
 
@@ -422,7 +422,7 @@ namespace {
 struct Server : Parts, mesh::Mesh, ZcpfsServerHost {
     std::string name;
     std::string admin_pw = "admin1", guest_pw = "guest1";
-    uint8_t mode = ZCPFS_MODE_ON, no_legacy_login = 0;
+    uint8_t mode = ZCPFS_MODE_ON, no_legacy_login = 0, enforce = 0;
     ClientACL acl;
     ZcpfsServer zs;
     int matching[MAX_CLIENTS];
@@ -430,7 +430,7 @@ struct Server : Parts, mesh::Mesh, ZcpfsServerHost {
 
     Server(const char *n, uint32_t seed)
         : Parts(seed), mesh::Mesh(radio, clock, rng, rtc, pool, tables), name(n),
-          zs(*this, acl, *this, 2, mode, no_legacy_login) {
+          zs(*this, acl, *this, 2, mode, no_legacy_login, enforce) {
         radio.completion = true;
         self_id = mesh::LocalIdentity(&rng);
         begin();
@@ -504,17 +504,25 @@ struct Server : Parts, mesh::Mesh, ZcpfsServerHost {
         zs.onPath(c, pkt->isRouteFlood());
         return false;
     }
-    // the legacy login: timestamp, password
+    // the legacy login: timestamp, password. As handleLoginReq: a known client's empty password logs it in
+    // without a replay check; a password is checked against the stored timestamp.
     void onAnonDataRecv(mesh::Packet *pkt, const uint8_t *secret, const mesh::Identity &sender, uint8_t *data,
                         size_t len) override {
-        if (pkt->getPayloadType() != PAYLOAD_TYPE_ANON_REQ || len < 4 || zs.refuseLegacyLogin()) return;
+        if (pkt->getPayloadType() != PAYLOAD_TYPE_ANON_REQ || len < 4 || zs.refuseLegacyLogin(sender.pub_key)) return;
         data[len] = 0;
-        if (admin_pw != (const char *)&data[4]) return;
-        ClientInfo *c = acl.putClient(sender, 0);
-        c->permissions = PERM_ACL_ADMIN;
-        memcpy(c->shared_secret, secret, PUB_KEY_SIZE);
-        memcpy(&c->last_timestamp, data, 4);
-        zs.onLegacyLogin(*c);
+        uint32_t ts;
+        memcpy(&ts, data, 4);
+        ClientInfo *c = data[4] == 0 ? acl.getClient(sender.pub_key, PUB_KEY_SIZE) : nullptr;
+        bool fresh = c == nullptr || ts > c->last_timestamp;
+        if (c == nullptr) {
+            if (admin_pw != (const char *)&data[4]) return;
+            c = acl.putClient(sender, 0);
+            if (ts <= c->last_timestamp) return;
+            c->permissions = PERM_ACL_ADMIN;
+            memcpy(c->shared_secret, secret, PUB_KEY_SIZE);
+            c->last_timestamp = ts;
+        }
+        zs.onLegacyLogin(*c, fresh);
         uint8_t r[13] = {0};
         uint32_t t = rtc.getCurrentTime();
         memcpy(r, &t, 4);
@@ -789,4 +797,86 @@ TEST(zcpfs_mesh_advert_mark, "UNIT-ZCPFSM-013",
     b.advert();
     air.run(3000);
     CHECK(!pinned(a, b));
+}
+
+TEST(zcpfs_mesh_enforce_advert, "UNIT-ZCPFSM-015",
+     "zcpfs.enforce on: a pinned contact's untagged advert is accepted but keeps the pin; with enforce off a newer one unpins") {
+    Pair p;
+    CHECK(p.a.cli("set zcpfs.enforce on") == "OK - zcpfs.enforce on");
+    CHECK(p.a.cli("get zcpfs.enforce") == "> on");
+    uint32_t before = p.a.contact(p.b)->last_advert_timestamp;
+    p.b.cli("set zcpfs passive");
+    p.b.advert();                               // untagged
+    p.air.run(3000);
+    CHECK(p.a.contact(p.b)->last_advert_timestamp > before);   // accepted
+    CHECK(pinned(p.a, p.b));                    // and the pin kept
+    CHECK(p.a.dm(p.b, "still sealed"));
+    p.air.run(5000);
+    CHECK(p.b.texts.size() == 1 && counter(p.a, "tx t") == 2);
+    CHECK(p.a.cli("set zcpfs.enforce off") == "OK - zcpfs.enforce off");
+    p.b.advert();
+    p.air.run(3000);
+    CHECK(!pinned(p.a, p.b));
+}
+
+TEST(zcpfs_mesh_server_enforce, "UNIT-ZCPFSM-016",
+     "zcpfs.enforce on at a server: a pinned client's legacy login is dropped and the pin kept; an unpinned client logs in as before") {
+    Bench b;
+    CHECK(b.login("admin1"));
+    CHECK(b.s.client(b.c)->zcpfs_pinned);
+    CHECK(b.s.cli("set zcpfs.enforce on") == "OK - zcpfs.enforce on");
+    b.c.cli("set zcpfs passive");               // the client logs in the legacy way
+    CHECK(!b.login("admin1"));
+    CHECK(b.s.client(b.c)->zcpfs_pinned && server_counter(b.s, "legacy refused") == 1);
+    CHECK(b.s.cli("set zcpfs.enforce off") == "OK - zcpfs.enforce off");
+    CHECK(b.login("admin1"));                   // a fresh legacy login unpins
+    CHECK(!b.s.client(b.c)->zcpfs_pinned);
+    CHECK(b.s.cli("set zcpfs.enforce on") == "OK - zcpfs.enforce on");
+    CHECK(b.login("admin1"));                   // not pinned: enforce does not refuse it
+    CHECK(server_counter(b.s, "legacy refused") == 1);
+}
+
+TEST(zcpfs_mesh_server_legacy_replay, "UNIT-ZCPFSM-017",
+     "A recorded empty-password legacy login, replayed after the client's zcpfs login, keeps its pin; a fresh one unpins") {
+    Bench b;
+    b.c.cli("set zcpfs passive");
+    CHECK(b.login("admin1"));                   // legacy: carol becomes a known client
+    uint32_t timeout = 0;
+    CHECK(b.c.sendLogin(*b.c.contact_of(b.s), "", timeout) != MSG_SEND_FAILED);
+    for (int i = 0; i < 1000 && b.c.radio.sent.empty(); i++) {
+        b.c.radio.completion = true;
+        b.c.loop();
+        g_ms += 10;
+    }
+    std::vector<std::vector<uint8_t>> recorded = b.c.radio.sent;   // recorded, never delivered
+    b.c.radio.sent.clear();
+    CHECK(recorded.size() == 1);
+    b.run(2000);
+    b.c.cli("set zcpfs on");
+    CHECK(b.login("admin1"));                   // the zcpfs login pins carol
+    CHECK(b.s.client(b.c)->zcpfs_pinned);
+    b.s.radio.incoming.push_back(recorded[0]);  // the replay: older than carol's last login
+    b.run(3000);
+    CHECK(b.s.client(b.c)->zcpfs_pinned);
+    b.c.cli("set zcpfs passive");
+    CHECK(b.login(""));                         // a fresh empty-password legacy login
+    CHECK(!b.s.client(b.c)->zcpfs_pinned);
+}
+
+TEST(zcpfs_mesh_advert_mark_cap, "UNIT-ZCPFSM-018",
+     "The advert mark is capped at the receiver's clock: a sender's clock running ahead does not freeze its later adverts") {
+    Pair p;
+    const uint32_t ahead = 10 * 86400;
+    p.b.rtc.base += ahead;                      // bob's clock is ten days ahead
+    uint32_t future = p.b.rtc.getCurrentTime();
+    CHECK(p.b.dm(p.a, "from the future"));
+    p.air.run(5000);
+    CHECK(p.a.texts.size() == 1);
+    CHECK(p.a.contact(p.b)->last_advert_timestamp <= p.a.rtc.getCurrentTime());
+    p.b.rtc.base -= ahead;                      // corrected
+    p.b.cli("set zcpfs passive");
+    p.b.advert();                               // untagged, signed at the right time
+    p.air.run(3000);
+    CHECK(p.a.contact(p.b)->last_advert_timestamp < future - ZCPFS_ADVERT_MARK_SLACK);
+    CHECK(!pinned(p.a, p.b));                   // accepted
 }
