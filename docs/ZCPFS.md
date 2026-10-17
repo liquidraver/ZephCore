@@ -168,14 +168,14 @@ sequenceDiagram
   participant A as Alice (app + node)
   participant B as Bob (node)
   Note over A,B: both pinned each other from tagged adverts
-  A->>A: app sends text; no session, no path: hold it
+  A->>A: app sends text, no session and no path: hold it
   A-->>B: probe (flood, the app's send point)
   B-->>A: path return, sealed (flood)
   A->>B: reciprocal path (direct)
   A->>B: handshake 1 (direct)
   B->>A: handshake 2
   A->>B: held text, sealed under the new session
-  B->>A: ACK (4 bytes); the app sees its usual confirmation
+  B->>A: ACK (4 bytes), the app sees its usual confirmation
 ```
 
 Every later message is one sealed packet and one 4-byte ACK. On the bench: first message confirmed in
@@ -195,7 +195,7 @@ sequenceDiagram
   participant S as Server
   C->>S: ANON_REQ: client key, point Y_c (from password + one-time scalar), sealed flags + timestamp
   Note over S: authenticates the key, checks the offer limit, one branch per password it would accept
-  S->>C: reply: one or two branches (point Y_j, sealed 6-byte response); flood answers flood, direct answers direct
+  S->>C: reply: one or two branches (point Y_j, sealed 6-byte response), flood answers flood, direct answers direct
   Note over C: opens the branch built from the same password, or none (wrong password: the app times out)
   C->>S: first text under that branch's session (a confirmation)
   Note over S: only now: client entered with the role, pinned, session current
