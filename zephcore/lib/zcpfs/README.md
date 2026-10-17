@@ -5,7 +5,7 @@ C library, the Python reference model (`ref/`) and the test vectors both must re
 
 **Status, 2026-10-16:** the library reproduces every vector, and its per-contact state machine passes the
 model's whole-node scenarios in host tests. ZephCore companions, repeaters and room servers can be built with
-it (`CONFIG_ZEPHCORE_ZCPFS`, off by default; the glue is in `helpers/zcpfs/`), and that glue has run on a
+it (`CONFIG_ZEPHCORE_ZCPFS`, on by default on this branch; the glue is in `helpers/zcpfs/`), and that glue has run on a
 bench of three nodes. Neither the design nor the code has had a cryptographic review.
 
 ## The library
