@@ -6,7 +6,7 @@ The text CLI of every ZephCore role. Commands are sent over USB serial (CDC-ACM)
 |------|----------------------|
 | **Repeater** | Every section except Room Server, the two Companion sections and Observer |
 | **Room server** | Shares the repeater's CLI — the common commands (radio, region, password, advert, gps, etc.) plus `setperm` / `get acl` — and adds `room.post` |
-| **Companion** | The common commands (`helpers/CommonCLI.cpp`) from USB or the app's CLI, plus Companion WiFi, Companion Extras and zcpfs. The repeater's and room server's own commands (`setperm`, `get acl`, `discover.neighbors`, `uplink.*`, `room.post`) are not there. Over the mesh, a contact with remote CLI permission reaches only the commands upstream's companion has |
+| **Companion** | The common commands (`helpers/CommonCLI.cpp`) from USB or the app's CLI, plus Companion WiFi, Companion Extras and zcpfs (very experimental). The repeater's and room server's own commands (`setperm`, `get acl`, `discover.neighbors`, `uplink.*`, `room.post`) are not there. Over the mesh, a contact with remote CLI permission reaches only the commands upstream's companion has |
 | **Observer** | Its own small CLI, USB only — see [Observer](#observer-zephcore-only). No other section applies |
 
 **Sources:**
@@ -334,7 +334,12 @@ The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and, ap
 
 ---
 
-## zcpfs (ZephCore only; builds with `CONFIG_ZEPHCORE_ZCPFS`, experimental)
+## zcpfs (ZephCore only; builds with `CONFIG_ZEPHCORE_ZCPFS`, VERY EXPERIMENTAL)
+
+> **Very experimental.** For testing only. Neither the protocol nor the code has had a cryptographic review,
+> the wire format and these commands may change or be removed in any version without notice, and two nodes on
+> different versions may not understand each other's sealed packets. It is off by default and not announced
+> in the release notes. Do not rely on it to protect anything.
 
 Forward-secret direct messages, sealed requests, a login that never sends the password, and sealed channel
 messages, between ZephCore nodes that both run zcpfs; everything else is unchanged. How it works:

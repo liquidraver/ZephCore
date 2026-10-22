@@ -4,7 +4,8 @@ zcpfs gives direct messages between two ZephCore nodes forward secrecy, and seal
 where the members choose so, channel messages with a modern AEAD. It is built on top of MeshCore's packets, so nodes without it
 are not affected and the phone apps notice nothing.
 
-**Status:** experimental. Built in by default on this branch (`CONFIG_ZEPHCORE_ZCPFS`, default `y` here, `n`
+**Status:** very experimental, for testing only; the wire format and the CLI commands may change or be removed
+in any version without notice, and the feature is not announced in the release notes. Built in by default on this branch (`CONFIG_ZEPHCORE_ZCPFS`, default `y` here, `n`
 on `dev`/`master`), and switched on per node at
 run time (`set zcpfs on`, default `off`). Companion, repeater and room server roles are done and have run on a
 bench of three nodes beside an official MeshCore 1.18 companion. Neither the design nor the code has had a
