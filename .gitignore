@@ -91,3 +91,4 @@ Thumbs.db
 desktop.ini
 zephcore/lib/zcpfs/SPEC.md
 firmware/txchk_report.py
+_wt-*/
