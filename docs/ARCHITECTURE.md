@@ -424,6 +424,19 @@ startReceive();                 // CAS(REST → RX) clears latch + IRQ
 
 This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX. After recovery, the dispatcher fires `_tx_queued_cb(1, ...)` to re-wake the loop promptly.
 
+### 5.2.3 Received Header Without Payload CRC
+
+In explicit-header mode the chip checks the payload CRC only when the received header says one is present. ZephCore and MeshCore always transmit with CRC on, so with `packet_crc_disable` false every driver rejects a frame whose received header has the CRC flag off, as it rejects a CRC error: not delivered, counted as a receive error, RX restarted.
+
+| Driver | Flag read at RX done |
+|---|---|
+| SX126x, incl. STM32WL | register `0x076B` bit 4 (DS Table 12-1), patch 0003 |
+| LR11xx | `lr11xx_radio_get_lora_rx_info()` (`GetLoRaRxHeaderInfos`, UM §7.2.14) |
+| LR20xx | `crc` of `lr20xx_radio_lora_get_packet_status()` |
+| SX127x | `RegHopChannel` `CrcOnPayload` in loramac-node `SX1276OnDio0Irq` (module patch 0001) |
+
+One register or command read per received LoRa frame. GFSK and a CRC-off configuration are unchanged. Evidence and limits: `devdocs/lld/03-radio-contract.md` §15.
+
 ### 5.3 Noise Floor EMA
 
 Algorithm in `triggerNoiseFloorCalibrate()`:

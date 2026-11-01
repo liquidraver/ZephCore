@@ -1,5 +1,5 @@
 diff --git a/src/radio/sx1276/sx1276.c b/src/radio/sx1276/sx1276.c
-index 7dd9b122..3ea5320d 100644
+index 7dd9b122..b696d878 100644
 --- a/src/radio/sx1276/sx1276.c
 +++ b/src/radio/sx1276/sx1276.c
 @@ -523,12 +523,14 @@ void SX1276SetRxConfig( RadioModems_t modem, uint32_t bandwidth,
@@ -83,3 +83,17 @@ index 7dd9b122..3ea5320d 100644
      {
          lowDatareOptimize = true;
      }
+@@ -1694,7 +1708,12 @@ static void SX1276OnDio0Irq( void* context )
+                     SX1276Write( REG_LR_IRQFLAGS, RFLR_IRQFLAGS_RXDONE );
+ 
+                     irqFlags = SX1276Read( REG_LR_IRQFLAGS );
+-                    if( ( irqFlags & RFLR_IRQFLAGS_PAYLOADCRCERROR_MASK ) == RFLR_IRQFLAGS_PAYLOADCRCERROR )
++                    // ZephCore: with CRC configured on, a received header without the
++                    // payload-CRC flag (RegHopChannel CrcOnPayload) means the payload was
++                    // never checked: handle it as a CRC error.
++                    if( ( ( irqFlags & RFLR_IRQFLAGS_PAYLOADCRCERROR_MASK ) == RFLR_IRQFLAGS_PAYLOADCRCERROR ) ||
++                        ( SX1276.Settings.LoRa.CrcOn &&
++                          ( SX1276Read( REG_LR_HOPCHANNEL ) & RFLR_HOPCHANNEL_CRCONPAYLOAD_ON ) == 0 ) )
+                     {
+                         // Clear Irq
+                         SX1276Write( REG_LR_IRQFLAGS, RFLR_IRQFLAGS_PAYLOADCRCERROR );

@@ -56,6 +56,11 @@ becomes 5).
   LED off still flashed on every DM and channel message. `set leds on` with `set leds.hb off` now keeps
   a T1000-E dark in use while it still blinks three times when you switch it off with the buzzer muted;
   `set leds off` keeps it dark at power-off too.
+- **Packets the radio never checked are no longer repeated.** A LoRa header can say a packet
+  carries no CRC, and the radio then passes it on without checking it. MeshCore always sends a CRC,
+  so such a packet is a misread header or noise; it is now dropped like a packet with a bad CRC, on
+  every radio type. It is rare (one in about 48 000 receptions on a busy repeater) and it does not
+  explain the damaged packet copies seen on map.meshcore.hu.
 - **Zephyr** updated to `b70dbaf045e`. A GPS receiver that fails to start on the first try is now
   really tried again (the two retries did nothing before), and on boards with external flash a
   failed start of that flash is retried at the next mount instead of staying failed until reboot.

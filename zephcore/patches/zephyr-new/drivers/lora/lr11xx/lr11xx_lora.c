@@ -509,6 +509,22 @@ static uint32_t lr11xx_cad_rx_timeout_steps(struct lr11xx_data *data);
  * once; otherwise it reports through *rx_restarted whether it left the receiver
  * running, which the safety net at the end relies on. */
 
+/* The chip checks the payload CRC only when the received explicit header says
+ * one is present (UM Sec 7.2.14).  With CRC configured on, a header without it
+ * is a misread header or noise, and its payload is unchecked. */
+static bool lr11xx_rx_header_lacks_crc(struct lr11xx_data *data)
+{
+	bool crc_present = true;
+	lr11xx_radio_lora_cr_t cr;
+
+	if (data->modem_cfg.packet_crc_disable ||
+	    lr11xx_radio_get_lora_rx_info(&data->hal_ctx, &crc_present, &cr) !=
+		    LR11XX_STATUS_OK) {
+		return false;
+	}
+	return !crc_present;
+}
+
 /* ── RX done ──
  * Deliver unless CRC_ERROR, or HEADER_ERROR with no valid header. A header
  * error during a valid header is a foreign signal; keep the packet
@@ -833,6 +849,13 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 	if (irq & (LR11XX_SYSTEM_IRQ_RX_DONE | LR11XX_SYSTEM_IRQ_CRC_ERROR |
 		   LR11XX_SYSTEM_IRQ_HEADER_ERROR)) {
 		lr11xx_cad_rx_resolve(data, LR11XX_CAD_RX_PACKET);
+	}
+
+	/* A header without the payload-CRC flag takes the CRC-error path. */
+	if ((irq & LR11XX_SYSTEM_IRQ_RX_DONE) && !(irq & LR11XX_SYSTEM_IRQ_CRC_ERROR) &&
+	    lr11xx_rx_header_lacks_crc(data)) {
+		LOG_WRN("RX rejected: header without CRC");
+		irq |= LR11XX_SYSTEM_IRQ_CRC_ERROR;
 	}
 
 	if (lr11xx_irq_rx_done(data, irq, hdr_valid_seen, &rx_restarted) ||

@@ -1569,6 +1569,22 @@ static void lr20xx_irq_status_notes(struct lr20xx_data *data, uint32_t irq)
 	}
 }
 
+/* The chip checks the payload CRC only when the received explicit header says
+ * one is present; the packet status reports that flag.  With CRC configured
+ * on, a header without it is a misread header or noise, and its payload is
+ * unchecked. */
+static bool lr20xx_rx_header_lacks_crc(struct lr20xx_data *data)
+{
+	lr20xx_radio_lora_packet_status_t st;
+
+	if (data->modem_cfg.packet_crc_disable ||
+	    lr20xx_radio_lora_get_packet_status(&data->hal_ctx, &st) !=
+		    LR20XX_STATUS_OK) {
+		return false;
+	}
+	return st.crc == LR20XX_RADIO_LORA_CRC_DISABLED;
+}
+
 /* ── RX done ──
  * Gated on no error bits: RX_DONE and CRC_ERROR co-fire on a failed packet,
  * and a good packet coalesced with a header error may be misaligned in the
@@ -1889,6 +1905,15 @@ static void lr20xx_dio1_work_handler(struct k_work *work)
 		if (irq & (LR20XX_SYSTEM_IRQ_RX_DONE | LR20XX_SYSTEM_IRQ_CRC_ERROR |
 			   LR20XX_SYSTEM_IRQ_LORA_HEADER_ERROR)) {
 			lr20xx_cad_rx_resolve(data, LR20XX_CAD_RX_PACKET);
+		}
+
+		/* A header without the payload-CRC flag takes the CRC-error path. */
+		if ((irq & LR20XX_SYSTEM_IRQ_RX_DONE) &&
+		    !(irq & (LR20XX_SYSTEM_IRQ_CRC_ERROR |
+			     LR20XX_SYSTEM_IRQ_LORA_HEADER_ERROR)) &&
+		    lr20xx_rx_header_lacks_crc(data)) {
+			LOG_WRN("RX rejected: header without CRC");
+			irq |= LR20XX_SYSTEM_IRQ_CRC_ERROR;
 		}
 
 		if (lr20xx_irq_rx_done(data, irq, &rx_restarted) ||
