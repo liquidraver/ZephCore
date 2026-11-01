@@ -16,7 +16,8 @@ namespace mesh {
 
 /**
  * An un-scoped flood: ROUTE_TYPE_FLOOD, or a transport flood whose first code
- * is 0 (no Region computes 0; upstream 01f9293b treats it as un-scoped).
+ * is 0 (no Region computes 0; upstream 01f9293b and bd882a2a treat it as
+ * un-scoped, for the hop limit too).
  */
 inline bool isUnscopedFlood(const Packet *packet)
 {

@@ -21,6 +21,7 @@ add_executable(zephcore_unit
   unit/lpp_tests.cpp
   unit/telemetry_text_tests.cpp
   unit/kiss_modem_tests.cpp
+  unit/chat_contacts_tests.cpp
   support/hash_capture.cpp
   support/identity_utils_boundary.cpp
   ${PRODUCTION}/src/Dispatcher.cpp
@@ -29,6 +30,8 @@ add_executable(zephcore_unit
   ${PRODUCTION}/lib/monocypher/monocypher-ed25519.c
   ${PRODUCTION}/src/Packet.cpp
   ${PRODUCTION}/src/StaticPoolPacketManager.cpp
+  ${PRODUCTION}/src/Mesh.cpp
+  ${PRODUCTION}/helpers/BaseChatMesh.cpp
   ${PRODUCTION}/src/ContentionTracker.cpp
   ${PRODUCTION}/helpers/AdvertDataHelpers.cpp
   ${PRODUCTION}/helpers/MeshTimeSync.cpp

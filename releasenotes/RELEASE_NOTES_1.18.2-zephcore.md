@@ -39,3 +39,10 @@ state.
   so such a packet is a misread header or noise; it is now dropped like a packet with a bad CRC, on
   every radio type. It is rare (one in about 48 000 receptions on a busy repeater) and it does not
   explain the damaged packet copies seen on map.meshcore.hu.
+- **Companions ignore empty contact slots.** A temporary contact slot that had been cleared could
+  still be matched as a sender with no key, so a crafted message could be taken as coming from it.
+  Such slots are now skipped everywhere a contact is looked up (from upstream MeshCore).
+- **Repeater and room server duplicate counters stop at 65535** in the stats the app shows, instead
+  of starting again from 0 on a busy node (from upstream MeshCore).
+
+- **Zephyr updated to a newer main.** The base system moves forward by about 1,100 upstream commits, including Bluetooth host fixes. Nothing changes in how the nodes are used.

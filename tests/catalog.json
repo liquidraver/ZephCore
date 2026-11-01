@@ -363,6 +363,16 @@
       "source": "tests/unit/policy_tests.cpp"
     },
     {
+      "id": "UNIT-CHAT-001",
+      "name": "An empty contact slot (all-zero key) matches no lookup",
+      "source": "tests/unit/chat_contacts_tests.cpp"
+    },
+    {
+      "id": "UNIT-CHAT-002",
+      "name": "sendGroupMessage refuses a negative text length",
+      "source": "tests/unit/chat_contacts_tests.cpp"
+    },
+    {
       "id": "UNIT-OFFGRID-001",
       "name": "Off-grid frequency: the three allowed, nearest per band, none above sub-GHz",
       "source": "tests/unit/policy_tests.cpp"

@@ -218,7 +218,7 @@ Caveats: the `sys=` tally needs `CONFIG_ZEPHCORE_GPS_SAT_DIAG` (default on for r
 
 | Command | Description |
 |---------|-------------|
-| `sensor list [<start_idx>]` | List custom sensor settings (paginated at 134 chars) |
+| `sensor list [<start_idx>]` | List custom sensor settings, one `name=value` per line; when the reply is full it ends with `... next:<idx>` (pass that index to continue) |
 | `sensor get <key>` | Get a custom sensor setting value by key |
 | `sensor set <key> <value>` | Set a custom sensor setting value |
 

@@ -50,3 +50,11 @@ int mesh::Utils::encryptThenMAC(const uint8_t*, uint8_t*, const uint8_t*, int) {
 int mesh::Utils::MACThenDecrypt(const uint8_t*, uint8_t*, const uint8_t*, int) {
     throw std::runtime_error("KISS decrypt command requires real Utils integration");
 }
+// Pure; copied from src/Utils.cpp for the BaseChatMesh contact tests (Mesh.cpp
+// draws retransmit delays from it).
+uint32_t mesh::RNG::nextInt(uint32_t _min, uint32_t _max) {
+    uint32_t num;
+    random((uint8_t *)&num, sizeof(num));
+    if (_max <= _min) return _min;
+    return (num % (_max - _min)) + _min;
+}

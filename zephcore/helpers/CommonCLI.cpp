@@ -565,18 +565,29 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		if (start < 0 || start >= end) {
 			strcpy(reply, "no custom var");
 		} else {
-			snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%d vars\n", end);
+			/* As upstream 017db61c, but sized by replyCap(): entries that do
+			 * not fit move to the next page, one oversized entry is truncated,
+			 * and room is kept for the "... next:N" hint. */
+			const int reply_max = (int)replyCap(sender_timestamp);
+			const int next_reserve = 16;  // room for "... next:NNN"
+			snprintf(dp, reply_max, "%d vars\n", end);
 			dp = strchr(dp, 0);
 			int i;
-			for (i = start; i < end && (dp - reply < 134); i++) {
-				snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "%s=%s\n",
-				    _sensors->getSettingName(i),
-				    _sensors->getSettingValue(i));
+			for (i = start; i < end; i++) {
+				const char* name = _sensors->getSettingName(i);
+				const char* value = _sensors->getSettingValue(i);
+				if (name == NULL) name = "?";
+				if (value == NULL) value = "";
+				int room = reply_max - next_reserve - (int)(dp - reply);
+				int need = snprintf(NULL, 0, "%s=%s\n", name, value);
+				if (need >= room && i > start) break;  // continue on the next page
+				snprintf(dp, room, "%s=%s\n", name, value);
 				dp = strchr(dp, 0);
+				if (need >= room) { i++; break; }
 			}
 			if (i < end) {
-				snprintf(dp, CLI_REPLY_SIZE - (dp - reply), "... next:%d", i);
-			} else {
+				snprintf(dp, reply_max - (int)(dp - reply), "... next:%d", i);
+			} else if (dp > reply && *(dp - 1) == '\n') {
 				*(dp - 1) = 0;  // remove last CR
 			}
 		}

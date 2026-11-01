@@ -744,7 +744,7 @@ default) is migrated to 3200 once (`zc.aoff_set`).
 Autonomous operation features:
 - **Authentication**: Password-based login with timestamp replay protection (120s window)
 - **Permission levels**: GUEST(0), READ_ONLY(1), READ_WRITE(2), ADMIN(3)
-- **Region filtering**: `RegionMap` with transport key matching per flood packet. Un-scoped floods (`mesh::isUnscopedFlood()`: plain floods, and transport floods with code 0 as upstream 1.18.0) go to the wildcard `*`, whose deny-flood flag and `flood.max.unscoped` apply to both; upstream exempts the code-0 case from both (LLD 02 section 16)
+- **Region filtering**: `RegionMap` with transport key matching per flood packet. Un-scoped floods (`mesh::isUnscopedFlood()`: plain floods, and transport floods with code 0 as upstream 1.18.0) go to the wildcard `*`, whose deny-flood flag and `flood.max.unscoped` apply to both, as upstream since `bd882a2a` (LLD 02 sections 16-17)
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s
 - **Node discovery**: answers discovery requests only while forwarding is on. With `advert.interval` and `flood.advert.interval` both `0` the node is hidden and does not answer, as upstream (`isHiddenNode()`); the request still counts against the discovery rate limit
 - **Neighbor tracking**: RSSI/SNR/name/timestamp table (`CONFIG_ZEPHCORE_MAX_NEIGHBOURS`, default 50 slots)
