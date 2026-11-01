@@ -27,7 +27,8 @@
  *   defaults to DC-DC — `regulator-ldo` must NOT be added to the lora node.
  *
  * Clocks: the XIAO carries its own 32.768 kHz crystal (7 pF, 20 ppm), so the
- * upstream board DTS enables LFXO and this node keeps accurate time. The
+ * upstream board DTS enables LFXO, and the &lfclk override below selects it
+ * (upstream's DTS sets the RC; see devdocs/lld/10-peripherals-power.md). The
  * ME25LS02, the other nRF54L board here, has no such crystal and runs the RC
  * instead — do not copy clock settings between the two.
  *
@@ -53,13 +54,15 @@
 /* Zephyr main (4.5) split the nRF clock driver per clock; each one the
  * application uses must be enabled or it is not built (the BT controller fails
  * to compile without lfclk). Upstream's xiao_nrf54l15 DTS enables only &clock,
- * so we add the same pair as upstream's nrf54l15dk. LFCLK keeps the binding's
- * default source, the XIAO's own crystal (see "Clocks" above). */
+ * so we add the same pair as upstream's nrf54l15dk. LFCLK
+ * source is set explicitly to the XIAO's own crystal (see "Clocks" above). */
 &xo {
 	status = "okay";
 };
 
 &lfclk {
+	k32src = "xtal";
+	k32src-accuracy-ppm = <20>;
 	status = "okay";
 };
 

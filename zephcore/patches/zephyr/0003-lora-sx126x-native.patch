@@ -711,7 +711,7 @@ Regenerate with:
 appended to this preamble.
 
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index d3a7313e964..70b06883d32 100644
+index f68bf508853..3ecdb2a4e04 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -6,15 +6,54 @@
@@ -1856,7 +1856,7 @@ index d3a7313e964..70b06883d32 100644
  	/* Re-enable the DIO1 interrupt for the next event (unless sleeping) */
  	if (atomic_get(&data->state) != SX126X_REST_STATE) {
  		sx126x_hal_dio1_irq_enable(dev);
-@@ -921,7 +1746,7 @@ int sx126x_config_carrier(const struct device *dev, uint32_t frequency, int8_t t
+@@ -935,7 +1760,7 @@ int sx126x_config_carrier(const struct device *dev, uint32_t frequency, int8_t t
  		return ret;
  	}
  
@@ -1865,7 +1865,7 @@ index d3a7313e964..70b06883d32 100644
  }
  
  static int sx126x_lora_config(const struct device *dev, const struct lora_modem_config *config)
-@@ -975,6 +1800,15 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
+@@ -989,6 +1814,15 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
  		goto out;
  	}
  
@@ -1881,7 +1881,7 @@ index d3a7313e964..70b06883d32 100644
  	/* Set modulation parameters */
  	ret = bandwidth_to_reg(config->bandwidth, &bw_reg);
  	__ASSERT_NO_MSG(ret == 0);
-@@ -985,6 +1819,12 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
+@@ -999,6 +1833,12 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
  		goto out;
  	}
  
@@ -1894,7 +1894,7 @@ index d3a7313e964..70b06883d32 100644
  	/* Set sync word */
  	ret = sx126x_set_sync_word(dev, config);
  	if (ret < 0) {
-@@ -1009,6 +1849,10 @@ out:
+@@ -1023,6 +1863,10 @@ out:
  	return ret;
  }
  
@@ -1905,7 +1905,7 @@ index d3a7313e964..70b06883d32 100644
  static int sx126x_lora_send_async(const struct device *dev,
  				  uint8_t *data_buf, uint32_t data_len,
  				  struct k_poll_signal *async)
-@@ -1036,11 +1880,27 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1050,11 +1894,27 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return -EINVAL;
  	}
  
@@ -1935,7 +1935,7 @@ index d3a7313e964..70b06883d32 100644
  	k_mutex_lock(&data->lock, K_FOREVER);
  
  	ret = sx126x_ensure_ready(dev);
-@@ -1050,12 +1910,65 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1064,12 +1924,65 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return ret;
  	}
  
@@ -1943,7 +1943,7 @@ index d3a7313e964..70b06883d32 100644
 -	k_msgq_purge(&data->tx_msgq);
 -
 -	/* Set packet parameters */
--	ret = sx126x_set_configured_packet_params(dev, data_len);
+-	ret = sx126x_set_configured_packet_params(dev, data_len, false);
 -	if (ret < 0) {
 +	/* LBT: perform blocking CAD before transmitting */
 +	if (data->config.cad.mode == LORA_CAD_MODE_LBT) {
@@ -2002,12 +2002,12 @@ index d3a7313e964..70b06883d32 100644
 +	k_msgq_purge(&data->tx_msgq);
 +
 +	/* Set packet parameters */
-+	ret = sx126x_set_configured_packet_params(dev, data_len);
++	ret = sx126x_set_configured_packet_params(dev, data_len, false);
 +	if (ret < 0) {
  		goto out_error;
  	}
  
-@@ -1074,8 +1987,90 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1088,8 +2001,90 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -2100,7 +2100,7 @@ index d3a7313e964..70b06883d32 100644
  	if (ret < 0) {
  		goto out_error;
  	}
-@@ -1144,6 +2139,8 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
+@@ -1158,6 +2153,8 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
  	}
  
  	data->rx_cb = NULL;
@@ -2109,7 +2109,7 @@ index d3a7313e964..70b06883d32 100644
  	k_msgq_purge(&data->rx_msgq);
  
  	/* Set packet parameters for variable length reception */
-@@ -1208,6 +2205,8 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1222,6 +2219,8 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		/* Stop async reception */
  		data->rx_cb = NULL;
  		data->rx_cb_user_data = NULL;
@@ -2118,7 +2118,7 @@ index d3a7313e964..70b06883d32 100644
  		if (atomic_cas(&data->state, SX126X_STATE_RX, SX126X_STATE_IDLE)) {
  			sx126x_set_standby(dev, SX126X_STANDBY_RC);
  			sx126x_set_sleep(dev);
-@@ -1222,6 +2221,19 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1236,6 +2235,19 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		return -EINVAL;
  	}
  
@@ -2138,7 +2138,7 @@ index d3a7313e964..70b06883d32 100644
  	if (!atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
  		LOG_ERR("Busy");
  		k_mutex_unlock(&data->lock);
-@@ -1235,13 +2247,24 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1249,13 +2261,24 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		return ret;
  	}
  
@@ -2156,14 +2156,14 @@ index d3a7313e964..70b06883d32 100644
 +	data->rx_duty_cycle_enabled = false;
  
  	/* Set packet parameters */
- 	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN);
+ 	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN, true);
  	if (ret < 0) {
  		data->rx_cb = NULL;
 +		atomic_inc(&data->rx_cb_gen);
  		sx126x_set_sleep(dev);
  		k_mutex_unlock(&data->lock);
  		return ret;
-@@ -1254,11 +2277,21 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1268,11 +2291,21 @@ static int sx126x_lora_recv_async(const struct device *dev,
  	ret = sx126x_set_rx(dev, 0);
  	if (ret < 0) {
  		data->rx_cb = NULL;
@@ -2185,7 +2185,7 @@ index d3a7313e964..70b06883d32 100644
  	k_mutex_unlock(&data->lock);
  	return 0;
  }
-@@ -1316,151 +2349,6 @@ static void sx126x_duty_cycle_stop(const struct device *dev)
+@@ -1330,151 +2363,6 @@ static void sx126x_duty_cycle_stop(const struct device *dev)
  	sx126x_set_sleep(dev);
  }
  
@@ -2201,7 +2201,7 @@ index d3a7313e964..70b06883d32 100644
 -	data->duty_cycle.sleep_period = SX126X_MS_TO_TIMEOUT(
 -		k_ticks_to_ms_ceil32(sleep_period.ticks));
 -
--	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN);
+-	ret = sx126x_set_configured_packet_params(dev, SX126X_MAX_PAYLOAD_LEN, true);
 -	if (ret < 0) {
 -		goto out_error;
 -	}
@@ -2337,7 +2337,7 @@ index d3a7313e964..70b06883d32 100644
  static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
  {
  	struct sx126x_data *data = dev->data;
-@@ -1560,7 +2448,7 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+@@ -1575,7 +2463,7 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  
  	/* Set PA config and TX power */
  	ret = sx126x_hal_configure_tx_params(dev, tx_power, frequency,
@@ -2346,7 +2346,7 @@ index d3a7313e964..70b06883d32 100644
  	if (ret < 0) {
  		goto out_sleep;
  	}
-@@ -1592,53 +2480,1125 @@ out_unlock:
+@@ -1607,53 +2495,1125 @@ out_unlock:
  	return ret;
  }
  
@@ -3511,7 +3511,7 @@ index d3a7313e964..70b06883d32 100644
  
  	/* Initialize HAL */
  	ret = sx126x_hal_init(dev);
-@@ -1700,6 +3660,8 @@ static int sx126x_init(const struct device *dev)
+@@ -1715,6 +3675,8 @@ static int sx126x_init(const struct device *dev)
  						      {0}),			\
  		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
  						      {0}),			\
@@ -3520,7 +3520,7 @@ index d3a7313e964..70b06883d32 100644
  		.dio2_tx_enable = DT_INST_PROP(inst, dio2_tx_enable),		\
  		.dio3_tcxo_enable = DT_INST_NODE_HAS_PROP(inst, dio3_tcxo_voltage), \
  		.dio3_tcxo_voltage = DT_INST_PROP_OR(inst, dio3_tcxo_voltage, 0), \
-@@ -1754,6 +3716,8 @@ DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
+@@ -1769,6 +3731,8 @@ DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
  						      {0}),			\
  		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
  						      {0}),			\
