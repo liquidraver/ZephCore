@@ -204,7 +204,11 @@ bool SystemScreen::handleInput(char c)
 					(now - _dfu_confirm_time) <= DFU_CONFIRM_WINDOW_MS) {
 					_dfu_confirm_time = 0;
 #if IS_ENABLED(CONFIG_ZEPHCORE_BLE_OTA)
-					_task->showAlert(mesh_ble_ota_open() ? "BLE OTA open" : "BLE OTA failed", 2000);
+					/* Deferred to the mesh thread (see mesh_ble_ota_open()) --
+					 * no synchronous result to show; the menu label already
+					 * polls mesh_ble_ota_remaining_s() once it is open. */
+					mesh_ble_ota_open();
+					_task->showAlert("BLE OTA opening...", 2000);
 #elif defined(CONFIG_SOC_SERIES_NRF52)
 					_task->rebootToDFU();
 #else
