@@ -181,6 +181,13 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
   if (client == nullptr) {
     uint8_t perms;
 
+    /* No password is compared, the right one included, while the failed-login
+     * limit is spent: otherwise guessing is limited by airtime only. */
+    if (login_fail_limiter.blocked(getRTCClock()->getCurrentTime())) {
+      LOG_WRN("Login rate-limited (failed attempts exceeded)");
+      return 0;
+    }
+
     /* Constant-time comparison: zero-pad both the received and the stored
      * passwords into cleared buffers (up to the NUL) and compare full-width.
      * The stored buffer can carry garbage past the NUL. */

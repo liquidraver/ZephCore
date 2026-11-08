@@ -392,6 +392,13 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
   }
 
   if (client == nullptr) {
+    /* No password is compared, the right one included, while the failed-login
+     * limit is spent: otherwise guessing is limited by airtime only. */
+    if (login_fail_limiter.blocked(getRTCClock()->getCurrentTime())) {
+      LOG_WRN("Room login rate-limited");
+      return;
+    }
+
     /* Constant-time compare against both stored passwords, zero-padded into
      * cleared buffers first. Admin grants ADMIN; the guest/room password grants
      * READ_WRITE; allow_read_only downgrades any other login to GUEST. */
