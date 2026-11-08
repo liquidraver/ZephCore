@@ -28,6 +28,7 @@ compile_commands.json
 /devdocs/
 /westchanges/
 /meshtimesync-sim/
+/firmware/
 CLAUDE.md
 # Working docs dropped at the root by habit: matched by shape, not one by one
 # (a per-file list once missed one and it went into a commit).
