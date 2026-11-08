@@ -96,7 +96,7 @@ MeshCore-specific functionality uses the standard KISS SetHardware command. The 
 | GetRandom       | `0x02` | Length (1 byte, 1-64)                    |
 | VerifySignature | `0x03` | PubKey (32) + Signature (64) + Data      |
 | SignData        | `0x04` | Data to sign                             |
-| EncryptData     | `0x05` | Key (32) + Plaintext                     |
+| EncryptData     | `0x05` | Key (32) + Plaintext (at most 184 bytes; longer → EncryptFailed) |
 | DecryptData     | `0x06` | Key (32) + MAC (2) + Ciphertext          |
 | KeyExchange     | `0x07` | Remote PubKey (32)                       |
 | Hash            | `0x08` | Data to hash                             |

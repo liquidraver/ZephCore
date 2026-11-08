@@ -121,6 +121,9 @@ static int aes_ecb_crypt(const uint8_t *key, size_t key_len, const uint8_t *src,
 int Utils::encrypt(const uint8_t *shared_secret, uint8_t *dest, const uint8_t *src, int src_len)
 {
 	uint8_t tmp[MAX_PACKET_PAYLOAD + CIPHER_BLOCK_SIZE];
+	if (src_len > MAX_PACKET_PAYLOAD) {
+		return 0;	/* tmp holds a packet payload; the KISS host can send more */
+	}
 	const uint8_t *sp = src;
 	uint8_t *dp = tmp;
 	int rem = src_len;
