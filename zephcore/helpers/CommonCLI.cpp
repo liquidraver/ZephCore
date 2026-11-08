@@ -492,9 +492,13 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			snprintf(reply, CLI_REPLY_SIZE, "Error: freq 150-2500, bw %s, sf 5-12, cr 5-8, timeout>0", ZC_RADIO_BW_RANGE_STR);
 		}
 	} else if (memcmp(command, "password ", 9) == 0) {
-		StrHelper::strzcpy(_prefs->password, &command[9], sizeof(_prefs->password));
-		savePrefs();
-		snprintf(reply, CLI_REPLY_SIZE, "password now: %s", _prefs->password);
+		if (command[9] == 0) {
+			strcpy(reply, "Error: empty admin password");	/* would disable admin login by password */
+		} else {
+			StrHelper::strzcpy(_prefs->password, &command[9], sizeof(_prefs->password));
+			savePrefs();
+			snprintf(reply, CLI_REPLY_SIZE, "password now: %s", _prefs->password);
+		}
 	} else if (memcmp(command, "clear stats", 11) == 0) {
 		_callbacks->clearStats();
 		strcpy(reply, "(OK - stats reset)");

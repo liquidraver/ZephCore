@@ -418,6 +418,8 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
      * compares above still run unconditionally, so timing is unchanged.
      * allow_read_only below remains the intended way to run an open room. */
     if (_prefs.guest_password[0] == 0) guest_match = false;
+    /* Likewise an empty stored admin password: admin only through the ACL. */
+    if (_prefs.password[0] == 0) admin_match = false;
 
     uint8_t perms;
     if (admin_match) {

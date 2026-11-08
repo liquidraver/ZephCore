@@ -206,6 +206,10 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
                   guest_pw,
                   sizeof(received));
 
+    /* An empty stored admin password matches nothing: an empty login is a guest
+     * login, and admin is then reached only through the ACL. */
+    if (_prefs.password[0] == 0) admin_match = false;
+
     /* An empty stored guest password means open guest access on a repeater, as
      * Arduino MeshCore. Deliberately not what RoomServerMesh does, where it
      * disables guest access. A repeater guest gets login plus status/telemetry. */

@@ -84,7 +84,7 @@ Every clock set (these commands, GPS, the app, mesh time sync, SNTP) is also wri
 
 | Command | Description |
 |---------|-------------|
-| `password <new_password>` | Set the admin password (**max 15 characters**) |
+| `password <new_password>` | Set the admin password (**max 15 characters**). An empty one is refused: a stored empty admin password matches no login, so admin is then only reachable through the ACL (`setperm`) or the serial console |
 | `setperm <perms_hex> <pubkey_hex>` | *(ZephCore only)* Set ACL permissions for a node (app format: 2-char hex perms first) |
 | `setperm <pubkey_hex> <perms_dec>` | Set ACL permissions for a node (Arduino format: pubkey first, decimal perms) |
 | `get acl` | *(USB only)* List all ACL entries, as upstream: `ACL:` then one `<perms hex> <public key hex>` line per entry, printed straight to the console (the `  -> ` reply line is empty). Guest entries (permissions 0) are skipped. |
