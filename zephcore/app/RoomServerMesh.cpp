@@ -42,6 +42,7 @@ LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #define CLI_REPLY_DELAY_MILLIS      600
 #define LAZY_CONTACTS_WRITE_DELAY   5000
+#define REPLAY_BOOT_SLACK           60    // seconds below the boot clock where replay marks start
 #define SERVER_RESPONSE_DELAY       300
 #define TXT_ACK_DELAY               200
 
@@ -438,6 +439,7 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     }
 
     client = acl.putClient(sender, 0);
+    if (client->last_timestamp < _replay_floor) client->last_timestamp = _replay_floor;  // a new entry too
     if (sender_timestamp <= client->last_timestamp) {
       LOG_WRN("Possible login replay attack!");
       return;
@@ -757,6 +759,14 @@ void RoomServerMesh::begin(RepeaterDataStore* store) {
   mesh::Mesh::begin();
   _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
   acl.load(_store->getFS(), self_id);
+  /* last_timestamp is RAM only: every client starts at the boot clock less
+   * REPLAY_BOOT_SLACK, so frames recorded before that do not run again after a
+   * reboot (devdocs/lld/07-server-roles.md section 22). */
+  {
+    uint32_t now = getRTCClock()->getCurrentTime();
+    _replay_floor = now > REPLAY_BOOT_SLACK ? now - REPLAY_BOOT_SLACK : 0;
+    for (int i = 0; i < acl.getNumClients(); i++) acl.getClientByIdx(i)->last_timestamp = _replay_floor;
+  }
   region_map.load(_store->getFS());
 
   // establish default-scope from persisted default region (if any)
@@ -985,6 +995,8 @@ void RoomServerMesh::handleCommand(uint32_t sender_timestamp, char* command, cha
       if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
         if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
           if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+          ClientInfo* c = acl.getClient(pubkey, hex_len / 2);  // a new entry starts at the floor
+          if (c && c->last_timestamp < _replay_floor) c->last_timestamp = _replay_floor;
           strcpy(reply, "OK");
         } else {
           strcpy(reply, "Err - invalid params");

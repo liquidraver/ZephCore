@@ -742,7 +742,7 @@ default) is migrated to 3200 once (`zc.aoff_set`).
 ### 6.3 RepeaterMesh
 
 Autonomous operation features:
-- **Authentication**: Password-based login with timestamp replay protection (120s window)
+- **Authentication**: Password-based login; replay protection by each client's newest accepted timestamp (`ClientInfo::last_timestamp`, RAM only: logins, requests and CLI must be newer). At boot every client starts at the node's clock less 60 s (`REPLAY_BOOT_SLACK`), so frames recorded before a reboot do not run again, as long as the clock survives the reboot (RTC chip, or a warm reboot)
 - **Permission levels**: GUEST(0), READ_ONLY(1), READ_WRITE(2), ADMIN(3)
 - **Region filtering**: `RegionMap` with transport key matching per flood packet. Un-scoped floods (`mesh::isUnscopedFlood()`: plain floods, and transport floods with code 0 as upstream 1.18.0) go to the wildcard `*`, whose deny-flood flag and `flood.max.unscoped` apply to both, as upstream since `bd882a2a` (LLD 02 sections 16-17)
 - **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s: after the fourth no password is checked, the right one included, until the window ends (`RateLimiter::blocked()`). An empty stored admin password matches no login

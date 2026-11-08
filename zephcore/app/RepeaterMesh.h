@@ -106,6 +106,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
   TransportKey default_scope;
   RateLimiter discover_limiter, anon_limiter;
   RateLimiter login_fail_limiter;  // ZEPHCORE: wrong-password attempts (MeshCore#2556)
+  uint32_t _replay_floor = 0;      // ZEPHCORE: lowest last_timestamp this boot (begin())
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;

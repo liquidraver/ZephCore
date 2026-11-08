@@ -92,6 +92,7 @@ class RoomServerMesh : public mesh::Mesh, public CommonCLICallbacks {
   bool recv_pkt_unscoped_flood;
   TransportKey default_scope;
   RateLimiter login_fail_limiter;  // wrong-password attempts (MeshCore#2556)
+  uint32_t _replay_floor = 0;      // lowest last_timestamp this boot (begin())
   bool region_load_active;
   unsigned long dirty_contacts_expiry;
   unsigned long next_push;
