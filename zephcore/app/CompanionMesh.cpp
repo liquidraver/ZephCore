@@ -2251,6 +2251,11 @@ bool CompanionMesh::handleCmdAddUpdateContact(const uint8_t *data, size_t len)
 		}
 		c.sync_since = 0;
 		c.shared_secret_valid = false;
+		/* The stored advert timestamp is the replay guard of adverts: the app
+		 * may raise it, never lower it. */
+		if (existing && existing->last_advert_timestamp > c.last_advert_timestamp) {
+			c.last_advert_timestamp = existing->last_advert_timestamp;
+		}
 
 		if (existing) {
 			// Update existing
