@@ -142,7 +142,7 @@ static void radio_set_tx_power(uint8_t power_dbm) {
 #define CLI_REPLY_DELAY_MILLIS      600
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
-#define REPLAY_BOOT_SLACK            60   // seconds below the boot clock where replay marks start
+#define REPLAY_BOOT_SLACK            10   // seconds below the boot clock where replay marks start
 
 void RepeaterMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
 #if MAX_NEIGHBOURS // check if neighbours enabled

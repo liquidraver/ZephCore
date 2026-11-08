@@ -42,7 +42,7 @@ LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #define CLI_REPLY_DELAY_MILLIS      600
 #define LAZY_CONTACTS_WRITE_DELAY   5000
-#define REPLAY_BOOT_SLACK           60    // seconds below the boot clock where replay marks start
+#define REPLAY_BOOT_SLACK           10    // seconds below the boot clock where replay marks start
 #define SERVER_RESPONSE_DELAY       300
 #define TXT_ACK_DELAY               200
 
