@@ -766,6 +766,16 @@ config ZEPHCORE_LED_PWM
 	  alias: that LED is driven through PWM and dimmed by leds.brightness.
 	  Pulls in CONFIG_PWM automatically.
 
+config ZEPHCORE_LED_DEFAULT_BRIGHTNESS
+	int "Default PWM LED brightness (%)"
+	depends on ZEPHCORE_LED_PWM
+	range 0 100
+	default 100
+	help
+	  leds.brightness on a node with no saved value. A board whose PWM
+	  LED is too bright for an always-on heartbeat lowers it in
+	  board.conf.
+
 endmenu
 
 menu "Debug & Logging"

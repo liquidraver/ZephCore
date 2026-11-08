@@ -28,3 +28,12 @@ stranger in radio range could keep guessing as fast as the airtime allowed.
   `EncryptData` command with a plaintext longer than 192 bytes wrote past a buffer in the modem's
   memory. Plaintexts over 184 bytes, the most a packet can carry, are now refused with
   `EncryptFailed`. Only the computer on the modem's serial port could send it.
+- **KISS modem: protocol version 2.** A host can now ask which radio controls the modem has
+  (`GetCapabilities`), switch the radio's boosted receive gain (`SetRxBoostedGain`) and, on boards
+  with a switchable LNA in the front end, turn that LNA on or off (`SetFemState`). These follow
+  MeshCore's KISS protocol 2. ZephCore does not take MeshCore's timed AGC reset: the modem keeps
+  resetting a stuck receiver only after a long silence, as every ZephCore role does, so the AGC
+  interval commands answer `Unsupported`. None of these settings is saved across a restart.
+- **SenseCAP Solar: dimmer heartbeat LED.** The white LED's heartbeat blink can now be dimmed with
+  `set leds.brightness <0-100>`, and a newly set-up node starts at 10%, as in MeshCore. A node you
+  already use keeps its current brightness (100%); `set leds.brightness 10` gives the new default.

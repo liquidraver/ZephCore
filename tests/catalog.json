@@ -591,6 +591,21 @@
       "id": "UNIT-KISS-005",
       "name": "msUntilNextTx reports each timed state and nothing while idle",
       "source": "tests/unit/kiss_modem_tests.cpp"
+    },
+    {
+      "id": "UNIT-KISS-006",
+      "name": "GetCapabilities reports FEM RX and boosted gain where present, never AGC; AGC commands are Unsupported",
+      "source": "tests/unit/kiss_modem_tests.cpp"
+    },
+    {
+      "id": "UNIT-KISS-007",
+      "name": "SetFemState is all-or-nothing, held during a TX, and answered in arrival order after TxDone",
+      "source": "tests/unit/kiss_modem_tests.cpp"
+    },
+    {
+      "id": "UNIT-KISS-008",
+      "name": "SetRxBoostedGain is Unsupported without the radio hook, refused during TX, and drains RX before applying",
+      "source": "tests/unit/kiss_modem_tests.cpp"
     }
   ]
 }

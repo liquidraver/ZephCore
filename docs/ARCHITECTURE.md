@@ -776,7 +776,10 @@ deadline. Differences from upstream:
   airtime of a 255-byte packet from the start of CSMA), then reports TX failed; upstream reports it at once.
 - A transmit times out only once the radio has concluded it, as in `Dispatcher::loop()`.
 - `SetRadio` outside the `ZC_RADIO_*` ranges (NodePrefs.h) is refused with `HW_ERR_INVALID_PARAM`.
-- No periodic AGC reset: the radio's own deaf-aware maintenance replaces it, as in every role.
+- No periodic AGC reset: the radio's own deaf-aware maintenance replaces it, as in every role. Protocol v2's AGC
+  interval commands answer `Unsupported` and GetCapabilities leaves bit 0 clear.
+- Protocol v2 FEM control is RX gain only, where the board wires `lna-bypass-gpios` (answered by `KissBoard` in
+  `main_kiss_modem.cpp`, as upstream's board CLI would); boosted RX gain on SX126x, LR11xx and LR2021, not SX127x.
 Radio settings live in RAM only (upstream: the same); the identity is `/lfs/repeater/_main.id`, shared with the
 server roles. No UI: at boot the LEDs are driven off and a display is blanked (`mc_display_off()`, or
 `oled_sleep()` without the display UI), as a server leaves them after its auto-off. Host tests: `UNIT-KISS-*`
@@ -932,7 +935,8 @@ Does not cover the display backlight, which has its own UI brightness setting (`
 `lora-tx-pwm-led` drives that LED through PWM (`zephcore_led_pwm_write()`), and the PWM alias wins over
 `led0` / `lora-tx-led`. `CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and stops
 the server and observer mains from configuring `led0` as a GPIO, because that pin belongs to the PWM
-driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files.
+driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files. A new node
+starts at `CONFIG_ZEPHCORE_LED_DEFAULT_BRIGHTNESS` (100; `sensecap_solar` 10).
 
 ### 7.6 WiFi / MQTT / TCP Transports
 
