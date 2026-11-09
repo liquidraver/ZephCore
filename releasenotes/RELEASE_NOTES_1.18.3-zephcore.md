@@ -1,7 +1,7 @@
 # ZephCore 1.18.3-zephcore
 
-A failed-login limit on repeaters and room servers that now really limits, and a memory fix in the
-KISS modem.
+A failed-login limit on repeaters and room servers that now really limits, fewer collisions between
+neighbours after a busy channel, and a memory fix in the KISS modem.
 
 > [!NOTE]
 > A normal upgrade keeps your identity, settings, contacts and phone pairing.
@@ -21,6 +21,59 @@ stranger in radio range could keep guessing as fast as the airtime allowed.
   the app does when you open a repeater you have used before.
 - Anyone in range can now hold password logins closed by sending four wrong ones every three
   minutes. If that happens, log in from a client that is already on the access list, or over USB.
+
+## Fewer collisions after a busy channel
+
+Before a node transmits it listens, and if it hears the channel in use it waits and tries again.
+Two things made neighbours that waited out the same packet collide with each other afterwards:
+
+- **The wait only had three possible lengths** (120, 240 or 360 ms), so two waiting nodes picked
+  the same one about a third of the time. Both then listened at the same moment, both heard
+  nothing, and both transmitted together.
+- **A node that was receiving sent the moment that packet ended**, without waiting at all. Every
+  node in range that had something ready did the same.
+
+Now the wait is picked from many short steps, each one listen long (about 12 ms on the default
+radio settings), spread over the time a typical packet takes to send. Two waiting neighbours pick
+the same step about once in thirty. If the channel is still busy on the next try the spread doubles,
+up to four times. After hearing a packet, a node now waits out its turn too. The first retry comes
+a little sooner than before on average.
+
+Nothing changes in how a busy channel is treated: a node never transmits over traffic it can hear.
+
+New: **`get lbt.stats`** shows how often listen-before-talk found the channel clear or busy, how
+often a busy reading was followed by an actual reception, and the longest time the node has been
+held back. `clear stats` resets it. See `docs/CLI_commands.md`.
+
+For digging deeper there is a diagnostic build option, `lbt_logging.conf` (added after
+`packet_logging.conf`): it prints one `LBT ...` line for every transmit attempt, with the outcome,
+the signal strength right after a busy reading and the wait chosen. Tools that read the packet
+lines, such as mctomqtt, ignore these lines. `ver` shows `+lbtlog` on such a build.
+
+## Steadier noise floor
+
+For a few milliseconds after the receiver starts listening, the radio reports no signal at all and then
+climbs to the real level. The node starts listening again many times a minute without the noise-floor
+measurement knowing, so now and then that measurement caught the dip and pulled the noise floor
+down by about 3 dB for a couple of minutes.
+
+- A reading that would be the first, or that lies 6 dB or more below the current noise floor, is now
+  taken again 10 ms later, and the second reading counts.
+- A reading below what physics allows for the bandwidth is thrown away instead of being counted
+  as the lowest possible value.
+- Right after a restart, the first few readings now count equally, so one bad first reading no
+  longer takes minutes to wash out.
+
+`get cad.stats` on the USB console shows how often each happened (`c` and `l`).
+
+## Adaptive CAD no longer mistakes undecodable packets for false alarms
+
+The node tunes its listen-before-talk sensitivity by testing it in quiet moments: if the test says
+"busy" and no packet follows, it counts a false alarm, and enough false alarms make it less
+sensitive. A packet the node can hear but not decode, too weak, or with a damaged header, also
+counted as a false alarm, which nudged the node toward ignoring real traffic. Now the radio notes
+whether a packet start (preamble) or header showed up after the test; if so it counts as real
+traffic. `get cad.stats` shows these as a new `u` column next to `t`.
 
 ## Other changes
 

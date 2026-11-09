@@ -343,7 +343,11 @@ add_definitions(-DFIRMWARE_BUILD_EPOCH=${ZEPHCORE_BUILD_EPOCH}u)
 # Version string: set once near the top of this file (the release workflow reads
 # that line). The per-app `#ifndef FIRMWARE_VERSION` fallbacks only apply to
 # builds that bypass this injection.
-add_definitions(-DFIRMWARE_VERSION="${ZEPHCORE_FIRMWARE_VERSION}")
+set(_zc_fw_version "${ZEPHCORE_FIRMWARE_VERSION}")
+if(CONFIG_ZEPHCORE_LBT_LOGGING)
+    string(APPEND _zc_fw_version "+lbtlog")   # diagnostic build, visible in `ver`
+endif()
+add_definitions(-DFIRMWARE_VERSION="${_zc_fw_version}")
 
 add_subdirectory(lib/monocypher)
 target_link_libraries(app PRIVATE monocypher)

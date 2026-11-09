@@ -147,6 +147,12 @@ public:
 	bool cadRelaxOnTxStarvation() override { return _cad.relaxOnTxStarvation(); }
 	int formatCadStatus(char *buf, int cap) override;
 
+	/* LBT: backoff slot width and per-attempt outcome counters (`get lbt.stats`). */
+	uint32_t getLbtSlotMs() override;
+	int formatLbtCounters(char *buf, int cap) override;
+	void resetLbtCounters() override;
+	int formatLastTxAttempt(char *buf, int cap) override;
+
 private:
 	/* ── The radio family (LoRaRadioOps.h): the Zephyr LoRa API plus the
 	 * driver's extension table. A NULL entry is the documented default. ── */
@@ -316,11 +322,15 @@ private:
 
 	/* Sampler diagnostics for `get cad` (no behaviour depends on them): reads
 	 * ok/busy, bursts abandoned, and attempts refused before a burst started
-	 * (duty-cycle sleep), without which "refused" and "fine" both read b0/a0. */
+	 * (duty-cycle sleep), without which "refused" and "fine" both read b0/a0;
+	 * bursts read again (seed or suspiciously low), and bursts dropped as
+	 * below the thermal floor even after that. */
 	uint32_t _rssi_reads_ok;
 	uint32_t _rssi_reads_busy;
 	uint32_t _rssi_bursts_abandoned;
 	uint32_t _rssi_dc_blocked;
+	uint32_t _rssi_confirms;
+	uint32_t _rssi_below_min;
 
 	/* Silence tracking for deafness hunting.  Reports only; the recovery
 	 * decision lives in agcIdleMaintenance() and is family-gated. */
@@ -337,6 +347,29 @@ private:
 	/* Start of the last TX, for the drift poll's post-TX quiet window
 	 * (start-referenced: one stamp site; seconds against a minute). */
 	uint32_t _last_tx_start_ms;
+
+	/* LBT outcome per startSendRaw() (mesh thread): CAD clear and TX started,
+	 * CAD busy, any other driver error, refused before the driver (not ready,
+	 * receiving, previous TX winding down). */
+	uint32_t _lbt_clear;
+	uint32_t _lbt_busy;
+	uint32_t _lbt_err;
+	uint32_t _lbt_gate;
+	/* Busy verdicts followed by a reception (good or CRC error) before
+	 * _lbt_busy_until: evidence the channel really was busy. The deadline is
+	 * set on the mesh thread and consumed (CAS to 0) in the RX callback. */
+	atomic_t _lbt_busy_rx;
+	atomic_t _lbt_busy_until;
+	void noteRxAfterLbtBusy();
+	/* The last startSendRaw()'s outcome, for formatLastTxAttempt(). The RSSI
+	 * series after a busy is read only in CONFIG_ZEPHCORE_LBT_LOGGING builds,
+	 * at about 0.25, 1, 2, 4, 8 and 16 ms after the verdict (LLD 03 §17). */
+	enum LastTx : uint8_t { LAST_NONE, LAST_CLEAR, LAST_BUSY, LAST_ERR, LAST_GATE_READY,
+				LAST_GATE_RX, LAST_GATE_TX, LAST_TOO_LONG };
+	static constexpr int LBT_RSSI_PROBES = 6;
+	uint8_t _last_tx;
+	int16_t _last_tx_err;
+	int16_t _last_busy_rssi[LBT_RSSI_PROBES];
 
 	/* Config cache — skip redundant hwConfigure() */
 	struct lora_modem_config _last_cfg;

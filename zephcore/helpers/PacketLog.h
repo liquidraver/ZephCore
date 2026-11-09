@@ -79,3 +79,30 @@ static inline void packet_log_rx(const char *, const mesh::Packet *, float, floa
 static inline void packet_log_tx(const char *, const mesh::Packet *) {}
 
 #endif
+
+#if IS_ENABLED(CONFIG_ZEPHCORE_LBT_LOGGING)
+
+/* One listen-before-talk outcome (Dispatcher::logTxAttempt()). Starts with
+ * "LBT " and never contains "U: " or "-> ", so mctomqtt neither parses it as a
+ * packet nor mistakes it for a CLI reply. t is uptime in ms; ref the LBT
+ * refusals before this attempt; retry the backoff picked (0 = none); nf the
+ * noise-floor estimate. Fields: docs/ARCHITECTURE.md, LLD 03 §17. */
+static inline void packet_log_lbt(const char *outcome, const mesh::Packet *pkt,
+				  unsigned ref, uint32_t retry_ms, int noise_floor)
+{
+	zc_console_line_start();
+	if (pkt) {
+		printk("LBT t=%u %s ref=%u retry=%u len=%d type=%d route=%s nf=%d\n",
+			k_uptime_get_32(), outcome, ref, retry_ms, pkt->getRawLength(),
+			pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", noise_floor);
+	} else {
+		printk("LBT t=%u %s ref=%u retry=%u nf=%d\n",
+			k_uptime_get_32(), outcome, ref, retry_ms, noise_floor);
+	}
+}
+
+#else
+
+static inline void packet_log_lbt(const char *, const mesh::Packet *, unsigned, uint32_t, int) {}
+
+#endif

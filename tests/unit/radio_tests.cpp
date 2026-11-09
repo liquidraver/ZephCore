@@ -25,7 +25,9 @@ void feed(CadController& c, int8_t level, int probes, int busy, int fp) {
 TEST(noise_seed, "UNIT-NOISE-001", "Noise floor seeds from the first sample within the clamp window") {
     NoiseFloorEstimator e;
     CHECK(!e.seeded() && e.floor() == DEFAULT_NOISE_FLOOR && e.isQuiet(-20));
-    CHECK(e.update(-130, -123) == NoiseFloorEstimator::SEEDED && e.floor() == -123);
+    // Below the thermal floor: not a reading, so it cannot seed.
+    CHECK(e.update(-130, -123) == NoiseFloorEstimator::REJECTED && !e.seeded());
+    CHECK(e.update(-123, -123) == NoiseFloorEstimator::SEEDED && e.floor() == -123);
     NoiseFloorEstimator hot;
     CHECK(hot.update(-40, -123) == NoiseFloorEstimator::SEEDED && hot.floor() == NOISE_FLOOR_CEILING_DBM);
     NoiseFloorEstimator mid;
@@ -51,16 +53,17 @@ TEST(noise_gate, "UNIT-NOISE-002", "Warm-up accepts everything then outliers are
     CHECK(e.update(f + NOISE_FLOOR_SAMPLING_THRESHOLD - 1, -130) == NoiseFloorEstimator::UPDATED);
 }
 TEST(noise_rounding, "UNIT-NOISE-003", "EMA step rounds to nearest symmetrically with a +-3 dB dead zone") {
+    const int W = 1 << NOISE_FLOOR_EMA_SHIFT;
+    // Past warm-up (W samples at the seed value) the step is 1/W.
     NoiseFloorEstimator down; down.update(-100, -130);
+    for (int i = 0; i < W; ++i) down.update(-100, -130);
     for (int i = 0; i < 200; ++i) down.update(-110, -130);
     CHECK(down.floor() == -107);
-    NoiseFloorEstimator up; up.update(-110, -130);
-    for (int i = 0; i < 7; ++i) up.update(-100, -130);  // stay inside warm-up
     NoiseFloorEstimator one; one.update(-100, -130);
+    for (int i = 0; i < W; ++i) one.update(-100, -130);
     one.update(-96, -130); CHECK(one.floor() == -99);   // (+4 + 4) / 8 = +1
     one.update(-103, -130); CHECK(one.floor() == -100); // (-4 - 4) / 8 = -1
     one.update(-97, -130); CHECK(one.floor() == -100);  // (+3 + 4) / 8 = 0
-    CHECK(up.floor() > -110 && up.floor() <= -103);
 }
 TEST(noise_median_quiet, "UNIT-NOISE-004", "Median of an even burst and the quiet verdict against the floor") {
     int16_t s[8] = {-90, -110, -100, -120, -95, -105, -115, -101};
@@ -68,6 +71,23 @@ TEST(noise_median_quiet, "UNIT-NOISE-004", "Median of an even burst and the quie
     for (int i = 1; i < 8; ++i) CHECK(s[i - 1] <= s[i]);
     NoiseFloorEstimator e; e.update(-110, -130);
     CHECK(e.isQuiet(-110 + CAD_PROBE_RSSI_GUARD) && !e.isQuiet(-110 + CAD_PROBE_RSSI_GUARD + 1));
+}
+TEST(noise_warmup_dip, "UNIT-NOISE-005", "Warm-up weighs samples equally and suspicious low readings are confirmed") {
+    // A low seed (RSSI start-up dip) is mostly gone after warm-up: a running
+    // mean leaves 1/W of it, the old fixed 1/W step left (1-1/W)^W.
+    NoiseFloorEstimator e;
+    CHECK(e.wantsConfirm(-104));                       // unseeded: every seed is read twice
+    e.update(-112, -126);
+    for (int i = 0; i < (1 << NOISE_FLOOR_EMA_SHIFT); ++i) e.update(-104, -126);
+    CHECK(e.floor() >= -106 && e.floor() <= -104);
+    // Seeded: only readings CONFIRM_DB or more below the floor are read again.
+    int f = e.floor();
+    CHECK(!e.wantsConfirm(f - NOISE_FLOOR_CONFIRM_DB + 1));
+    CHECK(e.wantsConfirm(f - NOISE_FLOOR_CONFIRM_DB));
+    // The chip's empty code below the thermal floor never moves the floor.
+    CHECK(e.update(-127, -126) == NoiseFloorEstimator::REJECTED && e.floor() == f);
+    // A genuine drop above the thermal floor is still tracked.
+    CHECK(e.update(f - 10, -126) == NoiseFloorEstimator::UPDATED && e.floor() < f);
 }
 
 TEST(cad_window, "UNIT-CAD-001", "Level window narrows only where the driver clamp binds") {
@@ -177,7 +197,7 @@ TEST(cad_probe_levels, "UNIT-CAD-007", "Probe levels sweep when manual and mix o
       for (int l : expected) CHECK(c.pickProbeLevel() == l);
       hw.pmin = 0; }
 }
-TEST(cad_pending, "UNIT-CAD-008", "Pending verdicts book tp or fp, unresolved ones are withdrawn and reset drops them") {
+TEST(cad_pending, "UNIT-CAD-008", "Pending verdicts book tp, fp or undecoded-real, unresolved ones are withdrawn and reset drops them") {
     FakeCadHw hw; CadController c(hw);
     CHECK(!c.hasPending());
     c.recordProbe(0, true); c.setPending(0, 500);
@@ -186,8 +206,11 @@ TEST(cad_pending, "UNIT-CAD-008", "Pending verdicts book tp or fp, unresolved on
     CHECK(!c.hasPending() && c.stats(0).tp == 1 && c.stats(0).fp == 0);
     c.recordProbe(0, true); c.setPending(0, 900); c.resolvePending(2);
     CHECK(c.stats(0).fp == 1 && c.stats(0).probes == 2 && c.stats(0).busy == 2);
+    // A preamble or header seen but nothing decoded: real, never an FP.
+    c.recordProbe(0, true); c.setPending(0, 900); c.resolvePending(3);
+    CHECK(c.stats(0).pre == 1 && c.stats(0).fp == 1 && c.stats(0).tp == 1 && c.stats(0).probes == 3);
     c.recordProbe(0, true); c.setPending(0, 900); c.resolvePending(0);
-    CHECK(c.stats(0).probes == 2 && c.stats(0).busy == 2);
+    CHECK(c.stats(0).probes == 3 && c.stats(0).busy == 3);
     c.recordProbe(0, true); c.setPending(0, 900);
     c.resetStats();
     CHECK(!c.hasPending() && c.pendingDeadline() == 0 && c.stats(0).probes == 0);

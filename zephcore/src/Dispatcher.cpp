@@ -5,7 +5,9 @@
 
 #include <math.h>
 
-// ZEPHCORE: log module backing MESH_DEBUG_PRINTLN (see MeshCore.h).
+// ZEPHCORE: log module backing MESH_DEBUG_PRINTLN (see MeshCore.h); snprintf for
+// formatLbtStatus().
+#include <stdio.h>
 #include <zephyr/logging/log.h>
 LOG_MODULE_REGISTER(zephcore_dispatcher, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
 
@@ -29,6 +31,8 @@ Dispatcher::Dispatcher(Radio& radio, MillisecondClock& ms, PacketManager& mgr)
   cad_busy_start = 0;
   lbt_busy_start = 0;
   lbt_next_warn = 0;
+  lbt_streak_max = 0;
+  lbt_refusals = 0;
   tx_budget_ms = 0;
   last_budget_update = 0;
   duty_cycle_window_ms = 0;
@@ -349,12 +353,16 @@ bool Dispatcher::txBudgetAllowsSend(uint32_t now) {
 void Dispatcher::onLbtRefused(uint32_t now, int len) {
   uint32_t retry = getCADFailRetryDelay();
   LOG_INF("checkSend: startSendRaw refused (LBT busy), re-queuing delay=%u", retry);
+  noteTxAttempt(outbound, NULL, retry);  // before the count moves: ref = refusals before this one
+  if (lbt_refusals < 255) lbt_refusals++;  // widens the next backoff window
+  next_tx_time = now + retry;  // nothing else goes out before the retry either
 
   if (lbt_busy_start == 0) {
     lbt_busy_start = now;
     lbt_next_warn = now + getCADFailMaxDuration();
   } else {
     uint32_t streak = now - lbt_busy_start;
+    if (streak > lbt_streak_max) lbt_streak_max = streak;
 
     if ((int32_t)(now - lbt_next_warn) >= 0) {
       _err_flags |= ERR_EVENT_CAD_TIMEOUT;
@@ -365,9 +373,11 @@ void Dispatcher::onLbtRefused(uint32_t now, int len) {
     if (streak > getTxStarvationDuration()) {
       if (_radio->cadRelaxOnTxStarvation()) {
         LOG_ERR("checkSend: TX starved %ums — relaxed CAD one step", (unsigned)streak);
+        noteTxAttempt(outbound, "relax", 0);
       } else {
         LOG_ERR("checkSend: TX starved %ums — CAD already at its least sensitive step, channel may be genuinely busy",
                 (unsigned)streak);
+        noteTxAttempt(outbound, "relax-max", 0);
       }
       lbt_busy_start = now;
       lbt_next_warn = now + getCADFailMaxDuration();
@@ -379,13 +389,53 @@ void Dispatcher::onLbtRefused(uint32_t now, int len) {
   notifyTxQueued(retry);
 }
 
+// ZEPHCORE: `get lbt.stats`. Streaks are LBT refusals with no transmit between
+// them; the radio appends its per-attempt outcome counters.
+int Dispatcher::formatLbtStatus(char* buf, int cap) {
+  if (cap <= 0) return 0;
+  uint32_t now = (uint32_t)_ms->getMillis();
+  uint32_t streak = lbt_busy_start ? now - lbt_busy_start : 0;
+  int n = snprintf(buf, cap, "streak:%ums max:%ums ref:%u",
+                   (unsigned)streak, (unsigned)(streak > lbt_streak_max ? streak : lbt_streak_max),
+                   (unsigned)lbt_refusals);
+  if (n < 0) return 0;
+  if (n < cap) n += _radio->formatLbtCounters(buf + n, cap - n);
+  return n < cap ? n : cap - 1;  // snprintf reports the untruncated length
+}
+
+void Dispatcher::resetLbtStats() {
+  lbt_streak_max = 0;
+  _radio->resetLbtCounters();
+}
+
+// ZEPHCORE: LBT diagnostic line; NULL outcome = the radio's account of its last
+// startSendRaw(). Nothing at all unless CONFIG_ZEPHCORE_LBT_LOGGING.
+void Dispatcher::noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms) {
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+  char buf[64];
+  if (outcome == NULL) {
+    if (_radio->formatLastTxAttempt(buf, sizeof(buf)) <= 0) {
+      buf[0] = '?';
+      buf[1] = 0;
+    }
+    outcome = buf;
+  }
+  logTxAttempt(pkt, outcome, retry_ms);
+#else
+  (void)pkt; (void)outcome; (void)retry_ms;
+#endif
+}
+
 void Dispatcher::checkSend() {
   uint32_t now = (uint32_t)_ms->getMillis();
   if (_mgr->getOutboundCount(now) == 0) {
     cad_busy_start = 0;
     // ZEPHCORE: only a genuinely EMPTY queue ends an LBT streak — a refusal
-    // re-queues 100-200 ms ahead, so "nothing due now" is not "nothing pending".
-    if (_mgr->getOutboundTotal() == 0) lbt_busy_start = 0;
+    // re-queues a backoff ahead, so "nothing due now" is not "nothing pending".
+    if (_mgr->getOutboundTotal() == 0) {
+      lbt_busy_start = 0;
+      lbt_refusals = 0;
+    }
     return;
   }
 
@@ -393,15 +443,18 @@ void Dispatcher::checkSend() {
 
   if (!txBudgetAllowsSend(now)) return;  // ZEPHCORE: percentage budget, admin exempt
 
-  // ZEPHCORE: also defer while the radio is not command-ready, and apply the
-  // retry timer only to a busy channel (upstream checks it first).
+  // ZEPHCORE: a busy deferral holds every transmit until next_tx_time, even once
+  // the channel clears (as upstream): otherwise every node that waited out the
+  // same packet sends at the instant it ends. Reached exactly = may send.
+  if ((int32_t)(next_tx_time - now) > 0) {
+    notifyTxQueued(next_tx_time - now + 1);
+    return;
+  }
+
+  // ZEPHCORE: also defer while the radio is not command-ready.
   bool is_receiving = _radio->isReceiving();
   bool is_radio_ready = _radio->isRadioReady();
   if (is_receiving || !is_radio_ready) {
-    if (!millisHasNowPassed(next_tx_time)) {
-      notifyTxQueued(next_tx_time - now + 1);
-      return;
-    }
     if (cad_busy_start == 0) {
       cad_busy_start = now;   // record when CAD busy state started
     }
@@ -416,9 +469,11 @@ void Dispatcher::checkSend() {
       // channel activity has gone on too long... (Radio might be in a bad state)
       // force the pending transmit below...
       _radio->recoverRxState();  // ZEPHCORE: walk the chip REST -> fresh RX first
+      noteTxAttempt(NULL, "recover", 0);
     } else {
       uint32_t retry = getCADFailRetryDelay();
       next_tx_time = futureMillis(retry);
+      noteTxAttempt(NULL, is_receiving ? "hold-rx" : "hold-ready", retry);
       notifyTxQueued(retry + 1);  // ZEPHCORE: schedule the wake
       return;
     }
@@ -454,8 +509,10 @@ void Dispatcher::checkSend() {
       // covers a radio that published its completion but is still re-arming RX.
       if (_radio->isReceiving() || !_radio->isRadioReady() || _radio->isTxActive()) {
         uint32_t retry = getCADFailRetryDelay();
+        noteTxAttempt(outbound, "final", retry);
         _mgr->queueOutbound(outbound, outbound_priority, futureMillis((int)retry));
         outbound = NULL;
+        next_tx_time = now + retry;
         notifyTxQueued(retry);
         return;
       }
@@ -465,9 +522,14 @@ void Dispatcher::checkSend() {
         onLbtRefused(now, len);  // ZEPHCORE: re-queue (upstream drops the packet)
         return;
       }
+      noteTxAttempt(outbound, NULL, 0);
       outbound_expiry = futureMillis(max_airtime);
       cad_busy_start = 0;  // ZEPHCORE: a transmit got out, so any refusal streak is over
+      if (lbt_busy_start != 0 && now - lbt_busy_start > lbt_streak_max) {
+        lbt_streak_max = now - lbt_busy_start;
+      }
       lbt_busy_start = 0;
+      lbt_refusals = 0;
     }
   }
 }

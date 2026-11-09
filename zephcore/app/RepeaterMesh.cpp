@@ -676,6 +676,11 @@ void RepeaterMesh::logTxFail(mesh::Packet* pkt, int len) {
   }
 }
 
+// ZEPHCORE: ours. LBT diagnostic lines (CONFIG_ZEPHCORE_LBT_LOGGING), helpers/PacketLog.h.
+void RepeaterMesh::logTxAttempt(const mesh::Packet* pkt, const char* outcome, uint32_t retry_ms) {
+  packet_log_lbt(outcome, pkt, getLbtRefusals(), retry_ms, _radio->getNoiseFloor());
+}
+
 // ZEPHCORE: no calcRxDelay() here: rx delay is replaced by the adaptive contention window
 
 // ZEPHCORE: ours. Adaptive contention window.

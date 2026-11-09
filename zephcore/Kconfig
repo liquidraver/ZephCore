@@ -792,6 +792,20 @@ config ZEPHCORE_PACKET_LOGGING
 	  packet_logging.conf keeps CONFIG_LOG=n and the console carries
 	  nothing else.
 
+config ZEPHCORE_LBT_LOGGING
+	bool "Log every listen-before-talk outcome (diagnostic)"
+	default n
+	depends on ZEPHCORE_PACKET_LOGGING
+	help
+	  One "LBT ..." line per transmit attempt and per hold-back: CAD
+	  clear/busy (with the RSSI right after a busy), driver errors,
+	  gate refusals, RX-busy holds, the 4 s recovery, the starvation
+	  relax, and the backoff picked. Printed like the packet lines, on
+	  the mesh thread, so packet lines stay whole; line-parsing tools
+	  such as mctomqtt ignore them. Adds "+lbtlog" to the version.
+	  Build with lbt_logging.conf after packet_logging.conf. Format:
+	  docs/CLI_commands.md (get lbt.stats) and LLD 03.
+
 endmenu
 
 menu "LoRa Power Saving"

@@ -331,6 +331,8 @@ it polls external state. Repeater and room server share one loop (`server_main_c
 - Packet logging (`packet_logging.conf`): upstream's `MESH_PACKET_LOGGING` RAW/RX/TX lines through `printk`, with
   the logging subsystem off so they share the console only with the CLI (R6.5). Every packet is one whole line
   starting at column 0, also while a host is typing commands (bench-verified SF7 BW62.5 to BW500).
+- LBT diagnostic lines (`lbt_logging.conf`, on top of packet logging): one `LBT ...` line per transmit attempt
+  and hold-back, printed the same way, so packet lines stay whole and mctomqtt ignores them.
 - CLI `get`/`stats-*`, `get pwrmgt.bootreason` (reset cause, shutdown reason, and the last fatal error with its pc).
 - Host regression suite (`tests/`, CI with ASan/UBSan) over the production sources.
 

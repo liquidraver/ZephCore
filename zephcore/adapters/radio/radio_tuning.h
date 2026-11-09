@@ -14,6 +14,12 @@
 #define NOISE_FLOOR_SAMPLING_THRESHOLD   14  /* dB above floor to reject as interference */
 #define NOISE_FLOOR_CEILING_DBM          (-50) /* upper clamp */
 #define DEFAULT_NOISE_FLOOR              0   /* sentinel: seed from first sample */
+/* A seed, or a reading this far below the floor, is read again after
+ * NOISE_FLOOR_CONFIRM_DELAY_MS: GetRssiInst returns -127 and then ramps up
+ * for several ms after any RX entry, most of which the sampler cannot see
+ * (measured: levelled by ~8 ms at BW 62.5, LLD 03 §17). */
+#define NOISE_FLOOR_CONFIRM_DB           6
+#define NOISE_FLOOR_CONFIRM_DELAY_MS     10
 
 /* --- Adaptive CAD (LBT detPeak calibration) ---
  * Levels are signed offsets from the chip family's per-SF/per-BW base detPeak.

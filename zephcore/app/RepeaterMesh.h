@@ -167,6 +167,7 @@ protected:
   void logRx(mesh::Packet* pkt, int len, float score) override;
   void logTx(mesh::Packet* pkt, int len) override;
   void logTxFail(mesh::Packet* pkt, int len) override;
+  void logTxAttempt(const mesh::Packet* pkt, const char* outcome, uint32_t retry_ms) override;
 
   uint32_t getRetransmitDelay(const mesh::Packet* packet) override;
   uint32_t getDirectRetransmitDelay(const mesh::Packet* packet) override;
@@ -184,6 +185,9 @@ protected:
   }
   int formatCadStatus(char* buf, int cap) override {
     return _radio->formatCadStatus(buf, cap);
+  }
+  int formatLbtStats(char* buf, int cap) override {
+    return formatLbtStatus(buf, cap);
   }
   void applyCadPrefs() override {
     _radio->setCadParams(_prefs.cad_auto != 0, _prefs.cad_offset,

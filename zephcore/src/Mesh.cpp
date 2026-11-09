@@ -1,4 +1,5 @@
 #include <mesh/Mesh.h>
+#include <mesh/LbtBackoff.h>  // ZEPHCORE: post-busy retry delay
 //#include <Arduino.h>
 
 // ZEPHCORE: log module backing MESH_DEBUG_PRINTLN (see MeshCore.h).
@@ -82,7 +83,11 @@ uint8_t Mesh::getExtraAckTransmitCount() const {
 }
 
 uint32_t Mesh::getCADFailRetryDelay() const {
-  return _rng->nextInt(1, 4)*120;
+  // ZEPHCORE: random slot in an airtime-sized window that widens with each LBT
+  // refusal (mesh/LbtBackoff.h); upstream: _rng->nextInt(1, 4)*120.
+  return lbtBackoffDelayMs(_radio->getEstAirtimeFor(LBT_BACKOFF_TYPICAL_LEN),
+                           _radio->getLbtSlotMs(), getLbtRefusals(),
+                           _rng->nextInt(0, 0xFFFFFFFFu));
 }
 
 int Mesh::searchPeersByHash(const uint8_t* hash) {

@@ -253,11 +253,16 @@ loop():
      - Process immediately (no inbound queue / score-based RX delay: the
        adaptive contention window replaces upstream's rxdelay)
   4. checkSend(): Check outbound queue
-     - CAD: if channel busy (`isReceiving()` returns true or radio not ready),
-            retry every 100-200ms (jittered) up to 4s total. On 4s timeout,
-            call `_radio->recoverRxState()` (cancel + restart, clears IRQ +
-            latch + grace timestamp) and re-wake the loop instead of falling
-            through to TX.
+     - Busy: if `isReceiving()` is true or the radio is not ready, or the
+            driver's LBT refuses, wait a random backoff (`mesh/LbtBackoff.h`:
+            whole slots of one LBT CAD + turnaround, in a window of one
+            100-byte packet's airtime that doubles per LBT refusal, 4x at
+            most, capped at 2 s). Nothing transmits before that retry time,
+            even if the channel clears earlier. After 4 s of `isReceiving()`
+            busy, call `_radio->recoverRxState()` (cancel + restart, clears
+            IRQ + latch + grace timestamp) and try the transmit, which still
+            has to pass the final gate and the driver's LBT CAD: a CAD busy
+            is never transmitted over.
      - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
@@ -384,6 +389,12 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 2. SX126x `send_async` entry CAS accepts both `REST_STATE → TX` and `RX → TX`, recording `was_rx`. LBT branch issues `set_standby(RC)` then SetCAD. On CAD-busy: in-driver `sx126x_restart_rx` puts the chip back in RX before `-EBUSY` returns. C++ failure path calls `startReceive()`, which the driver's `lora_recv_async` short-circuits when state is already RX.
 3. On TX success: `_in_recv_mode = 0`, TX wait thread blocks on semaphore (5 s timeout).
 4. On DIO1 `TX_DONE` interrupt → signal raised → restart RX → update stats.
+5. Every attempt is counted for `get lbt.stats`: CAD clear (TX started), CAD busy, other driver error, or refused before
+   the driver (not ready, receiving, previous TX winding down). A busy verdict arms a one-max-packet window in which
+   the next reception (good or CRC error) counts as `rx`, evidence the channel really was busy. `getLbtSlotMs()` is the
+   dispatcher's backoff slot: 4 CAD symbols + 3 ms turnaround (12 ms at SF7/62.5 kHz). With `lbt_logging.conf`
+   every attempt and hold-back is also printed as one `LBT ...` line (`formatLastTxAttempt()` →
+   `Dispatcher::logTxAttempt()` → `packet_log_lbt()`), alongside the packet lines.
 
 **RX Flow**:
 1. `lora_recv_async()` with callback. SX126x `recv_async` clears `IRQ_ALL` and resets the RX-busy signals on every fresh entry.
@@ -413,7 +424,7 @@ The poll path is otherwise non-destructive — IRQ bits are cleared only by the 
 
 ### 5.2.2 CAD-Timeout Recovery
 
-`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadio::recoverRxState()` does:
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and then tries the pending transmit. That attempt still passes the final `isReceiving()` gate and the driver's LBT CAD, so a fresh busy reading re-queues it; nothing is transmitted over a CAD busy. `LoRaRadio::recoverRxState()` does:
 
 ```cpp
 hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
@@ -422,7 +433,7 @@ _config_cached = false;         // force full lora_config on the way back
 startReceive();                 // CAS(REST → RX) clears latch + IRQ
 ```
 
-This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX. After recovery, the dispatcher fires `_tx_queued_cb(1, ...)` to re-wake the loop promptly.
+This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX.
 
 ### 5.2.3 Received Header Without Payload CRC
 
@@ -441,9 +452,14 @@ One register or command read per received LoRa frame. GFSK and a CRC-off configu
 
 Algorithm in `triggerNoiseFloorCalibrate()`:
 - 8 RSSI samples per tick, take median (insertion-sort midpoint)
-- Threshold filter: reject samples ≥ floor + 14dB (after 8-tick warmup)
+- Confirmation: a seed, or a median ≥ 6 dB below the floor, is read again 10 ms later (the RSSI start-up dip after
+  an RX entry the sampler cannot see); `c` in `get cad.stats`
+- Below thermal noise for the bandwidth (`noise_floor_min_dbm()`, -126 dBm at 62.5 kHz): dropped, never clamped in;
+  `l` in `get cad.stats`
+- Warm-up (8 ticks after the seed): accepts everything, running mean (1/2 .. 1/8)
+- Threshold filter: reject samples ≥ floor + 14dB (after warm-up)
 - Periodic bypass: every 16th tick accepts unconditionally
-- EMA: `floor += round_nearest((sample - floor) / 8)`, clamped to [-120, -50] dBm
+- EMA: `floor += round_nearest((sample - floor) / 8)`, clamped to [thermal minimum, -50] dBm
 
 ### 5.3.1 Adaptive CAD (LBT detPeak calibration)
 
@@ -457,10 +473,12 @@ to the family's per-SF base detPeak, restarts RX, and classifies busy verdicts
 with a ground-truth filter. **Key property:** the probe is *skipped* when RSSI >
 floor+7 dB, so probes only ever sample the quiet/faint regime — the whole loop
 is a faint-rejection tuner and `busy%` is faint-regime, not total occupancy.
-Post-busy classification watches a ~12-symbol window for RX re-sync **or** an
-RSSI climb above floor+guard (the energy path recovers real packets whose
-preamble the probe's RX-restart ate — the fix for the FP over-count that used to
-drive the staircase to the ceiling) → `tp`, else `fp`. Counters decay 6-hourly,
+The probe runs as CAD_RX: on a busy verdict the chip goes straight into Rx on
+the signal (no preamble race), and the driver reports the first terminal event
+within one max-packet airtime: a packet or CRC error → `tp`; a timeout after a
+preamble, header or header error was seen → `u` (real, undecoded; not an FP,
+since 2026-11-09); a timeout with nothing seen → `fp`; no terminal event → the
+sample is withdrawn (`*_cad_rx_outcome()`, LLD 03 §18). Counters decay 6-hourly,
 reset on any RF param change.
 
 With `cad.auto on` the staircase is **knee-seeking**: probes sample op / op−1 /
@@ -469,7 +487,7 @@ op+1 (½/¼/¼); it steps **up** when the level above is ≥`CAD_KNEE_SLOPE_PERM
 (`≤CAD_PLATEAU_CLEAN_PERMILLE`), else holds — slope-based so convergence is
 independent of a site's FP floor. Highest-priority override: **airtime / faint
 cap** — step up when the operating busy rate exceeds `cad_busycap` (percent,
-`set cad.busycap`, default 25, 0=off); self-targeting since only busy nodes
+`set cad.busycap`, default 15, 0=off); self-targeting since only busy nodes
 reach it, and effectively a faint-tolerance dial (lower = reject faint harder).
 Each step needs ≥`CAD_STEP_MIN_PROBES` (120); offset clamped to **−8…+12**
 *narrowed by the driver's own detPeak clamp* (SX126x 12–48, LR11xx 40–100,
@@ -1368,12 +1386,14 @@ main event loop (every 5s) → Dispatcher::maintenanceLoop()
   → radio->triggerNoiseFloorCalibrate(threshold)
     → guards: in RX? TX active? duty cycle? mid-receive?
     → read 8 RSSI samples, take median
+    → seed, or median ≥ 6 dB below floor: sleep 10 ms, read 8 again, use that median
+    → below thermal minimum for the BW: drop, retry soon
     → first sample: seed directly
-    → warmup (<8 ticks): accept unconditionally
+    → warmup (<8 ticks): accept unconditionally, running mean
     → periodic bypass (every 16th): accept unconditionally
     → otherwise: reject if sample ≥ floor + 14dB
     → EMA: floor += round((sample - floor) / 8)
-    → clamp [-120, -50] dBm
+    → clamp [thermal minimum, -50] dBm
 ```
 
 ---
@@ -1425,7 +1445,7 @@ Timeouts and deadlines that are watchdogs in everything but name:
 |-----------|----------|--------|
 | RX-latch payload deadline | all three custom radio paths: SX126x `patch 0003` ("Bound the lifetime of the RX-busy latch"), `lr11xx_lora.c`, `lr20xx_lora.c` (`header_seen_at_ms` + `*_max_payload_ms()`) | A `HEADER_VALID` whose packet never completes would pin the TX gate closed and silently mute the node — continuous RX has no symbol timer. Released at 255-byte airtime +25% +100 ms. See [5.2.1](#521-rx-busy-gate-tx-during-rx-prevention). |
 | Stuck-DIO1 counter | `lr11xx_lora.c` and `lr20xx_lora.c` | 5 empty DIO1 cycles → hardware reset. Counting rather than timing; on the LR11xx it complements the wedge watchdog rather than replacing it. |
-| CAD timeout | `Dispatcher::checkSend()` | 4 s (~20 retry attempts) → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, rather than falling through to TX. See [5.2.2](#522-cad-timeout-recovery). |
+| CAD timeout | `Dispatcher::checkSend()` | 4 s of `isReceiving()` busy → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, then the transmit is tried through the final gate and the driver's LBT CAD (never over a CAD busy). See [5.2.2](#522-cad-timeout-recovery). |
 | Chip-side TX timeout | SX126x `SetTx` deadline (`patch 0003`, "Scale the chip-side Tx timeout from airtime instead of a fixed 10 s"; airtime +25% +500 ms, floored at 10 s, clamped 262143 ms); LR2021 `TIMEOUT` IRQ handler | The chip stops the transmission when this fires, so a fixed value is a truncation, not a safeguard — at SF12/BW62.5 the old flat 10 s cut every packet from 76 bytes up. |
 | Serial partial-frame resync | `ZephyrCompanionUSB.cpp` (`USB_FRAME_TIMEOUT_MS`) | 2 s. Parser-level only — deliberately **not** a session or idle timeout; an idle-but-connected companion sits in `RX_IDLE` indefinitely. |
 | TCP send timeout | `TcpCompanionTransport.c` (`TX_SEND_TIMEOUT_SEC`, `SO_SNDTIMEO`) | 2 s per send. Native Linux and WiFi companions. A peer that can't accept a frame in the window is wedged → close it, rather than hang the whole queue. Needs `CONFIG_NET_CONTEXT_SNDTIMEO`, which `ZEPHCORE_TRANSPORT_TCP` selects; before 1.18.1 it was off, the option silently failed and sends waited up to 10 s per attempt (`NET_SOCKET_MAX_SEND_WAIT`). |

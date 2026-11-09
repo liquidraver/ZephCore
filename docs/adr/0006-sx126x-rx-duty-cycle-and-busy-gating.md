@@ -41,7 +41,8 @@ back to continuous RX. `get dc.restarts` counts false-preamble re-arms.
    the driver already restored RX.
 4. **CAD-timeout recovery** — `mesh::Radio::recoverRxState()` (default no-op, overridden in `LoRaRadio` as
    `hwCancelReceive → _in_recv_mode=0 → _config_cached=false → startReceive`). `Dispatcher::checkSend()`'s 4 s
-   CAD-timeout block calls it and re-wakes the loop instead of falling through to TX.
+   CAD-timeout block calls it and then tries the pending transmit, which still passes the final `isReceiving()` gate
+   and the driver's LBT CAD: a CAD busy is never transmitted over (LLD 02 §13, §18).
 
 The C++ adapter virtual is `hwIsReceiving()` (formerly `hwIsPreambleDetected` — renamed when the latch made the
 old name a lie). It calls the family's `*_is_receiving()` through the ops table (`LoRaRadioOps.h`); that function

@@ -76,7 +76,10 @@ struct Dispatcher : mesh::Dispatcher {
     }
     uint8_t getDutyCyclePercent() const override { return duty; }
     uint32_t getDutyCycleWindowMs() const override { return window; }
-    uint32_t getCADFailRetryDelay() const override { return 100; }
+    mutable std::vector<uint8_t> refusals_seen;  // getLbtRefusals() at each retry pick
+    uint32_t getCADFailRetryDelay() const override {
+        refusals_seen.push_back(getLbtRefusals()); return 100;
+    }
     void logTx(mesh::Packet*, int) override { ++successes; }
     void logTxFail(mesh::Packet*, int) override { ++failures; }
     void onCadOffsetChanged(int8_t offset) override { offsets.push_back(offset); }

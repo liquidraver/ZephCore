@@ -130,6 +130,9 @@ struct lr20xx_data {
 	 * (bounded by the 524 ms cad_timeout). */
 	bool cad_probe_rx;
 	atomic_t cad_rx_state;
+	/* A preamble, header or header error was seen while a probe Rx was armed:
+	 * a transmitter was there even if nothing decodes. */
+	atomic_t cad_rx_signal;
 
 	/* CAD_DONE -> carrier-up latency (k_cycle_get_32 units); 0 = no CAD
 	 * preceded this transmit.  Only reached on the >524 ms fallback path. */
@@ -1189,6 +1192,7 @@ static void lr20xx_dc_resume(struct lr20xx_data *data, bool was_armed)
 }
 
 static uint32_t lr20xx_preamble_grace_ms(struct lr20xx_data *data);
+static inline void lr20xx_cad_rx_note(struct lr20xx_data *data, uint32_t irq);
 
 /* Is a duty-cycled reception under way? Ask before dc_suspend(), which would
  * end it (the LR11xx lost ~1 packet in 40 without this). Non-destructive
@@ -1203,6 +1207,7 @@ static bool lr20xx_dc_rx_in_flight(struct lr20xx_data *data)
 	if (lr20xx_system_get_status(&data->hal_ctx, NULL, NULL, &irq) != LR20XX_STATUS_OK) {
 		return false;
 	}
+	lr20xx_cad_rx_note(data, irq);
 	if (irq & LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID) {
 		return true;
 	}
@@ -1514,8 +1519,9 @@ static void lr20xx_dio1_callback(void *user_data);
 /* cad_rx_state values -- mirrors the SX126x/LR11xx probe outcome tracker. */
 #define LR20XX_CAD_RX_IDLE   0
 #define LR20XX_CAD_RX_ARMED  1
-#define LR20XX_CAD_RX_PACKET 2
-#define LR20XX_CAD_RX_TMOUT  3
+#define LR20XX_CAD_RX_PACKET   2
+#define LR20XX_CAD_RX_TMOUT    3
+#define LR20XX_CAD_RX_PREAMBLE 4  /* timeout, but a transmitter was seen */
 
 static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data);
 
@@ -1524,6 +1530,18 @@ static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data);
 static inline bool lr20xx_cad_rx_resolve(struct lr20xx_data *data, int outcome)
 {
 	return atomic_cas(&data->cad_rx_state, LR20XX_CAD_RX_ARMED, outcome);
+}
+
+/* Called with every IRQ status read: while a probe Rx is armed, a preamble,
+ * header or header error means a LoRa transmitter was there, decoded or not. */
+static inline void lr20xx_cad_rx_note(struct lr20xx_data *data, uint32_t irq)
+{
+	if ((irq & (LR20XX_SYSTEM_IRQ_PREAMBLE_DETECTED |
+		    LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID |
+		    LR20XX_SYSTEM_IRQ_LORA_HEADER_ERROR)) &&
+	    atomic_get(&data->cad_rx_state) == LR20XX_CAD_RX_ARMED) {
+		atomic_set(&data->cad_rx_signal, 1);
+	}
 }
 
 /* The DIO1 handler is one pass over the IRQ word, case by case, in this order.
@@ -1537,6 +1555,8 @@ static inline bool lr20xx_cad_rx_resolve(struct lr20xx_data *data, int outcome)
 static void lr20xx_irq_status_notes(struct lr20xx_data *data, uint32_t irq)
 {
 	void *ctx = &data->hal_ctx;
+
+	lr20xx_cad_rx_note(data, irq);
 
 	if (irq & (LR20XX_SYSTEM_IRQ_ERROR | LR20XX_SYSTEM_IRQ_CMD_ERROR)) {
 		lr20xx_log_chip_errors(ctx, (irq & LR20XX_SYSTEM_IRQ_CMD_ERROR)
@@ -1677,6 +1697,7 @@ static bool lr20xx_irq_cad_done(struct lr20xx_data *data, uint32_t irq,
 		uint32_t steps = zc_lora_ms_to_steps24(lr20xx_max_payload_ms(data),
 						       LR20XX_RTC_FREQ_HZ);
 
+		atomic_set(&data->cad_rx_signal, 0);
 		atomic_set(&data->cad_rx_state, LR20XX_CAD_RX_ARMED);
 		lr20xx_radio_common_set_rx_with_timeout_in_rtc_step(&data->hal_ctx,
 								   steps);
@@ -1732,7 +1753,8 @@ static void lr20xx_irq_timeout(struct lr20xx_data *data,
 
 	/* The probe's own Rx window expiring with nothing decoded: the
 	 * detection had no packet behind it. */
-	lr20xx_cad_rx_resolve(data, LR20XX_CAD_RX_TMOUT);
+	lr20xx_cad_rx_resolve(data, atomic_get(&data->cad_rx_signal) ?
+				    LR20XX_CAD_RX_PREAMBLE : LR20XX_CAD_RX_TMOUT);
 	if (data->tx_active) {
 		/* Chip TX timeout (DS §6.3.6): TX_DONE will never come. Re-arm RX but do NOT
 		 * raise tx_signal (it means "sent"); the adapter wait thread owns the loss. */
@@ -3115,12 +3137,15 @@ int lr20xx_cad_rx_outcome(const struct device *dev)
 	struct lr20xx_data *data = dev->data;
 	atomic_val_t st = atomic_get(&data->cad_rx_state);
 
-	if (st != LR20XX_CAD_RX_PACKET && st != LR20XX_CAD_RX_TMOUT) {
+	if (st != LR20XX_CAD_RX_PACKET && st != LR20XX_CAD_RX_TMOUT &&
+	    st != LR20XX_CAD_RX_PREAMBLE) {
 		return 0;  /* nothing armed, or still awaiting the terminal IRQ */
 	}
 
 	atomic_set(&data->cad_rx_state, LR20XX_CAD_RX_IDLE);
-	return (st == LR20XX_CAD_RX_PACKET) ? 1 : 2;
+	/* 1 packet, 2 nothing seen, 3 preamble/header but nothing decoded */
+	return (st == LR20XX_CAD_RX_PACKET) ? 1 :
+	       (st == LR20XX_CAD_RX_PREAMBLE) ? 3 : 2;
 }
 
 /* ── Driver API: recv_duty_cycle ────────────────────────────────────── */

@@ -113,6 +113,16 @@ public:
   // Human-readable status blocks; return chars written (0 = unsupported).
   virtual int formatCadStatus(char* buf, int cap) { return 0; }
   virtual int formatFreqErrorStatus(char* buf, int cap) { return 0; }
+  // LBT outcome counters (clear/busy/error/gate/busy-then-RX), appended to
+  // Dispatcher::formatLbtStatus(); 0 = none.
+  virtual int formatLbtCounters(char* buf, int cap) { return 0; }
+  virtual void resetLbtCounters() { }
+  // One LBT CAD plus the RX->TX turnaround: two nodes whose CADs start closer
+  // than this both read clear. Backoff slot width; 0 = unknown.
+  virtual uint32_t getLbtSlotMs() { return 0; }
+  // Outcome of the last startSendRaw() as short text ("clr", "busy rssi=-97",
+  // "err=-116", "gate=rx"...), for the LBT diagnostic log; 0 = none.
+  virtual int formatLastTxAttempt(char* buf, int cap) { return 0; }
 
   // Receiver hygiene (deaf-aware AGC unstick, temperature-drift recal). Both
   // sleep the radio, so called only from the maintenance tick.
@@ -195,6 +205,8 @@ class Dispatcher {
   uint8_t outbound_priority;
   uint32_t lbt_busy_start;
   uint32_t lbt_next_warn;
+  uint32_t lbt_streak_max;
+  uint8_t lbt_refusals;
   int8_t cad_offset_shadow;
   bool cad_offset_shadow_valid;
   tx_queued_callback_t _tx_queued_cb;
@@ -236,6 +248,13 @@ protected:
   virtual uint32_t getTxStarvationDuration() const;
   // Adaptive CAD moved the operating detPeak offset; subclasses persist it.
   virtual void onCadOffsetChanged(int8_t offset) { }
+  // LBT refusals since the last transmit that got out (saturating); sizes the
+  // backoff window in getCADFailRetryDelay().
+  uint8_t getLbtRefusals() const { return lbt_refusals; }
+  // LBT diagnostic hook (CONFIG_ZEPHCORE_LBT_LOGGING builds only): every
+  // transmit attempt and hold-back, with the backoff picked. pkt is NULL for an
+  // RX-busy hold, where nothing has been dequeued yet.
+  virtual void logTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms) { }
   void notifyTxQueued(uint32_t delay_ms) {
     if (_tx_queued_cb) _tx_queued_cb(delay_ms, _tx_queued_user_data);
   }
@@ -264,10 +283,15 @@ public:
   void resetStats() {
     n_sent_flood = n_sent_direct = n_recv_flood = n_recv_direct = 0;
     _err_flags = 0;
+    resetLbtStats();  // ZEPHCORE: `clear stats` covers `get lbt.stats` too
   }
 
   // ZEPHCORE: error flags and event-loop callbacks.
   uint16_t getErrFlags() const { return _err_flags; }
+  // `get lbt.stats`: refusal streaks and backoff, then the radio's counters.
+  int formatLbtStatus(char* buf, int cap);
+  void resetLbtStats();
+  uint32_t getLbtStreakMaxMs() const { return lbt_streak_max; }
   void setTxQueuedCallback(tx_queued_callback_t cb, void* user_data) {
     _tx_queued_cb = cb;
     _tx_queued_user_data = user_data;
@@ -293,6 +317,7 @@ private:
   uint32_t getMaxTxBudgetMs() const;
   bool txBudgetAllowsSend(uint32_t now);
   void onLbtRefused(uint32_t now, int len);
+  void noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms);
   void checkRecv();
   void checkSend();
 };

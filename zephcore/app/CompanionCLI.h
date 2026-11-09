@@ -84,6 +84,9 @@ public:
 	int formatCadStatus(char* buf, int cap) override {
 		return _radio.formatCadStatus(buf, cap);
 	}
+	int formatLbtStats(char* buf, int cap) override {
+		return _mesh.formatLbtStatus(buf, cap);
+	}
 	void applyCadPrefs() override {
 		_radio.setCadParams(_mesh.prefs.cad_auto != 0,
 					_mesh.prefs.cad_offset,

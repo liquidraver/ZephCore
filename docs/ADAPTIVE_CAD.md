@@ -125,6 +125,9 @@ level:
 - `busy` — raw "activity detected" verdicts
 - `fp` — suspected **false positives**: busy verdicts where no packet
   materialised right after (see filtering below)
+- `u` — busy verdicts after which a preamble, header or header error
+  was seen but nothing decoded: a real LoRa transmitter, **not** counted
+  as a false positive (since 2026-11-09)
 - `tp` — **true positives**: busy verdicts confirmed by actual RX
   activity immediately after the probe
 
@@ -136,18 +139,28 @@ below-noise-floor packet (detecting those is CAD's whole purpose):
    received — those teach nothing about false positives. (This is also the
    prefilter that limits probing to the faint regime; see the mental model
    above.)
-2. After a busy verdict, RX is restarted and the firmware watches a
-   ~12-symbol window for either signal of a real transmitter: (a) the
-   restarted RX syncs on it, **or** (b) instantaneous RSSI climbs above the
-   noise floor. If neither appears, the verdict counts as a suspected false
-   positive. Path (b) matters: tearing RX down to run the probe routinely
-   eats a real packet's preamble, so RX often fails to re-sync on a signal
-   that is genuinely there — an earlier `isReceiving()`-only check booked
-   those as false positives, a detPeak-independent floor that flattened the
-   FP curve and drove the staircase into the ceiling. Channel energy does
-   not depend on winning the preamble race, so it recovers them. Residual
-   contamination by real below-floor traffic biases the estimate
-   *conservative* (higher detPeak), which is the safe direction.
+2. The probe runs in CAD_RX mode: on a busy verdict the chip does not
+   return to standby but goes straight into receive on the signal it
+   found, so there is no preamble race to lose. The verdict is settled by
+   the first terminal interrupt within one maximum-length packet's
+   airtime: a received packet **or a CRC error** (a corrupt packet is
+   still a real transmitter) is a true positive; the chip's timeout with
+   nothing decoded is a suspected false positive; no terminal event at
+   all withdraws the sample. A timeout after which the receiver saw a
+   preamble, a header or a header error (noted on every interrupt status
+   read while the probe is armed) is booked as `u`, a real transmitter
+   that did not decode, not as a false positive; all three chip families
+   do this since 2026-11-09. (Older builds restarted RX after the probe
+   and watched a ~12-symbol window for RX sync or an RSSI rise.)
+   What still scores as a false positive although it may be real: CAD
+   catching the payload of a packet whose preamble it missed, and signals
+   too weak for even the preamble detector. That residue pushes the
+   staircase toward a higher detPeak: for airtime the cheap direction, for
+   "never transmit over traffic" the risky one, which is why the knee rule
+   (step up only on a *slope*) matters more than any absolute FP figure.
+   The preamble detector also fires on noise now and then (`dc.restarts`
+   counts that in duty-cycle RX); `u` shows how much of the old FP count
+   it now absorbs.
 
 Statistics decay (halve) every 6 hours so the picture stays fresh, and
 reset completely whenever the radio parameters change (frequency, SF, BW
@@ -284,9 +297,10 @@ only observable from inside the sampler.
 Then a **three-rung window** centred on the operating offset (`*` marks
 it): the frontier (one step more sensitive), the operating level, and one
 step less sensitive — exactly the three rungs the staircase reads to judge
-the local slope. Per level: `level(peak) probes busy fp tp fp%%` — `fp` =
-suspected false positives, `tp` = busy verdicts confirmed by a real
-signal, `fp%%` = integer false-positive rate.
+the local slope. Per level: `level(peak) probes busy fp tp u fp%%` — `fp`
+= suspected false positives, `tp` = busy verdicts confirmed by a received
+packet, `u` = a preamble or header seen but nothing decoded (real, not an
+FP), `fp%%` = integer false-positive rate.
 
 Here the staircase has already stepped to offset −1 (peak 20): the −1
 level is clean (0%) over 900 probes while −2 shows a 3% jump, so −1 is
@@ -353,6 +367,13 @@ works); command *values* like passwords and node names are not, so `on`
 - **SX127x boards** (TTGO LoRa32, T-Beam classic) have no hardware CAD;
   `get cad.stats` reports `not available` and the settings are inert. Their LBT
   remains the RSSI-based `int.thresh` gate.
+- **Field check, BlueLake roof repeater (2026-11-09, SF7/BW62.5, 75 min
+  after a reflash):** `o:-1 pk:19(b20)`, i.e. one step *more* sensitive
+  than Semtech's base; rungs `-2: 30p 13b 8f 5t`, `*-1: 63p 1b 1f 0t`,
+  `0: 32p 2b 0f 2t`. The operating rung trips in 1.6% of quiet moments,
+  the next more sensitive one in 43%, so it sits at the knee, and the 15%
+  busy cap is not binding. Counts are below the 120-probe step threshold;
+  the offset itself was learned before and persisted.
 - **The false-positive side is measured; the miss side mostly is not.**
   A too-high detPeak shows up as on-air collisions, which a single node
   cannot observe. That is why the workflow is "find the lowest clean

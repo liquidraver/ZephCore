@@ -54,7 +54,7 @@
     },
     {
       "id": "UNIT-CAD-008",
-      "name": "Pending verdicts book tp or fp, unresolved ones are withdrawn and reset drops them",
+      "name": "Pending verdicts book tp, fp or undecoded-real, unresolved ones are withdrawn and reset drops them",
       "source": "tests/unit/radio_tests.cpp"
     },
     {
@@ -163,6 +163,26 @@
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {
+      "id": "UNIT-DISPATCH-018",
+      "name": "Busy deferral holds every transmit until the retry even after the channel clears",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-019",
+      "name": "LBT refusals widen the backoff, RX busy does not, a send resets it",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-020",
+      "name": "lbt.stats reports streaks, stays inside its buffer and clears with stats",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-LBT-001",
+      "name": "LBT backoff window doubles to its cap and delays fill whole slots",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
       "id": "UNIT-IDENTITY-001",
       "name": "RFC8032 Ed25519 public keys and exact signatures",
       "source": "tests/unit/identity_tests.cpp"
@@ -225,6 +245,11 @@
     {
       "id": "UNIT-NOISE-004",
       "name": "Median of an even burst and the quiet verdict against the floor",
+      "source": "tests/unit/radio_tests.cpp"
+    },
+    {
+      "id": "UNIT-NOISE-005",
+      "name": "Warm-up weighs samples equally and suspicious low readings are confirmed",
       "source": "tests/unit/radio_tests.cpp"
     },
     {

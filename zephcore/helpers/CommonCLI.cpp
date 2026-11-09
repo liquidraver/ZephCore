@@ -1234,6 +1234,13 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		if (_callbacks->formatCadStatus(reply + n, (int)cap - n) == 0) {
 			strcpy(reply, "not available");
 		}
+	} else if (memcmp(config, "lbt.stats", 9) == 0) {
+		/* Listen-before-talk outcomes; remote replies are truncated like cad.stats. */
+		size_t cap = replyCap(sender_timestamp);
+		int n = snprintf(reply, cap, "> ");
+		if (_callbacks->formatLbtStats(reply + n, (int)cap - n) == 0) {
+			strcpy(reply, "not available");
+		}
 	} else if (memcmp(config, "cad.auto", 8) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s",
 			 _prefs->cad_auto ? "on" : "off");

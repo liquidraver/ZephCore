@@ -129,9 +129,11 @@ struct lr11xx_data {
 	uint8_t cad_probe_peak;
 	/* CAD_RX probe bookkeeping: cad_exit_rx marks the CAD in flight as a probe
 	 * whose positive verdict continues into Rx; cad_rx_state records which
-	 * terminal interrupt (packet or timeout) resolved it. */
+	 * terminal interrupt (packet or timeout) resolved it; cad_rx_signal that a
+	 * preamble, header or header error was seen while armed. */
 	bool cad_exit_rx;
 	atomic_t cad_rx_state;
+	atomic_t cad_rx_signal;
 
 	/* Deferred hardware init — heavy SPI/radio work runs on first config() */
 	bool hw_initialized;
@@ -173,8 +175,9 @@ struct lr11xx_data {
 /* cad_rx_state values -- see the field comment in the data struct. */
 #define LR11XX_CAD_RX_IDLE   0
 #define LR11XX_CAD_RX_ARMED  1
-#define LR11XX_CAD_RX_PACKET 2
-#define LR11XX_CAD_RX_TMOUT  3
+#define LR11XX_CAD_RX_PACKET   2
+#define LR11XX_CAD_RX_TMOUT    3
+#define LR11XX_CAD_RX_PREAMBLE 4  /* timeout, but a transmitter was seen */
 
 /* Resolve an in-flight CAD_RX with the terminal event that just arrived.
  * A no-op unless one is armed, so the packet path pays one atomic compare.
@@ -184,6 +187,18 @@ struct lr11xx_data {
 static inline bool lr11xx_cad_rx_resolve(struct lr11xx_data *data, int outcome)
 {
 	return atomic_cas(&data->cad_rx_state, LR11XX_CAD_RX_ARMED, outcome);
+}
+
+/* Called with every IRQ status read: while a CAD_RX is armed, a preamble,
+ * header or header error means a LoRa transmitter was there, decoded or not. */
+static inline void lr11xx_cad_rx_note(struct lr11xx_data *data, uint32_t irq)
+{
+	if ((irq & (LR11XX_SYSTEM_IRQ_PREAMBLE_DETECTED |
+		    LR11XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID |
+		    LR11XX_SYSTEM_IRQ_HEADER_ERROR)) &&
+	    atomic_get(&data->cad_rx_state) == LR11XX_CAD_RX_ARMED) {
+		atomic_set(&data->cad_rx_signal, 1);
+	}
 }
 
 static inline void lr11xx_reset_rx_busy_signals(struct lr11xx_data *data)
@@ -616,6 +631,7 @@ static bool lr11xx_irq_cad_done(struct lr11xx_data *data, uint32_t irq,
 		lr11xx_radio_set_rx_with_timeout_in_rtc_step(
 			&data->hal_ctx, lr11xx_cad_rx_timeout_steps(data));
 		data->in_rx_mode = true;
+		atomic_set(&data->cad_rx_signal, 0);
 		atomic_set(&data->cad_rx_state, LR11XX_CAD_RX_ARMED);
 		*rx_restarted = true;
 	}
@@ -671,6 +687,8 @@ static void lr11xx_irq_timeout(struct lr11xx_data *data,
 	 * no packet behind it.  Resolved before the branches below,
 	 * which put the receiver back on air. */
 	bool was_cad_rx = lr11xx_cad_rx_resolve(data,
+						atomic_get(&data->cad_rx_signal) ?
+						LR11XX_CAD_RX_PREAMBLE :
 						LR11XX_CAD_RX_TMOUT);
 
 	if (data->tx_active) {
@@ -819,6 +837,9 @@ static void lr11xx_dio1_work_handler(struct k_work *work)
 	lr11xx_system_irq_mask_t irq = 0;
 	lr11xx_status_t rc = lr11xx_system_get_irq_status(ctx, &irq);
 	lr11xx_system_clear_irq_status(ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
+	if (rc == LR11XX_STATUS_OK) {
+		lr11xx_cad_rx_note(data, irq);
+	}
 
 	if (rc != LR11XX_STATUS_OK) {
 		LOG_ERR("Failed to read IRQ status (rc=%d)", rc);
@@ -1264,6 +1285,7 @@ static bool lr11xx_dc_rx_in_flight(struct lr11xx_data *data)
 	if (lr11xx_system_get_irq_status(&data->hal_ctx, &irq) != LR11XX_STATUS_OK) {
 		return false;
 	}
+	lr11xx_cad_rx_note(data, irq);
 	if (irq & LR11XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID) {
 		return true;
 	}
@@ -1473,6 +1495,7 @@ bool lr11xx_is_receiving(const struct device *dev)
 
 	lr11xx_system_irq_mask_t irq = 0;
 	lr11xx_system_get_irq_status(&data->hal_ctx, &irq);
+	lr11xx_cad_rx_note(data, irq);
 
 	/* Header landed: payload phase in progress.  The bit stays latched
 	 * until the terminal DIO1 event bulk-clears it, so this covers the
@@ -1883,12 +1906,15 @@ int lr11xx_cad_rx_outcome(const struct device *dev)
 	struct lr11xx_data *data = dev->data;
 	atomic_val_t st = atomic_get(&data->cad_rx_state);
 
-	if (st != LR11XX_CAD_RX_PACKET && st != LR11XX_CAD_RX_TMOUT) {
+	if (st != LR11XX_CAD_RX_PACKET && st != LR11XX_CAD_RX_TMOUT &&
+	    st != LR11XX_CAD_RX_PREAMBLE) {
 		return 0;  /* nothing armed, or still awaiting the terminal IRQ */
 	}
 
 	atomic_set(&data->cad_rx_state, LR11XX_CAD_RX_IDLE);
-	return (st == LR11XX_CAD_RX_PACKET) ? 1 : 2;
+	/* 1 packet, 2 nothing seen, 3 preamble/header but nothing decoded */
+	return (st == LR11XX_CAD_RX_PACKET) ? 1 :
+	       (st == LR11XX_CAD_RX_PREAMBLE) ? 3 : 2;
 }
 
 /* ── Deferred hardware init ─────────────────────────────────────────── */

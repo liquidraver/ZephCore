@@ -1,4 +1,7 @@
 #include "dispatcher_fixture.h"
+#include <mesh/LbtBackoff.h>
+#include <cstring>
+#include <set>
 using namespace test_support;
 
 TEST(dispatch_send, "UNIT-DISPATCH-001", "Immediate wake delayed dispatch and exactly-once completion") {
@@ -185,4 +188,59 @@ TEST(dispatch_generated_rx, "UNIT-DISPATCH-017", "Generated dispatcher inputs ob
     // Packet::readFrom has a stricter nonempty-payload contract; don't conflate them.
     const uint8_t empty[] = {9, 0}; mesh::Packet p;
     CHECK(f.dispatcher.tryParsePacket(&p, empty, sizeof(empty)) && p.payload_len == 0);
+}
+TEST(dispatch_post_busy_hold, "UNIT-DISPATCH-018", "Busy deferral holds every transmit until the retry even after the channel clears") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 101);
+    f.radio.receiving = false; f.clock.now = 150; f.dispatcher.loop();  // RX ended
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 51);
+    f.clock.now = 200; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_lbt_backoff_state, "UNIT-DISPATCH-019", "LBT refusals widen the backoff, RX busy does not, a send resets it") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();         // RX-busy deferral
+    f.radio.receiving = false; f.radio.accept = false;
+    f.clock.now = 200; f.dispatcher.loop();                              // LBT refusal 1
+    f.clock.now = 300; f.dispatcher.loop();                              // LBT refusal 2
+    CHECK(f.dispatcher.refusals_seen == std::vector<uint8_t>({0, 0, 1}));
+    f.radio.accept = true; f.clock.now = 400; f.dispatcher.loop();
+    CHECK(f.radio.sent.size() == 1 && f.dispatcher.getLbtStreakMaxMs() == 200);
+    f.complete(); f.dispatcher.sendPacket(f.packet(), 0);
+    f.radio.accept = false; f.clock.now = 500; f.dispatcher.loop();
+    CHECK(f.dispatcher.refusals_seen.back() == 0);                       // the send reset it
+    f.radio.accept = true; f.clock.now = 600; f.dispatcher.loop(); f.complete();
+    CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_lbt_status, "UNIT-DISPATCH-020", "lbt.stats reports streaks, stays inside its buffer and clears with stats") {
+    Fixture f; f.begin(); f.radio.accept = false;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    f.clock.now = 200; f.dispatcher.loop(); f.clock.now = 250;
+    char buf[64];
+    int n = f.dispatcher.formatLbtStatus(buf, sizeof(buf));
+    CHECK(std::strcmp(buf, "streak:150ms max:150ms ref:2") == 0 && n == int(std::strlen(buf)));
+    char tiny[8];
+    n = f.dispatcher.formatLbtStatus(tiny, sizeof(tiny));
+    CHECK(n == 7 && std::strlen(tiny) == 7);
+    f.radio.accept = true; f.clock.now = 300; f.dispatcher.loop(); f.complete();
+    CHECK(f.dispatcher.getLbtStreakMaxMs() == 200);
+    f.dispatcher.resetStats(); CHECK(f.dispatcher.getLbtStreakMaxMs() == 0);
+}
+TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff window doubles to its cap and delays fill whole slots") {
+    using namespace mesh;
+    CHECK(lbtBackoffWindowMs(398, 0) == 398 && lbtBackoffWindowMs(398, 1) == 796);
+    CHECK(lbtBackoffWindowMs(398, 2) == 1592 && lbtBackoffWindowMs(398, 200) == 1592);
+    CHECK(lbtBackoffWindowMs(900, 1) == 1800 && lbtBackoffWindowMs(900, 2) == 2000);
+    CHECK(lbtBackoffWindowMs(2500, 0) == 2500 && lbtBackoffWindowMs(2500, 2) == 2500);
+    std::set<uint32_t> seen;
+    for (uint32_t rnd = 0; rnd < 1000; ++rnd) {
+        uint32_t d = lbtBackoffDelayMs(398, 12, 0, rnd * 2654435761u);
+        CHECK(d >= 12 && d <= 396 && d % 12 == 0);
+        seen.insert(d);
+    }
+    CHECK(seen.size() == 33);                                          // every slot reachable
+    CHECK(lbtBackoffDelayMs(398, 0, 0, 0) == 10);                      // fallback slot
+    CHECK(lbtBackoffDelayMs(5, 12, 0, 0) == 12 && lbtBackoffDelayMs(5, 12, 0, 1) == 24);
+    CHECK(lbtBackoffDelayMs(398, 12, 2, 0xFFFFFFFFu) <= 1592);
 }

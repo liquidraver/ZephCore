@@ -101,6 +101,8 @@ public:
 	virtual int formatFreqErrorStatus(char* buf, int cap) { (void)buf; (void)cap; return 0; }
 	virtual void applyCadPrefs() {}
 	virtual void resetCadStats() {}
+	/* `get lbt.stats`: refusal streaks plus per-attempt LBT outcomes. */
+	virtual int formatLbtStats(char* buf, int cap) { (void)buf; (void)cap; return 0; }
 
 	// Mesh time sync (all roles wire one; nullptr = not compiled/available)
 	virtual MeshTimeSync* getMeshTimeSync() { return nullptr; }
