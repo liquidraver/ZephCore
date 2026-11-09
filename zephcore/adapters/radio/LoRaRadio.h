@@ -152,6 +152,7 @@ public:
 	int formatLbtCounters(char *buf, int cap) override;
 	void resetLbtCounters() override;
 	int formatLastTxAttempt(char *buf, int cap) override;
+	uint32_t getRxEndSeq() override { return (uint32_t)atomic_get(&_rx_end_seq); }
 
 private:
 	/* ── The radio family (LoRaRadioOps.h): the Zephyr LoRa API plus the
@@ -411,6 +412,17 @@ private:
 	atomic_t _packets_recv;
 	atomic_t _packets_sent;
 	atomic_t _packets_recv_errors;
+	/* Receptions ended (packet or error), for the dispatcher's wait. */
+	atomic_t _rx_end_seq;
+	/* CONFIG_ZEPHCORE_LBT_LOGGING: reception ends with their uptime, written
+	 * by the RX callback, printed by the mesh thread (SPSC, drop when full). */
+	struct RxEndEvt { uint32_t t; uint16_t len; int16_t rssi; int8_t snr; };
+	static constexpr uint8_t RX_END_LOG_SIZE = 16;
+	RxEndEvt _rx_end_log[RX_END_LOG_SIZE];
+	atomic_t _rx_end_log_head;
+	atomic_t _rx_end_log_tail;
+	void noteRxEnd(uint16_t len, int16_t rssi, int8_t snr);
+	void printRxEnds();
 };
 
 } /* namespace mesh */

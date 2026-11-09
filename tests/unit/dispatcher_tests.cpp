@@ -32,7 +32,9 @@ TEST(dispatch_timeout, "UNIT-DISPATCH-002", "TX timeout releases ownership and n
 TEST(dispatch_refusal, "UNIT-DISPATCH-003", "Driver refusal preserves priority schedule and accounting") {
     Fixture f; f.begin(); f.radio.accept = false;
     auto p = f.packet(); f.dispatcher.sendPacket(p, 3); f.dispatcher.loop();
-    CHECK(f.pool.getOutboundByIdx(0) == p && f.pool.getOutboundSchedule(0) == 200);
+    // Re-queued due now; the retry (200) is held by next_tx_time, so the wait
+    // for a reception end still sees a due packet.
+    CHECK(f.pool.getOutboundByIdx(0) == p && f.pool.getOutboundSchedule(0) == 100);
     CHECK(f.pool.peekNextOutboundPriority(200) == 3);
     CHECK(f.dispatcher.getTotalAirTime() == 0 && f.dispatcher.getNumSentFlood() == 0);
     f.clock.now = 199; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
@@ -67,7 +69,8 @@ TEST(dispatch_busy_recovery, "UNIT-DISPATCH-006", "Persistent RX busy recovers a
     Fixture f; f.begin(); f.radio.receiving = true;
     f.dispatcher.sendPacket(f.packet(), 0);
     f.clock.now = 101; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
-    f.clock.now = 4102; f.dispatcher.loop();
+    f.clock.now = 4102; f.dispatcher.loop(); CHECK(f.radio.recoveries == 0);
+    f.clock.now = 10102; f.dispatcher.loop();
     CHECK(f.radio.recoveries == 1 && f.radio.attempts == 1);
     CHECK((f.dispatcher.getErrFlags() & ERR_EVENT_CAD_TIMEOUT) != 0);
     f.complete(); CHECK(f.pool.getFreeCount() == 32);
@@ -198,7 +201,7 @@ TEST(dispatch_post_busy_hold, "UNIT-DISPATCH-018", "Busy deferral holds every tr
     f.clock.now = 200; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
     f.complete(); CHECK(f.pool.getFreeCount() == 32);
 }
-TEST(dispatch_lbt_backoff_state, "UNIT-DISPATCH-019", "LBT refusals widen the backoff, RX busy does not, a send resets it") {
+TEST(dispatch_lbt_backoff_state, "UNIT-DISPATCH-019", "LBT refusals are counted, RX busy is not, a send resets the count") {
     Fixture f; f.begin(); f.radio.receiving = true;
     f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();         // RX-busy deferral
     f.radio.receiving = false; f.radio.accept = false;
@@ -227,20 +230,47 @@ TEST(dispatch_lbt_status, "UNIT-DISPATCH-020", "lbt.stats reports streaks, stays
     CHECK(f.dispatcher.getLbtStreakMaxMs() == 200);
     f.dispatcher.resetStats(); CHECK(f.dispatcher.getLbtStreakMaxMs() == 0);
 }
-TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff window doubles to its cap and delays fill whole slots") {
+TEST(dispatch_rx_end_retry, "UNIT-DISPATCH-021", "A deferral retries one backoff after the reception ends, not on its own timer") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // hold-rx, fallback 200
+    f.radio.receiving = false; f.radio.rx_end_seq = 1;
+    f.clock.now = 150; f.dispatcher.loop();                            // reception ended
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 101);
+    f.clock.now = 200; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
+    f.clock.now = 250; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete();
+    // An LBT refusal waits for the packet it heard the same way, and the
+    // re-queued packet stays due so the end is noticed.
+    f.radio.accept = false; f.dispatcher.sendPacket(f.packet(), 0);
+    f.clock.now = 300; f.dispatcher.loop();                            // refused, retry 400
+    CHECK(f.radio.attempts == 2 && f.pool.getOutboundCount(300) == 1);
+    f.radio.accept = true; f.radio.rx_end_seq = 2;
+    f.clock.now = 330; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.clock.now = 400; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.clock.now = 430; f.dispatcher.loop(); CHECK(f.radio.attempts == 3);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_rx_stuck, "UNIT-DISPATCH-022", "Recovery needs 10 s of RX busy with no reception ending") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // busy since 100
+    f.clock.now = 6000; f.radio.rx_end_seq = 1; f.dispatcher.loop();  // one ended, the next began
+    f.clock.now = 6100; f.dispatcher.loop();                           // busy since 6100
+    f.clock.now = 15000; f.dispatcher.loop();
+    CHECK(f.radio.recoveries == 0 && f.radio.attempts == 0);
+    f.clock.now = 16200; f.dispatcher.loop();
+    CHECK(f.radio.recoveries == 1 && f.radio.attempts == 1);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff delays fill whole slots of a fixed window") {
     using namespace mesh;
-    CHECK(lbtBackoffWindowMs(398, 0) == 398 && lbtBackoffWindowMs(398, 1) == 796);
-    CHECK(lbtBackoffWindowMs(398, 2) == 1592 && lbtBackoffWindowMs(398, 200) == 1592);
-    CHECK(lbtBackoffWindowMs(900, 1) == 1800 && lbtBackoffWindowMs(900, 2) == 2000);
-    CHECK(lbtBackoffWindowMs(2500, 0) == 2500 && lbtBackoffWindowMs(2500, 2) == 2500);
     std::set<uint32_t> seen;
     for (uint32_t rnd = 0; rnd < 1000; ++rnd) {
-        uint32_t d = lbtBackoffDelayMs(398, 12, 0, rnd * 2654435761u);
+        uint32_t d = lbtBackoffDelayMs(398, 12, rnd * 2654435761u);
         CHECK(d >= 12 && d <= 396 && d % 12 == 0);
         seen.insert(d);
     }
     CHECK(seen.size() == 33);                                          // every slot reachable
-    CHECK(lbtBackoffDelayMs(398, 0, 0, 0) == 10);                      // fallback slot
-    CHECK(lbtBackoffDelayMs(5, 12, 0, 0) == 12 && lbtBackoffDelayMs(5, 12, 0, 1) == 24);
-    CHECK(lbtBackoffDelayMs(398, 12, 2, 0xFFFFFFFFu) <= 1592);
+    CHECK(lbtBackoffDelayMs(398, 0, 0) == 10);                         // fallback slot
+    CHECK(lbtBackoffDelayMs(5, 12, 0) == 12 && lbtBackoffDelayMs(5, 12, 1) == 24);
+    CHECK(lbtBackoffDelayMs(2500, 12, 0xFFFFFFFFu) <= 2500);          // slow preset: one packet
 }

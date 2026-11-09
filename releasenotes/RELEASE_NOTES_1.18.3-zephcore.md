@@ -34,12 +34,17 @@ Two things made neighbours that waited out the same packet collide with each oth
   node in range that had something ready did the same.
 
 Now the wait is picked from many short steps, each one listen long (about 12 ms on the default
-radio settings), spread over the time a typical packet takes to send. Two waiting neighbours pick
-the same step about once in thirty. If the channel is still busy on the next try the spread doubles,
-up to four times. After hearing a packet, a node now waits out its turn too. The first retry comes
-a little sooner than before on average.
+radio settings), spread over the time a typical packet takes to send, and it is counted from the
+moment the packet the node was hearing ends, not from when it first noticed the channel busy. Two
+waiting neighbours pick the same step about once in thirty. The spread stays the same after a busy
+try, so a node that lost one race is not pushed to the back of the next one. During a burst of repeated packets a node now uses the short gaps between
+them, where it used to sleep through them: on a busy roof repeater the longest wait to transmit
+was over 10 seconds.
 
 Nothing changes in how a busy channel is treated: a node never transmits over traffic it can hear.
+The radio restart that used to fire after 4 seconds of receiving now waits for 10 seconds with no
+packet completing, so it no longer cuts off receptions in a busy burst; it remains as a safety net
+for a stuck radio.
 
 New: **`get lbt.stats`** shows how often listen-before-talk found the channel clear or busy, how
 often a busy reading was followed by an actual reception, and the longest time the node has been

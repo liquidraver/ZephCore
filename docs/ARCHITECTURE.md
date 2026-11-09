@@ -254,15 +254,18 @@ loop():
        adaptive contention window replaces upstream's rxdelay)
   4. checkSend(): Check outbound queue
      - Busy: if `isReceiving()` is true or the radio is not ready, or the
-            driver's LBT refuses, wait a random backoff (`mesh/LbtBackoff.h`:
-            whole slots of one LBT CAD + turnaround, in a window of one
-            100-byte packet's airtime that doubles per LBT refusal, 4x at
-            most, capped at 2 s). Nothing transmits before that retry time,
-            even if the channel clears earlier. After 4 s of `isReceiving()`
-            busy, call `_radio->recoverRxState()` (cancel + restart, clears
-            IRQ + latch + grace timestamp) and try the transmit, which still
-            has to pass the final gate and the driver's LBT CAD: a CAD busy
-            is never transmitted over.
+            driver's LBT refuses, wait for the reception to end
+            (`Radio::getRxEndSeq()` moves on every packet or RX error), then
+            a random backoff from that moment (`mesh/LbtBackoff.h`: whole
+            slots of one LBT CAD + turnaround, in a fixed window of one
+            100-byte packet's airtime; it does not widen with refusals). The
+            backoff drawn at the hold is the fallback when no reception
+            ends. Nothing transmits before the retry time. After 10 s (or 3
+            max-length packets) of `isReceiving()` with no reception ending,
+            call `_radio->recoverRxState()` (cancel + restart, clears IRQ +
+            latch + grace timestamp) and try the transmit, which still has to
+            pass the final gate and the driver's LBT CAD: a CAD busy is never
+            transmitted over.
      - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
@@ -424,7 +427,7 @@ The poll path is otherwise non-destructive — IRQ bits are cleared only by the 
 
 ### 5.2.2 CAD-Timeout Recovery
 
-`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and then tries the pending transmit. That attempt still passes the final `isReceiving()` gate and the driver's LBT CAD, so a fresh busy reading re-queues it; nothing is transmitted over a CAD busy. `LoRaRadio::recoverRxState()` does:
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed; every reception that ends resets it. If `getRxStuckDuration()` elapses (max(10 s, 3 x max-packet airtime); upstream uses `getCADFailMaxDuration()`, 4 s from the first hold), the dispatcher calls `_radio->recoverRxState()` and then tries the pending transmit. That attempt still passes the final `isReceiving()` gate and the driver's LBT CAD, so a fresh busy reading re-queues it; nothing is transmitted over a CAD busy. `LoRaRadio::recoverRxState()` does:
 
 ```cpp
 hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
@@ -1445,7 +1448,7 @@ Timeouts and deadlines that are watchdogs in everything but name:
 |-----------|----------|--------|
 | RX-latch payload deadline | all three custom radio paths: SX126x `patch 0003` ("Bound the lifetime of the RX-busy latch"), `lr11xx_lora.c`, `lr20xx_lora.c` (`header_seen_at_ms` + `*_max_payload_ms()`) | A `HEADER_VALID` whose packet never completes would pin the TX gate closed and silently mute the node — continuous RX has no symbol timer. Released at 255-byte airtime +25% +100 ms. See [5.2.1](#521-rx-busy-gate-tx-during-rx-prevention). |
 | Stuck-DIO1 counter | `lr11xx_lora.c` and `lr20xx_lora.c` | 5 empty DIO1 cycles → hardware reset. Counting rather than timing; on the LR11xx it complements the wedge watchdog rather than replacing it. |
-| CAD timeout | `Dispatcher::checkSend()` | 4 s of `isReceiving()` busy → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, then the transmit is tried through the final gate and the driver's LBT CAD (never over a CAD busy). See [5.2.2](#522-cad-timeout-recovery). |
+| CAD timeout | `Dispatcher::checkSend()` | 10 s (or 3 max-length packets) of `isReceiving()` busy with no reception ending → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, then the transmit is tried through the final gate and the driver's LBT CAD (never over a CAD busy). See [5.2.2](#522-cad-timeout-recovery). |
 | Chip-side TX timeout | SX126x `SetTx` deadline (`patch 0003`, "Scale the chip-side Tx timeout from airtime instead of a fixed 10 s"; airtime +25% +500 ms, floored at 10 s, clamped 262143 ms); LR2021 `TIMEOUT` IRQ handler | The chip stops the transmission when this fires, so a fixed value is a truncation, not a safeguard — at SF12/BW62.5 the old flat 10 s cut every packet from 76 bytes up. |
 | Serial partial-frame resync | `ZephyrCompanionUSB.cpp` (`USB_FRAME_TIMEOUT_MS`) | 2 s. Parser-level only — deliberately **not** a session or idle timeout; an idle-but-connected companion sits in `RX_IDLE` indefinitely. |
 | TCP send timeout | `TcpCompanionTransport.c` (`TX_SEND_TIMEOUT_SEC`, `SO_SNDTIMEO`) | 2 s per send. Native Linux and WiFi companions. A peer that can't accept a frame in the window is wedged → close it, rather than hang the whole queue. Needs `CONFIG_NET_CONTEXT_SNDTIMEO`, which `ZEPHCORE_TRANSPORT_TCP` selects; before 1.18.1 it was off, the option silently failed and sends waited up to 10 s per attempt (`NET_SOCKET_MAX_SEND_WAIT`). |

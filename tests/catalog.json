@@ -169,7 +169,7 @@
     },
     {
       "id": "UNIT-DISPATCH-019",
-      "name": "LBT refusals widen the backoff, RX busy does not, a send resets it",
+      "name": "LBT refusals are counted, RX busy is not, a send resets the count",
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {
@@ -178,8 +178,18 @@
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {
+      "id": "UNIT-DISPATCH-021",
+      "name": "A deferral retries one backoff after the reception ends, not on its own timer",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-022",
+      "name": "Recovery needs 10 s of RX busy with no reception ending",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
       "id": "UNIT-LBT-001",
-      "name": "LBT backoff window doubles to its cap and delays fill whole slots",
+      "name": "LBT backoff delays fill whole slots of a fixed window",
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {

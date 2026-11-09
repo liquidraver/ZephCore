@@ -75,7 +75,8 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _rx_cb(nullptr), _rx_cb_user_data(nullptr),
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
 	  _tx_thread_running(false), _tx_len(0),
-	  _packets_recv(0), _packets_sent(0), _packets_recv_errors(0)
+	  _packets_recv(0), _packets_sent(0), _packets_recv_errors(0),
+	  _rx_end_seq(0), _rx_end_log{}, _rx_end_log_head(0), _rx_end_log_tail(0)
 {
 	k_poll_signal_init(&_tx_signal);
 	k_sem_init(&_tx_start_sem, 0, 1);
@@ -242,12 +243,18 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	LoRaRadio *self = static_cast<LoRaRadio *>(user_data);
 
 	self->noteRxAfterLbtBusy();
+	self->noteRxEnd(size, rssi, snr);
 
 	/* NULL data = RX error (CRC/header error) */
 	if (data == NULL && size == 0) {
 		atomic_inc(&self->_packets_recv_errors);
 		LOG_DBG("RX error (CRC/header), total errors: %u",
 			(uint32_t)atomic_get(&self->_packets_recv_errors));
+		/* Wake the mesh thread anyway: a deferred transmit waits for any
+		 * reception to end (Dispatcher::checkSend). */
+		if (self->_rx_cb) {
+			self->_rx_cb(self->_rx_cb_user_data);
+		}
 		return;
 	}
 
@@ -659,8 +666,54 @@ void LoRaRadio::startReceive()
 
 /* ── RX/TX ────────────────────────────────────────────────────────────── */
 
+/* RX callback context. The sequence always moves; the timeline entry only in
+ * LBT-logging builds. len 0 = CRC/header error. */
+void LoRaRadio::noteRxEnd(uint16_t len, int16_t rssi, int8_t snr)
+{
+	atomic_inc(&_rx_end_seq);
+	if (!IS_ENABLED(CONFIG_ZEPHCORE_LBT_LOGGING)) {
+		return;
+	}
+	uint8_t head = (uint8_t)atomic_get(&_rx_end_log_head);
+	uint8_t next = (uint8_t)((head + 1) % RX_END_LOG_SIZE);
+
+	if (next == (uint8_t)atomic_get(&_rx_end_log_tail)) {
+		return;
+	}
+	_rx_end_log[head] = { k_uptime_get_32(), len, rssi, snr };
+	atomic_set(&_rx_end_log_head, next);
+}
+
+extern "C" void zc_console_line_start(void);
+
+/* Mesh thread: one `LBT t=<ms> rxend ...` line per reception end, so the
+ * channel's busy/idle timeline can be laid against the transmit attempts
+ * (LLD 03 §17). */
+void LoRaRadio::printRxEnds()
+{
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+	uint8_t tail = (uint8_t)atomic_get(&_rx_end_log_tail);
+
+	while (tail != (uint8_t)atomic_get(&_rx_end_log_head)) {
+		const RxEndEvt &e = _rx_end_log[tail];
+
+		zc_console_line_start();
+		if (e.len) {
+			printk("LBT t=%u rxend ok len=%u air=%u rssi=%d snr=%d\n",
+			       e.t, e.len, getEstAirtimeFor(e.len), e.rssi, e.snr);
+		} else {
+			printk("LBT t=%u rxend err\n", e.t);
+		}
+		tail = (uint8_t)((tail + 1) % RX_END_LOG_SIZE);
+		atomic_set(&_rx_end_log_tail, tail);
+	}
+#endif
+}
+
 int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 {
+	printRxEnds();
+
 	uint8_t tail = (uint8_t)atomic_get(&_rx_tail);
 	if (atomic_get(&_rx_head) == tail) {
 		return 0;

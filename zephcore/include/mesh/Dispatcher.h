@@ -89,8 +89,9 @@ public:
   // Radio not command-ready (e.g. BUSY high); the Dispatcher defers TX.
   virtual bool isRadioReady() { return true; }
 
-  // Reset the radio into a known good RX state: called on CAD timeout, when
-  // isReceiving() stayed true past getCADFailMaxDuration(). Radios that can
+  // Reset the radio into a known good RX state: called when isReceiving() kept
+  // deferring TX for getRxStuckDuration() with no reception ending (ZEPHCORE;
+  // upstream: getCADFailMaxDuration(), counted from the first hold). Radios that can
   // stall walk the chip cancel -> REST -> fresh RX, clearing IRQs and latches.
   virtual void recoverRxState() { }
 
@@ -123,6 +124,9 @@ public:
   // Outcome of the last startSendRaw() as short text ("clr", "busy rssi=-97",
   // "err=-116", "gate=rx"...), for the LBT diagnostic log; 0 = none.
   virtual int formatLastTxAttempt(char* buf, int cap) { return 0; }
+  // Receptions that have ended (packet or CRC/header error), wrapping; a
+  // deferral waits for it to move. Constant = cannot tell (timer only).
+  virtual uint32_t getRxEndSeq() { return 0; }
 
   // Receiver hygiene (deaf-aware AGC unstick, temperature-drift recal). Both
   // sleep the radio, so called only from the maintenance tick.
@@ -207,6 +211,8 @@ class Dispatcher {
   uint32_t lbt_next_warn;
   uint32_t lbt_streak_max;
   uint8_t lbt_refusals;
+  bool wait_rx_end;           // deferred: retry once a reception ends
+  uint32_t rx_end_seq_seen;   // getRxEndSeq() when the deferral began
   int8_t cad_offset_shadow;
   bool cad_offset_shadow_valid;
   tx_queued_callback_t _tx_queued_cb;
@@ -246,6 +252,9 @@ protected:
   // How long the driver's LBT may refuse every transmit before we conclude the
   // detector is too sensitive and relax it one step (see checkSend()).
   virtual uint32_t getTxStarvationDuration() const;
+  // ZEPHCORE: how long "receiving" may defer TX with no reception ending before
+  // the radio is judged stuck and recoverRxState() runs.
+  virtual uint32_t getRxStuckDuration() const;
   // Adaptive CAD moved the operating detPeak offset; subclasses persist it.
   virtual void onCadOffsetChanged(int8_t offset) { }
   // LBT refusals since the last transmit that got out (saturating); sizes the
@@ -316,7 +325,8 @@ private:
   // refusal escalation).
   uint32_t getMaxTxBudgetMs() const;
   bool txBudgetAllowsSend(uint32_t now);
-  void onLbtRefused(uint32_t now, int len);
+  void onLbtRefused(uint32_t now, int len, uint32_t rx_seq);
+  void waitForRxEnd(uint32_t rx_seq) { wait_rx_end = true; rx_end_seq_seen = rx_seq; }
   void noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms);
   void checkRecv();
   void checkSend();
