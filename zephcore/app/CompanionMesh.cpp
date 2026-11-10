@@ -1527,14 +1527,17 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 	sendPush(buf[0], &buf[1], i - 1);
 }
 
+/* Off-grid repeat, flood and direct: one LBT slot draw (LLD 02 §21). */
 uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
 {
-	return computeAdaptiveFloodDelay(packet);
+	(void)packet;
+	return computeForwardDelay();
 }
 
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	return computeAdaptiveDirectDelay(packet);
+	(void)packet;
+	return computeForwardDelay();
 }
 
 uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)

@@ -1,6 +1,6 @@
 /*
  * SPDX-License-Identifier: MIT
- * Adaptive Contention Window — dupe-counting based delay estimation
+ * Contention estimate — dupe-counting EMA
  */
 
 #include <mesh/ContentionTracker.h>
@@ -179,21 +179,6 @@ uint32_t ContentionTracker::msUntilNextTick(uint32_t now_ms) const
 float ContentionTracker::getContentionEstimate() const
 {
 	return (float)_ema_x256 / 256.0f;
-}
-
-float ContentionTracker::getFloodDelayFactor() const
-{
-	if (!isWarmedUp()) return 0.5f; /* conservative default before warmup */
-
-	float est = getContentionEstimate();
-	if (est <= 0.0f) return MIN_FLOOD_FACTOR;
-
-	/* Arduino-like center near 0.5 in light contention, rising smoothly
-	 * toward 0.8 as contention increases. */
-	float factor = MIN_FLOOD_FACTOR + (MAX_FLOOD_FACTOR - MIN_FLOOD_FACTOR) *
-		       (est / (est + FLOOD_EST_HALFPOINT));
-	if (factor > MAX_FLOOD_FACTOR) factor = MAX_FLOOD_FACTOR;
-	return factor;
 }
 
 } /* namespace mesh */

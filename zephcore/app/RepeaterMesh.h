@@ -300,9 +300,7 @@ public:
   float getContentionEstimate() const override {
     return getContentionTracker().getContentionEstimate();
   }
-  float getFloodDelayFactor() const override {
-    return getContentionTracker().getFloodDelayFactor();
-  }
+  uint32_t getLbtWindowSlots() const override { return lbtWindowSlots(); }
   // Duty-cycle false-preamble re-arms (SX126x only; others return 0).
   uint32_t getDutyCycleTimeoutRestarts() const override;
   void resetDutyCycleTimeoutRestarts() override;

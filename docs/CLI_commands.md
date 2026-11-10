@@ -349,7 +349,7 @@ The observer role (ESP32, `boards/common/observer.conf`) has its own CLI and, ap
 | `get lon` | Stored longitude |
 | `get dutycycle` | Duty cycle as percentage (e.g. "50.0%") |
 | `get af` | Raw airtime factor value |
-| `get txdelay` | Adaptive TX delay status: contention estimate and flood delay factor |
+| `get txdelay` | *(ZephCore)* Contention estimate (copies heard per forward) and the LBT slot window it sizes, e.g. `> slots (est=4.2 win=10)`. Forwards and retries after a busy channel wait a random number of slots from the window; it is 10 slots, more on dense sites (up to 64) |
 | `get rxdelay` | *(deprecated)* Always returns "adaptive (rxdelay deprecated)" |
 | `get direct.txdelay` | *(deprecated)* Always returns "adaptive (direct.txdelay deprecated)" |
 | `get flood.max` | Max flood retransmit hops |
@@ -518,6 +518,6 @@ four radio parameters together, since they are one interop-critical set.
   For a node that is dark in use but still blinks three times at power-off (buzzer muted), use
   `set leds on` with `set leds.hb off` (and `set leds.radio off` where the board has a radio LED).
 - **USB-only commands** — `get acl`, `get prv.key`, `set freq`, `log` (dump), `stats-packets`, `stats-radio`, `stats-core`, `erase` — are blocked when the command arrives over the mesh (remote admin). These are the only ones gated on `sender_timestamp == 0`; `get public.key` and `set prv.key` are **not** among them.
-- **Adaptive contention window** — `txdelay`, `rxdelay`, and `direct.txdelay` are accepted and stored for Arduino prefs compatibility but have no effect. Use `get txdelay` to inspect the current adaptive state. `get/set backoff.multiplier` were removed in 1.18.3 together with the per-copy delay they tuned.
+- **Adaptive contention window** — `txdelay`, `rxdelay`, and `direct.txdelay` are accepted and stored for Arduino prefs compatibility but have no effect. Use `get txdelay` to see the contention estimate and the current slot window. `get/set backoff.multiplier` were removed in 1.18.3 together with the per-copy delay they tuned.
 - **Region load mode** — after `region load`, every line received is parsed as a region entry until a blank line is sent. The loaded map is only committed to the live region tree at that point; use `region save` to persist it. Region rows must be indented by at least one space, so an **unindented line that starts with a name character aborts the mode and is executed as a normal command** — the escape hatch if a `region load` is started by accident or a client dies mid-transfer. An abort discards the partial map, leaving the live region tree untouched. The exported wildcard header line `*` stays unindented and is ignored as before, so pasting the output of `region` still loads cleanly.
 - **Reboot delay** — `start dfu`, `start ota` (nRF52 BLE-DFU path only), `reboot`, `poweroff`, `clkreboot` and `erase` defer the reset by **2 seconds** so the reply can be transmitted over LoRa first. On a companion the handler then keeps deferring in 20 ms steps until the BLE/USB transport has drained, up to a further 3 s grace. On ESP32 `start ota` starts the WiFi OTA server or opens the BLE OTA window and does **not** reboot; the reboot comes from the upload client.

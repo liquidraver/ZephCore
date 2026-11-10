@@ -683,13 +683,14 @@ void RepeaterMesh::logTxAttempt(const mesh::Packet* pkt, const char* outcome, ui
 
 // ZEPHCORE: no calcRxDelay() here: rx delay is replaced by the adaptive contention window
 
-// ZEPHCORE: ours. Adaptive contention window.
+// ZEPHCORE: ours. Flood and direct forwards: one LBT slot draw (LLD 02 §21).
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveFloodDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
-// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveDirectDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
 
 // ZEPHCORE: ours. Also records whether the packet was an unscoped flood; a
@@ -972,7 +973,10 @@ void RepeaterMesh::onControlDataRecv(mesh::Packet* packet) {
       memcpy(&data[6], self_id.pub_key, PUB_KEY_SIZE);
       auto resp = createControlData(data, prefix_only ? 6 + 8 : 6 + PUB_KEY_SIZE);
       if (resp) {
-        sendZeroHop(resp, getRetransmitDelay(resp)*4);  // apply random delay (widened x4), as multiple nodes can respond to this
+        // ZEPHCORE: every repeater in range answers at once: upstream's spread
+        // (0-10 airtimes at txdelay 0.5), not the forward slot draw.
+        uint32_t air = _radio->getEstAirtimeFor(resp->getRawLength());
+        sendZeroHop(resp, 4 * getRNG()->nextInt(0, 5 * air / 2 + 1));  // apply random delay (widened x4), as multiple nodes can respond to this
       }
     }
   } else if (type == CTL_TYPE_NODE_DISCOVER_RESP && packet->payload_len >= 6) {

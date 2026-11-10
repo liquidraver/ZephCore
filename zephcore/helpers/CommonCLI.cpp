@@ -774,9 +774,8 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 			snprintf(reply, CLI_REPLY_SIZE, "> adaptive (rxdelay deprecated)");
 		} else if (memcmp(config, "txdelay", 7) == 0) {
 			float est = _callbacks->getContentionEstimate();
-			float ff = _callbacks->getFloodDelayFactor();
-			snprintf(reply, CLI_REPLY_SIZE, "> adaptive (est=%.1f flood=%.2f)",
-				 (double)est, (double)ff);
+			snprintf(reply, CLI_REPLY_SIZE, "> slots (est=%.1f win=%u)",
+				 (double)est, (unsigned)_callbacks->getLbtWindowSlots());
 		} else if (memcmp(config, "direct.txdelay", 14) == 0) {
 			snprintf(reply, CLI_REPLY_SIZE, "> adaptive (direct.txdelay deprecated)");
 		} else if (memcmp(config, "path.hash.mode", 14) == 0) {

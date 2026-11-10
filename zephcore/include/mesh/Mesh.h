@@ -1,7 +1,7 @@
 #pragma once
 
 #include <mesh/Dispatcher.h>
-#include <mesh/ContentionTracker.h>  // ZEPHCORE: adaptive contention window
+#include <mesh/ContentionTracker.h>  // ZEPHCORE: contention estimate, LBT window
 
 namespace mesh {
 
@@ -37,11 +37,13 @@ class Mesh : public Dispatcher {
   DispatcherAction forwardMultipartDirect(Packet* pkt, uint32_t delay_millis);
 
 protected:
-  // ZEPHCORE: adaptive contention window — dupe tracking and adaptive
-  // retransmit jitter (ADR 0007, LLD 02).
+  // ZEPHCORE: contention window — counted dupes size the LBT slot window that
+  // forwards and post-busy retries draw from (ADR 0007, LLD 02 §21).
   ContentionTracker _contention;
-  uint32_t computeAdaptiveFloodDelay(const Packet* packet);
-  uint32_t computeAdaptiveDirectDelay(const Packet* packet);
+  // Delay for any forward, flood or direct: one slot draw from the reception end.
+  uint32_t computeForwardDelay();
+  // Slots in the LBT window for the current contention estimate.
+  uint32_t lbtWindowSlots() const;
   // Track heard floods we don't forward, so the EMA warms on non-relaying nodes.
   virtual bool passivelyTrackFloods() const { return false; }
   // Added to the caller's delay on every sendFlood(); companions spread their

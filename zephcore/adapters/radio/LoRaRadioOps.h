@@ -60,6 +60,11 @@ struct LoRaRadioOps {
 			      uint8_t num);
 	void (*reset_stats)(const struct device *dev);
 	int (*format_freq_error)(const struct device *dev, char *buf, int cap);
+	/* LBT diagnostics: flags latched before the last pre-TX CAD (bit 0
+	 * preamble, 1 header, 2 header error) and the last preamble that never
+	 * gave a header (first-seen ms, 0 = none) with a count. NULL: none. */
+	void (*lbt_rx_evidence)(const struct device *dev, uint8_t *pre_flags,
+				uint32_t *foreign_ms, uint32_t *foreign_count);
 };
 
 extern const LoRaRadioOps kLoRaRadioOps;

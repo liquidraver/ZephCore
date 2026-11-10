@@ -53,6 +53,12 @@ public:
   uint8_t path[MAX_PATH_SIZE];
   uint8_t payload[MAX_PACKET_PAYLOAD];
   int8_t _snr;
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+  // ZEPHCORE: LBT logging only. Uptime ms when the Dispatcher first queued this
+  // packet for TX, and the delay it was queued with (re-queues keep both).
+  uint32_t _zc_queued_ms;
+  uint32_t _zc_queue_delay_ms;
+#endif
 
   /**
    * \brief calculate the hash of payload + type

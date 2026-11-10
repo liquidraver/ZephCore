@@ -7,6 +7,8 @@ add_executable(zephcore_unit
   unit/main.cpp
   unit/packet_tests.cpp
   unit/policy_tests.cpp
+  unit/filter_tests.cpp
+  ${PRODUCTION}/helpers/FwdFilter.cpp
   unit/pool_tests.cpp
   unit/contention_tests.cpp
   unit/advert_tests.cpp

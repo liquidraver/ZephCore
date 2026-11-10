@@ -228,6 +228,26 @@ int sx126x_cad_rx_outcome(const struct device *dev);
  */
 uint32_t sx126x_cad_rx_timeout_ms(const struct device *dev);
 
+/* Flags for sx126x_lbt_rx_evidence(): status latched before the last LBT CAD. */
+#define SX126X_LBT_PRE_PREAMBLE   0x01  /* PREAMBLE_DETECTED */
+#define SX126X_LBT_PRE_HEADER     0x02  /* HEADER_VALID (our sync word) */
+#define SX126X_LBT_PRE_HEADER_ERR 0x04  /* HEADER_ERR */
+
+/**
+ * @brief Receiver evidence around listen-before-talk (diagnostics)
+ *
+ * @param dev           LoRa device
+ * @param pre_flags     SX126X_LBT_PRE_* latched in RX just before the last
+ *                      pre-TX CAD (0 when the chip was not in RX)
+ * @param foreign_ms    k_uptime ms at which the last preamble without a
+ *                      HEADER_VALID was first seen by sx126x_is_receiving()
+ *                      (released after the grace as a foreign sync word or a
+ *                      failed sync); 0 = none since boot
+ * @param foreign_count Number of such preambles since boot
+ */
+void sx126x_lbt_rx_evidence(const struct device *dev, uint8_t *pre_flags,
+			    uint32_t *foreign_ms, uint32_t *foreign_count);
+
 #ifdef __cplusplus
 }
 #endif

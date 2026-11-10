@@ -68,6 +68,7 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _lbt_clear(0), _lbt_busy(0), _lbt_err(0), _lbt_gate(0),
 	  _lbt_busy_rx(0), _lbt_busy_until(0),
 	  _last_tx(LAST_NONE), _last_tx_err(0), _last_busy_rssi{},
+	  _last_busy_pre(0xFF), _last_busy_fp_age(UINT32_MAX), _foreign_seen(0),
 	  _config_cached(false),
 	  _has_radio_override(false),
 	  _override_freq(0), _override_bw(0),
@@ -711,6 +712,19 @@ void LoRaRadio::printRxEnds()
 		tail = (uint8_t)((tail + 1) % RX_END_LOG_SIZE);
 		atomic_set(&_rx_end_log_tail, tail);
 	}
+	/* Preambles released without a header since the last check: only the
+	 * latest first-seen time is kept, n says how many there were. */
+	if (_ops.lbt_rx_evidence) {
+		uint8_t flags;
+		uint32_t fms, fcount;
+
+		_ops.lbt_rx_evidence(_dev, &flags, &fms, &fcount);
+		if (fcount != _foreign_seen) {
+			zc_console_line_start();
+			printk("LBT t=%u fpre n=%u\n", fms, fcount - _foreign_seen);
+			_foreign_seen = fcount;
+		}
+	}
 #endif
 }
 
@@ -822,6 +836,16 @@ bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 			static const uint16_t gap_us[LBT_RSSI_PROBES] = {
 				0, 750, 1000, 2000, 4000, 8000 };
 
+			_last_busy_pre = 0xFF;
+			_last_busy_fp_age = UINT32_MAX;
+			if (_ops.lbt_rx_evidence) {
+				uint32_t fms, fcount;
+
+				_ops.lbt_rx_evidence(_dev, &_last_busy_pre, &fms, &fcount);
+				if (fms) {
+					_last_busy_fp_age = k_uptime_get_32() - fms;
+				}
+			}
 			k_busy_wait(rssi_settle_delay_us(
 				(uint16_t)(getActiveBandwidthKHzX10() / 10)));
 			for (int i = 0; i < LBT_RSSI_PROBES; i++) {
@@ -1647,10 +1671,27 @@ int LoRaRadio::formatLastTxAttempt(char *buf, int cap)
 		if (_ops.rssi_burst) {
 			return snprintf(buf, cap, "busy");
 		}
-		return snprintf(buf, cap, "busy rssi=%d,%d,%d,%d,%d,%d",
-				(int)_last_busy_rssi[0], (int)_last_busy_rssi[1],
-				(int)_last_busy_rssi[2], (int)_last_busy_rssi[3],
-				(int)_last_busy_rssi[4], (int)_last_busy_rssi[5]);
+		{
+			int n = snprintf(buf, cap, "busy rssi=%d,%d,%d,%d,%d,%d",
+					 (int)_last_busy_rssi[0], (int)_last_busy_rssi[1],
+					 (int)_last_busy_rssi[2], (int)_last_busy_rssi[3],
+					 (int)_last_busy_rssi[4], (int)_last_busy_rssi[5]);
+
+			if (_last_busy_pre == 0xFF || n < 0 || n >= cap) {
+				return n;
+			}
+			/* pre: P preamble, H header, E header error latched before CAD;
+			 * fp: ms since the last preamble that gave no header (- = none). */
+			char fp[12] = "-";
+
+			if (_last_busy_fp_age != UINT32_MAX) {
+				snprintf(fp, sizeof(fp), "%u", (unsigned)_last_busy_fp_age);
+			}
+			return n + snprintf(buf + n, cap - n, " pre=%c%c%c fp=%s",
+					    (_last_busy_pre & 1) ? 'P' : '-',
+					    (_last_busy_pre & 2) ? 'H' : '-',
+					    (_last_busy_pre & 4) ? 'E' : '-', fp);
+		}
 	case LAST_ERR:
 		return snprintf(buf, cap, "err=%d", (int)_last_tx_err);
 	case LAST_GATE_READY:

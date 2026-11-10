@@ -69,7 +69,7 @@
     },
     {
       "id": "UNIT-CONTENTION-003",
-      "name": "Flood delay factor follows the saturating curve",
+      "name": "Contention estimate sizes the LBT slot window",
       "source": "tests/unit/contention_tests.cpp"
     },
     {
@@ -401,6 +401,31 @@
       "id": "UNIT-POLICY-003",
       "name": "Transport flood with code 0 is un-scoped, other codes and routes are not",
       "source": "tests/unit/policy_tests.cpp"
+    },
+    {
+      "id": "UNIT-FILTER-001",
+      "name": "Locked: filter commands are not handled and nothing is dropped",
+      "source": "tests/unit/filter_tests.cpp"
+    },
+    {
+      "id": "UNIT-FILTER-002",
+      "name": "Repeater rule matches any path entry on the shared prefix, floods only",
+      "source": "tests/unit/filter_tests.cpp"
+    },
+    {
+      "id": "UNIT-FILTER-003",
+      "name": "Source rule: flood REQ only, narrowed by dst and first repeater",
+      "source": "tests/unit/filter_tests.cpp"
+    },
+    {
+      "id": "UNIT-FILTER-004",
+      "name": "Request limit: per pair per hour, off at 0, oldest pair evicted",
+      "source": "tests/unit/filter_tests.cpp"
+    },
+    {
+      "id": "UNIT-FILTER-005",
+      "name": "Save and load round trip; a damaged blob changes nothing",
+      "source": "tests/unit/filter_tests.cpp"
     },
     {
       "id": "UNIT-CHAT-001",

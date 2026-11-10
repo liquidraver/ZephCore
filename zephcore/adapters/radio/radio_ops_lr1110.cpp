@@ -38,6 +38,7 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.side_detectors = nullptr,
 	.reset_stats = nullptr,
 	.format_freq_error = nullptr,
+	.lbt_rx_evidence = nullptr,
 };
 
 } /* namespace mesh */

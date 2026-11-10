@@ -341,13 +341,14 @@ const char* RoomServerMesh::getLogDateTime() {
   return tmp;
 }
 
-// ZEPHCORE: ours. Adaptive contention window.
+// ZEPHCORE: ours. Flood and direct forwards: one LBT slot draw (LLD 02 §21).
 uint32_t RoomServerMesh::getRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveFloodDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
-// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RoomServerMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveDirectDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
 
 // ZEPHCORE: ours. The room server never forwards (UPSTREAM_TRACKER fad11c90).

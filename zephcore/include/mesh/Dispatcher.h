@@ -245,6 +245,8 @@ protected:
 
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
+  // ZEPHCORE: ms since the last reception ended; 0 without a stamp or over 2 s old.
+  uint32_t msSinceRxEnd(uint32_t now) const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
   virtual uint32_t getDutyCycleWindowMs() const { return 3600000; }
 
@@ -260,13 +262,14 @@ protected:
   virtual uint32_t getRxStuckDuration() const;
   // Adaptive CAD moved the operating detPeak offset; subclasses persist it.
   virtual void onCadOffsetChanged(int8_t offset) { }
-  // LBT refusals since the last transmit that got out (saturating); sizes the
-  // backoff window in getCADFailRetryDelay().
+  // LBT refusals since the last transmit that got out (saturating); logged as
+  // ref= on LBT lines, does not size the backoff window.
   uint8_t getLbtRefusals() const { return lbt_refusals; }
   // LBT diagnostic hook (CONFIG_ZEPHCORE_LBT_LOGGING builds only): every
   // transmit attempt and hold-back, with the backoff picked. pkt is NULL for an
   // RX-busy hold, where nothing has been dequeued yet.
   virtual void logTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms) { }
+  void stampQueued(Packet* pkt, uint32_t delay_ms);  // ZEPHCORE: LBT logging
   void notifyTxQueued(uint32_t delay_ms) {
     if (_tx_queued_cb) _tx_queued_cb(delay_ms, _tx_queued_user_data);
   }

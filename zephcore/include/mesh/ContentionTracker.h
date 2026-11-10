@@ -1,9 +1,9 @@
 /*
  * SPDX-License-Identifier: MIT
- * Adaptive Contention Window — EMA-based flood retransmit delay
+ * Contention estimate — EMA of the dupes heard per retransmit
  *
  * Counts neighbor retransmit dupes within a 10s window per packet.
- * Dupe counts feed a rolling EMA that drives an adaptive delay factor.
+ * The EMA sizes the LBT slot window (mesh/LbtBackoff.h, lbtBackoffSlots()).
  */
 
 #pragma once
@@ -47,10 +47,6 @@ public:
 
 	float getContentionEstimate() const;
 
-	/* Saturating curve: MIN + (MAX-MIN) * est/(est+HALFPOINT).
-	 * Returns 0.5 during warmup. */
-	float getFloodDelayFactor() const;
-
 	bool isWarmedUp() const { return _finalized_count >= WARMUP_PACKETS; }
 
 private:
@@ -58,9 +54,6 @@ private:
 	static constexpr uint32_t WINDOW_MS = 10000;      /* dupe observation window; covers SF12 2-hop */
 	static constexpr int EMA_SHIFT = 3;               /* alpha = 1/8 */
 	static constexpr int WARMUP_PACKETS = 4;          /* min samples before EMA is trusted */
-	static constexpr float MIN_FLOOD_FACTOR = 0.40f;  /* sparse mesh baseline */
-	static constexpr float MAX_FLOOD_FACTOR = 1.00f;  /* dense mesh ceiling */
-	static constexpr float FLOOD_EST_HALFPOINT = 4.0f; /* midpoint: factor=0.70 at est=4 */
 	static constexpr uint32_t STALE_MS = 300000;      /* 5 min: reset EMA if no traffic */
 	/* Wall-clock period of one 1/8 stale-decay step.  The decay used to be
 	 * "one step per tick()", which silently coupled it to the 5 s

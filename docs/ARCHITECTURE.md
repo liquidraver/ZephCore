@@ -283,39 +283,29 @@ Called every ~5 seconds from the main event loop:
 3. **AGC reset** (`agcIdleMaintenance()`): warm sleep + recalibration, **SX126x only** — gated on `hwNeedsAgcReset()`, which only that family declares. Semtech prescribe it for a jammed AGC on the SX126x; neither the LR11xx UM nor the LR2021 DS describes such a fault, and running it there cost packets (T1000-E, 2026-08-24: 7.4% miss rate in the 60 s after a fire vs 0.6% elsewhere). Triggered by long silence **and** corroborating evidence — a frozen noise-floor reading — never by silence alone, which is a normal condition rather than a fault.
 4. **Image-calibration drift** (`imageCalMaintenance()`): unrelated to the AGC despite the shared hook — LR11xx/LR2021 only, where the datasheets give a temperature threshold. Temperature is read from the **board** (`Board::getMCUTemperature()`), never from the radio; only the delta matters and the die sensor tracks the same ambient without costing the radio an SPI command. Polled hourly, deferred after TX so PA self-heating is not read as ambient drift, and confirmed by a second reading before recalibrating.
 
-### 4.7 Adaptive Contention Window
+### 4.7 Contention Window
 
-Replaces Arduino MeshCore's static `txdelay`/`rxdelay` with three complementary mechanisms.
+Replaces Arduino MeshCore's static `txdelay`/`rxdelay` (ADR 0007). Every forward and every retry after a busy CAD waits one draw from the same LBT slot window, counted from the end of a reception; the window grows with the measured contention.
 
-**EMA Delay Factor (proactive)**
+**Contention estimate**
 
-`ContentionTracker` measures observed duplicates per retransmitted packet using a **24-entry ring buffer** (sized for ~50-neighbor hilltop topologies with multiple concurrent in-flight floods). Each entry tracks a packet (identified by FNV-1a hash) and records how many dupes arrive within a 10-second observation window. When the window closes, the entry is finalized and an EMA is updated with alpha = 1/8. The resulting estimate feeds the delay factor formula:
+`ContentionTracker` measures observed duplicates per retransmitted packet using a **24-entry ring buffer** (sized for ~50-neighbor hilltop topologies with multiple concurrent in-flight floods). Each entry tracks a packet (FNV-1a hash) and counts the dupes heard within a 10-second window; when the window closes the count is folded into an EMA with alpha = 1/8. The EMA is trusted after 4 samples and decays 1/8 per 5 s after 5 minutes without traffic. A heard duplicate only counts: it does not move a pending TX (the per-dupe reactive backoff was retired in 1.18.3). The joystick UI also reads per-packet dupe counts ("heard a repeat?").
 
-```
-factor = 0.05 + 0.170 * sqrt(est)
-```
+**LBT slot window**
 
-Capped at 2.0. During warmup (fewer than 4 finalized entries), factor defaults to 0.5. Sparse nodes converge toward near-zero delay; dense nodes get proportionally higher delay.
+`lbtBackoffSlots(est)` (`include/mesh/LbtBackoff.h`): `2·est + 2` slots, clamped to 10..64, and 10 before warmup. A slot is about one CAD plus the RX→TX turnaround (`getLbtSlotMs()`, 12 ms at SF7/62.5 kHz). `Mesh::getCADFailRetryDelay()` draws a whole number of slots in the window (devdocs LLD 02 §18-§21).
 
-The flood retransmit jitter window is `5·airtime·factor` clamped by **two ceilings**:
-- Airtime-scaled: `6·airtime` — keeps SF7/narrow-BW configs from wasting time in oversized windows.
-- Absolute: `2000ms` — bounds per-hop latency in dense areas even when airtime is large.
+**Forwards**
 
-**Heard Duplicates**
-
-A heard duplicate of a pending outbound flood only counts towards the EMA; it does not move the pending TX. The per-dupe reactive backoff (`backoff.multiplier`) was retired in 1.18.3 (ADR 0007 amendment): the post-busy wait from the end of each reception (ADR 0006) already makes a node yield to every copy it hears. `NodePrefs::backoff_multiplier` stays in the stored prefs, unused.
+Flood and direct forwards (repeater, room server, companion off-grid repeat) wait `Mesh::computeForwardDelay()`: one slot draw less the time since the reception ended (`Dispatcher::msSinceRxEnd()`), at least 1 ms. Then CAD: clear → transmit; busy → wait for that reception to end and draw again from its end (ADR 0006). A repeater's discover response is the exception: it waits upstream's `4 × rand(0, 2.5 airtimes)`, since every repeater in range answers the same request.
 
 **Initial-Flood Jitter (companion-only)**
 
-Companions don't retransmit floods, but they observe mesh contention and need to spread their *originated* transmissions to avoid colliding with repeaters still busy in TX/RX. `Mesh::passivelyTrackFloods()` (overridden to `true` on `CompanionMesh`) registers every first-hearing of a flood with the ContentionTracker, so the EMA warms up even without forwarding. `Mesh::getInitialFloodJitter(packet)` is added to the caller-supplied delay in both `sendFlood` overloads; on companion this is `rand(0, min(1000ms, 3·airtime, 5·airtime·factor))` — half the repeater's ceilings. Repeaters keep the default 0 (no double-jitter on forwards).
-
-**Direct Packets**
-
-Direct (source-routed) packets bypass adaptive scaling entirely. They use minimal fixed jitter: `20 + rand(0, airtime / 10)` ms.
+Companions spread their originated floods with `getInitialFloodJitter()`, a fixed `20..150 ms`. `Mesh::passivelyTrackFloods()` stays false on every role, so a companion's estimate only warms from what it forwards in off-grid repeat. Repeaters keep an initial jitter of 0.
 
 **CLI**
 
-- `get txdelay` — shows current adaptive state (EMA estimate, flood delay factor).
+- `get txdelay` — `slots (est=<EMA> win=<slots>)`.
 - `txdelay`, `rxdelay`, `direct.txdelay` — accepted for prefs compatibility but ignored at runtime.
 
 **ContentionTracker Resource Usage**
@@ -397,7 +387,11 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
    the next reception (good or CRC error) counts as `rx`, evidence the channel really was busy. `getLbtSlotMs()` is the
    dispatcher's backoff slot: 4 CAD symbols + 3 ms turnaround (12 ms at SF7/62.5 kHz). With `lbt_logging.conf`
    every attempt and hold-back is also printed as one `LBT ...` line (`formatLastTxAttempt()` →
-   `Dispatcher::logTxAttempt()` → `packet_log_lbt()`), alongside the packet lines.
+   `Dispatcher::logTxAttempt()` → `packet_log_lbt()`), alongside the packet lines. On SX126x a busy line also carries
+   the RX status latched just before the CAD and the age of the last preamble that gave no header, and each such
+   preamble gets an `fpre` line (`sx126x_lbt_rx_evidence()`, which reads foreign-sync-word evidence; LLD 03 §19).
+   Lines with a packet carry `q=` (ms since it was first queued) and `d=` (the jitter it was queued with), the per-hop
+   delay; `Dispatcher::stampQueued()` keeps them in two `Packet` fields that exist only in LBT-logging builds.
 
 **RX Flow**:
 1. `lora_recv_async()` with callback. SX126x `recv_async` clears `IRQ_ALL` and resets the RX-busy signals on every fresh entry.

@@ -36,7 +36,7 @@ Two things made neighbours that waited out the same packet collide with each oth
 Now the wait is picked from ten short steps, each one listen long (about 12 ms on the default
 radio settings), and it is counted from the moment the packet the node was hearing ends, not from
 when it first noticed the channel busy or finished handling that packet. Two waiting neighbours
-pick the same step about once in ten; on a busy site, where most gaps between repeated packets
+pick the same step about once in ten (on a crowded hilltop the node uses more steps, see below); on a busy site, where most gaps between repeated packets
 close within a tenth of a second, a longer spread meant a node rarely got a turn at all. The spread stays the same after a busy
 try, so a node that lost one race is not pushed to the back of the next one. During a burst of repeated packets a node now uses the short gaps between
 them, where it used to sleep through them: on a busy roof repeater the longest wait to transmit
@@ -46,6 +46,15 @@ A repeater no longer pushes its own forward back each time it hears a neighbour 
 packet. Waiting for each packet to end already makes it give way, and the extra delay made no
 measurable difference on a busy roof repeater over a night of traffic. `get backoff.multiplier`
 and `set backoff.multiplier`, which tuned that delay, are removed. A saved value is ignored.
+
+**Repeaters forward sooner.** A repeater used to hold every packet it forwards for a random time
+of up to about 2 seconds before even listening. Most of the time the channel was busy by then
+anyway, so the hold only added delay. Now a forward waits the same short random step as a retry,
+counted from the end of the packet that brought it. On a busy roof repeater this cut the typical
+delay per hop from 2.6 to 2.1 seconds, with no more collisions and no lost packets. The number
+of steps grows with how many neighbours repeat the same packets, from 10 to at most 64, so a
+crowded hilltop spreads its neighbours wider. `get txdelay` now shows that estimate and the
+number of steps.
 
 Nothing changes in how a busy channel is treated: a node never transmits over traffic it can hear.
 The radio restart that used to fire after 4 seconds of receiving now waits for 10 seconds with no
@@ -58,7 +67,10 @@ held back. `clear stats` resets it. See `docs/CLI_commands.md`.
 
 For digging deeper there is a diagnostic build option, `lbt_logging.conf` (added after
 `packet_logging.conf`): it prints one `LBT ...` line for every transmit attempt, with the outcome,
-the signal strength right after a busy reading and the wait chosen. Tools that read the packet
+the signal strength right after a busy reading, the wait chosen and how long the packet has
+waited since it was queued. On SX126x radios a busy
+line also says whether the receiver had just heard the start of a packet that turned out not to be
+MeshCore's, which helps tell other LoRa traffic on the channel apart from the mesh. Tools that read the packet
 lines, such as mctomqtt, ignore these lines. `ver` shows `+lbtlog` on such a build.
 
 ## Steadier noise floor

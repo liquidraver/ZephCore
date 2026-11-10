@@ -1,5 +1,6 @@
 #include "test.h"
 #include <mesh/ContentionTracker.h>
+#include <mesh/LbtBackoff.h>
 using namespace mesh;
 
 TEST(contention_window, "UNIT-CONTENTION-001", "Observation window exact boundary and wrap") {
@@ -18,30 +19,32 @@ TEST(contention_saturation, "UNIT-CONTENTION-002", "Duplicate saturation and exa
     CHECK(c.getContentionEstimate() == 255.0f);
     CHECK(!c.recordDupeIfTracked(99, 101));
 }
-TEST(contention_curve, "UNIT-CONTENTION-003", "Flood delay factor follows the saturating curve") {
+TEST(contention_lbt_window, "UNIT-CONTENTION-003", "Contention estimate sizes the LBT slot window") {
     ContentionTracker c;
     for (unsigned hash = 0; hash < 4; ++hash) {
         c.trackRetransmit(hash, 100);
         for (int i = 0; i < 4; ++i) c.recordDupeIfTracked(hash, 101);
         CHECK(c.extractDupeCount(hash) == 4);
     }
-    float f = c.getFloodDelayFactor();
-    CHECK(c.getContentionEstimate() == 4.0f && f > 0.6999f && f < 0.7001f);
+    CHECK(c.isWarmedUp() && c.getContentionEstimate() == 4.0f);
+    CHECK(lbtBackoffSlots(c.getContentionEstimate()) == LBT_BACKOFF_SLOTS);  // busy site: 10
     ContentionTracker d;
     for (unsigned hash = 0; hash < 4; ++hash) {
         d.trackRetransmit(hash, 100);
         for (int i = 0; i < 300; ++i) d.recordDupeIfTracked(hash, 101);
         d.extractDupeCount(hash);
     }
-    f = d.getFloodDelayFactor();
-    CHECK(f > 0.99f && f <= 1.0f);
+    CHECK(lbtBackoffSlots(d.getContentionEstimate()) == LBT_BACKOFF_SLOTS_MAX);
+    CHECK(lbtBackoffSlots(-1.0f) == 10 && lbtBackoffSlots(0.0f) == 10);       // unknown, idle
+    CHECK(lbtBackoffSlots(4.5f) == 11 && lbtBackoffSlots(15.0f) == 32);       // 2 * est + 2
+    CHECK(lbtBackoffSlots(31.0f) == 64 && lbtBackoffSlots(1e9f) == 64);       // capped
 }
 TEST(contention_decay, "UNIT-CONTENTION-004", "Warmup eviction and decay independent of tick frequency") {
-    ContentionTracker c; CHECK(c.getFloodDelayFactor() == 0.5f);
+    ContentionTracker c; CHECK(!c.isWarmedUp());
     for (unsigned hash = 0; hash < 4; ++hash) {
         c.trackRetransmit(hash, 100); CHECK(c.extractDupeCount(hash) == 0);
     }
-    CHECK(c.isWarmedUp() && c.getFloodDelayFactor() == 0.4f);
+    CHECK(c.isWarmedUp() && c.getContentionEstimate() == 0.0f);
     ContentionTracker d; d.trackRetransmit(100, 100);
     for (int i = 0; i < 8; ++i) d.recordDupeIfTracked(100, 101);
     CHECK(d.extractDupeCount(100) == 8);

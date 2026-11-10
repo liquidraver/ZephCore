@@ -85,16 +85,21 @@ static inline void packet_log_tx(const char *, const mesh::Packet *) {}
 /* One listen-before-talk outcome (Dispatcher::logTxAttempt()). Starts with
  * "LBT " and never contains "U: " or "-> ", so mctomqtt neither parses it as a
  * packet nor mistakes it for a CLI reply. t is uptime in ms; ref the LBT
- * refusals before this attempt; retry the backoff picked (0 = none); nf the
+ * refusals before this attempt; retry the backoff picked (0 = none); q the ms
+ * since the packet was first queued and d the delay it was queued with
+ * (q - d = time held by LBT, the duty budget and the queue); nf the
  * noise-floor estimate. Fields: docs/ARCHITECTURE.md, LLD 03 §17. */
 static inline void packet_log_lbt(const char *outcome, const mesh::Packet *pkt,
 				  unsigned ref, uint32_t retry_ms, int noise_floor)
 {
 	zc_console_line_start();
 	if (pkt) {
-		printk("LBT t=%u %s ref=%u retry=%u len=%d type=%d route=%s nf=%d\n",
-			k_uptime_get_32(), outcome, ref, retry_ms, pkt->getRawLength(),
-			pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F", noise_floor);
+		uint32_t now = k_uptime_get_32();
+
+		printk("LBT t=%u %s ref=%u retry=%u len=%d type=%d route=%s q=%u d=%u nf=%d\n",
+			now, outcome, ref, retry_ms, pkt->getRawLength(),
+			pkt->getPayloadType(), pkt->isRouteDirect() ? "D" : "F",
+			now - pkt->_zc_queued_ms, pkt->_zc_queue_delay_ms, noise_floor);
 	} else {
 		printk("LBT t=%u %s ref=%u retry=%u nf=%d\n",
 			k_uptime_get_32(), outcome, ref, retry_ms, noise_floor);

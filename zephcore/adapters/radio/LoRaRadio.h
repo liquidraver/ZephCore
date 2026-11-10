@@ -372,6 +372,12 @@ private:
 	uint8_t _last_tx;
 	int16_t _last_tx_err;
 	int16_t _last_busy_rssi[LBT_RSSI_PROBES];
+	/* Receiver evidence at the last busy (ops.lbt_rx_evidence; 0xFF = none):
+	 * flags latched before CAD and the age of the last header-less preamble
+	 * (UINT32_MAX = none). _foreign_seen: count already printed as fpre. */
+	uint8_t _last_busy_pre;
+	uint32_t _last_busy_fp_age;
+	uint32_t _foreign_seen;
 
 	/* Config cache — skip redundant hwConfigure() */
 	struct lora_modem_config _last_cfg;

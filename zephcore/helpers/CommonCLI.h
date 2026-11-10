@@ -85,9 +85,9 @@ public:
 	virtual bool isOffgridActive() const { return false; }
 	virtual void setOffgridMode(bool on, char* reply) { (void)on; (void)reply; }
 
-	// Adaptive contention window
+	// Contention estimate and the LBT slot window it sizes
 	virtual float getContentionEstimate() const { return -1.0f; }
-	virtual float getFloodDelayFactor() const { return 0.5f; }
+	virtual uint32_t getLbtWindowSlots() const { return 0; }
 
 	// Duty-cycle preamble false-positive counter (SX126x only)
 	virtual uint32_t getDutyCycleTimeoutRestarts() const { return 0; }

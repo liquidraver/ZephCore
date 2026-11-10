@@ -54,6 +54,7 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.side_detectors = lr20xx_configure_side_detectors,
 	.reset_stats = lr20xx_reset_freq_offset,
 	.format_freq_error = lr2021_format_freq_error,
+	.lbt_rx_evidence = nullptr,
 };
 
 } /* namespace mesh */
