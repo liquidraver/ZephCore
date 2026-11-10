@@ -25,6 +25,9 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
+/* Requested LBT CAD length in symbols; lbtCadSymbolsFor() caps it per SF. */
+#define LBT_CAD_SYMBOLS 4U
+
 /* Minimum preamble symbols that must land inside one open duty-cycle RX
  * window for guaranteed detection.  8 is Semtech's own figure for sniff
  * mode (AN1200.36 §4: "8 symbols in LoRa make up the time required to
@@ -54,6 +57,7 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _rssi_bursts(0), _rssi_spread_sum(0), _rssi_degenerate(0),
 	  _cad(*this), _probe_interval_s(0), _cad_last_decay_ms(0),
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
+	  _cad_symbols(LBT_CAD_SYMBOLS),
 	  _rx_boost_enabled(kLoRaRadioOps.set_rx_boost != nullptr),
 	  _dc_last_rx_us(0), _dc_last_sleep_us(0),
 	  _agc_rx_count_shadow(0), _agc_last_activity_ms(0),
@@ -297,10 +301,23 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 
 /* ── Config helpers ───────────────────────────────────────────────────── */
 
-/* LBT CAD length, and what the backoff slot adds to it: the host's
- * CAD-done -> SetTx step plus the PA ramp (LLD 03 §16). */
-#define LBT_CAD_SYMBOLS     LORA_CAD_SYMB_4
+/* What the backoff slot adds to the CAD: the host's CAD-done -> SetTx step
+ * plus the PA ramp (LLD 03 §16). */
 #define LBT_TURNAROUND_US   3000U
+
+/* LBT CAD length actually used: the request, halved (not below 4) until a
+ * packet whose preamble starts with the CAD keeps 8 symbols plus about one
+ * for the CAD tail and RX restart (LLD 03 §16, §20). With a 32-symbol
+ * preamble (SF <= 8) 4, 8 and 16 fit; with 16 (SF9+) only 4. */
+static uint8_t lbtCadSymbolsFor(uint8_t want, uint8_t sf)
+{
+	uint16_t pre = preambleLengthForSF(sf);
+
+	while (want > 4U && (uint16_t)(want + 9U) > pre) {
+		want /= 2U;
+	}
+	return want;
+}
 
 void LoRaRadio::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 {
@@ -336,13 +353,10 @@ void LoRaRadio::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	 * never read cad.mode, so this is harmless during receive. */
 	cfg.cad.mode = LORA_CAD_MODE_LBT;
 
-	/* 4-symbol CAD at every SF (drivers default to 2 when this is 0).
-	 * Our LBT runs against mesh packets that are mostly payload airtime;
-	 * payload chirps correlate less reliably per symbol than preamble
-	 * upchirps, so the extra looks matter — AN1200.48 itself recommends
-	 * 4 symbols at SF9+.  The drivers scale their blocking-CAD timeout
-	 * from this value, so slow presets stay covered. */
-	cfg.cad.symbol_num = LBT_CAD_SYMBOLS;
+	/* LBT CAD length in symbols (a count; drivers default to 2 when it is
+	 * 0, and the SX126x driver encodes it for the chip). The drivers take
+	 * detPeak and the blocking-CAD timeout from it (LLD 03 §20). */
+	cfg.cad.symbol_num = (enum lora_cad_symbol_num)lbtCadSymbolsFor(_cad_symbols, sf);
 }
 
 uint32_t LoRaRadio::getActiveFrequencyHz() const
@@ -1538,7 +1552,7 @@ int LoRaRadio::formatCadStatus(char *buf, int cap)
 	}
 
 	/* Terse: remote replies are capped at ~160 B. Fields (docs/ADAPTIVE_CAD.md):
-	 * a auto on/off/tmp (visiting a preset), o offset, pk peak (b base / 4
+	 * a auto on/off/tmp (visiting a preset), o offset, pk peak (b base / CAD
 	 * symbols), sp mean burst spread in dB / zero-spread share, bc busy cap.
 	 * Levels: *+1(22) 22p 18b 14f 2t 2u 64% = rung(peak) probes busy fp tp
 	 * undecoded-real fp%. */
@@ -1558,9 +1572,9 @@ int LoRaRadio::formatCadStatus(char *buf, int cap)
 	const int eff_off = _cad.effectiveOffset();
 
 	n += snprintf(buf + n, cap > n ? cap - n : 0,
-		      "a:%s o:%d pk:%d(b%u/4s) sp:%u.%u/%u%%",
+		      "a:%s o:%d pk:%d(b%u/%us) sp:%u.%u/%u%%",
 		      _cad.visiting() ? "tmp" : (_cad.autoEnabled() ? "on" : "off"),
-		      eff_off, (int)base + eff_off, base,
+		      eff_off, (int)base + eff_off, base, (unsigned)getLbtCadSymbols(),
 		      spread_mean10 / 10U, spread_mean10 % 10U, degen_pct);
 	if (room_for_count) {
 		/* (bursts r<ok reads>/b<busy reads>/a<abandoned>/d<dc-blocked>
@@ -1625,7 +1639,26 @@ uint32_t LoRaRadio::getLbtSlotMs()
 	}
 	uint32_t tsym_us = (uint32_t)(((uint64_t)1U << sf) * 1000000U / bw_hz);
 
-	return ((uint32_t)LBT_CAD_SYMBOLS * tsym_us + LBT_TURNAROUND_US + 999U) / 1000U;
+	return ((uint32_t)lbtCadSymbolsFor(_cad_symbols, sf) * tsym_us + LBT_TURNAROUND_US + 999U) / 1000U;
+}
+
+uint8_t LoRaRadio::getLbtCadSymbols()
+{
+	return hwCadBasePeak() ? lbtCadSymbolsFor(_cad_symbols, getActiveSpreadingFactor()) : 0;
+}
+
+/* RAM only; a full reconfigure programs it, and resets the CAD probe stats,
+ * which belong to one CAD configuration. */
+bool LoRaRadio::setLbtCadSymbols(uint8_t n)
+{
+	if ((n != 4U && n != 8U && n != 16U) || hwCadBasePeak() == 0) {
+		return false;
+	}
+	_cad_symbols = n;
+	reconfigure();
+	LOG_INF("lbt: cad %u symbols requested, %u used", (unsigned)n,
+		(unsigned)lbtCadSymbolsFor(n, getActiveSpreadingFactor()));
+	return true;
 }
 
 /* RX callback context: count one reception per armed busy verdict. */
@@ -1655,10 +1688,10 @@ int LoRaRadio::formatLbtCounters(char *buf, int cap)
 	uint32_t tries = _lbt_clear + _lbt_busy;
 	unsigned busy_pct = tries ? (unsigned)((_lbt_busy * 100U + tries / 2U) / tries) : 0;
 
-	return snprintf(buf, cap, " clr:%u busy:%u(%u%%) rx:%u err:%u gate:%u slot:%ums",
+	return snprintf(buf, cap, " clr:%u busy:%u(%u%%) rx:%u err:%u gate:%u slot:%ums cad:%us",
 			(unsigned)_lbt_clear, (unsigned)_lbt_busy, busy_pct,
 			(unsigned)atomic_get(&_lbt_busy_rx), (unsigned)_lbt_err,
-			(unsigned)_lbt_gate, (unsigned)slot);
+			(unsigned)_lbt_gate, (unsigned)slot, (unsigned)getLbtCadSymbols());
 }
 
 int LoRaRadio::formatLastTxAttempt(char *buf, int cap)

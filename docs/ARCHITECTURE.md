@@ -385,7 +385,9 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 5. Every attempt is counted for `get lbt.stats`: CAD clear (TX started), CAD busy, other driver error, or refused before
    the driver (not ready, receiving, previous TX winding down). A busy verdict arms a one-max-packet window in which
    the next reception (good or CRC error) counts as `rx`, evidence the channel really was busy. `getLbtSlotMs()` is the
-   dispatcher's backoff slot: 4 CAD symbols + 3 ms turnaround (12 ms at SF7/62.5 kHz). With `lbt_logging.conf`
+   dispatcher's backoff slot: one LBT CAD + 3 ms turnaround (4 symbols by default, 12 ms at SF7/62.5 kHz; the CAD
+   length is `lbtCadSymbolsFor()`, capped so 8 preamble symbols survive it, and `set lbt.cadsym 4|8|16` in LBT-logging
+   builds, LLD 03 §20). With `lbt_logging.conf`
    every attempt and hold-back is also printed as one `LBT ...` line (`formatLastTxAttempt()` →
    `Dispatcher::logTxAttempt()` → `packet_log_lbt()`), alongside the packet lines. On SX126x a busy line also carries
    the RX status latched just before the CAD and the age of the last preamble that gave no header, and each such
@@ -503,7 +505,8 @@ for SX126x (base from Semtech's LBM table, bandwidth-aware), tuned to catch fain
 it. Probe +
 offset plumbing is per-driver extension API (`*_cad_probe`,
 `*_cad_set_peak_offset`, `*_cad_base_peak`); LBT CAD runs 4 symbols (set in
-`buildModemConfig`), drivers scale their blocking-CAD timeout to
+`buildModemConfig`; the SX126x driver encodes the count as the chip's `cadSymbolNum` code, which until build
+20261110f it did not, so SX126x ran 16, LLD 03 §20), drivers scale their blocking-CAD timeout to
 `nSym·Tsym + margin`. CLI: `get cad.stats` (3-rung window, `*`=operating, `bc:`=cap),
 `set cad.auto/offset/probe.interval/busycap/reset`. SX127x: unsupported (no HW
 CAD). Full mental model + tuning: `ADAPTIVE_CAD.md`.
@@ -1122,7 +1125,7 @@ Applied automatically at CMake configure time; a failed patch aborts the configu
 | Patch | Risk | Purpose |
 |-------|------|---------|
 | 0001-lora-lr11xx-lr20xx-build | LOW | Registers the LR11xx and LR20xx drivers in the Zephyr LoRa build |
-| 0003-lora-sx126x-native | **HIGH** | DIO1 work queue, duty cycle, CAD, RX-busy gating, band RSSI/AGC calibration, PA/OCP tuning, extension API |
+| 0003-lora-sx126x-native | **HIGH** | DIO1 work queue, duty cycle, CAD (symbol count encoded as `cadSymbolNum`), RX-busy gating, band RSSI/AGC calibration, PA/OCP tuning, extension API |
 | 0004-lora-sx127x-62k5-bandwidth | LOW | Adds 62.5 kHz bandwidth to the loramac-node backend |
 | 0005-gnss-config-and-version-query | MEDIUM | Air530Z nav-rate config + `$PCAS06` version query; NMEA generic dump |
 | 0006-blobs-py | LOW | Fix `west blobs fetch` KeyError |

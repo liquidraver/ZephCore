@@ -248,7 +248,7 @@ Compact output (kept short so it survives a truncated LoRa reply):
 ```
 
 Header: `a` auto on/off · `o` operating offset · `pk` operating detPeak ·
-`b` family base · `4s` 4 symbols · `sp` RSSI burst quality · `bc` busy cap.
+`b` family base · `4s` CAD symbols (4 by default) · `sp` RSSI burst quality · `bc` busy cap.
 
 `a:tmp` means a `tempradio` window is open: the node is on a preset it is
 only visiting, so adaptation is suspended and `o`/`pk` describe the visit
@@ -383,7 +383,9 @@ works); command *values* like passwords and node names are not, so `on`
 - **detPeak is the only adaptive knob.** `cadDetMin` stays at Semtech's
   universal 10; the symbol count is fixed at 4 (better mid-payload
   detection than 2 — most of a mesh packet's airtime is payload, and
-  that is where a pre-TX CAD usually lands). The drivers scale their
+  that is where a pre-TX CAD usually lands). Before 1.18.3 the SX126x
+  driver mis-encoded it and SX1262 boards ran 16; a roof trial of 4, 8
+  and 16 found 4 fastest with no more collisions (LLD 03 §20). The drivers scale their
   CAD timeout with symbol count and preset automatically.
 - Statistics are RAM-only and restart after a reboot; the learned
   *offset* is persisted. Mixed fleets are fine — this feature changes

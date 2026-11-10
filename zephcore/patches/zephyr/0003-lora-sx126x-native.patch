@@ -494,6 +494,11 @@ followed by a symbol-count correction: -1 at 4 symbols, -2 at 8 or 16, since
 more looks at the same correlation reach the same detection quality at a lower
 threshold.  We run 4 symbols everywhere and applied no such correction.
 
+SetCadParams takes cadSymbolNum as a code (DS Table 13-72: 0x00..0x04 for 1,
+2, 4, 8, 16 symbols), so sx126x_cad_symb_code() encodes the count from
+lora_modem_config.  From 2026-07 to 2026-11 the count was written as-is, and
+the 4 that LoRaRadio asked for ran as 16 (ZephCore LLD 03 section 20).
+
 The error this leaves is mild on this family -- 1-3 counts per octave of
 bandwidth -- which is why SF+13 survived so long.  It is not nil: against the
 BW500 column SF+13 is ten counts too sensitive at SF12, and `set bw` accepts
@@ -732,7 +737,7 @@ Regenerate with:
 appended to this preamble.
 
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index c23685301a5..1485d5289cc 100644
+index c23685301a5..ba01de2923d 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -6,15 +6,54 @@
@@ -2396,7 +2401,7 @@ index c23685301a5..1485d5289cc 100644
  	if (ret < 0) {
  		goto out_sleep;
  	}
-@@ -1631,53 +2553,1141 @@ out_unlock:
+@@ -1631,53 +2553,1158 @@ out_unlock:
  	return ret;
  }
  
@@ -2903,8 +2908,9 @@ index c23685301a5..1485d5289cc 100644
 +	}
 +
 +	/* More symbols means more looks at the same correlation, so the same
-+	 * detection quality is reached at a lower threshold.  We run 4 symbols
-+	 * everywhere (LORA_CAD_SYMB_4 in LoRaRadioBase::buildModemConfig). */
++	 * detection quality is reached at a lower threshold.  Semtech's
++	 * correction: -1 at 4 symbols, -2 at 8 and 16.  The count comes from
++	 * LoRaRadio::buildModemConfig() (LLD 03 §20). */
 +	if (symb_nb >= 8) {
 +		peak -= 2;
 +	} else if (symb_nb >= 4) {
@@ -2984,6 +2990,22 @@ index c23685301a5..1485d5289cc 100644
 +	return MAX(ms, 200U);
 +}
 +
++/* cadSymbolNum is a code, not a count (DS Table 13-72): 1, 2, 4, 8, 16
++ * symbols are 0x00..0x04.  A count of 4 written as-is asks for 16. */
++static uint8_t sx126x_cad_symb_code(uint8_t symb_nb)
++{
++	if (symb_nb >= 16) {
++		return 0x04;
++	} else if (symb_nb >= 8) {
++		return 0x03;
++	} else if (symb_nb >= 4) {
++		return 0x02;
++	} else if (symb_nb >= 2) {
++		return 0x01;
++	}
++	return 0x00;
++}
++
 +static int sx126x_do_cad(const struct device *dev, struct sx126x_data *data)
 +{
 +	struct lora_modem_config *mc = &data->config;
@@ -3052,7 +3074,7 @@ index c23685301a5..1485d5289cc 100644
 +	 * see the cad_exit_rx branch in the DIO1 work handler. */
 +	uint32_t cad_timeout = 0U;
 +
-+	buf[0] = symb_nb;
++	buf[0] = sx126x_cad_symb_code(symb_nb);
 +	buf[1] = detect_peak;
 +	buf[2] = mc->cad.detection_minimum ? mc->cad.detection_minimum : 10;
 +	buf[3] = 0x00;  /* CAD_ONLY -- see the cad_timeout note above */
@@ -3577,7 +3599,7 @@ index c23685301a5..1485d5289cc 100644
  
  	/* Initialize HAL */
  	ret = sx126x_hal_init(dev);
-@@ -1734,6 +3744,7 @@ static int sx126x_init(const struct device *dev)
+@@ -1734,6 +3761,7 @@ static int sx126x_init(const struct device *dev)
  		.antenna_enable = GPIO_DT_SPEC_GET_OR(node_id, antenna_enable_gpios, {0}),	\
  		.tx_enable = GPIO_DT_SPEC_GET_OR(node_id, tx_enable_gpios, {0}),		\
  		.rx_enable = GPIO_DT_SPEC_GET_OR(node_id, rx_enable_gpios, {0}),		\
@@ -3585,7 +3607,7 @@ index c23685301a5..1485d5289cc 100644
  		.dio2_tx_enable = DT_PROP(node_id, dio2_tx_enable),				\
  		.dio3_tcxo_enable = DT_NODE_HAS_PROP(node_id, dio3_tcxo_voltage),		\
  		.dio3_tcxo_voltage = DT_PROP_OR(node_id, dio3_tcxo_voltage, 0),			\
-@@ -1783,6 +3794,8 @@ DT_FOREACH_STATUS_OKAY_VARGS(semtech_llcc68, SX126X_INIT, SX126X_LLCC68)
+@@ -1783,6 +3811,8 @@ DT_FOREACH_STATUS_OKAY_VARGS(semtech_llcc68, SX126X_INIT, SX126X_LLCC68)
  						      {0}),			\
  		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
  						      {0}),			\

@@ -63,3 +63,7 @@ nothing dropped. 91% of transmits met a busy channel and went through the slot d
 delayed when the node joined the contention. Not changed: a repeater's discover response keeps upstream's spread
 (4 × rand(0, 2.5 airtimes)), since every repeater in range answers the same request; companion-originated floods
 keep their 20-150 ms jitter. `get txdelay` shows `slots (est=… win=…)`.
+
+A slot is one LBT CAD plus the turnaround, and the decision assumes a 4-symbol CAD. On SX126x the driver ran 16
+symbols until build 20261110f (a mis-encoded `cadSymbolNum`), so every slot above was shorter than the CAD. Fixed,
+and a 4/8/16 trial on BlueLake (LLD 03 §20) kept 4: fastest at every load, RX errors unchanged.

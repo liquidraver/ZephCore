@@ -559,6 +559,7 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     app/RepeaterDataStore.cpp
     helpers/ClientACL.cpp
     helpers/RegionMap.cpp
+    helpers/FwdFilter.cpp
     helpers/TransportKeyStore.cpp
     helpers/compat/SHA256.cpp
     helpers/compat/ZephyrFS.cpp

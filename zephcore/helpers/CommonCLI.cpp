@@ -1231,6 +1231,10 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		if (_callbacks->formatCadStatus(reply + n, (int)cap - n) == 0) {
 			strcpy(reply, "not available");
 		}
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+	} else if (memcmp(config, "lbt.cadsym", 10) == 0) {
+		snprintf(reply, CLI_REPLY_SIZE, "> %u", (unsigned)_callbacks->getLbtCadSymbols());
+#endif
 	} else if (memcmp(config, "lbt.stats", 9) == 0) {
 		/* Listen-before-talk outcomes; remote replies are truncated like cad.stats. */
 		size_t cap = replyCap(sender_timestamp);
@@ -1683,6 +1687,17 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 		} else {
 			strcpy(reply, "Error: unsupported by this board");
 		}
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+	} else if (memcmp(config, "lbt.cadsym ", 11) == 0) {
+		/* Trial switch: RAM only, reboots to the default (LLD 03 §20). */
+		int n = atoi(&config[11]);
+		if (n > 0 && n < 256 && _callbacks->setLbtCadSymbols((uint8_t)n)) {
+			snprintf(reply, CLI_REPLY_SIZE, "OK - lbt.cadsym=%u (RAM only)",
+				 (unsigned)_callbacks->getLbtCadSymbols());
+		} else {
+			strcpy(reply, "Error: 4, 8 or 16");
+		}
+#endif
 	} else if (memcmp(config, "rxduty ", 7) == 0) {
 		int val = cliOnOff(&config[7], cliDefaults()->rx_duty_cycle);
 		if (val == 0 || val == 1) {

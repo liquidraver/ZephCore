@@ -102,6 +102,9 @@ public:
 	virtual void resetCadStats() {}
 	/* `get lbt.stats`: refusal streaks plus per-attempt LBT outcomes. */
 	virtual int formatLbtStats(char* buf, int cap) { (void)buf; (void)cap; return 0; }
+	/* `get/set lbt.cadsym` (LBT-logging builds): LBT CAD length, RAM only. */
+	virtual uint8_t getLbtCadSymbols() { return 0; }
+	virtual bool setLbtCadSymbols(uint8_t n) { (void)n; return false; }
 
 	// Mesh time sync (all roles wire one; nullptr = not compiled/available)
 	virtual MeshTimeSync* getMeshTimeSync() { return nullptr; }

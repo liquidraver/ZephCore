@@ -73,6 +73,16 @@ line also says whether the receiver had just heard the start of a packet that tu
 MeshCore's, which helps tell other LoRa traffic on the channel apart from the mesh. Tools that read the packet
 lines, such as mctomqtt, ignore these lines. `ver` shows `+lbtlog` on such a build.
 
+## SX1262 boards listen for the right length before transmitting
+
+Before every transmission a node checks the channel for a few symbols (CAD). On SX1262 boards (RAK4631,
+RAK3401, Heltec, Seeed SX1262 boards and others) the radio was told the wrong length and listened for 16 symbols
+instead of 4 since 1.16.5; LR1110 and LR2021 boards were not affected. The check took about 33 ms instead of 8 at
+SF7/62.5 kHz, the backoff steps were shorter than the check, and at SF9 and above a packet that began during the
+check could be missed. Now it listens 4 symbols. On a busy roof repeater the wait before a forward is about a fifth
+shorter at the same traffic, with no more collisions. After the update the adaptive CAD may sit one step more
+sensitive for a while until it re-settles.
+
 ## Steadier noise floor
 
 For a few milliseconds after the receiver starts listening, the radio reports no signal at all and then

@@ -121,6 +121,10 @@ public:
   // One LBT CAD plus the RX->TX turnaround: two nodes whose CADs start closer
   // than this both read clear. Backoff slot width; 0 = unknown.
   virtual uint32_t getLbtSlotMs() { return 0; }
+  // ZEPHCORE: LBT CAD length in symbols as programmed (0 = no CAD), and a RAM-only
+  // request for 4, 8 or 16 (LBT-logging trial builds); false = refused.
+  virtual uint8_t getLbtCadSymbols() { return 0; }
+  virtual bool setLbtCadSymbols(uint8_t n) { (void)n; return false; }
   // Outcome of the last startSendRaw() as short text ("clr", "busy rssi=-97",
   // "err=-116", "gate=rx"...), for the LBT diagnostic log; 0 = none.
   virtual int formatLastTxAttempt(char* buf, int cap) { return 0; }

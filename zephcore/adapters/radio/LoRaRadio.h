@@ -149,6 +149,8 @@ public:
 
 	/* LBT: backoff slot width and per-attempt outcome counters (`get lbt.stats`). */
 	uint32_t getLbtSlotMs() override;
+	uint8_t getLbtCadSymbols() override;
+	bool setLbtCadSymbols(uint8_t n) override;
 	int formatLbtCounters(char *buf, int cap) override;
 	void resetLbtCounters() override;
 	int formatLastTxAttempt(char *buf, int cap) override;
@@ -302,6 +304,7 @@ private:
 
 	/* Power saving */
 	bool _rx_duty_cycle_enabled;
+	uint8_t _cad_symbols;           /* requested LBT CAD length; lbtCadSymbolsFor() caps it */
 	bool _rx_boost_enabled;
 
 	/* Last duty-cycle timing handed to the driver — used to log timing

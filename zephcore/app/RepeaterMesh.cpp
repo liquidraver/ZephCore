@@ -8,6 +8,7 @@
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/MeshcoreJson.h>
 #include <adapters/radio/LoRaRadio.h>
+#include <adapters/datastore/ZephyrFsUtil.h>
 #include <adapters/sensors/ZephyrSensorManager.h>
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <zephyr/kernel.h>
@@ -603,7 +604,36 @@ bool RepeaterMesh::allowPacketForward(const mesh::Packet *packet) {
       return false;
     }
   }
+  // ZEPHCORE: the list rules again (for a copy the receive hook let through as
+  // ours), then the request limit, once per distinct packet.
+  if (packet->isRouteFlood()
+      && (_filter.matches(packet) || _filter.overLimit(packet, (uint32_t)_ms->getMillis()))) {
+    return false;
+  }
   return true;
+}
+
+// ZEPHCORE: ours. Drops a blacklisted flood copy before it is marked seen, so
+// a later clean copy is still handled; a packet for this node is kept.
+bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* packet) {
+  if (FwdFilter::isAddressedTo(packet, self_id.pub_key[0])) return false;
+  return _filter.matches(packet);
+}
+
+// ZEPHCORE: ours. The filter state as one small file, replaced atomically.
+void RepeaterMesh::loadFilter() {
+  char path[48];
+  uint8_t buf[FwdFilter::BLOB_MAX];
+  size_t len = 0;
+  snprintf(path, sizeof(path), "%s/filter", _store->getBasePath());
+  if (zephcore_fs_read_file(path, buf, sizeof(buf), &len)) _filter.load(buf, len);
+}
+void RepeaterMesh::saveFilter() {
+  char path[48];
+  uint8_t buf[FwdFilter::BLOB_MAX];
+  size_t len = _filter.save(buf, sizeof(buf));
+  snprintf(path, sizeof(path), "%s/filter", _store->getBasePath());
+  if (len > 0) zephcore_fs_atomic_replace(path, buf, len, "filter");
 }
 
 // ZEPHCORE: ours. Zephyr clock formatting.
@@ -1103,6 +1133,7 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
     for (int i = 0; i < acl.getNumClients(); i++) acl.getClientByIdx(i)->last_timestamp = _replay_floor;
   }
   region_map.load(_store->getFS());
+  loadFilter();  // ZEPHCORE
 
   // establish default-scope from persisted default region (if any)
   {
@@ -1374,6 +1405,16 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
     return;
   }
 #endif
+
+  // ZEPHCORE: `idkfa` and, once unlocked, `filter ...`; a locked `filter`
+  // falls through and is answered like any unknown command.
+  {
+    bool changed = false;
+    if (_filter.command(command, reply, CLI_REMOTE_REPLY_SIZE - hdr_used, &changed)) {
+      if (changed) saveFilter();
+      return;
+    }
+  }
 
   // ACL commands - supports BOTH formats for app compatibility:
   //   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)

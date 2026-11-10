@@ -24,6 +24,7 @@
 #include <helpers/RoutingPolicy.h>
 #include <helpers/TransportKeyStore.h>
 #include <helpers/RateLimiter.h>
+#include <helpers/FwdFilter.h>
 
 struct RepeaterStats {
   uint16_t batt_milli_volts;
@@ -107,6 +108,7 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
   RateLimiter discover_limiter, anon_limiter;
   RateLimiter login_fail_limiter;  // ZEPHCORE: wrong-password attempts (MeshCore#2556)
   uint32_t _replay_floor = 0;      // ZEPHCORE: lowest last_timestamp this boot (begin())
+  FwdFilter _filter;               // ZEPHCORE: flood blacklists, off until unlocked (LLD 07 section 25)
   uint32_t pending_discover_tag;
   unsigned long pending_discover_until;
   bool region_load_active;
@@ -149,6 +151,8 @@ class RepeaterMesh : public mesh::Mesh, public CommonCLICallbacks {
   mesh::Packet* createSelfAdvert();
 
   bool isLooped(const mesh::Packet* packet, const uint8_t max_counters[]);
+  void loadFilter();  // ZEPHCORE
+  void saveFilter();  // ZEPHCORE
 
   void timeSyncTick();  // ZEPHCORE
   void handleRegionLoadLine(uint32_t sender_timestamp, char* command, char* reply);  // ZEPHCORE
@@ -161,6 +165,7 @@ protected:
   }
 
   bool allowPacketForward(const mesh::Packet* packet) override;
+  bool filterRecvFloodPacket(mesh::Packet* packet) override;  // ZEPHCORE
   const char* getLogDateTime() override;
   void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
 
@@ -189,6 +194,8 @@ protected:
   int formatLbtStats(char* buf, int cap) override {
     return formatLbtStatus(buf, cap);
   }
+  uint8_t getLbtCadSymbols() override { return _radio->getLbtCadSymbols(); }
+  bool setLbtCadSymbols(uint8_t n) override { return _radio->setLbtCadSymbols(n); }
   void applyCadPrefs() override {
     _radio->setCadParams(_prefs.cad_auto != 0, _prefs.cad_offset,
                          _prefs.probe_interval, _prefs.cad_busycap,
