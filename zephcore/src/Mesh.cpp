@@ -27,26 +27,6 @@ uint32_t Mesh::msUntilNextMaintenance() {
                            _contention.msUntilNextTick((uint32_t)_ms->getMillis()));
 }
 
-// A duplicate of a flood we are about to retransmit was heard: defer our copy
-// by one backoff_multiplier x airtime window (per dupe, from NOW), within the
-// per-packet reactive headroom.
-void Mesh::extendPendingRetransmit(uint32_t hash32) {
-  uint32_t now = (uint32_t)_ms->getMillis();
-  int total = _mgr->getOutboundTotal();
-  for (int i = 0; i < total; i++) {
-    Packet* pkt = _mgr->getOutboundByIdx(i);
-    if (pkt && pkt->isRouteFlood() && ContentionTracker::computePacketHash32(pkt) == hash32) {
-      uint32_t airtime = _radio->getEstAirtimeFor(pkt->getRawLength());
-      uint16_t delay = _contention.getReactiveHeadroom(hash32, airtime);
-      if (delay == 0) break;
-      _mgr->rescheduleOutbound(i, now + delay);
-      _contention.addReactiveExtension(hash32, delay);
-      notifyTxQueued(delay);
-      break;
-    }
-  }
-}
-
 // Adaptive flood jitter: 5 x airtime x EMA factor, capped at 6 airtimes and
 // 2000 ms absolute; +20 ms floor so downstream nodes are back in RX first.
 uint32_t Mesh::computeAdaptiveFloodDelay(const Packet* packet) {
@@ -83,10 +63,11 @@ uint8_t Mesh::getExtraAckTransmitCount() const {
 }
 
 uint32_t Mesh::getCADFailRetryDelay() const {
-  // ZEPHCORE: random slot in a fixed airtime-sized window (mesh/LbtBackoff.h);
-  // upstream: _rng->nextInt(1, 4)*120.
-  return lbtBackoffDelayMs(_radio->getEstAirtimeFor(LBT_BACKOFF_TYPICAL_LEN),
-                           _radio->getLbtSlotMs(), _rng->nextInt(0, 0xFFFFFFFFu));
+  // ZEPHCORE: random slot in a fixed window of LBT_BACKOFF_SLOTS
+  // (mesh/LbtBackoff.h); upstream: _rng->nextInt(1, 4)*120.
+  uint32_t slot = _radio->getLbtSlotMs();
+  if (slot == 0) slot = LBT_BACKOFF_SLOT_FALLBACK_MS;
+  return lbtBackoffDelayMs(slot * LBT_BACKOFF_SLOTS, slot, _rng->nextInt(0, 0xFFFFFFFFu));
 }
 
 int Mesh::searchPeersByHash(const uint8_t* hash) {
@@ -170,13 +151,11 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
 
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
 
-  // ZEPHCORE: record dupes for contention tracking + reactive backoff; on nodes
-  // that don't relay, track first hearings so the EMA still reflects contention.
+  // ZEPHCORE: count dupes for the contention EMA; on nodes that don't relay,
+  // track first hearings so the EMA still reflects contention.
   if (pkt->isRouteFlood()) {
     uint32_t h = ContentionTracker::computePacketHash32(pkt);
-    if (_contention.recordDupeIfTracked(h, (uint32_t)_ms->getMillis())) {
-      extendPendingRetransmit(h);
-    } else if (passivelyTrackFloods()) {
+    if (!_contention.recordDupeIfTracked(h, (uint32_t)_ms->getMillis()) && passivelyTrackFloods()) {
       _contention.trackRetransmit(h, (uint32_t)_ms->getMillis());
     }
   }

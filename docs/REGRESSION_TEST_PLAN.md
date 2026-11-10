@@ -566,7 +566,7 @@ Do not pass values outside a C++ API's representable input type and claim covera
   append/consume paths; loop prevention; duplicate suppression and cache eviction;
   region filters, transport keys and admin exceptions.
 - MESH-004: ContentionTracker warmup/EMA/decay, ring eviction, duplicate-window
-  boundaries, reactive backoff caps, multiplier limits and timer wrap.
+  boundaries, flood delay factor curve and timer wrap.
 - MESH-005: ACK loss, delayed/duplicate/out-of-order ACK, retry exhaustion, path
   discovery/fallback, no duplicate user-visible delivery where required by protocol.
 - MESH-006: A → relay → B, two relays, competing relays, relay loss/rejoin and

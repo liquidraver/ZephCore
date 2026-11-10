@@ -80,7 +80,7 @@ struct NodePrefs {
 	float tx_delay_factor;
 	char guest_password[16];
 	float direct_tx_delay_factor;
-	float backoff_multiplier;       // per-dupe reactive backoff (0.0 = disabled)
+	float backoff_multiplier;       // retired 2026-11-10 (ADR 0007); kept so the stored layout holds
 	uint32_t guard;
 	uint8_t sf;
 	uint8_t cr;
@@ -280,10 +280,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->adc_multiplier = sanePrefFloat(p->adc_multiplier, 0.0f, 30000.0f, 0.0f);
 	p->offgrid_home_freq = sanePrefFloat(p->offgrid_home_freq, ZC_RADIO_FREQ_MIN_MHZ,
 					      ZC_RADIO_FREQ_MAX_MHZ, 0.0f);
-	/* Range matches the CLI (0.0-2.0).  0.0 is a legal value meaning "reactive
-	 * backoff off" and must survive: this guard exists for NaN and corruption
-	 * only.  RepeaterDataStore used to coerce 0.0 -> 0.2 here, which silently
-	 * undid the documented way to disable the feature on every boot. */
+	/* Unused since the reactive backoff was retired; still sanitised and
+	 * stored so older firmware reads a valid value after a downgrade. */
 	p->backoff_multiplier = sanePrefFloat(p->backoff_multiplier, 0.0f, 2.0f, 0.2f);
 	p->node_lat = sanePrefFloat(p->node_lat, -90.0, 90.0, 0.0);
 	p->node_lon = sanePrefFloat(p->node_lon, -180.0, 180.0, 0.0);
@@ -401,11 +399,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->advert_interval = 0;       // 0 = periodic local advert off; else minutes = value * 2
 	prefs->flood_advert_interval = 47;  // hours
 	prefs->rx_delay_base = 0.0f;
-	/* Must match mesh::ContentionTracker::DEFAULT_BACKOFF_MULT.  Left at the
-	 * memset 0 (= backoff disabled) until now, with RepeaterDataStore coercing
-	 * 0.0 -> 0.2 on load to paper over it — which also undid a deliberate 0.0.
-	 * Companions never apply this (only Repeater/RoomServer call
-	 * setBackoffMultiplier), so setting it here changes no existing node. */
+	/* Unused (reactive backoff retired); 0.2 is the old default, so firmware
+	 * from before the retirement gets its default after a downgrade. */
 	prefs->backoff_multiplier = 0.2f;
 	prefs->tx_delay_factor = 0.5f;
 	prefs->direct_tx_delay_factor = 0.3f;

@@ -33,13 +33,19 @@ Two things made neighbours that waited out the same packet collide with each oth
 - **A node that was receiving sent the moment that packet ended**, without waiting at all. Every
   node in range that had something ready did the same.
 
-Now the wait is picked from many short steps, each one listen long (about 12 ms on the default
-radio settings), spread over the time a typical packet takes to send, and it is counted from the
-moment the packet the node was hearing ends, not from when it first noticed the channel busy. Two
-waiting neighbours pick the same step about once in thirty. The spread stays the same after a busy
+Now the wait is picked from ten short steps, each one listen long (about 12 ms on the default
+radio settings), and it is counted from the moment the packet the node was hearing ends, not from
+when it first noticed the channel busy or finished handling that packet. Two waiting neighbours
+pick the same step about once in ten; on a busy site, where most gaps between repeated packets
+close within a tenth of a second, a longer spread meant a node rarely got a turn at all. The spread stays the same after a busy
 try, so a node that lost one race is not pushed to the back of the next one. During a burst of repeated packets a node now uses the short gaps between
 them, where it used to sleep through them: on a busy roof repeater the longest wait to transmit
 was over 10 seconds.
+
+A repeater no longer pushes its own forward back each time it hears a neighbour repeat the same
+packet. Waiting for each packet to end already makes it give way, and the extra delay made no
+measurable difference on a busy roof repeater over a night of traffic. `get backoff.multiplier`
+and `set backoff.multiplier`, which tuned that delay, are removed. A saved value is ignored.
 
 Nothing changes in how a busy channel is treated: a node never transmits over traffic it can hear.
 The radio restart that used to fire after 4 seconds of receiving now waits for 10 seconds with no

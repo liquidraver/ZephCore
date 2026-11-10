@@ -466,8 +466,19 @@ void Dispatcher::checkSend() {
     wait_rx_end = false;
     cad_busy_start = 0;
     uint32_t retry = getCADFailRetryDelay();
-    next_tx_time = now + retry;
+    // From the reception's actual end: the mesh thread may have spent tens of
+    // ms processing that packet first. A stale or missing stamp means now.
+    uint32_t end = _radio->getLastRxEndMillis();
+    uint32_t lag = now - end;
+    if (end == 0 || lag > 2000) lag = 0;
+    next_tx_time = now - lag + retry;
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+    char what[24];
+    snprintf(what, sizeof(what), "rx-end lag=%u", (unsigned)lag);
+    noteTxAttempt(NULL, what, retry);
+#else
     noteTxAttempt(NULL, "rx-end", retry);
+#endif
   }
 
   // ZEPHCORE: a busy deferral holds every transmit until next_tx_time, even once

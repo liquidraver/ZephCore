@@ -1,19 +1,20 @@
 #pragma once
 
 /* Post-busy retry delay (Mesh::getCADFailRetryDelay()). A random whole number
- * of slots in a fixed window: one typical packet's airtime, counted from the
- * end of the reception the node waited for. It does not widen with refusals:
- * only the loser would widen, which halves its chance in the next gap.
- * Design and numbers: devdocs/lld/02-core-mesh.md §18-§19. Zephyr-free so the
- * host tests build it. */
+ * of slots in a fixed window of LBT_BACKOFF_SLOTS, counted from the end of the
+ * reception the node waited for. It does not widen with refusals: only the
+ * loser would widen, which halves its chance in the next gap. Design and
+ * numbers: devdocs/lld/02-core-mesh.md §18-§20. Zephyr-free so the host tests
+ * build it. */
 
 #include <stdint.h>
 
 namespace mesh {
 
-/* Packet length whose airtime sizes the window: about a median mesh packet
- * (398 ms, 33 slots at SF7/62.5 kHz). */
-#define LBT_BACKOFF_TYPICAL_LEN      100
+/* Window in slots (120 ms at SF7/62.5 kHz): sized to the measured gaps
+ * between repeated packets on a busy site, half of which close within
+ * 100 ms (LLD 02 §20). */
+#define LBT_BACKOFF_SLOTS            10
 /* Slot when the radio cannot say (no symbol time known). */
 #define LBT_BACKOFF_SLOT_FALLBACK_MS 10
 

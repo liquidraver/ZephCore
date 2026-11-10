@@ -261,6 +261,23 @@ TEST(dispatch_rx_stuck, "UNIT-DISPATCH-022", "Recovery needs 10 s of RX busy wit
     CHECK(f.radio.recoveries == 1 && f.radio.attempts == 1);
     f.complete(); CHECK(f.pool.getFreeCount() == 32);
 }
+TEST(dispatch_rx_end_stamp, "UNIT-DISPATCH-023", "The retry counts from the stamped reception end, a stale stamp from now") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // hold at 100
+    f.radio.receiving = false; f.radio.rx_end_seq = 1; f.radio.rx_end_ms = 150;
+    f.clock.now = 190; f.dispatcher.loop();                            // noticed 40 ms late
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 61);   // due 150 + 100
+    f.clock.now = 249; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
+    f.clock.now = 250; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete();
+    f.radio.receiving = true; f.dispatcher.sendPacket(f.packet(), 0);
+    f.clock.now = 3000; f.dispatcher.loop();                           // hold
+    f.radio.receiving = false; f.radio.rx_end_seq = 2; f.radio.rx_end_ms = 500;
+    f.clock.now = 3010; f.dispatcher.loop();                           // stamp 2.5 s old: from now
+    f.clock.now = 3109; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.clock.now = 3110; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
 TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff delays fill whole slots of a fixed window") {
     using namespace mesh;
     std::set<uint32_t> seen;

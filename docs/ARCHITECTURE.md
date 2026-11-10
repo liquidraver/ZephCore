@@ -256,9 +256,10 @@ loop():
      - Busy: if `isReceiving()` is true or the radio is not ready, or the
             driver's LBT refuses, wait for the reception to end
             (`Radio::getRxEndSeq()` moves on every packet or RX error), then
-            a random backoff from that moment (`mesh/LbtBackoff.h`: whole
-            slots of one LBT CAD + turnaround, in a fixed window of one
-            100-byte packet's airtime; it does not widen with refusals). The
+            a random backoff from that moment (`getLastRxEndMillis()`, the
+            stamp taken in the RX callback; `mesh/LbtBackoff.h`: whole slots
+            of one LBT CAD + turnaround, fixed window of 10 slots, 120 ms at
+            SF7/62.5; it does not widen with refusals). The
             backoff drawn at the hold is the fallback when no reception
             ends. Nothing transmits before the retry time. After 10 s (or 3
             max-length packets) of `isReceiving()` with no reception ending,
@@ -300,9 +301,9 @@ The flood retransmit jitter window is `5·airtime·factor` clamped by **two ceil
 - Airtime-scaled: `6·airtime` — keeps SF7/narrow-BW configs from wasting time in oversized windows.
 - Absolute: `2000ms` — bounds per-hop latency in dense areas even when airtime is large.
 
-**Per-Dupe Reactive Backoff**
+**Heard Duplicates**
 
-When a duplicate of a pending outbound packet is heard, TX is rescheduled to `now + backoff_multiplier * airtime`. Each dupe triggers a full delay (not diminishing). Cumulative reactive extension is capped at `min(2000ms, 12·airtime)` per packet; after the cap, CAD handles remaining channel activity. `backoff_multiplier` is configurable via `set backoff.multiplier X` (range 0.0–2.0).
+A heard duplicate of a pending outbound flood only counts towards the EMA; it does not move the pending TX. The per-dupe reactive backoff (`backoff.multiplier`) was retired in 1.18.3 (ADR 0007 amendment): the post-busy wait from the end of each reception (ADR 0006) already makes a node yield to every copy it hears. `NodePrefs::backoff_multiplier` stays in the stored prefs, unused.
 
 **Initial-Flood Jitter (companion-only)**
 
@@ -314,13 +315,12 @@ Direct (source-routed) packets bypass adaptive scaling entirely. They use minima
 
 **CLI**
 
-- `get txdelay` — shows current adaptive state (EMA estimate, delay factor, backoff multiplier).
-- `set backoff.multiplier X` — controls per-dupe reactive delay (0.0–2.0).
+- `get txdelay` — shows current adaptive state (EMA estimate, flood delay factor).
 - `txdelay`, `rxdelay`, `direct.txdelay` — accepted for prefs compatibility but ignored at runtime.
 
 **ContentionTracker Resource Usage**
 
-~260 bytes RAM (24-entry ring buffer × ~16B/entry + state). FNV-1a packet hash, 10-second observation window, EMA with alpha = 1/8.
+~310 bytes RAM (24-entry ring buffer × 12 B/entry + state). FNV-1a packet hash, 10-second observation window, EMA with alpha = 1/8.
 
 ### 4.8 Encryption
 

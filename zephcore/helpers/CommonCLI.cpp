@@ -1074,8 +1074,6 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max_unscoped);
 	} else if (memcmp(config, "flood.max", 9) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_max);
-	} else if (memcmp(config, "backoff.multiplier", 18) == 0) {
-		snprintf(reply, CLI_REPLY_SIZE, "> %.2f", (double)_prefs->backoff_multiplier);
 	} else if (memcmp(config, "owner.info", 10) == 0) {
 		*reply++ = '>';
 		*reply++ = ' ';
@@ -1578,29 +1576,6 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			strcpy(reply, "OK");
 		} else {
 			strcpy(reply, "Error: range 0-64, or default");
-		}
-	} else if (memcmp(config, "backoff.multiplier ", 19) == 0) {
-		/* Companion's setBackoffMultiplier callback is the base-class
-		 * no-op and the value isn't restored at boot — reject instead of
-		 * a false OK. */
-		if (strcmp(_callbacks->getRole(), "companion") == 0) {
-			strcpy(reply, "Error: not supported on companion");
-		} else {
-			/* initNodePrefs() leaves this at 0.0 (memset) even though the
-			 * live default is ContentionTracker::DEFAULT_BACKOFF_MULT and
-			 * RepeaterDataStore migrates 0.0 -> 0.2 on load, so `default`
-			 * uses the real value rather than the prefs blank. */
-			float f;
-			if (!cliFloat(&config[19], 0.2f, &f)) {
-				strcpy(reply, "Error, range 0.0-2.0, or default");
-			} else if (f >= 0.0f && f <= 2.0f) {
-				_prefs->backoff_multiplier = f;
-				_callbacks->setBackoffMultiplier(f);
-				savePrefs();
-				strcpy(reply, "OK");
-			} else {
-				strcpy(reply, "Error, range 0.0-2.0");
-			}
 		}
 	} else if (memcmp(config, "owner.info ", 11) == 0) {
 		config += 11;

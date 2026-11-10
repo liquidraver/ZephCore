@@ -37,10 +37,9 @@ class Mesh : public Dispatcher {
   DispatcherAction forwardMultipartDirect(Packet* pkt, uint32_t delay_millis);
 
 protected:
-  // ZEPHCORE: adaptive contention window — dupe tracking, reactive backoff,
-  // adaptive retransmit jitter (docs: ADAPTIVE contention, LLD 02).
+  // ZEPHCORE: adaptive contention window — dupe tracking and adaptive
+  // retransmit jitter (ADR 0007, LLD 02).
   ContentionTracker _contention;
-  void extendPendingRetransmit(uint32_t hash32);
   uint32_t computeAdaptiveFloodDelay(const Packet* packet);
   uint32_t computeAdaptiveDirectDelay(const Packet* packet);
   // Track heard floods we don't forward, so the EMA warms on non-relaying nodes.

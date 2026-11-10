@@ -195,7 +195,7 @@ flowchart TB
 | Component | Layer | Responsibility |
 |---|---|---|
 | Dispatcher, Mesh, Packet, PacketManager | L1 | TX/RX state machine, CAD/LBT gate, duty cycle, routing, dedup, adverts; 32-slot static pool |
-| ContentionTracker | L1 (ZephCore) | adaptive flood jitter and reactive backoff ([ADR 0007](adr/0007-adaptive-contention-window.md)) |
+| ContentionTracker | L1 (ZephCore) | adaptive flood jitter ([ADR 0007](adr/0007-adaptive-contention-window.md)) |
 | Identity / Utils | L1 | Ed25519/X25519 keys, AES/HMAC helpers |
 | `LoRaRadio` + per-family ops tables | L3 | one `mesh::Radio` adapter over SX126x / LR11xx / LR20xx / SX127x drivers; RX-busy gate, noise floor, CAD ([ADR 0006](adr/0006-sx126x-rx-duty-cycle-and-busy-gating.md)) |
 | BaseChatMesh, CompanionMesh | L2 / L4 | contacts, channels, messages; companion protocol (one handler per opcode), offline queue, v-contact |

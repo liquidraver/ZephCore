@@ -248,9 +248,6 @@ public:
   float getFloodDelayFactor() const override {
     return getContentionTracker().getFloodDelayFactor();
   }
-  void setBackoffMultiplier(float m) override {
-    getContentionTracker().setBackoffMultiplier(m);
-  }
   // Duty-cycle false-preamble re-arms (SX126x only; others return 0).
   uint32_t getDutyCycleTimeoutRestarts() const override;
   void resetDutyCycleTimeoutRestarts() override;

@@ -29,17 +29,16 @@ TEST(pool_priority, "UNIT-POOL-002", "Only due packets dispatch in priority and 
     CHECK(pool.getNextOutbound(101) == c); pool.free(c);
     CHECK(pool.getOutboundTotal() == 0 && pool.getFreeCount() == 32);
 }
-TEST(pool_reschedule, "UNIT-POOL-003", "Reschedule remove and dispatch across clock wrap") {
+TEST(pool_reschedule, "UNIT-POOL-003", "Remove and dispatch across clock wrap") {
     StaticPoolPacketManager pool;
-    auto p = pool.allocNew(); pool.queueOutbound(p, 0, 0xFFFFFFF0u);
-    CHECK(pool.getOutboundByIdx(0) == p);
-    CHECK(pool.rescheduleOutbound(0, 0x10u)); CHECK(pool.getOutboundSchedule(0) == 0x10u);
+    auto p = pool.allocNew(); pool.queueOutbound(p, 0, 0x10u);
+    CHECK(pool.getOutboundByIdx(0) == p); CHECK(pool.getOutboundSchedule(0) == 0x10u);
     CHECK(pool.getNextOutbound(0xFFFFFFF0u) == nullptr);
     CHECK(pool.getNextOutbound(0x0Fu) == nullptr);
     CHECK(pool.getNextOutbound(0x10u) == p); pool.free(p);
     p = pool.allocNew(); pool.queueOutbound(p, 2, 500);
     CHECK(pool.removeOutboundByIdx(0) == p); pool.free(p);
-    CHECK(!pool.rescheduleOutbound(0, 1)); CHECK(pool.removeOutboundByIdx(0) == nullptr);
+    CHECK(pool.removeOutboundByIdx(0) == nullptr);
     CHECK(pool.getFreeCount() == 32);
 }
 TEST(pool_sequence, "UNIT-POOL-004", "Seeded pool ownership conservation") {

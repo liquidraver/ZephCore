@@ -18,6 +18,7 @@ struct Radio : mesh::Radio {
     uint32_t airtime = 100, maintenance = mesh::MAINTENANCE_IDLE;
     int8_t cad_offset = 0;
     uint32_t rx_end_seq = 0;  // stays 0 unless a test ends a reception
+    uint32_t rx_end_ms = 0;   // 0 = end time unknown
     std::deque<std::vector<uint8_t>> incoming;
     std::vector<std::vector<uint8_t>> sent;
     int recvRaw(uint8_t *bytes, int size) override {
@@ -56,6 +57,7 @@ struct Radio : mesh::Radio {
     int8_t getCadOffset() const override { return cad_offset; }
     uint32_t msUntilNextMaintenance() override { return maintenance; }
     uint32_t getRxEndSeq() override { return rx_end_seq; }
+    uint32_t getLastRxEndMillis() override { return rx_end_ms; }
 };
 struct Dispatcher : mesh::Dispatcher {
     uint8_t duty = 0;

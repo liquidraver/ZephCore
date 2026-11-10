@@ -76,7 +76,7 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
 	  _tx_thread_running(false), _tx_len(0),
 	  _packets_recv(0), _packets_sent(0), _packets_recv_errors(0),
-	  _rx_end_seq(0), _rx_end_log{}, _rx_end_log_head(0), _rx_end_log_tail(0)
+	  _rx_end_seq(0), _rx_end_ms(0), _rx_end_log{}, _rx_end_log_head(0), _rx_end_log_tail(0)
 {
 	k_poll_signal_init(&_tx_signal);
 	k_sem_init(&_tx_start_sem, 0, 1);
@@ -670,6 +670,10 @@ void LoRaRadio::startReceive()
  * LBT-logging builds. len 0 = CRC/header error. */
 void LoRaRadio::noteRxEnd(uint16_t len, int16_t rssi, int8_t snr)
 {
+	uint32_t now = k_uptime_get_32();
+
+	/* Time before sequence: a reader that sees the new sequence sees its time. */
+	atomic_set(&_rx_end_ms, (atomic_val_t)(now ? now : 1U));
 	atomic_inc(&_rx_end_seq);
 	if (!IS_ENABLED(CONFIG_ZEPHCORE_LBT_LOGGING)) {
 		return;
@@ -680,7 +684,7 @@ void LoRaRadio::noteRxEnd(uint16_t len, int16_t rssi, int8_t snr)
 	if (next == (uint8_t)atomic_get(&_rx_end_log_tail)) {
 		return;
 	}
-	_rx_end_log[head] = { k_uptime_get_32(), len, rssi, snr };
+	_rx_end_log[head] = { now, len, rssi, snr };
 	atomic_set(&_rx_end_log_head, next);
 }
 

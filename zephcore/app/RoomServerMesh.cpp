@@ -761,7 +761,6 @@ void RoomServerMesh::begin(RepeaterDataStore* store) {
    * begin() — the radio reads freq/bw/sf/cr through _prefs during
    * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
   mesh::Mesh::begin();
-  _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
   acl.load(_store->getFS(), self_id);
   /* last_timestamp is RAM only: every client starts at the boot clock less
    * REPLAY_BOOT_SLACK, so frames recorded before that do not run again after a

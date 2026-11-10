@@ -69,7 +69,7 @@
     },
     {
       "id": "UNIT-CONTENTION-003",
-      "name": "Reactive airtime and hard caps plus disabled backoff",
+      "name": "Flood delay factor follows the saturating curve",
       "source": "tests/unit/contention_tests.cpp"
     },
     {
@@ -185,6 +185,11 @@
     {
       "id": "UNIT-DISPATCH-022",
       "name": "Recovery needs 10 s of RX busy with no reception ending",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-023",
+      "name": "The retry counts from the stamped reception end, a stale stamp from now",
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {
@@ -434,7 +439,7 @@
     },
     {
       "id": "UNIT-POOL-003",
-      "name": "Reschedule remove and dispatch across clock wrap",
+      "name": "Remove and dispatch across clock wrap",
       "source": "tests/unit/pool_tests.cpp"
     },
     {

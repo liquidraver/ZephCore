@@ -79,7 +79,7 @@ struct PacketQueue {
     return true;
   }
 
-  // ZEPHCORE: eviction and schedule access (reactive backoff, re-queue priority).
+  // ZEPHCORE: eviction and schedule access (re-queue priority).
   int findLowestPriority() const {   // least important entry, -1 when empty
     if (_num == 0) return -1;
     uint8_t worst = 0;
@@ -100,11 +100,6 @@ struct PacketQueue {
       if (_pri_table[j] < best) best = _pri_table[j];
     }
     return best;
-  }
-  bool reschedule(int i, uint32_t new_scheduled_for) {
-    if (i >= _num) return false;
-    _schedule_table[i] = new_scheduled_for;
-    return true;
   }
 };
 
@@ -182,9 +177,6 @@ mesh::Packet* StaticPoolPacketManager::removeOutboundByIdx(int i) {
 // ZEPHCORE: schedule access instead of the inbound queue.
 uint32_t StaticPoolPacketManager::getOutboundSchedule(int i) const {
   return send_queue.scheduleAt(i);
-}
-bool StaticPoolPacketManager::rescheduleOutbound(int i, uint32_t new_scheduled_for) {
-  return send_queue.reschedule(i, new_scheduled_for);
 }
 uint8_t StaticPoolPacketManager::peekNextOutboundPriority(uint32_t now) const {
   return send_queue.peekPriority(now);

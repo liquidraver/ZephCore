@@ -18,15 +18,23 @@ TEST(contention_saturation, "UNIT-CONTENTION-002", "Duplicate saturation and exa
     CHECK(c.getContentionEstimate() == 255.0f);
     CHECK(!c.recordDupeIfTracked(99, 101));
 }
-TEST(contention_caps, "UNIT-CONTENTION-003", "Reactive airtime and hard caps plus disabled backoff") {
-    ContentionTracker c; c.trackRetransmit(1, 100); c.setBackoffMultiplier(2.0f);
-    CHECK(c.getReactiveHeadroom(1, 10) == 20);
-    c.addReactiveExtension(1, 115); CHECK(c.getReactiveHeadroom(1, 10) == 5);
-    c.addReactiveExtension(1, 5); CHECK(c.getReactiveHeadroom(1, 10) == 0);
-    c.trackRetransmit(2, 100); c.addReactiveExtension(2, 1999);
-    CHECK(c.getReactiveHeadroom(2, 1000) == 1);
-    c.addReactiveExtension(2, 1); CHECK(c.getReactiveHeadroom(2, 1000) == 0);
-    c.setBackoffMultiplier(0); CHECK(c.getReactiveHeadroom(1, 1000) == 0);
+TEST(contention_curve, "UNIT-CONTENTION-003", "Flood delay factor follows the saturating curve") {
+    ContentionTracker c;
+    for (unsigned hash = 0; hash < 4; ++hash) {
+        c.trackRetransmit(hash, 100);
+        for (int i = 0; i < 4; ++i) c.recordDupeIfTracked(hash, 101);
+        CHECK(c.extractDupeCount(hash) == 4);
+    }
+    float f = c.getFloodDelayFactor();
+    CHECK(c.getContentionEstimate() == 4.0f && f > 0.6999f && f < 0.7001f);
+    ContentionTracker d;
+    for (unsigned hash = 0; hash < 4; ++hash) {
+        d.trackRetransmit(hash, 100);
+        for (int i = 0; i < 300; ++i) d.recordDupeIfTracked(hash, 101);
+        d.extractDupeCount(hash);
+    }
+    f = d.getFloodDelayFactor();
+    CHECK(f > 0.99f && f <= 1.0f);
 }
 TEST(contention_decay, "UNIT-CONTENTION-004", "Warmup eviction and decay independent of tick frequency") {
     ContentionTracker c; CHECK(c.getFloodDelayFactor() == 0.5f);

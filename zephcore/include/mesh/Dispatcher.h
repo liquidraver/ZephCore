@@ -127,6 +127,10 @@ public:
   // Receptions that have ended (packet or CRC/header error), wrapping; a
   // deferral waits for it to move. Constant = cannot tell (timer only).
   virtual uint32_t getRxEndSeq() { return 0; }
+  // When the last reception ended, on the MillisecondClock's time base
+  // (0 = unknown): the retry counts from here, not from when the mesh
+  // thread got round to noticing it.
+  virtual uint32_t getLastRxEndMillis() { return 0; }
 
   // Receiver hygiene (deaf-aware AGC unstick, temperature-drift recal). Both
   // sleep the radio, so called only from the maintenance tick.
@@ -158,9 +162,8 @@ public:
   virtual Packet* removeOutboundByIdx(int i) = 0;
   // ZEPHCORE: no inbound queue (queueInbound/getNextInbound) — received packets
   // are processed immediately; the adaptive contention window replaces upstream's
-  // score-based RX delay. Instead, schedule access for reactive backoff:
+  // score-based RX delay. Instead, schedule access:
   virtual uint32_t getOutboundSchedule(int i) const = 0;
-  virtual bool rescheduleOutbound(int i, uint32_t new_scheduled_for) = 0;
   virtual uint8_t peekNextOutboundPriority(uint32_t now) const = 0;
 };
 

@@ -11,8 +11,7 @@ namespace mesh {
 
 ContentionTracker::ContentionTracker()
 	: _next_idx(0), _ema_x256(0), _finalized_count(0),
-	  _last_retransmit_ms(0), _last_decay_ms(0),
-	  _backoff_multiplier(DEFAULT_BACKOFF_MULT)
+	  _last_retransmit_ms(0), _last_decay_ms(0)
 {
 	memset(_ring, 0, sizeof(_ring));
 }
@@ -76,7 +75,6 @@ void ContentionTracker::trackRetransmit(uint32_t hash32, uint32_t now_ms)
 	e.hash32 = hash32;
 	e.first_seen_ms = now_ms;
 	e.dupe_count = 0;
-	e.reactive_added_ms = 0;
 	e.active = true;
 
 	_next_idx = (_next_idx + 1) % RING_SIZE;
@@ -107,34 +105,6 @@ int ContentionTracker::extractDupeCount(uint32_t hash32)
 	int count = (int)_ring[idx].dupe_count;
 	finalizeEntry(idx);  /* folds into EMA, marks inactive */
 	return count;
-}
-
-uint16_t ContentionTracker::getReactiveHeadroom(uint32_t hash32, uint32_t airtime_ms) const
-{
-	int idx = findEntry(hash32);
-	if (idx < 0) return 0;
-
-	uint32_t per_dupe = (uint32_t)(_backoff_multiplier * (float)airtime_ms);
-	if (per_dupe == 0) return 0;
-
-	/* Effective cap: ~12 relay-slots (airtime-scaled), absolute ceiling REACTIVE_HARD_CAP_MS */
-	uint32_t effective_cap = 12 * airtime_ms;
-	if (effective_cap > REACTIVE_HARD_CAP_MS) effective_cap = REACTIVE_HARD_CAP_MS;
-
-	if (_ring[idx].reactive_added_ms >= effective_cap) return 0;
-
-	uint32_t remaining = effective_cap - _ring[idx].reactive_added_ms;
-	if (per_dupe > remaining) per_dupe = remaining;
-	return per_dupe > 0xFFFF ? 0xFFFF : (uint16_t)per_dupe;
-}
-
-void ContentionTracker::addReactiveExtension(uint32_t hash32, uint16_t added_ms)
-{
-	int idx = findEntry(hash32);
-	if (idx < 0) return;
-
-	uint32_t total = (uint32_t)_ring[idx].reactive_added_ms + added_ms;
-	_ring[idx].reactive_added_ms = total > 0xFFFF ? 0xFFFF : (uint16_t)total;
 }
 
 void ContentionTracker::tick(uint32_t now_ms)
