@@ -30,6 +30,10 @@ touch before writing code. Decisions are in `docs/adr/`.
 8. **A real platform difference is stated as one.** If something truly is specific to one SoC or chip (an
    erratum, a vendor blob, a peripheral that exists nowhere else), it lives in that platform's layer and the PR
    cites the source that makes it specific. "Only seen on X" is not that.
+9. **Chip state belongs to the driver.** A register or mode is set inside the driver, while the chip is awake and
+   under the driver's lock, and must survive every sleep the driver uses (SX126x: the warm-start retention
+   list). A write from an adapter hook after `begin()` is lost at the next sleep. Bus errors are returned to the
+   caller, not discarded with `(void)`.
 
 ## Invariants: do not change without an ADR
 
@@ -37,7 +41,9 @@ touch before writing code. Decisions are in `docs/adr/`.
 - Settings persist in `prefs.json` only. The legacy binary prefs files are frozen: no new fields in
   `PrefsCodec`, no change to its size constants or to the pinned offsets and lengths in its tests.
 - The wall clock only moves forward.
-- Mesh, GPS state and UI run on the main thread; loops are event-driven, no polling.
+- Mesh, GPS state and UI run on the main thread; loops are event-driven, no polling. A button, UI or work-queue
+  thread that needs the mesh or the Bluetooth host sets a flag in `pending_ui_actions` and lets
+  `mesh_handle_ui_actions()` make the call on the main thread; it never calls in directly.
 - No heap in the packet path. Companion builds are RAM-bound.
 - Never write to a peripheral that was not cleanly identified first.
 - BLE: no proactive SMP Security Request, keep `BT_LE_ADV_OPT_USE_IDENTITY` (ADR 0004), leave connection
@@ -57,7 +63,11 @@ touch before writing code. Decisions are in `docs/adr/`.
 - Host tests: `python3 tests/run.py run --profile quick` (Linux or WSL). A new case needs a
   `tests/catalog.json` entry. A failing pinned test is a finding: do not edit the pinned values to make it pass.
 - Logic that runs without hardware (a protocol parser, a state machine, a timing rule, a `// ZEPHCORE:` change
-  to upstream behaviour) comes with host tests that pin it.
+  to upstream behaviour) comes with host tests that pin it. Driver code in a Zephyr patch counts too: extract the
+  functions from the patch at configure time, as `tests/support/extract_sx126x_helpers.py` does, and fake the bus.
+- A changed `zephcore/patches/zephyr` patch must apply to the pinned Zephyr; check it before pushing.
+- Remove what the change orphans: a hook, API or Kconfig symbol left with no user goes in the same PR. Grep
+  docs, comments and patch headers for every name and number you changed.
 - PR CI runs the host tests only. Build every board you touched and one you did not, and run each role you
   changed. Releases build from `zephcore.yml` alone, so nothing may depend on a hand-passed fragment. A role or
   fragment no `zephcore.yml` row builds goes into the "compile-only roles" step of `.github/workflows/build.yml`.
