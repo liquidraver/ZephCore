@@ -36,23 +36,32 @@
 	#define ZC_RADIO_BW_RANGE_STR "7-500"
 #endif
 
+/* The narrowest bandwidth each radio family has, as its whole-kHz name. */
+#if defined(CONFIG_ZEPHCORE_RADIO_SX127X)
+	#define ZC_RADIO_BW_FLOOR_KHZ 62U   /* loramac-node backend: 62.5, 125, 250, 500 */
+#elif defined(CONFIG_ZEPHCORE_RADIO_LR2021)
+	#define ZC_RADIO_BW_FLOOR_KHZ 31U   /* LR20xx: 31.25 kHz and up */
+#elif defined(CONFIG_ZEPHCORE_RADIO_LR1110)
+	#define ZC_RADIO_BW_FLOOR_KHZ 10U   /* LR11xx: 10.42 kHz and up */
+#else
+	#define ZC_RADIO_BW_FLOOR_KHZ 7U    /* SX126x: 7.81 kHz and up */
+#endif
+
 /* Is `khz` a bandwidth this build's radio has? LoRa bandwidths are a fixed
  * set and the adapter names them by their whole-kHz part (bw_khz_to_enum()):
  * 7.8 and 7.81 are 7, 62.5 is 62. A value in range but outside the set (42,
- * 100) is refused by every setter and loader, never run as 125 kHz. */
+ * 100), or one the radio lacks, is refused by every setter and loader,
+ * never run as 125 kHz. */
 static inline bool zcRadioBwValid(float khz)
 {
 	if (!(khz >= ZC_RADIO_BW_MIN_KHZ && khz <= ZC_RADIO_BW_MAX_KHZ)) {
 		return false;
 	}
+	if ((unsigned)khz < ZC_RADIO_BW_FLOOR_KHZ) {
+		return false;
+	}
 	switch ((unsigned)khz) {
-	case 7:
-#ifdef CONFIG_ZEPHCORE_RADIO_LR1110
-		return false;   /* the LR11xx starts at 10.4 kHz */
-#else
-		return true;
-#endif
-	case 10: case 15: case 20: case 31: case 41: case 62:
+	case 7: case 10: case 15: case 20: case 31: case 41: case 62:
 	case 125: case 250: case 500:
 		return true;
 #ifdef CONFIG_ZEPHCORE_RADIO_LR2021

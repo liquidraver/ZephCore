@@ -146,10 +146,10 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 - **A bandwidth that is not a LoRa bandwidth is refused.** `set radio`, `tempradio` and the app accepted any
   number from 7 to 500 kHz. A value such as 42 (for 41.7) or 100 was saved and shown, but the radio ran at
   125 kHz and the node dropped off the mesh. Now only 7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250 and
-  500 kHz are accepted (LR1110 boards have no 7.8; LR2021 boards also take 203, 406, 812 and 1000). A node that
+  500 kHz are accepted, and only those the board's radio has (LR1110 from 10.4, LR2021 from 31.25 plus 203, 406, 812 and 1000, SX127x from 62.5). A node that
   has such a value saved starts on the default radio settings after the update.
-- **LR1110 boards: receive duty cycle keeps its safety margin on fast presets.** The sleep time was rounded up
+- **LR1110 and LR2021 boards: receive duty cycle keeps its safety margin on fast presets.** The sleep time was rounded up
   to a whole millisecond, which on presets with short symbols used up the margin against missing a packet.
-- **LR1110 boards never transmit when the channel check itself fails.** If the listen-before-talk check did
+- **LR1110 and LR2021 boards never transmit when the channel check itself fails.** If the listen-before-talk check did
   not complete, the node used to transmit anyway. It now restores reception and tries again later.
-- **LR1110 boards report signal-to-noise in quarter-dB steps**, like SX1262 boards.
+- **LR1110 and LR2021 boards report signal-to-noise in quarter-dB steps**, like SX1262 boards.

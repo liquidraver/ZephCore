@@ -55,7 +55,7 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.reset_stats = lr20xx_reset_freq_offset,
 	.format_freq_error = lr2021_format_freq_error,
 	.lbt_rx_evidence = nullptr,
-	.last_snr_x4 = nullptr,
+	.last_snr_x4 = lr20xx_get_last_snr_x4,
 };
 
 } /* namespace mesh */
