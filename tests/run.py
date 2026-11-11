@@ -174,9 +174,10 @@ def metadata():
     paths += list((ROOT / "zephcore/lib/monocypher").glob("*"))
     paths += [ROOT / "zephcore" / p for p in (
         "src/Packet.cpp", "src/StaticPoolPacketManager.cpp", "src/ContentionTracker.cpp",
-        "src/Dispatcher.cpp", "src/Identity.cpp", "helpers/AdvertDataHelpers.cpp")]
+        "src/Dispatcher.cpp", "src/Identity.cpp", "helpers/AdvertDataHelpers.cpp",
+        "patches/zephyr/0003-lora-sx126x-native.patch")]
     hashes = {p.relative_to(ROOT).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-              for p in paths if p.is_file() and (p.suffix in (".py", ".cpp", ".c", ".h", ".json") or p.name == "CMakeLists.txt")}
+              for p in paths if p.is_file() and (p.suffix in (".py", ".cpp", ".c", ".h", ".json", ".patch") or p.name == "CMakeLists.txt")}
     return {"git_commit": git("rev-parse", "HEAD"), "git_status": git("status", "--porcelain"),
             "tracked_diff_sha256": hashlib.sha256((git("diff", "HEAD", "--binary") or "").encode()).hexdigest(),
             "python": sys.version, "host": platform.platform(), "input_sha256": hashes,

@@ -681,6 +681,26 @@
       "id": "UNIT-KISS-008",
       "name": "SetRxBoostedGain is Unsupported without the radio hook, refused during TX, and drains RX before applying",
       "source": "tests/unit/kiss_modem_tests.cpp"
+    },
+    {
+      "id": "UNIT-HELTEC-001",
+      "name": "Heltec bit preserves other bits and propagates SPI failures",
+      "source": "tests/unit/sx126x_heltec_tests.cpp"
+    },
+    {
+      "id": "UNIT-HELTEC-002",
+      "name": "Heltec workaround survives warm sleep and calibration-style reapply",
+      "source": "tests/unit/sx126x_heltec_tests.cpp"
+    },
+    {
+      "id": "UNIT-HELTEC-003",
+      "name": "Capability off leaves Heltec register untouched and retains two entries",
+      "source": "tests/unit/sx126x_heltec_tests.cpp"
+    },
+    {
+      "id": "UNIT-HELTEC-004",
+      "name": "Retention errors propagate and debug check validates the third entry",
+      "source": "tests/unit/sx126x_heltec_tests.cpp"
     }
   ]
 }

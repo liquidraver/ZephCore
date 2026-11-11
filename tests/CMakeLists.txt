@@ -3,6 +3,14 @@ project(zephcore_host_tests LANGUAGES C CXX)
 
 option(ZEPHCORE_TEST_SANITIZERS "Enable host address/undefined behavior sanitizers" OFF)
 set(PRODUCTION "${CMAKE_CURRENT_LIST_DIR}/../zephcore")
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+set(SX126X_PATCH "${PRODUCTION}/patches/zephyr/0003-lora-sx126x-native.patch")
+set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+  "${SX126X_PATCH}" "${CMAKE_CURRENT_LIST_DIR}/support/extract_sx126x_helpers.py")
+execute_process(COMMAND "${Python3_EXECUTABLE}"
+  "${CMAKE_CURRENT_LIST_DIR}/support/extract_sx126x_helpers.py"
+  "${SX126X_PATCH}" "${CMAKE_CURRENT_BINARY_DIR}/sx126x_helpers.inc"
+  COMMAND_ERROR_IS_FATAL ANY)
 add_executable(zephcore_unit
   unit/main.cpp
   unit/packet_tests.cpp
@@ -17,6 +25,7 @@ add_executable(zephcore_unit
   unit/timesync_tests.cpp
   unit/helper_tests.cpp
   unit/radio_tests.cpp
+  unit/sx126x_heltec_tests.cpp
   unit/lora_timing_tests.cpp
   unit/prefs_codec_tests.cpp
   unit/prefs_json_tests.cpp
@@ -49,7 +58,7 @@ target_compile_features(zephcore_unit PRIVATE cxx_std_17)
 target_compile_definitions(zephcore_unit PRIVATE CONFIG_ZEPHCORE_PACKET_LOGGING=0
   CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK=1 CONFIG_ZEPHCORE_UI_DESIGN_BUTTON=0)
 target_include_directories(zephcore_unit PRIVATE
-  support unit ${PRODUCTION} ${PRODUCTION}/include ${PRODUCTION}/helpers ${PRODUCTION}/helpers/compat
+  "${CMAKE_CURRENT_BINARY_DIR}" support unit ${PRODUCTION} ${PRODUCTION}/include ${PRODUCTION}/helpers ${PRODUCTION}/helpers/compat
   ${PRODUCTION}/lib/monocypher
   ${PRODUCTION}/adapters/radio
   ${PRODUCTION}/patches/zephyr-new/include ${PRODUCTION}/patches/zephyr-new/drivers/lora/lr11xx)

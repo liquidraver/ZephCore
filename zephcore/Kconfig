@@ -710,7 +710,8 @@ config ZEPHCORE_SX126X_HELTEC_REG_PATCH
 	depends on ZEPHCORE_RADIO_NATIVE
 	default n
 	help
-	  Sets the LSB of undocumented register 0x8B5 after the first lora_config().
+	  Sets the LSB of undocumented register 0x8B5 while awake during radio
+	  configuration and retains it across warm sleep and AGC recalibration.
 	  Described by Heltec engineer @Quency-D in MeshCore PR#1398 — consistently
 	  improves RX reception on boards with GC1109 or KCT8103L PA (Heltec V4/V4.3/V4-R8).
 	  Upstream MeshCore also enables it for the RAK3401's SKY66122 FEM, so it is
