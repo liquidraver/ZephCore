@@ -123,9 +123,7 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 
 extern "C" void mesh_ble_set_enabled(bool enable)
 {
-#if IS_ENABLED(CONFIG_BT)
-	zephcore_ble_set_enabled(enable);
-#endif
+	/* Bluetooth host calls run on the mesh thread (LLD 11 §21). */
 	atomic_set(&pending_ble_disabled, enable ? 0 : 1);
 	atomic_or(&pending_ui_actions, UI_ACTION_BLE_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -225,13 +223,8 @@ extern "C" void mesh_reboot_to_ota_dfu(void)
 
 extern "C" void mesh_ble_ota_open(void)
 {
-	/* Deferred to the mesh thread, like every other toggle here:
-	 * ble_ota_start() ends up in bt_gatt_service_register(), a
-	 * Bluetooth host call that is not safe from the button thread --
-	 * same class of issue as mesh_ble_set_enabled() above. The DFU
-	 * page's render already polls mesh_ble_ota_remaining_s() on every
-	 * redraw, so the screen catches up as soon as the mesh thread has
-	 * processed this. */
+	/* Opened on the mesh thread (LLD 11 §21); the UIs poll
+	 * mesh_ble_ota_remaining_s() for the result. */
 	atomic_or(&pending_ui_actions, UI_ACTION_BLE_OTA_OPEN);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
@@ -301,6 +294,9 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_BLE_TOGGLE) {
 		bool bd = atomic_get(&pending_ble_disabled) != 0;
+#if IS_ENABLED(CONFIG_BT)
+		zephcore_ble_set_enabled(!bd);
+#endif
 		s_mesh->prefs.ble_disabled = bd ? 1 : 0;
 		LOG_INF("ble_disabled=%d (button)", bd);
 		need_save = true;

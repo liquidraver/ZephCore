@@ -375,6 +375,8 @@ mesh::Radio (abstract interface)
 
 Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR2021` / `_SX127X` Kconfig options, resolved in `RadioIncludes.h`. The native SX126x path is the default and covers SX1261/62/68, LLCC68, and the STM32WL integrated sub-GHz radio.
 
+The three native drivers share `zc_lora_timing.h`: the true LoRa bandwidths (`zc_lora_bw_hz()`), the LDRO rule (`zc_lora_ldro()`, symbol time over 16.38 ms; both ends of a link must agree on it), and the RX-busy bounds. Packet SNR reaches `LoRaRadio` in quarter dB on SX126x and LR11xx (`last_snr_x4` in the ops table) and in whole dB on LR20xx. A radio bandwidth is accepted only when `zcRadioBwValid()` (`NodePrefs.h`) knows it as a LoRa bandwidth of the build's radio; every setter and prefs loader uses that one test.
+
 ### 5.2 LoRaRadio State Machine
 
 **TX Flow** (LBT — current default; `cad.mode == LORA_CAD_MODE_LBT` is set unconditionally in `buildModemConfig`):

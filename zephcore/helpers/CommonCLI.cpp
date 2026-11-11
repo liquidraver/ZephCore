@@ -485,11 +485,11 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		uint8_t cr = num > 3 ? atoi(parts[3]) : 0;
 		int temp_timeout_mins = num > 4 ? atoi(parts[4]) : 0;
 		if (freq >= ZC_RADIO_FREQ_MIN_MHZ && freq <= ZC_RADIO_FREQ_MAX_MHZ && sf >= 5 && sf <= 12 &&
-		    cr >= 5 && cr <= 8 && bw >= ZC_RADIO_BW_MIN_KHZ && bw <= ZC_RADIO_BW_MAX_KHZ && temp_timeout_mins > 0) {
+		    cr >= 5 && cr <= 8 && zcRadioBwValid(bw) && temp_timeout_mins > 0) {
 			_callbacks->applyTempRadioParams(freq, bw, sf, cr, temp_timeout_mins);
 			snprintf(reply, CLI_REPLY_SIZE, "OK - temp params for %d mins", temp_timeout_mins);
 		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "Error: freq 150-2500, bw %s, sf 5-12, cr 5-8, timeout>0", ZC_RADIO_BW_RANGE_STR);
+			snprintf(reply, CLI_REPLY_SIZE, "Error: freq 150-2500, bw %s (a LoRa bandwidth), sf 5-12, cr 5-8, timeout>0", ZC_RADIO_BW_RANGE_STR);
 		}
 	} else if (memcmp(command, "password ", 9) == 0) {
 		if (command[9] == 0) {
@@ -876,7 +876,7 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 			uint8_t sf = want_def ? cliDefaults()->sf : (num > 2 ? (uint8_t)atoi(parts[2]) : 0);
 			uint8_t cr = want_def ? cliDefaults()->cr : (num > 3 ? (uint8_t)atoi(parts[3]) : 0);
 			if (freq >= ZC_RADIO_FREQ_MIN_MHZ && freq <= ZC_RADIO_FREQ_MAX_MHZ && sf >= 5 && sf <= 12 &&
-			    cr >= 5 && cr <= 8 && bw >= ZC_RADIO_BW_MIN_KHZ && bw <= ZC_RADIO_BW_MAX_KHZ) {
+			    cr >= 5 && cr <= 8 && zcRadioBwValid(bw)) {
 				/* Snapshot old params, then mutate _prefs and save so later
 				 * savePrefs() calls (set af, set name, ...) don't clobber
 				 * the new values with stale RAM. Freeze the running radio on
@@ -905,7 +905,7 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 					strcpy(reply, "OK - reboot to apply");
 				}
 			} else {
-				strcpy(reply, "Error: freq 150-2500, bw 7-500, sf 5-12, cr 5-8, or default");
+				strcpy(reply, "Error: freq 150-2500, bw 7-500 (a LoRa bandwidth), sf 5-12, cr 5-8, or default");
 			}
 		} else if (memcmp(config, "rxdelay ", 8) == 0) {
 			_prefs->rx_delay_base = cliIsDefault(&config[8]) ? cliDefaults()->rx_delay_base

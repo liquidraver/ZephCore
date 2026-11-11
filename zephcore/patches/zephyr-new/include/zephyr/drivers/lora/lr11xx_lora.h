@@ -43,6 +43,10 @@ void lr11xx_reset_dc_timeout_restarts(const struct device *dev);
  * driver out of RX: the caller must restart it. */
 void lr11xx_recalibrate(const struct device *dev);
 
+/* SNR of the last received packet in quarter dB (the RX callback carries
+ * whole dB). Valid inside that callback, for the packet it is delivering. */
+int8_t lr11xx_get_last_snr_x4(const struct device *dev);
+
 /* Adaptive CAD. The offset is added to the base detPeak on every LBT CAD from
  * the next one on, clamped to [lr11xx_cad_peak_min(), lr11xx_cad_peak_max()]. */
 void lr11xx_cad_set_peak_offset(const struct device *dev, int8_t offset);

@@ -32,13 +32,27 @@ int16_t sx126x_get_rssi_inst(const struct device *dev);
 /**
  * @brief Check if radio is actively receiving a packet
  *
- * Checks IRQ status for preamble/header detection.
- * Uses non-blocking mutex — returns false if SPI is busy.
+ * The header latch, or else the IRQ status read for preamble/header
+ * detection.  The driver mutex is tried without waiting: when it is held
+ * the answer is "receiving" if the driver is in RX.  The status read itself
+ * waits on BUSY, so during a duty-cycle sleep phase the call returns at the
+ * chip's next RX window.
  *
  * @param dev LoRa device
  * @return true if preamble or header detected
  */
 bool sx126x_is_receiving(const struct device *dev);
+
+/**
+ * @brief SNR of the last received packet, in quarter dB
+ *
+ * The chip's own resolution; the LoRa API's RX callback carries whole dB.
+ * Valid inside that callback, for the packet it is delivering.
+ *
+ * @param dev LoRa device
+ * @return SNR * 4 (0 for a GFSK packet)
+ */
+int8_t sx126x_get_last_snr_x4(const struct device *dev);
 
 /**
  * @brief Enable/disable RX boosted mode

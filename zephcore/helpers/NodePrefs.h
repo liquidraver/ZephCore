@@ -36,6 +36,34 @@
 	#define ZC_RADIO_BW_RANGE_STR "7-500"
 #endif
 
+/* Is `khz` a bandwidth this build's radio has? LoRa bandwidths are a fixed
+ * set and the adapter names them by their whole-kHz part (bw_khz_to_enum()):
+ * 7.8 and 7.81 are 7, 62.5 is 62. A value in range but outside the set (42,
+ * 100) is refused by every setter and loader, never run as 125 kHz. */
+static inline bool zcRadioBwValid(float khz)
+{
+	if (!(khz >= ZC_RADIO_BW_MIN_KHZ && khz <= ZC_RADIO_BW_MAX_KHZ)) {
+		return false;
+	}
+	switch ((unsigned)khz) {
+	case 7:
+#ifdef CONFIG_ZEPHCORE_RADIO_LR1110
+		return false;   /* the LR11xx starts at 10.4 kHz */
+#else
+		return true;
+#endif
+	case 10: case 15: case 20: case 31: case 41: case 62:
+	case 125: case 250: case 500:
+		return true;
+#ifdef CONFIG_ZEPHCORE_RADIO_LR2021
+	case 200: case 203: case 400: case 406: case 800: case 812: case 1000:
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+
 #define TELEM_MODE_DENY            0
 #define TELEM_MODE_ALLOW_FLAGS     1
 #define TELEM_MODE_ALLOW_ALL       2

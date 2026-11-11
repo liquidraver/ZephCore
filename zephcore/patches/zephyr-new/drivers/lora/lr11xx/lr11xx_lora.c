@@ -108,8 +108,8 @@ struct lr11xx_data {
 	/* Stored duty-cycle timing from recv_duty_cycle() — the re-arm paths
 	 * (start_rx / restart_rx) reuse these exact values, never recompute:
 	 * window sizing is owned by the adapter layer (LoRaRadio). */
-	uint32_t dc_rx_ms;
-	uint32_t dc_sleep_ms;
+	uint32_t dc_rx_steps;      /* 32.768 kHz RTC steps */
+	uint32_t dc_sleep_steps;
 
 	/* Duty-cycle false-preamble re-arms (UM §7.2.6: the 2*Rx+Sleep window
 	 * expired with no packet). `get dc.restarts`. */
@@ -160,6 +160,10 @@ struct lr11xx_data {
 	uint32_t last_dio1_ms;
 	struct k_work_delayable wedge_work;
 	struct k_work_q wedge_wq;
+
+	/* SNR of the last received packet in quarter dB, as the chip reports it.
+	 * Written by the DIO1 handler before the RX callback. */
+	int8_t last_snr_x4;
 
 	/* RX data buffer — filled in DIO1 handler, passed to callback */
 	uint8_t rx_buf[256];
@@ -245,6 +249,26 @@ static lr11xx_system_tcxo_supply_voltage_t get_tcxo_voltage(uint16_t mv)
 	return LR11XX_SYSTEM_TCXO_CTRL_1_6V;
 }
 
+/* TCXO start-up time for SetTcxoMode, in 32.768 kHz RTC steps, rounded up. */
+static uint32_t lr11xx_tcxo_steps(const struct lr11xx_config *cfg)
+{
+	return (cfg->tcxo_startup_delay_ms * 32768U + 999U) / 1000U;
+}
+
+/* The bandwidths the chip has. bw_enum_to_lr11xx() maps everything else to
+ * 125 kHz, so lr11xx_lora_config() refuses it first. */
+static bool lr11xx_bw_supported(enum lora_signal_bandwidth bw)
+{
+	switch (bw) {
+	case BW_10_KHZ: case BW_15_KHZ: case BW_20_KHZ: case BW_31_KHZ:
+	case BW_41_KHZ: case BW_62_KHZ: case BW_125_KHZ: case BW_250_KHZ:
+	case BW_500_KHZ:
+		return true;
+	default:
+		return false;
+	}
+}
+
 /* Get kHz value from Zephyr BW enum — needed for duty cycle timing */
 static float bw_enum_to_khz(enum lora_signal_bandwidth bw)
 {
@@ -265,7 +289,7 @@ static void lr11xx_hardware_reset(struct lr11xx_data *data,
 	/* TCXO */
 	if (cfg->tcxo_voltage_mv > 0) {
 		lr11xx_system_set_tcxo_mode(ctx, get_tcxo_voltage(cfg->tcxo_voltage_mv),
-					    164);
+					    lr11xx_tcxo_steps(cfg));
 	}
 
 	lr11xx_system_set_reg_mode(ctx, LR11XX_SYSTEM_REG_MODE_DCDC);
@@ -309,8 +333,10 @@ static void lr11xx_hardware_reset(struct lr11xx_data *data,
 static uint8_t lr11xx_ldro(const struct lora_modem_config *mc)
 {
 	uint32_t bw_hz = lr11xx_radio_get_lora_bw_in_hz(bw_enum_to_lr11xx(mc->bandwidth));
-	uint32_t symbol_time_us = ((1U << (uint8_t)mc->datarate) * 1000000U) / bw_hz;
-	return symbol_time_us > 16380;
+
+	/* The rule every family shares; Semtech's table above already holds the
+	 * true bandwidths. */
+	return zc_lora_ldro((uint8_t)mc->datarate, bw_hz);
 }
 
 static void lr11xx_apply_modem_config(struct lr11xx_data *data,
@@ -413,13 +439,14 @@ static void lr11xx_start_rx(struct lr11xx_data *data,
 	}
 
 	if (data->rx_duty_cycle_enabled &&
-	    data->dc_rx_ms != 0 && data->dc_sleep_ms != 0) {
+	    data->dc_rx_steps != 0 && data->dc_sleep_steps != 0) {
 		/* Sniff mode: standard-RX listening with the chip's autonomous
 		 * sleep/wake.  MODE_RX uses the same preamble-detect-and-extend
 		 * (2*rx + sleep) mechanism as the SX126x — catches a preamble
 		 * mid-window.  Timing is computed by the adapter. */
-		lr11xx_radio_set_rx_duty_cycle(ctx, data->dc_rx_ms,
-			data->dc_sleep_ms, LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+		lr11xx_radio_set_rx_duty_cycle_with_timings_in_rtc_step(
+			ctx, data->dc_rx_steps, data->dc_sleep_steps,
+			LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
 	} else {
 		/* Start continuous RX.
 		 * 0xFFFFFF is the magic RTC-step value for continuous RX.
@@ -454,7 +481,7 @@ static int lr11xx_restart_rx(struct lr11xx_data *data, bool in_standby)
 	lr11xx_reset_rx_busy_signals(data);
 
 	if (data->rx_duty_cycle_enabled &&
-	    data->dc_rx_ms != 0 && data->dc_sleep_ms != 0) {
+	    data->dc_rx_steps != 0 && data->dc_sleep_steps != 0) {
 		/* Re-arm sniff mode with the stored timing (e.g. after RX_DONE
 		 * or a false-preamble 2*rx+sleep timeout dropped the chip to
 		 * standby).  Re-apply boost — same warm-start caution as
@@ -487,8 +514,9 @@ static int lr11xx_restart_rx(struct lr11xx_data *data, bool in_standby)
 		/* No boost re-apply: retained across the duty-cycle sleep, see
 		 * the note in lr11xx_start_rx().  This is the per-packet hot
 		 * path — the write bought nothing and cost a command on it. */
-		lr11xx_radio_set_rx_duty_cycle(ctx, data->dc_rx_ms,
-			data->dc_sleep_ms, LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+		lr11xx_radio_set_rx_duty_cycle_with_timings_in_rtc_step(
+			ctx, data->dc_rx_steps, data->dc_sleep_steps,
+			LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
 		data->in_rx_mode = true;
 		return 0;
 	}
@@ -560,8 +588,19 @@ static bool lr11xx_irq_rx_done(struct lr11xx_data *data, uint32_t irq,
 
 	if (rx_stat.pld_len_in_bytes > 0 &&
 	    rx_stat.pld_len_in_bytes <= 255) {
-		lr11xx_radio_pkt_status_lora_t pkt_stat;
-		lr11xx_radio_get_lora_pkt_status(ctx, &pkt_stat);
+		/* GetPacketStatus read here rather than through the SDK, which
+		 * rounds the SNR to whole dB: RssiPkt, SnrPkt (quarter dB),
+		 * SignalRssiPkt. Conversions as lr11xx_radio_get_lora_pkt_status(). */
+		static const uint8_t pkt_status_cmd[2] = { 0x02, 0x04 };
+		uint8_t pkt_raw[3] = { 0 };
+
+		lr11xx_hal_read(ctx, pkt_status_cmd, sizeof(pkt_status_cmd),
+				pkt_raw, sizeof(pkt_raw));
+
+		int16_t rssi = -(int16_t)(pkt_raw[0] >> 1);
+		int8_t snr = (int8_t)(((int8_t)pkt_raw[1] + 2) >> 2);
+
+		data->last_snr_x4 = (int8_t)pkt_raw[1];
 
 		lr11xx_regmem_read_buffer8(ctx, data->rx_buf,
 					   rx_stat.buffer_start_pointer,
@@ -584,16 +623,6 @@ static bool lr11xx_irq_rx_done(struct lr11xx_data *data, uint32_t irq,
 		lr11xx_restart_rx(data, true);
 		*rx_restarted = true;
 
-		/* When SNR < 0 the packet RSSI is dominated by
-		 * noise — use the signal-only RSSI estimate for a
-		 * more accurate reading on weak links. */
-		int16_t rssi = pkt_stat.rssi_pkt_in_dbm;
-
-		if (pkt_stat.snr_pkt_in_db < 0 &&
-		    pkt_stat.signal_rssi_pkt_in_dbm > rssi) {
-			rssi = pkt_stat.signal_rssi_pkt_in_dbm;
-		}
-
 		k_mutex_unlock(&data->spi_mutex);
 
 		/* Fire callback outside mutex */
@@ -601,7 +630,7 @@ static bool lr11xx_irq_rx_done(struct lr11xx_data *data, uint32_t irq,
 			data->async_rx_cb(data->dev, data->rx_buf,
 					  rx_stat.pld_len_in_bytes,
 					  rssi,
-					  pkt_stat.snr_pkt_in_db,
+					  snr,
 					  data->async_rx_user_data);
 		}
 		return true;
@@ -927,6 +956,11 @@ static int lr11xx_lora_config(const struct device *dev,
 	struct lr11xx_data *data = dev->data;
 	const struct lr11xx_config *cfg = dev->config;
 
+	if (!lr11xx_bw_supported(config->bandwidth)) {
+		LOG_ERR("Unsupported bandwidth: %d kHz", (int)config->bandwidth);
+		return -EINVAL;
+	}
+
 	/* Deferred hardware init — first config() triggers the heavy work */
 	if (!data->hw_initialized) {
 		int ret = lr11xx_hw_init(data, cfg);
@@ -1036,8 +1070,16 @@ static int lr11xx_lora_send_async(const struct device *dev,
 			return -EBUSY;
 		}
 		if (cad_ret < 0 && cad_ret != -ENOSYS) {
-			LOG_WRN("LBT: CAD failed (%d), proceeding with TX",
-				cad_ret);
+			/* No verdict is not a clear channel: do not transmit. The
+			 * full RX start also recovers a chip that did not answer
+			 * (standby, or a hardware reset when that fails). */
+			LOG_WRN("LBT: CAD failed (%d), restoring RX", cad_ret);
+			if (was_in_rx && data->async_rx_cb != NULL) {
+				k_mutex_lock(&data->spi_mutex, K_FOREVER);
+				lr11xx_start_rx(data, cfg);
+				k_mutex_unlock(&data->spi_mutex);
+			}
+			return cad_ret;
 		}
 	}
 
@@ -1192,25 +1234,34 @@ static int lr11xx_lora_recv_duty_cycle(const struct device *dev,
 		return -EINVAL;
 	}
 
-	uint32_t rx_ms = k_ticks_to_ms_ceil32(rx_period.ticks);
-	uint32_t slp_ms = k_ticks_to_ms_ceil32(sleep_period.ticks);
-	if (rx_ms < 1) rx_ms = 1;
-	if (slp_ms < 1) slp_ms = 1;
+	/* RTC steps straight from the caller's microseconds: the RX window rounds
+	 * up, the sleep rounds down, so the deaf time never exceeds what the
+	 * adapter budgeted. Whole milliseconds cost up to 1 ms of sleep, more
+	 * than the budget's margin on fast presets. */
+	uint32_t rx_us = k_ticks_to_us_ceil32(rx_period.ticks);
+	uint32_t slp_us = k_ticks_to_us_floor32(sleep_period.ticks);
+	uint32_t rx_steps = (uint32_t)(((uint64_t)rx_us * 32768U + 999999U) / 1000000U);
+	uint32_t slp_steps = (uint32_t)(((uint64_t)slp_us * 32768U) / 1000000U);
+
+	if (rx_steps < 1U) rx_steps = 1U;
+	if (slp_steps < 1U) slp_steps = 1U;
+	if (rx_steps > 0x00FFFFFFU) rx_steps = 0x00FFFFFFU;
+	if (slp_steps > 0x00FFFFFFU) slp_steps = 0x00FFFFFFU;
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
 	data->async_rx_cb = cb;
 	data->async_rx_user_data = user_data;
-	data->dc_rx_ms = rx_ms;
-	data->dc_sleep_ms = slp_ms;
+	data->dc_rx_steps = rx_steps;
+	data->dc_sleep_steps = slp_steps;
 	data->rx_duty_cycle_enabled = true;
 
-	/* start_rx() reads rx_duty_cycle_enabled + dc_*_ms and issues
-	 * SetRxDutyCycle(MODE_RX) with a forced boost re-apply. */
+	/* start_rx() reads rx_duty_cycle_enabled + dc_*_steps and issues
+	 * SetRxDutyCycle(MODE_RX). */
 	lr11xx_start_rx(data, cfg);
 
 	k_mutex_unlock(&data->spi_mutex);
-	LOG_INF("recv_duty_cycle: rx=%ums sleep=%ums", rx_ms, slp_ms);
+	LOG_INF("recv_duty_cycle: rx=%uus sleep=%uus", rx_us, slp_us);
 	return 0;
 }
 
@@ -1263,9 +1314,9 @@ static void lr11xx_dc_resume(struct lr11xx_data *data, bool was_armed)
 	 * IRQ/latch state is cleared so the new cycle starts from a known point. */
 	lr11xx_system_clear_irq_status(&data->hal_ctx, LR11XX_SYSTEM_IRQ_ALL_MASK);
 	lr11xx_reset_rx_busy_signals(data);
-	lr11xx_radio_set_rx_duty_cycle(&data->hal_ctx, data->dc_rx_ms,
-				       data->dc_sleep_ms,
-				       LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
+	lr11xx_radio_set_rx_duty_cycle_with_timings_in_rtc_step(
+		&data->hal_ctx, data->dc_rx_steps, data->dc_sleep_steps,
+		LR11XX_RADIO_RX_DUTY_CYCLE_MODE_RX);
 	data->in_rx_mode = true;
 }
 
@@ -1573,6 +1624,13 @@ void lr11xx_reset_dc_timeout_restarts(const struct device *dev)
 	struct lr11xx_data *data = dev->data;
 
 	atomic_set(&data->dc_timeout_restarts, 0);
+}
+
+int8_t lr11xx_get_last_snr_x4(const struct device *dev)
+{
+	struct lr11xx_data *data = dev->data;
+
+	return data->last_snr_x4;
 }
 
 uint32_t lr11xx_get_wakeup_time_us(const struct device *dev)
@@ -1970,7 +2028,7 @@ static int lr11xx_hw_init(struct lr11xx_data *data,
 	if (cfg->tcxo_voltage_mv > 0) {
 		lr11xx_system_set_tcxo_mode(ctx,
 					    get_tcxo_voltage(cfg->tcxo_voltage_mv),
-					    164);
+					    lr11xx_tcxo_steps(cfg));
 		LOG_DBG("TCXO: %dmV", cfg->tcxo_voltage_mv);
 	}
 

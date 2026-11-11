@@ -284,11 +284,15 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	memcpy(pkt->data, data, copy_len);
 	pkt->len = copy_len;
 	pkt->rssi = rssi;
-	pkt->snr = snr;
+	/* Quarter dB where the family reports it (the callback's snr is whole
+	 * dB); the driver holds this packet's value while the callback runs. */
+	pkt->snr_x4 = self->_ops.last_snr_x4
+		? self->_ops.last_snr_x4(dev)
+		: (int8_t)CLAMP((int)snr * 4, INT8_MIN, INT8_MAX);
 
 	atomic_set(&self->_rx_head, next_head);
 	self->_last_rssi = (float)rssi;
-	self->_last_snr = (float)snr;
+	self->_last_snr = (float)pkt->snr_x4 / 4.0f;
 	atomic_inc(&self->_packets_recv);
 
 	/* Activity LED: after the error return, so it blinks on valid packets only. */
@@ -759,7 +763,7 @@ int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 
 	memcpy(bytes, pkt->data, len);
 	_last_rssi = (float)pkt->rssi;
-	_last_snr = (float)pkt->snr;
+	_last_snr = (float)pkt->snr_x4 / 4.0f;
 	atomic_set(&_rx_tail, (tail + 1) % RX_RING_SIZE);
 	return (int)len;
 }

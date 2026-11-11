@@ -2454,8 +2454,7 @@ bool CompanionMesh::handleCmdSetRadioParams(const uint8_t *data, size_t len)
 		 * setting used to vanish on reboot. */
 		} else if (freq >= (uint32_t)(ZC_RADIO_FREQ_MIN_MHZ * 1000.0f) &&
 		    freq <= (uint32_t)(ZC_RADIO_FREQ_MAX_MHZ * 1000.0f) &&
-		    bw >= (uint32_t)(ZC_RADIO_BW_MIN_KHZ * 1000.0f) &&
-		    bw <= (uint32_t)(ZC_RADIO_BW_MAX_KHZ * 1000.0f) &&
+		    zcRadioBwValid((float)bw / 1000.0f) &&
 		    sf >= 5 && sf <= 12 &&
 		    cr >= 5 && cr <= 8) {
 			/* Coding rate is deliberately not in this test:

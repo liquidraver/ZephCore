@@ -263,7 +263,7 @@ private:
 		uint8_t data[256];
 		uint16_t len;
 		int16_t rssi;
-		int8_t snr;
+		int8_t snr_x4;   /* quarter dB */
 	};
 	RxPacket _rx_ring[RX_RING_SIZE];
 	atomic_t _rx_head;

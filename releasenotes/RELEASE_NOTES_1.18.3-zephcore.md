@@ -123,3 +123,18 @@ traffic. `get cad.stats` shows these as a new `u` column next to `t`.
 - **SenseCAP Solar: dimmer heartbeat LED.** The white LED's heartbeat blink can now be dimmed with
   `set leds.brightness <0-100>`, and a newly set-up node starts at 10%, as in MeshCore. A node you
   already use keeps its current brightness (100%); `set leds.brightness 10` gives the new default.
+- **SX1262 and LR2021 boards at SF8 with 15.6 kHz bandwidth can talk to the rest of the mesh.** On this one
+  setting the two radio types left low-data-rate optimisation off, while LR1110 boards and MeshCore nodes
+  have it on, so packets between them failed. Other settings were not affected.
+- **SX1262 boards report signal-to-noise in quarter-dB steps.** They used to round it down to a whole dB, so
+  SNR values read up to 0.75 dB low. Neighbour lists, statistics and the app now show the finer value.
+- **A bandwidth that is not a LoRa bandwidth is refused.** `set radio`, `tempradio` and the app accepted any
+  number from 7 to 500 kHz. A value such as 42 (for 41.7) or 100 was saved and shown, but the radio ran at
+  125 kHz and the node dropped off the mesh. Now only 7.8, 10.4, 15.6, 20.8, 31.25, 41.7, 62.5, 125, 250 and
+  500 kHz are accepted (LR1110 boards have no 7.8; LR2021 boards also take 203, 406, 812 and 1000). A node that
+  has such a value saved starts on the default radio settings after the update.
+- **LR1110 boards: receive duty cycle keeps its safety margin on fast presets.** The sleep time was rounded up
+  to a whole millisecond, which on presets with short symbols used up the margin against missing a packet.
+- **LR1110 boards never transmit when the channel check itself fails.** If the listen-before-talk check did
+  not complete, the node used to transmit anyway. It now restores reception and tries again later.
+- **LR1110 boards report signal-to-noise in quarter-dB steps**, like SX1262 boards.

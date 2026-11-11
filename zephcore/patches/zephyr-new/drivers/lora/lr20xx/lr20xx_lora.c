@@ -293,42 +293,22 @@ static lr20xx_system_tcxo_supply_voltage_t get_tcxo_voltage(uint16_t mv)
 	return LR20XX_SYSTEM_TCXO_CTRL_1_6V;
 }
 
-/* Get kHz value from Zephyr BW enum — used for LDRO/PPM calculation */
-static float bw_enum_to_khz(enum lora_signal_bandwidth bw)
+/* True bandwidth in Hz for the Zephyr BW enum, from the table every radio
+ * family shares (zc_lora_timing.h). An unknown enum reads as 125 kHz. */
+static uint32_t lr20xx_bw_hz(enum lora_signal_bandwidth bw)
 {
-	switch (bw) {
-	case BW_7_KHZ:   return 7.81f;
-	case BW_10_KHZ:  return 10.42f;
-	case BW_15_KHZ:  return 15.63f;
-	case BW_20_KHZ:  return 20.83f;
-	case BW_31_KHZ:  return 31.25f;
-	case BW_41_KHZ:  return 41.67f;
-	case BW_62_KHZ:  return 62.5f;
-	case BW_125_KHZ: return 125.0f;
-	case BW_250_KHZ: return 250.0f;
-	case BW_500_KHZ: return 500.0f;
-	/* Real chip bandwidths, not the enum's round names — these feed the LDRO
-	 * symbol-time test and the airtime maths, so they have to be the values
-	 * the modem actually runs at (DS Table: 203, 406, 812, 1000 kHz). */
-	case BW_200_KHZ:  return 203.0f;
-	case BW_400_KHZ:  return 406.0f;
-	case BW_800_KHZ:  return 812.0f;
-	case BW_1000_KHZ: return 1000.0f;
-	default:         return 125.0f;
-	}
+	uint32_t hz = zc_lora_bw_hz((uint16_t)bw);
+
+	return hz ? hz : 125000U;
 }
 
 /* LDRO rule: symbol time > 16.38 ms, NOT the SF-based rule DS 9.9.1
- * recommends.  Deliberate — LDRO must match between transmitter and receiver,
+ * recommends.  Deliberate: LDRO must match between transmitter and receiver,
  * and the rest of the mesh (SX126x, RadioLib) uses symbol time.  One copy so
  * apply_modem_config, apply_side_detectors and airtime cannot disagree. */
 static inline bool lr20xx_ldro_enabled(uint8_t sf, uint32_t bw_hz)
 {
-	if (bw_hz == 0U) {
-		return false;
-	}
-	/* SF12 is the worst case: 4096 * 1e6 fits in uint32_t. */
-	return (((1U << sf) * 1000000U) / bw_hz) > 16380U;
+	return zc_lora_ldro(sf, bw_hz);
 }
 
 /* The CAD symbol count actually programmed.  LoRaRadio asks for
@@ -868,7 +848,7 @@ static void lr20xx_apply_side_detectors(struct lr20xx_data *data, bool enable)
 		return;
 	}
 
-	bw_hz = (uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f);
+	bw_hz = lr20xx_bw_hz(data->modem_cfg.bandwidth);
 
 	for (uint8_t i = 0; i < n; i++) {
 		det[i].sf = (lr20xx_radio_lora_sf_t)data->side_det_sf[i];
@@ -935,7 +915,7 @@ static void lr20xx_apply_modem_config(struct lr20xx_data *data,
 	data->rx_boost_applied = data->rx_boost_enabled;
 	CHECK_CMD(ctx, "set_rx_path");
 
-	uint32_t bw_hz = (uint32_t)(bw_enum_to_khz(mc->bandwidth) * 1000.0f);
+	uint32_t bw_hz = lr20xx_bw_hz(mc->bandwidth);
 
 	lr20xx_radio_lora_mod_params_t mod = {
 		.sf  = (lr20xx_radio_lora_sf_t)mc->datarate,
@@ -2016,7 +1996,7 @@ static uint32_t lr20xx_lora_airtime(const struct device *dev,
 	struct lora_modem_config *mc = &data->modem_cfg;
 
 	uint8_t sf = (uint8_t)mc->datarate;
-	float bw = bw_enum_to_khz(mc->bandwidth) * 1000.0f;
+	float bw = (float)lr20xx_bw_hz(mc->bandwidth);
 	uint8_t cr = (uint8_t)mc->coding_rate + 4;
 
 	float ts = (float)(1 << sf) / bw;
@@ -2050,7 +2030,7 @@ static uint32_t lr20xx_cad_timeout_ms(struct lr20xx_data *data)
 	 * defaults to 4, which would have under-budgeted the wait if
 	 * buildModemConfig() ever stopped setting symbol_num explicitly. */
 	uint8_t symb_nb = lr20xx_cad_symb_nb(mc);
-	uint32_t bw_hz = (uint32_t)(bw_enum_to_khz(mc->bandwidth) * 1000.0f);
+	uint32_t bw_hz = lr20xx_bw_hz(mc->bandwidth);
 
 	if (bw_hz == 0 || sf < 5 || sf > 12) {
 		return 200;
@@ -2433,7 +2413,7 @@ static int lr20xx_lora_recv(const struct device *dev, uint8_t *buf,
  * the old 1 ms. */
 static uint32_t lr20xx_rssi_settle_us(struct lr20xx_data *data)
 {
-	uint32_t bw_khz = (uint32_t)bw_enum_to_khz(data->modem_cfg.bandwidth);
+	uint32_t bw_khz = lr20xx_bw_hz(data->modem_cfg.bandwidth) / 1000U;
 	uint32_t settle;
 
 	if (bw_khz == 0) {
@@ -2510,7 +2490,7 @@ static uint32_t lr20xx_preamble_grace_ms(struct lr20xx_data *data)
 {
 	return zc_lora_preamble_grace_ms(
 		(uint8_t)data->modem_cfg.datarate,
-		(uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f),
+		lr20xx_bw_hz(data->modem_cfg.bandwidth),
 		data->modem_cfg.preamble_len);
 }
 
@@ -2523,7 +2503,7 @@ static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data)
 {
 	return zc_lora_max_payload_ms(
 		(uint8_t)data->modem_cfg.datarate,
-		(uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f));
+		lr20xx_bw_hz(data->modem_cfg.bandwidth));
 }
 
 int lr20xx_get_rssi_burst(const struct device *dev, int16_t *out, int n,

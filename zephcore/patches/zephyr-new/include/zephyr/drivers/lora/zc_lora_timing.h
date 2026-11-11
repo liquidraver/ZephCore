@@ -9,11 +9,49 @@
 #ifndef ZEPHYR_INCLUDE_DRIVERS_LORA_ZC_LORA_TIMING_H_
 #define ZEPHYR_INCLUDE_DRIVERS_LORA_ZC_LORA_TIMING_H_
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
 #endif
+
+/* True LoRa bandwidth in Hz for a bandwidth named in whole kHz, which is the
+ * value of Zephyr's enum lora_signal_bandwidth (7, 10, 15 ... 1000). The
+ * narrow ones are 500 kHz / 2^n and 125 kHz / (3 * 2^n), to the nearest Hz;
+ * the datasheets print them rounded to 10 Hz. 0 = not a LoRa bandwidth. */
+static inline uint32_t zc_lora_bw_hz(uint16_t bw_khz)
+{
+	switch (bw_khz) {
+	case 7:    return 7812;
+	case 10:   return 10417;
+	case 15:   return 15625;
+	case 20:   return 20833;
+	case 31:   return 31250;
+	case 41:   return 41667;
+	case 62:   return 62500;
+	case 125:  return 125000;
+	case 250:  return 250000;
+	case 500:  return 500000;
+	case 200:  return 203000;
+	case 400:  return 406000;
+	case 800:  return 812000;
+	case 1000: return 1000000;
+	default:   return 0;
+	}
+}
+
+/* Low data rate optimisation: on when a symbol lasts longer than 16.38 ms
+ * (SX1261/2 DS 6.1.1.4). The header does not carry it, so every radio family
+ * takes the decision here, from the bandwidths above. Unconfigured (bw_hz == 0
+ * or an SF above 12) yields off. */
+static inline bool zc_lora_ldro(uint8_t sf, uint32_t bw_hz)
+{
+	if (bw_hz == 0 || sf > 12) {
+		return false;
+	}
+	return (((uint64_t)1U << sf) * 1000000ULL) / bw_hz > 16380U;
+}
 
 /* Preamble grace for the RX-busy gate: (preamble + 8) symbols, rounded up to a
  * whole ms. Enough for a real packet's header to land after PREAMBLE_DETECTED;

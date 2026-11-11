@@ -243,6 +243,16 @@
       "source": "tests/unit/lora_timing_tests.cpp"
     },
     {
+      "id": "UNIT-LORATIME-005",
+      "name": "LDRO follows the true symbol time on every SF and bandwidth",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-006",
+      "name": "Only LoRa bandwidths pass the radio bandwidth check",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
       "id": "UNIT-NOISE-001",
       "name": "Noise floor seeds from the first sample within the clamp window",
       "source": "tests/unit/radio_tests.cpp"

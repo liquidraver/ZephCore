@@ -644,8 +644,8 @@ void KissModem::handleSetRadio(const uint8_t* data, uint16_t len) {
     memcpy(&freq_hz, data, 4);
     memcpy(&bw_hz, data + 4, 4);
     float mhz = freq_hz / 1000000.0f, khz = bw_hz / 1000.0f;
-    if (mhz < ZC_RADIO_FREQ_MIN_MHZ || mhz > ZC_RADIO_FREQ_MAX_MHZ || khz < ZC_RADIO_BW_MIN_KHZ ||
-        khz > ZC_RADIO_BW_MAX_KHZ || data[8] < 5 || data[8] > 12 || data[9] < 5 || data[9] > 8) {
+    if (mhz < ZC_RADIO_FREQ_MIN_MHZ || mhz > ZC_RADIO_FREQ_MAX_MHZ || !zcRadioBwValid(khz) ||
+        data[8] < 5 || data[8] > 12 || data[9] < 5 || data[9] > 8) {
       writeHardwareError(HW_ERR_INVALID_PARAM);
       return;
     }
