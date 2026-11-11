@@ -931,6 +931,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 ### 7.5 Board (`adapters/board/`)
 
 - Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled). A board with a fuel gauge (AXP2101) reads voltage and charge from it instead; one with an nPM1300 charger (XIAO nRF54LM20A) reads the voltage from the PMIC's own ADC through the sensor API and takes the percentage from the discharge curve
+- Board hardware with no Zephyr driver is set up by an optional `boards/<platform>/<board>/board_init.c` (compiled in when present, registers itself with `SYS_INIT`). The T-Impulse Plus uses it for its SGM41562 charger on I2C1: charging on, watchdog off at boot, re-asserted every 20 s and reapplied if the chip reset (LLD 10 §22)
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan

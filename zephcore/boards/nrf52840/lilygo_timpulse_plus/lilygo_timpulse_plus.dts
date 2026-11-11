@@ -14,8 +14,8 @@
  * - SSD1315 128x64 mono OLED on I2C0 @ 0x3C (SSD1306-compatible, no reset pin)
  * - u-blox MIA-M10Q GPS on UART0 @ 38400 baud, power enable P1.10
  * - ZD25WQ32C 32Mbit (4MB) QSPI flash -> /ext LittleFS
- * - ICM-20948 IMU (0x69) + SGM41562 charger (0x03) on a second I2C bus —
- *   present but NOT used by ZephCore, so that bus is left disabled
+ * - ICM-20948 IMU (0x69) + SGM41562 charger (0x03) on I2C1 (P1.08/P0.11);
+ *   the charger is programmed at boot by board_init.c, the IMU is unused
  * - Battery ADC on AIN3 (P0.05), divider gated by P0.25 (drive HIGH to read)
  * - TTP223 capacitive touch button (P1.04, active-HIGH)
  * - Haptic vibration motor (P0.22) exposed as the buzzer/notification output
@@ -286,6 +286,20 @@
 		com-invdir;
 		prechargep = <0x22>;
 	};
+};
+
+/* ---- I2C1: SGM41562 charger (0x03) ----
+ * The charger powers up with charging disabled and must be programmed over
+ * I2C; board_init.c in this directory does that at boot and keeps its
+ * watchdog quiet. The ICM-20948 IMU (0x69) also sits here, unused.
+ * (devdocs/lld/10-peripherals-power.md, "T-Impulse Plus charger") */
+charger_i2c: &i2c1 {
+	compatible = "nordic,nrf-twim";
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c1_default>;
+	pinctrl-1 = <&i2c1_sleep>;
+	pinctrl-names = "default", "sleep";
 };
 
 /* ---- SPI2 for LoRa SX1262 ---- */

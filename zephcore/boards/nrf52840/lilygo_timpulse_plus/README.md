@@ -35,8 +35,8 @@ Bootloader is Adafruit UF2 / SoftDevice **s140 v6.1.1**, app @ `0x26000`
 | Display         | SSD1315 64x32 OLED | I2C0 @ 0x3C (64x32 glass at RAM col 32/row 32) |
 | GNSS            | u-blox MIA-M10Q    | UART0 @ 38400, enable P1.10                    |
 | Ext flash       | ZD25WQ32C 32 Mbit  | QSPI -> `/ext` LittleFS (contacts/channels)   |
-| IMU             | ICM-20948          | 2nd I2C bus @ 0x69 — present, not used         |
-| Charger         | SGM41562           | 2nd I2C bus @ 0x03 — present, not used         |
+| IMU             | ICM-20948          | I2C1 @ 0x69 — present, not used                |
+| Charger         | SGM41562           | I2C1 @ 0x03 — set up at boot (`board_init.c`)  |
 | Battery         | ADC AIN3 (P0.05)   | divider enable P0.25 (HIGH to read)           |
 | Input           | TTP223 touch       | P1.04, active-HIGH                             |
 | Haptic          | vibration motor    | P0.22 (PWM0) — exposed as the buzzer output   |
@@ -67,9 +67,12 @@ Bootloader is Adafruit UF2 / SoftDevice **s140 v6.1.1**, app @ `0x26000`
 - **Single-button UI** (like T-Echo): short tap = next page, double tap =
   previous page, long press (>=1 s) = ENTER. Confirmation needs two ENTERs, so
   `UI_CONFIRM_WINDOW_MS` is widened to 3 s.
-- **The ICM-20948 IMU and SGM41562 charger** sit on a second I2C bus
-  (SDA P1.08 / SCL P0.11) that ZephCore does not use — that bus is left
-  disabled. Battery state comes from the ADC, not the charger IC.
+- **The SGM41562 charger must be programmed or the battery never charges.**
+  It powers up with charging off and, on USB, a watchdog that power-cycles the
+  board every ~160 s. `board_init.c` enables I2C1 (SDA P1.08 / SCL P0.11),
+  writes LilyGo's charger setup at boot and touches the chip every 20 s (see
+  `devdocs/lld/10-peripherals-power.md` §22). Battery state still comes from
+  the ADC. The ICM-20948 IMU on the same bus is unused.
 
 ## To verify on real hardware
 
@@ -112,6 +115,7 @@ The panel is a **64x32** glass mapped into the SSD1315's 128x64 RAM at column
    their own compact branch. 128x64 boards are unaffected. Pixel positioning
    was written from the datasheet, not a bench — expect to nudge it on hardware.
 
-Separately, early hardware testing showed **occasional spontaneous reboots** —
-untriaged, likely power/brownout on TX or a fault loop; capture an RTT/USB
-console log from a debug build to get a backtrace.
+Separately, early hardware testing showed **occasional spontaneous reboots**.
+On USB these match the unprogrammed charger's watchdog power-cycling the board
+(fixed by `board_init.c`, 2026-11-11, not yet confirmed on hardware). If
+reboots continue on battery, capture an RTT/USB console log from a debug build.

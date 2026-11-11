@@ -108,6 +108,17 @@ counted as a false alarm, which nudged the node toward ignoring real traffic. No
 whether a packet start (preamble) or header showed up after the test; if so it counts as real
 traffic. `get cad.stats` shows these as a new `u` column next to `t`.
 
+## LilyGo T-Impulse Plus charges its battery
+
+The T-Impulse Plus has a charger chip that starts with charging switched off and has to be set up
+by the firmware. ZephCore never did, so the battery only charged after LilyGo's own firmware had
+run, and stopped again once the battery ran flat. On USB the chip also restarted the whole
+wristband every few minutes, which showed up as dropped Bluetooth connections.
+
+- **The charger is now set up at every start**, the way LilyGo's firmware does it, so the battery
+  charges on USB without flashing anything else first.
+- **The restarts on USB stop.** ZephCore keeps the charger's watchdog switched off.
+
 ## Other changes
 
 - **KISS modem: the encrypt command no longer overwrites memory.** A host that sent the

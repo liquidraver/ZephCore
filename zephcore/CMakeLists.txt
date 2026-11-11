@@ -464,6 +464,15 @@ if(_BOARD_SD_QUIESCE)
   target_sources(app PRIVATE "${_BOARD_SD_QUIESCE}")
 endif()
 
+# Optional per-board board_init.c — boot-time setup of board hardware that has
+# no Zephyr driver (e.g. the T-Impulse Plus charger). Registers itself with
+# SYS_INIT, so it is simply compiled in when the board provides one.
+zephcore_board_file(_BOARD_INIT board_init.c)
+if(_BOARD_INIT)
+  message(STATUS "ZephCore board init: ${_BOARD_INIT}")
+  target_sources(app PRIVATE "${_BOARD_INIT}")
+endif()
+
 # ESP32 pre-RF entropy source (bootloader_random).
 #
 # The ESP32 hardware TRNG (WDEV_RANDOM) is a PRNG that only receives real
