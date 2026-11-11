@@ -34,7 +34,6 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.cad_base_peak = sx126x_cad_base_peak,
 	.cad_peak_min = sx126x_cad_peak_min,
 	.cad_peak_max = sx126x_cad_peak_max,
-	.post_begin = nullptr,
 	.side_detectors = nullptr,
 	.reset_stats = nullptr,
 	.format_freq_error = nullptr,

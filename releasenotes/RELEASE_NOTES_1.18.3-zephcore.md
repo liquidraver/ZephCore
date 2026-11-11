@@ -123,8 +123,7 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 
 - **Heltec receive workaround stays enabled.** Boards using the Heltec `0x08B5` workaround now apply it while
   the radio is awake during configuration and retain it across warm sleep, including the AGC reset path.
-  Previously it was written after receive started and was missing from the sleep retention list. This fixes
-  the register setting; it does not establish the cause of every weak or intermittent radio link.
+  Previously it was written after receive started and was lost at the radio's first sleep.
 - **KISS modem: the encrypt command no longer overwrites memory.** A host that sent the
   `EncryptData` command with a plaintext longer than 192 bytes wrote past a buffer in the modem's
   memory. Plaintexts over 184 bytes, the most a packet can carry, are now refused with

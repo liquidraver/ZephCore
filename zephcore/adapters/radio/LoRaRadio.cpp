@@ -537,10 +537,6 @@ void LoRaRadio::begin()
 
 	LOG_INF("radio started: freq=%u bw=%u sf=%u cr=%u pwr=%d",
 		freq, bw_khz, sf, cr, tx_pwr);
-
-	if (_ops.post_begin) {
-		_ops.post_begin(_dev);
-	}
 }
 
 void LoRaRadio::reconfigure()

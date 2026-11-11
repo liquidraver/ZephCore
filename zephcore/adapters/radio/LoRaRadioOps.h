@@ -55,7 +55,6 @@ struct LoRaRadioOps {
 	uint8_t (*cad_peak_max)(void);
 
 	/* Family extras. */
-	void (*post_begin)(const struct device *dev);
 	int (*side_detectors)(const struct device *dev, const uint8_t *sfs,
 			      uint8_t num);
 	void (*reset_stats)(const struct device *dev);
