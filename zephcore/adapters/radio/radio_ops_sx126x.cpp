@@ -9,20 +9,7 @@ extern "C" {
 #include <zephyr/drivers/lora/sx126x_ext.h>
 }
 
-#include <zephyr/logging/log.h>
-LOG_MODULE_REGISTER(sx126x_radio, CONFIG_ZEPHCORE_LORA_LOG_LEVEL);
-
 namespace mesh {
-
-#if IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)
-/* Undocumented register 0x8B5 RX improvement (MeshCore PR#1398), applied once
- * the first lora_config() has run. */
-static void sx126x_post_begin(const struct device *dev)
-{
-	sx126x_apply_heltec_reg_patch(dev);
-	LOG_INF("Applied Heltec reg 0x8B5 RX patch");
-}
-#endif
 
 /* The one family with the jammed-AGC fault, so reset_agc is set (the remedy
  * re-issues CalibrateImage itself); drift recalibration is not specified by
@@ -47,11 +34,7 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.cad_base_peak = sx126x_cad_base_peak,
 	.cad_peak_min = sx126x_cad_peak_min,
 	.cad_peak_max = sx126x_cad_peak_max,
-#if IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)
-	.post_begin = sx126x_post_begin,
-#else
 	.post_begin = nullptr,
-#endif
 	.side_detectors = nullptr,
 	.reset_stats = nullptr,
 	.format_freq_error = nullptr,

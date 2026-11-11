@@ -109,6 +109,12 @@ Golden byte vectors are authored independently of the serializer. Generated roun
 trips supplement them. Native little-endian wire expectations match the current
 supported MCU targets; this suite does not establish big-endian compatibility.
 
+The SX126x Heltec cases compile the actual added helper definitions extracted from
+patch 0003, with fake SPI, retention-list and warm-sleep boundaries. They cover the
+workaround bit, error propagation, retention, calibration-style reapplication and
+capability off. They do not execute the complete driver or establish hardware timing,
+AGC-trigger behavior or Zephyr concurrency.
+
 Not yet covered: Mesh/application roles, PSA AES/HMAC/SHA-256, the remaining identity
 entry points described above, filesystem,
 Zephyr kernel behavior, driver/hardware behavior, coverage percentages, exhaustive

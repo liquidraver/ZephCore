@@ -449,6 +449,13 @@ In explicit-header mode the chip checks the payload CRC only when the received h
 
 One register or command read per received LoRa frame. GFSK and a CRC-off configuration are unchanged. Evidence and limits: `devdocs/lld/03-radio-contract.md` §15.
 
+### 5.2.4 Heltec SX126x receive workaround
+
+With `CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH`, the driver sets register `0x08B5` bit 0 while awake under its
+configuration lock, before configuration ends in warm sleep. The register joins RX gain and TX modulation in
+the retention list and is reapplied after AGC recalibration. There is no post-RX adapter write. Configuration
+and initialization propagate SPI/retention errors; the void AGC path logs them and completes its normal cleanup.
+
 ### 5.3 Noise Floor EMA
 
 Algorithm in `triggerNoiseFloorCalibrate()`:
