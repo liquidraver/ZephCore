@@ -378,6 +378,17 @@ static void color_flush_ops(void)
 /* Auto-off work */
 static struct k_work_delayable auto_off_work;
 
+/* E-paper off: the controller goes to deep sleep (the image stays); the
+ * driver wakes it on the next draw. LLD 11. */
+static void epd_sleep(void)
+{
+#if ZEPHCORE_DISPLAY_HAS_SSD16XX
+	if (is_epd) {
+		ssd16xx_deep_sleep(disp_dev);
+	}
+#endif
+}
+
 static void auto_off_handler(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -392,6 +403,7 @@ static void auto_off_handler(struct k_work *work)
 	if (is_epd) {
 		backlight_set(false);
 		disp_set_on(false);
+		epd_sleep();
 		return;
 	}
 	if (disp_on) {
@@ -873,6 +885,9 @@ void mc_display_finalize(void)
 		cfb_framebuffer_finalize(disp_dev);
 		epd_partial_count = 0;
 		epd_last_frame_hash = epd_frame_hash;
+		if (!disp_on) {
+			epd_sleep();
+		}
 		return;
 	}
 
@@ -881,6 +896,10 @@ void mc_display_finalize(void)
 
 	if (is_epd) {
 		epd_last_frame_hash = epd_frame_hash;
+		/* Drawn while off (e.g. a clock tick): back to sleep. */
+		if (!disp_on) {
+			epd_sleep();
+		}
 	}
 }
 

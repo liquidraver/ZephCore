@@ -1,8 +1,125 @@
 diff --git a/drivers/display/ssd16xx.c b/drivers/display/ssd16xx.c
-index 0b9a3559dd5..e7f52c19ec3 100644
+index fe3dad88f45..b03338bd3c6 100644
 --- a/drivers/display/ssd16xx.c
 +++ b/drivers/display/ssd16xx.c
-@@ -672,6 +672,27 @@ static int ssd16xx_clear_cntlr_mem(const struct device *dev, uint8_t ram_cmd)
+@@ -78,6 +78,7 @@ struct ssd16xx_data {
+ 	bool blanking_on;
+ 	enum ssd16xx_profile_type profile;
+ 	enum display_orientation orientation;
++	bool deep_sleep;
+ };
+ 
+ struct ssd16xx_dt_array {
+@@ -286,10 +287,64 @@ static int ssd16xx_update_display(const struct device *dev)
+ 	return ssd16xx_activate(dev, update_cmd);
+ }
+ 
++/*
++ * Leave deep sleep (ssd16xx_deep_sleep()): only a hardware reset wakes the
++ * controller, and the reset clears its registers but not its RAM, so the
++ * active profile is loaded again and partial refresh carries on.
++ */
++static int ssd16xx_wake(const struct device *dev)
++{
++	const struct ssd16xx_config *config = dev->config;
++	struct ssd16xx_data *data = dev->data;
++	enum ssd16xx_profile_type profile = data->profile;
++	int err;
++
++	if (!data->deep_sleep) {
++		return 0;
++	}
++
++	err = mipi_dbi_reset(config->mipi_dev, SSD16XX_RESET_DELAY);
++	if (err < 0) {
++		return err;
++	}
++
++	k_msleep(SSD16XX_RESET_DELAY);
++	data->deep_sleep = false;
++	data->profile = SSD16XX_PROFILE_INVALID;
++
++	return ssd16xx_set_profile(dev, profile < SSD16XX_NUM_PROFILES ?
++				   profile : SSD16XX_PROFILE_FULL);
++}
++
++int ssd16xx_deep_sleep(const struct device *dev)
++{
++	struct ssd16xx_data *data = dev->data;
++	int err;
++
++	if (data->deep_sleep) {
++		return 0;
++	}
++
++	/* Waits for a running refresh to end first. */
++	err = ssd16xx_write_uint8(dev, SSD16XX_CMD_SLEEP_MODE,
++				  SSD16XX_SLEEP_MODE_DSM);
++	if (err < 0) {
++		return err;
++	}
++
++	data->deep_sleep = true;
++
++	return 0;
++}
++
+ static int ssd16xx_blanking_off(const struct device *dev)
+ {
+ 	struct ssd16xx_data *data = dev->data;
+ 
++	if (ssd16xx_wake(dev) < 0) {
++		return -EIO;
++	}
++
+ 	if (data->blanking_on) {
+ 		data->blanking_on = false;
+ 		return ssd16xx_update_display(dev);
+@@ -302,6 +357,10 @@ static int ssd16xx_blanking_on(const struct device *dev)
+ {
+ 	struct ssd16xx_data *data = dev->data;
+ 
++	if (ssd16xx_wake(dev) < 0) {
++		return -EIO;
++	}
++
+ 	if (!data->blanking_on) {
+ 		if (ssd16xx_set_profile(dev, SSD16XX_PROFILE_FULL)) {
+ 			return -EIO;
+@@ -441,6 +500,10 @@ static int ssd16xx_write(const struct device *dev, const uint16_t x,
+ 		return -EINVAL;
+ 	}
+ 
++	if (ssd16xx_wake(dev) < 0) {
++		return -EIO;
++	}
++
+ 	if (partial_refresh) {
+ 		/*
+ 		 * Request the partial profile. This operation becomes
+@@ -539,6 +602,10 @@ int ssd16xx_read_ram(const struct device *dev, enum ssd16xx_ram ram_type,
+ 		return -EINVAL;
+ 	}
+ 
++	if (ssd16xx_wake(dev) < 0) {
++		return -EIO;
++	}
++
+ 	err = ssd16xx_set_window(dev, x, y, desc);
+ 	if (err < 0) {
+ 		return err;
+@@ -605,6 +672,10 @@ static int ssd16xx_set_orientation(const struct device *dev,
+ 	struct ssd16xx_data *data = dev->data;
+ 	int err;
+ 
++	if (ssd16xx_wake(dev) < 0) {
++		return -EIO;
++	}
++
+ 	if (orientation == DISPLAY_ORIENTATION_NORMAL) {
+ 		data->scan_mode = SSD16XX_DATA_ENTRY_XDYIY;
+ 	} else if (orientation == DISPLAY_ORIENTATION_ROTATED_90) {
+@@ -686,6 +757,32 @@ static int ssd16xx_clear_cntlr_mem(const struct device *dev, uint8_t ram_cmd)
  	return 0;
  }
  
@@ -18,8 +135,13 @@ index 0b9a3559dd5..e7f52c19ec3 100644
 +	 * post-boot first partial.  Leaves entry mode at XIYDY; the following
 +	 * set_profile()/set_window() restore it.
 +	 */
-+	int err = ssd16xx_clear_cntlr_mem(dev, SSD16XX_CMD_WRITE_RAM);
++	int err = ssd16xx_wake(dev);
 +
++	if (err < 0) {
++		return err;
++	}
++
++	err = ssd16xx_clear_cntlr_mem(dev, SSD16XX_CMD_WRITE_RAM);
 +	if (err < 0) {
 +		return err;
 +	}
@@ -30,11 +152,19 @@ index 0b9a3559dd5..e7f52c19ec3 100644
  static inline int ssd16xx_load_ws_from_otp_tssv(const struct device *dev)
  {
  	const struct ssd16xx_config *config = dev->config;
+@@ -896,6 +993,7 @@ static int ssd16xx_controller_init(const struct device *dev)
+ 	LOG_DBG("");
+ 
+ 	data->blanking_on = false;
++	data->deep_sleep = false;
+ 	data->profile = SSD16XX_PROFILE_INVALID;
+ 
+ 	err = mipi_dbi_reset(config->mipi_dev, SSD16XX_RESET_DELAY);
 diff --git a/include/zephyr/display/ssd16xx.h b/include/zephyr/display/ssd16xx.h
-index 53eb05b07ca..7e6690f82e8 100644
+index 53eb05b07ca..6b98e63f1d5 100644
 --- a/include/zephyr/display/ssd16xx.h
 +++ b/include/zephyr/display/ssd16xx.h
-@@ -58,6 +58,23 @@ int ssd16xx_read_ram(const struct device *dev, enum ssd16xx_ram ram_type,
+@@ -58,6 +58,37 @@ int ssd16xx_read_ram(const struct device *dev, enum ssd16xx_ram ram_type,
  		     const struct display_buffer_descriptor *desc,
  		     void *buf);
  
@@ -54,6 +184,20 @@ index 53eb05b07ca..7e6690f82e8 100644
 + * @return 0 on success, negative errno on failure.
 + */
 +int ssd16xx_fill_ram_white(const struct device *dev);
++
++/**
++ * @brief Put the controller in deep sleep mode 1.
++ *
++ * Waits for a running refresh to end, then sends Deep Sleep Mode 1: the panel
++ * keeps its image and the controller its RAM. The next display API call wakes
++ * the controller with a hardware reset and reloads the active profile, so it
++ * needs the MIPI DBI reset line.
++ *
++ * @param dev Pointer to device structure
++ *
++ * @return 0 on success, negative errno on failure.
++ */
++int ssd16xx_deep_sleep(const struct device *dev);
 +
  /** @} */
  
