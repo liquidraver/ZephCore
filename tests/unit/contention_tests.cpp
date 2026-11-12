@@ -57,3 +57,17 @@ TEST(contention_decay, "UNIT-CONTENTION-004", "Warmup eviction and decay indepen
     for (unsigned i = 0; i < 25; ++i) e.trackRetransmit(i, 100);
     CHECK(e.extractDupeCount(0) == -1 && e.extractDupeCount(1) == 0);
 }
+TEST(contention_rest, "UNIT-CONTENTION-005", "Stale decay reaches zero and the tracker goes idle") {
+    ContentionTracker c; c.trackRetransmit(1, 100);
+    for (int i = 0; i < 6; ++i) c.recordDupeIfTracked(1, 101);
+    CHECK(c.extractDupeCount(1) == 6);
+    uint32_t now = 300101; int ticks = 0;
+    for (; ticks < 1000; ++ticks) {
+        c.tick(now);
+        uint32_t next = c.msUntilNextTick(now);
+        if (next == MAINTENANCE_IDLE) break;
+        now += next ? next : 1;
+    }
+    CHECK(ticks < 200 && c.getContentionEstimate() == 0.0f);
+    CHECK(c.msUntilNextTick(now + 3600000u) == MAINTENANCE_IDLE);
+}

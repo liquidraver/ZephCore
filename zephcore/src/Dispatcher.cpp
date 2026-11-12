@@ -33,9 +33,11 @@ Dispatcher::Dispatcher(Radio& radio, MillisecondClock& ms, PacketManager& mgr)
   lbt_next_warn = 0;
   lbt_streak_max = 0;
   lbt_refusals = 0;
+  tx_hold = false;
   wait_rx_end = false;
   rx_end_seq_seen = 0;
   tx_budget_ms = 0;
+  tx_budget_frac = 0;
   last_budget_update = 0;
   duty_cycle_window_ms = 0;
   _err_flags = 0;
@@ -60,6 +62,7 @@ void Dispatcher::begin() {
 
   duty_cycle_window_ms = getDutyCycleWindowMs();
   tx_budget_ms = getMaxTxBudgetMs();
+  tx_budget_frac = 0;
   last_budget_update = now;
   next_tx_time = now;
 
@@ -92,14 +95,21 @@ void Dispatcher::updateTxBudget() {
     return;
   }
 
-  uint32_t refill = (elapsed * (uint32_t)duty_pct) / 100U;
-  if (refill > 0) {
-    uint32_t max_budget = getMaxTxBudgetMs();
-    tx_budget_ms += refill;
-    if (tx_budget_ms > max_budget) {
-      tx_budget_ms = max_budget;
-    }
-    last_budget_update = now;
+  last_budget_update = now;
+  uint32_t max_budget = getMaxTxBudgetMs();
+  if (elapsed >= duty_cycle_window_ms) {  // a whole window refills everything
+    tx_budget_ms = max_budget;
+    tx_budget_frac = 0;
+    return;
+  }
+
+  // Hundredths of a ms: the division's remainder carries to the next call.
+  uint64_t credit = (uint64_t)elapsed * duty_pct + tx_budget_frac;
+  tx_budget_ms += (uint32_t)(credit / 100U);
+  tx_budget_frac = (uint8_t)(credit % 100U);
+  if (tx_budget_ms >= max_budget) {
+    tx_budget_ms = max_budget;
+    tx_budget_frac = 0;
   }
 }
 
@@ -366,7 +376,7 @@ void Dispatcher::onLbtRefused(uint32_t now, int len, uint32_t rx_seq) {
   LOG_INF("checkSend: startSendRaw refused (LBT busy), re-queuing delay=%u", retry);
   noteTxAttempt(outbound, NULL, retry);  // before the count moves: ref = refusals before this one
   if (lbt_refusals < 255) lbt_refusals++;  // ref= on the LBT lines
-  next_tx_time = now + retry;  // nothing else goes out before the retry either
+  holdTxUntil(now + retry);  // nothing else goes out before the retry either
   waitForRxEnd(rx_seq);        // a busy CAD is usually a packet we are about to receive
 
   if (lbt_busy_start == 0) {
@@ -460,6 +470,10 @@ void Dispatcher::noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t 
 
 void Dispatcher::checkSend() {
   uint32_t now = (uint32_t)_ms->getMillis();
+  // ZEPHCORE: a hold ends when its time is reached, on any pass, so the stamp
+  // never ages into the wrong half of the 32-bit clock (LLD 02 §22).
+  if (tx_hold && (int32_t)(next_tx_time - now) <= 0) tx_hold = false;
+
   if (_mgr->getOutboundCount(now) == 0) {
     cad_busy_start = 0;
     // ZEPHCORE: only a genuinely EMPTY queue ends an LBT streak — a refusal
@@ -488,7 +502,7 @@ void Dispatcher::checkSend() {
     // From the reception's actual end: the mesh thread may have spent tens of
     // ms processing that packet first. A stale or missing stamp means now.
     uint32_t lag = msSinceRxEnd(now);
-    next_tx_time = now - lag + retry;
+    holdTxUntil(now - lag + retry);
 #ifdef CONFIG_ZEPHCORE_LBT_LOGGING
     char what[24];
     snprintf(what, sizeof(what), "rx-end lag=%u", (unsigned)lag);
@@ -501,10 +515,11 @@ void Dispatcher::checkSend() {
   // ZEPHCORE: a busy deferral holds every transmit until next_tx_time, even once
   // the channel clears (as upstream): otherwise every node that waited out the
   // same packet sends at the instant it ends. Reached exactly = may send.
-  if ((int32_t)(next_tx_time - now) > 0) {
+  if (tx_hold && (int32_t)(next_tx_time - now) > 0) {
     notifyTxQueued(next_tx_time - now + 1);
     return;
   }
+  tx_hold = false;
 
   // ZEPHCORE: also defer while the radio is not command-ready.
   bool is_receiving = _radio->isReceiving();
@@ -527,7 +542,7 @@ void Dispatcher::checkSend() {
       noteTxAttempt(NULL, "recover", 0);
     } else {
       uint32_t retry = getCADFailRetryDelay();  // fallback if no reception ends
-      next_tx_time = futureMillis(retry);
+      holdTxUntil(futureMillis(retry));
       waitForRxEnd(rx_seq);
       noteTxAttempt(NULL, is_receiving ? "hold-rx" : "hold-ready", retry);
       notifyTxQueued(retry + 1);  // ZEPHCORE: schedule the wake
@@ -568,7 +583,7 @@ void Dispatcher::checkSend() {
         noteTxAttempt(outbound, "final", retry);
         _mgr->queueOutbound(outbound, outbound_priority, futureMillis(0));  // held by next_tx_time
         outbound = NULL;
-        next_tx_time = now + retry;
+        holdTxUntil(now + retry);
         waitForRxEnd(rx_seq);
         notifyTxQueued(retry);
         return;

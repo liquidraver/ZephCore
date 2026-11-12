@@ -131,7 +131,10 @@ void ContentionTracker::tick(uint32_t now_ms)
 			    _ema_x256 == 0) {
 				break;
 			}
-			_ema_x256 -= _ema_x256 >> EMA_SHIFT;
+			/* At least 1, or the value sticks below 8 and never rests. */
+			uint32_t step = _ema_x256 >> EMA_SHIFT;
+
+			_ema_x256 -= step ? step : 1;
 			_last_decay_ms += DECAY_PERIOD_MS;
 		}
 	} else {

@@ -78,6 +78,11 @@
       "source": "tests/unit/contention_tests.cpp"
     },
     {
+      "id": "UNIT-CONTENTION-005",
+      "name": "Stale decay reaches zero and the tracker goes idle",
+      "source": "tests/unit/contention_tests.cpp"
+    },
+    {
       "id": "UNIT-DISPATCH-001",
       "name": "Immediate wake delayed dispatch and exactly-once completion",
       "source": "tests/unit/dispatcher_tests.cpp"
@@ -193,6 +198,16 @@
       "source": "tests/unit/dispatcher_tests.cpp"
     },
     {
+      "id": "UNIT-DISPATCH-024",
+      "name": "A transmit hold ends at its time and does not return half a clock wrap later",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
+      "id": "UNIT-DISPATCH-025",
+      "name": "Budget refill survives a long silence and keeps the division remainder",
+      "source": "tests/unit/dispatcher_tests.cpp"
+    },
+    {
       "id": "UNIT-LBT-001",
       "name": "LBT backoff delays fill whole slots of a fixed window",
       "source": "tests/unit/dispatcher_tests.cpp"
@@ -250,6 +265,11 @@
     {
       "id": "UNIT-LORATIME-006",
       "name": "Only LoRa bandwidths pass the radio bandwidth check",
+      "source": "tests/unit/lora_timing_tests.cpp"
+    },
+    {
+      "id": "UNIT-LORATIME-007",
+      "name": "Duty-cycle percent from the airtime factor is never 0",
       "source": "tests/unit/lora_timing_tests.cpp"
     },
     {
@@ -505,6 +525,11 @@
     {
       "id": "UNIT-CHAT-002",
       "name": "sendGroupMessage refuses a negative text length",
+      "source": "tests/unit/chat_contacts_tests.cpp"
+    },
+    {
+      "id": "UNIT-CHAT-003",
+      "name": "A TRACE ending in a partial hash entry is not forwarded",
       "source": "tests/unit/chat_contacts_tests.cpp"
     },
     {

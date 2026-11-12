@@ -254,6 +254,17 @@ static inline T sanePrefFloat(T v, T lo, T hi, T fallback) {
 	return v;
 }
 
+/* Largest airtime factor a setter or the loader accepts (10 % duty cycle). */
+#define ZC_AIRTIME_FACTOR_MAX 9.0f
+
+/* Duty cycle in whole percent for an airtime factor: 100 / (af + 1), rounded
+ * to nearest and never under 1, since 0 means "no limit" to the Dispatcher. */
+static inline uint8_t zcDutyCyclePercent(float af) {
+	float pct = 100.0f / (af + 1.0f) + 0.5f;
+	if (!(pct >= 1.0f)) return 1;
+	return pct >= 100.0f ? (uint8_t)100 : (uint8_t)pct;
+}
+
 /* A byte that is neither 0 nor 1 carries no user intent — take the default
  * rather than clamping, which would round every garbage value up to "on". */
 template <typename T>
@@ -315,7 +326,7 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->wifi_pwd[sizeof(p->wifi_pwd) - 1] = '\0';
 	p->wifi_enabled = saneBool(p->wifi_enabled, (uint8_t)1);
 
-	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, 9.0f, 9.0f);
+	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, ZC_AIRTIME_FACTOR_MAX, ZC_AIRTIME_FACTOR_MAX);
 	p->rx_delay_base  = sanePrefFloat(p->rx_delay_base, 0.0f, 3600.0f, 0.0f);
 	p->adc_multiplier = sanePrefFloat(p->adc_multiplier, 0.0f, 30000.0f, 0.0f);
 	p->offgrid_home_freq = sanePrefFloat(p->offgrid_home_freq, ZC_RADIO_FREQ_MIN_MHZ,

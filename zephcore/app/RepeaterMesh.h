@@ -161,7 +161,7 @@ protected:
   // ZEPHCORE: our Dispatcher asks for a duty-cycle percentage.
   uint8_t getDutyCyclePercent() const override {
     // Arduino formula: duty% = 100 / (af + 1). af=0 -> 100%, af=9 -> 10%.
-    return (uint8_t)(100.0f / (_prefs.airtime_factor + 1.0f) + 0.5f);
+    return zcDutyCyclePercent(_prefs.airtime_factor);
   }
 
   bool allowPacketForward(const mesh::Packet* packet) override;

@@ -267,12 +267,12 @@ loop():
             latch + grace timestamp) and try the transmit, which still has to
             pass the final gate and the driver's LBT CAD: a CAD busy is never
             transmitted over.
-     - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
+     - Duty cycle: if the budget is short, wake when it has refilled (admin packets exempt)
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
 ```
 
-**Duty Cycle**: Fixed 1-hour sliding window. Default 10%. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt.
+**Duty Cycle**: a budget of transmit time that holds at most one hour's allowance and refills at the duty percentage (exactly, at any loop rate). Default 10%; `zcDutyCyclePercent()` turns the airtime factor (0-9, every setter and the loader) into a whole percent, never 0. A transmit needs half a maximum packet's airtime in the budget. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt. A busy deferral holds every transmit until its retry time (`tx_hold`); the hold ends when that time is reached.
 
 ### 4.6 Maintenance Loop
 

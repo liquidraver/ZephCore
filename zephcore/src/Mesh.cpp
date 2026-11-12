@@ -89,6 +89,8 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       uint16_t offset = (uint16_t)pkt->path_len << path_sz;
       if (offset >= len) {   // TRACE has reached end of given path
         onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
+      } else if (offset + (1 << path_sz) > len) {
+        // ZEPHCORE: the next hash entry must be whole
       } else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->wasSeen(pkt)) {
         _tables->markSeen(pkt);
         // append SNR (Not hash!)

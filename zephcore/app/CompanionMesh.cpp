@@ -1555,7 +1555,7 @@ uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
 uint8_t CompanionMesh::getDutyCyclePercent() const
 {
 	/* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
-	return (uint8_t)(100.0f / (prefs.airtime_factor + 1.0f) + 0.5f);
+	return zcDutyCyclePercent(prefs.airtime_factor);
 }
 
 uint8_t CompanionMesh::getExtraAckTransmitCount() const
@@ -2513,8 +2513,14 @@ bool CompanionMesh::handleCmdSetTuningParams(const uint8_t *data, size_t len)
 		writeErrFrame(ERR_ILLEGAL_ARG);
 		return true;
 	}
+	/* Same range as `set af`: a larger factor would not survive a reload. */
+	float af = (float)get_le32(&data[5]) / 1000.0f;
+	if (af > ZC_AIRTIME_FACTOR_MAX) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
 	prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
-	prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
+	prefs.airtime_factor = af;
 	_store->savePrefs(prefs);
 	writeOKFrame();
 	return true;

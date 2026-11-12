@@ -34,6 +34,8 @@ struct ChatMesh : BaseChatMesh {
     uint8_t onContactRequest(const ContactInfo&, uint32_t, const uint8_t*, uint8_t, uint8_t*) override { return 0; }
     void onContactResponse(const ContactInfo&, const uint8_t*, uint8_t) override {}
     using BaseChatMesh::searchPeersByHash;
+    bool forward = false;
+    bool allowPacketForward(const mesh::Packet*) override { return forward; }
 };
 struct ChatFixture {
     test_support::Clock clock;
@@ -84,4 +86,24 @@ TEST(group_msg_negative_len, "UNIT-CHAT-002", "sendGroupMessage refuses a negati
     ChatFixture f;
     mesh::GroupChannel ch{};
     CHECK(!f.mesh.sendGroupMessage(1700000000, ch, "me", "x", -4));
+}
+TEST(trace_partial_hash, "UNIT-CHAT-003", "A TRACE ending in a partial hash entry is not forwarded") {
+    ChatFixture f; f.mesh.forward = true;
+    uint8_t seed[SEED_SIZE]; memset(seed, 7, sizeof(seed));
+    f.mesh.self_id.fromSeed(seed);
+    const uint8_t *pub = f.mesh.self_id.pub_key;
+    f.mesh.begin();
+    // Prime every pool slot so payload[12] holds the second byte of our key.
+    for (int i = 0; i < 32; ++i) {
+        std::vector<uint8_t> raw(2 + 13, 0);
+        raw[0] = uint8_t((0x0C << 2) | ROUTE_TYPE_DIRECT); raw[2 + 12] = pub[1];
+        f.radio.incoming.push_back(raw);
+    }
+    f.mesh.loop();
+    CHECK(f.pool.getFreeCount() == 32);
+    // 2-byte hashes, one hop done, a 3-byte hash list: one whole entry, then only the first byte of ours.
+    f.radio.incoming.push_back({uint8_t((PAYLOAD_TYPE_TRACE << 2) | ROUTE_TYPE_DIRECT), 1, 0x55,
+                                1, 2, 3, 4, 5, 6, 7, 8, 0x01, 0xEE, 0xEE, pub[0]});
+    f.mesh.loop();
+    CHECK(f.radio.attempts == 0 && f.pool.getOutboundTotal() == 0 && f.pool.getFreeCount() == 32);
 }

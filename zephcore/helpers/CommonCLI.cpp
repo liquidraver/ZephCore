@@ -499,11 +499,12 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 		uint8_t cr = num > 3 ? atoi(parts[3]) : 0;
 		int temp_timeout_mins = num > 4 ? atoi(parts[4]) : 0;
 		if (freq >= ZC_RADIO_FREQ_MIN_MHZ && freq <= ZC_RADIO_FREQ_MAX_MHZ && sf >= 5 && sf <= 12 &&
-		    cr >= 5 && cr <= 8 && zcRadioBwValid(bw) && temp_timeout_mins > 0) {
+		    cr >= 5 && cr <= 8 && zcRadioBwValid(bw) && temp_timeout_mins > 0 &&
+		    temp_timeout_mins <= ZC_TEMPRADIO_MAX_MINS) {
 			_callbacks->applyTempRadioParams(freq, bw, sf, cr, temp_timeout_mins);
 			snprintf(reply, CLI_REPLY_SIZE, "OK - temp params for %d mins", temp_timeout_mins);
 		} else {
-			snprintf(reply, CLI_REPLY_SIZE, "Error: freq 150-2500, bw %s (a LoRa bandwidth), sf 5-12, cr 5-8, timeout>0", ZC_RADIO_BW_RANGE_STR);
+			snprintf(reply, CLI_REPLY_SIZE, "Error: freq 150-2500, bw %s (a LoRa bandwidth), sf 5-12, cr 5-8, timeout 1-%d", ZC_RADIO_BW_RANGE_STR, ZC_TEMPRADIO_MAX_MINS);
 		}
 	} else if (memcmp(command, "password ", 9) == 0) {
 		if (command[9] == 0) {
@@ -946,7 +947,7 @@ bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, c
 			float af;
 			if (!cliFloat(&config[3], cliDefaults()->airtime_factor, &af)) {
 				strcpy(reply, "Error: expected a number or default");
-			} else if (af < 0.0f || af > 9.0f) {
+			} else if (af < 0.0f || af > ZC_AIRTIME_FACTOR_MAX) {
 				strcpy(reply, "Error: af must be 0-9");
 			} else {
 				_prefs->airtime_factor = af;

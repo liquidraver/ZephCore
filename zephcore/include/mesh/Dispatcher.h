@@ -208,6 +208,7 @@ class Dispatcher {
   uint32_t n_sent_flood, n_sent_direct;
   uint32_t n_recv_flood, n_recv_direct;
   uint32_t tx_budget_ms;
+  uint8_t tx_budget_frac;  // ZEPHCORE: refill remainder, hundredths of a ms
   uint32_t last_budget_update;
   uint32_t duty_cycle_window_ms;
 
@@ -218,6 +219,7 @@ class Dispatcher {
   uint32_t lbt_next_warn;
   uint32_t lbt_streak_max;
   uint8_t lbt_refusals;
+  bool tx_hold;               // next_tx_time is a live hold (a stale stamp must not hold)
   bool wait_rx_end;           // deferred: retry once a reception ends
   uint32_t rx_end_seq_seen;   // getRxEndSeq() when the deferral began
   int8_t cad_offset_shadow;
@@ -337,6 +339,8 @@ private:
   bool txBudgetAllowsSend(uint32_t now);
   void onLbtRefused(uint32_t now, int len, uint32_t rx_seq);
   void waitForRxEnd(uint32_t rx_seq) { wait_rx_end = true; rx_end_seq_seen = rx_seq; }
+  // Hold every transmit until t. The only writer of next_tx_time after begin().
+  void holdTxUntil(uint32_t t) { next_tx_time = t; tx_hold = true; }
   void noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms);
   void checkRecv();
   void checkSend();

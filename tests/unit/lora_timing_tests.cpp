@@ -67,6 +67,11 @@ TEST(radio_bw_valid, "UNIT-LORATIME-006", "Only LoRa bandwidths pass the radio b
     for (float out : {0.0f, -62.5f, 6.9f, 501.0f, 1000.0f, NAN})
         CHECK(!zcRadioBwValid(out));
 }
+TEST(duty_percent, "UNIT-LORATIME-007", "Duty-cycle percent from the airtime factor is never 0") {
+    CHECK(zcDutyCyclePercent(0.0f) == 100 && zcDutyCyclePercent(1.0f) == 50 && zcDutyCyclePercent(9.0f) == 10);
+    CHECK(zcDutyCyclePercent(199.0f) == 1 && zcDutyCyclePercent(200.0f) == 1);
+    CHECK(zcDutyCyclePercent(4294967.0f) == 1 && zcDutyCyclePercent(-5.0f) == 1 && zcDutyCyclePercent(NAN) == 1);
+}
 TEST(lr11xx_cad_peak, "UNIT-LORATIME-004", "LR11xx detPeak base table cells symbol adjustment and clamp headroom") {
     CHECK(lr11xx_cad_detect_peak(7, 62, 4) == 44);             // default preset, sub-125 row
     CHECK(lr11xx_cad_detect_peak(8, 125, 4) == 57);

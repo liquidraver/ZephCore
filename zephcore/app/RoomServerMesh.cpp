@@ -57,15 +57,6 @@ LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #define POST_SYNC_DELAY_SECS        2
 
 
-/* Helper: futureMillis */
-static inline unsigned long futureMillis(uint32_t delta_ms) {
-  return k_uptime_get() + delta_ms;
-}
-
-static inline bool millisHasNowPassed(unsigned long target) {
-  return (int64_t)k_uptime_get() >= (int64_t)target;
-}
-
 static void radio_set_tx_power(uint8_t power_dbm) {
   /* TX power is configured as part of lora_config() in radio_set_params
    * The Zephyr LoRa driver doesn't have a separate lora_set_tx_power API.

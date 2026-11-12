@@ -19,6 +19,10 @@ class MeshTimeSync;
 /* A local caller's reply buffer (sender_timestamp 0) */
 #define CLI_REPLY_SIZE 256
 
+/* Longest `tempradio` window: the revert deadline (2 s + minutes) has to stay
+ * under 2^31 ms ahead for the 32-bit millisecond clock. About 24 days. */
+#define ZC_TEMPRADIO_MAX_MINS 35000
+
 /* A remote reply rides in the caller's packet buffer, temp[5 + this] with the
  * text at offset 5; see replyCap(). */
 #define CLI_REMOTE_REPLY_SIZE 161

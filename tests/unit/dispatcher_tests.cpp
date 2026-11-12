@@ -291,3 +291,41 @@ TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff delays fill whole slots of a fixe
     CHECK(lbtBackoffDelayMs(5, 12, 0) == 12 && lbtBackoffDelayMs(5, 12, 1) == 24);
     CHECK(lbtBackoffDelayMs(2500, 12, 0xFFFFFFFFu) <= 2500);          // slow preset: one packet
 }
+TEST(dispatch_hold_no_stale, "UNIT-DISPATCH-024", "A transmit hold ends at its time and does not return half a clock wrap later") {
+    Fixture f; f.begin();                                              // boot at 100, never defers
+    f.clock.now = 100u + 0x80000001u;                                  // 24.9 days of uptime
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 1); f.complete();
+    Fixture g; g.begin(); g.radio.receiving = true;
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();       // hold until 200
+    g.radio.receiving = false; g.clock.now = 200; g.dispatcher.loop();
+    CHECK(g.radio.attempts == 1); g.complete();
+    g.clock.now = 200u + 0x80000001u;                                  // 24.9 days after that hold
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();
+    CHECK(g.radio.attempts == 2); g.complete();
+    CHECK(g.pool.getFreeCount() == 32);
+}
+TEST(dispatch_budget_long_idle, "UNIT-DISPATCH-025", "Budget refill survives a long silence and keeps the division remainder") {
+    Fixture f; f.dispatcher.window = 3600000; f.begin(10);             // 360 s budget
+    f.radio.airtime = 400000;                                          // one send drains it
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop(); f.complete();
+    CHECK(f.dispatcher.getRemainingTxBudget() == 0);
+    f.radio.airtime = 100;
+    f.clock.now = 100u + 429496800u;                                   // 4.97 days: elapsed * 10 passes 2^32
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 2 && f.dispatcher.getRemainingTxBudget() == 360000);
+    f.complete();
+    Fixture g; g.begin(10);                                            // 100 ms budget, 50 ms threshold
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop(); g.complete();
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();       // budget 0: held
+    g.clock.now = 115; g.dispatcher.loop(); CHECK(g.dispatcher.getRemainingTxBudget() == 1);
+    g.clock.now = 130; g.dispatcher.loop(); CHECK(g.dispatcher.getRemainingTxBudget() == 3);  // 5 ms carried
+    g.clock.now = 600; g.dispatcher.loop(); CHECK(g.radio.attempts == 2);
+    g.complete(); CHECK(g.pool.getFreeCount() == 32);
+    Fixture h; h.begin(11);                                            // 110 ms budget
+    h.dispatcher.sendPacket(h.packet(), 0); h.dispatcher.loop(); h.complete();
+    h.dispatcher.sendPacket(h.packet(), 0);
+    for (uint32_t t = 100; t <= 200; t += 10) { h.clock.now = t; h.dispatcher.loop(); }
+    CHECK(h.radio.attempts == 1 && h.dispatcher.getRemainingTxBudget() == 21);  // 10 + 11 % of 100 ms
+    h.clock.now = 1000; h.dispatcher.loop(); h.complete(); CHECK(h.pool.getFreeCount() == 32);
+}

@@ -121,6 +121,19 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 
 ## Other changes
 
+- **A node no longer falls silent after 25 days.** A node whose transmits had all gone out at the first try for
+  24.9 days stopped transmitting for up to another 24.9 days, and stopped receiving too once its queue had
+  filled. Only a reboot brought it back sooner. Repeaters on a quiet channel and companions that stay on for
+  weeks were the ones at risk.
+- **Idle nodes sleep longer.** Once a node had heard a packet repeated and then fell quiet, it woke every
+  5 seconds for as long as it ran. It now returns to waking only for its regular channel measurement (15 s).
+- **Companion: the app's airtime factor is limited to 0–9**, as `set af` is. A larger value used to apply until
+  the next restart and then become 9 without notice; from 200 up it switched the duty-cycle limit off. The app
+  now gets an error and the setting stays as it was.
+- **Duty-cycle budget refills exactly.** After about five days without a transmit (at 10 %) the budget could
+  come back almost empty and delay the next transmit, and rounding lost up to 5 % of the allowance while a
+  packet was waiting.
+- **`tempradio` takes at most 35000 minutes** (about 24 days). A longer time was accepted but never reverted.
 - **Heltec receive workaround stays enabled.** Boards using the Heltec `0x08B5` workaround now apply it while
   the radio is awake during configuration and retain it across warm sleep, including the AGC reset path.
   Previously it was written after receive started and was lost at the radio's first sleep.
