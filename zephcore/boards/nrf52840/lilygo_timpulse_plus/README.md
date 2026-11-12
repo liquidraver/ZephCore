@@ -33,7 +33,7 @@ Bootloader is Adafruit UF2 / SoftDevice **s140 v6.1.1**, app @ `0x26000`
 | MCU             | nRF52840           | BLE5, native USB, 1 MB flash / 256 KB RAM     |
 | LoRa            | SX1262 (AcSip S62F)| 22 dBm, embedded 32 MHz TCXO on DIO3          |
 | Display         | SSD1315 64x32 OLED | I2C0 @ 0x3C (64x32 glass at RAM col 32/row 32) |
-| GNSS            | u-blox MIA-M10Q    | UART0 @ 38400, enable P1.10                    |
+| GNSS            | u-blox MIA-M10Q    | UART0 @ 38400, enable P1.10 (LOW = on)         |
 | Ext flash       | ZD25WQ32C 32 Mbit  | QSPI -> `/ext` LittleFS (contacts/channels)   |
 | IMU             | ICM-20948          | I2C1 @ 0x69 — present, not used                |
 | Charger         | SGM41562           | I2C1 @ 0x03 — set up at boot (`board_init.c`)  |
@@ -51,7 +51,7 @@ Bootloader is Adafruit UF2 / SoftDevice **s140 v6.1.1**, app @ `0x26000`
 | LoRa MISO         | P0.30    | LoRa BUSY           | P0.31    |
 | LoRa DIO1         | P0.29    | RF TX enable (VC1)  | P1.13    |
 | RF RX enable (VC2)| P1.07    | OLED SDA / SCL      | P0.20 / P0.15 |
-| GPS MCU-TX / RX   | P1.11 / P1.12 | GPS enable      | P1.10    |
+| GPS MCU-TX / RX   | P1.11 / P1.12 | GPS enable (LOW=on) | P1.10 |
 | QSPI SCK / CS     | P0.04 / P0.12 | QSPI IO0/1/2/3  | P0.06 / P1.09 / P0.08 / P0.26 |
 | Battery ADC / en  | P0.05 / P0.25 | RT9080 rail en  | P0.14    |
 | Touch button      | P1.04    | Haptic motor        | P0.22    |
@@ -64,6 +64,10 @@ Bootloader is Adafruit UF2 / SoftDevice **s140 v6.1.1**, app @ `0x26000`
 - **GPS RX/TX are swapped relative to the net names.** LilyGo's `GPS_UART_RX`/
   `GPS_UART_TX` are labelled from the GPS module's side; the MCU receive pin is
   `GPS_UART_TX` (P1.12) and the MCU transmit pin is `GPS_UART_RX` (P1.11).
+- **GPS enable is active-LOW.** LilyGo's sketches write `GPS_EN` LOW to start
+  the M10 and HIGH to stop it; the DTS declares P1.10 `GPIO_ACTIVE_LOW`. Until
+  2026-11-12 it was active-HIGH, which kept the GPS off whenever ZephCore turned
+  it on, so the boot probe saw no NMEA and the app reported no GPS.
 - **Single-button UI** (like T-Echo): short tap = next page, double tap =
   previous page, long press (>=1 s) = ENTER. Confirmation needs two ENTERs, so
   `UI_CONFIRM_WINDOW_MS` is widened to 3 s.

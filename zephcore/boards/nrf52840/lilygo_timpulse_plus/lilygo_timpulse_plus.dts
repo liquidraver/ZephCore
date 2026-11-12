@@ -12,7 +12,7 @@
  * - SX1262 LoRa (AcSip S62F module): 22 dBm, embedded 32 MHz TCXO on DIO3,
  *   GPIO antenna switch (VC1=TX P1.13, VC2=RX P1.07 — NOT DIO2)
  * - SSD1315 128x64 mono OLED on I2C0 @ 0x3C (SSD1306-compatible, no reset pin)
- * - u-blox MIA-M10Q GPS on UART0 @ 38400 baud, power enable P1.10
+ * - u-blox MIA-M10Q GPS on UART0 @ 38400 baud, power enable P1.10 (active-LOW)
  * - ZD25WQ32C 32Mbit (4MB) QSPI flash -> /ext LittleFS
  * - ICM-20948 IMU (0x69) + SGM41562 charger (0x03) on I2C1 (P1.08/P0.11);
  *   the charger is programmed at boot by board_init.c, the IMU is unused
@@ -145,13 +145,14 @@
 	};
 
 	/* ---- GPS power control ----
-	 * GPS_EN (P1.10). gnss-nmea-generic has no on-off-gpios property, so
-	 * ZephyrGPSManager drives this pin directly via the gps-enable alias to
+	 * GPS_EN (P1.10), active-LOW: LOW powers the M10, HIGH cuts it (LilyGo
+	 * examples, LLD 10 §27). gnss-nmea-generic has no on-off-gpios property,
+	 * so ZephyrGPSManager drives this pin directly via the gps-enable alias to
 	 * power the M10 up/down for duty-cycled fixes. */
 	gps_en: gps-enable {
 		compatible = "gpio-leds";
 		gps_enable_pin: gps_enable {
-			gpios = <&gpio1 10 GPIO_ACTIVE_HIGH>;
+			gpios = <&gpio1 10 GPIO_ACTIVE_LOW>;
 			label = "GPS Enable";
 		};
 	};

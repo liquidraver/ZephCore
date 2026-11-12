@@ -118,6 +118,8 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 - **The charger is now set up at every start**, the way LilyGo's firmware does it, so the battery
   charges on USB without flashing anything else first.
 - **The restarts on USB stop.** ZephCore keeps the charger's watchdog switched off.
+- **The GPS works.** ZephCore switched the GPS off when it meant to switch it on, so the
+  wristband never found its GPS and the app showed GPS as not supported.
 
 ## Other changes
 
