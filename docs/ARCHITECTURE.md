@@ -1355,8 +1355,8 @@ parse falls back to the legacy file, then to defaults.
 
 **Legacy binary files.** Firmware before `prefs.json` wrote field-by-field binary files: companion
 `/lfs/new_prefs` (272 bytes) and servers `/lfs/repeater/prefs` (311 bytes; `leds_disabled` at 120
-is magic-encoded `0xA0`/`0xA1`). `helpers/PrefsCodec.cpp` reads (and, for tests, writes) both,
-pinned by host tests. On the first boot without `prefs.json` the legacy file is decoded and
+is magic-encoded `0xA0`/`0xA1`). `helpers/PrefsCodec.cpp` decodes both (no encoders),
+pinned by host tests against offset tables in `tests/support/prefs_layout.h`. On the first boot without `prefs.json` the legacy file is decoded and
 `prefs.json` written; the legacy file is **kept**, so a downgrade still boots with the settings as
 they were at the upgrade. Byte maps: `memory/prefs-format.md`.
 

@@ -159,5 +159,5 @@ Set them in a board conf or with `-DCONFIG_...=`. The full list with help texts 
 Host regression tests live in `tests/` and run in CI under ASan and UBSan. Locally (Linux or WSL):
 
 ```bash
-python3 tests/run.py run --profile quick
+python3 tests/run.py run --sanitize
 ```

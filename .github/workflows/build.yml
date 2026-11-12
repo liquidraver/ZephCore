@@ -1,24 +1,16 @@
 name: build firmware
 
+# Release pipeline; rationale for the caches, pins and publish steps: LLD 01 §19.
+
 on:
   push:
     branches: [ "master" ]
 
-# A release run deletes and re-creates a tag, then force-pushes the
-# firmware-dist branch. Two overlapping runs would race on both, and the loser
-# could leave firmware-dist pointing at a half-published set.
-#
-# Queue rather than cancel: `create-release` deletes the existing release before
-# creating the replacement, so cancelling a run mid-flight can leave the repo
-# with no release at all for that version.
+# Queue, never cancel: a cancelled release run can leave no release at all.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
-# Default for jobs that do not declare their own. create-release and
-# publish-catalog override this with contents: write. Same-run artifact
-# upload/download uses the Actions runtime token, not GITHUB_TOKEN, so it needs
-# no scope here.
 permissions:
   contents: read
 
@@ -26,51 +18,13 @@ env:
   zephyr_sdk: 1.0.1
   python_version: 3.12
   toolchains: arm-zephyr-eabi:xtensa-espressif_esp32s3_zephyr-elf:xtensa-espressif_esp32_zephyr-elf:riscv64-zephyr-elf
-
-  # Mark the GitHub release as a pre-release AND skip the Mesh America catalog
-  # publish. Set to "true" for a release that should not reach ordinary users
-  # through apps.meshamerica.com's browser flasher; set back to "false" for a
-  # normal release.
-  #
-  # Two separate effects, both driven from here so they cannot drift apart:
-  #   - the release is created with prerelease: true, so GitHub does not mark it
-  #     "Latest" and it is excluded from the /releases/latest API.
-  #   - publish-catalog is skipped entirely, so the firmware-dist branch and its
-  #     catalog.json are left ALONE — the configurator keeps offering whatever
-  #     the last non-prerelease build published. Nothing is unpublished or
-  #     rolled back; that branch is simply not force-pushed this time.
-  # Release artifacts are still built and attached, so a manual download and
-  # flash works exactly as usual.
-  #
-  # "false" is the normal state. It is easy to leave this on "true" and then
-  # silently keep shipping nothing to the configurator, so check it when cutting
-  # a release rather than assuming.
+  # "true": mark the release pre-release and skip publish-catalog (firmware-dist keeps the last release).
   prerelease: "false"
 
-# Runner image and third-party actions are pinned, not floating.
-#
-# runs-on: every job says ubuntu-24.04 rather than ubuntu-latest. That label
-# flips to Ubuntu 26 on 2026-10-19 and would move the whole cross-compile
-# toolchain under a release pipeline with no commit here to point at. 24.04 is
-# what ubuntu-latest resolves to today, so this pin changes nothing now and
-# makes the move to 26 a deliberate, testable commit later.
-#
-# uses: the two third-party actions are pinned to full commit SHAs with the
-# version in a trailing comment. A floating major tag can be repointed
-# upstream, and action-gh-release runs in a contents: write job holding
-# GITHUB_TOKEN. This is also how the Node 20 runtime warning used to appear and
-# vanish with no change on our side. Bump a pin by editing the SHA and the
-# comment together. First-party actions/* are left on major tags.
+# Runner image and third-party actions are pinned (third-party to a commit SHA, version in a comment).
 
 jobs:
-  # Populates the west-modules cache once so the five build jobs do not each pay
-  # for a cold `west update` plus a blob download. Compiles nothing, which is why
-  # ccache is switched off here — otherwise the action would write an empty
-  # 512 MB cache entry every run for no benefit.
-  #
-  # This job is also the ONLY writer of the modules cache. The build jobs are
-  # restore-only, so a tree that a build has patched in place can never be saved
-  # back — the cached modules stay pristine-plus-blobs.
+  # Warms the west modules cache (with both BLE blobs); the only writer of that cache.
   setup-zephyr:
     runs-on: ubuntu-24.04
 
@@ -82,20 +36,7 @@ jobs:
         python-version: '${{ env.python_version }}'
         cache: 'pip'
 
-    # Keyed on the manifest, NOT on github.sha. zephcore/west.yml pins the Zephyr
-    # revision and Zephyr's own manifest is imported from it, so the manifest
-    # hash captures the full transitive module set. The old per-SHA key meant a
-    # fresh multi-GB entry on every push that was never read again, and that
-    # churn is a large part of what evicted everything else out of the repo's
-    # 10 GB cache budget.
-    #
-    # Deliberately no restore-keys: a near-miss would restore modules pinned to
-    # DIFFERENT revisions, and `west update` then has to move HEAD in a tree our
-    # patches may have dirtied. An exact hit or a clean fetch, nothing between.
-    #
-    # Restored BEFORE the Zephyr setup so a hit makes `west update` a no-op. The
-    # matching save runs as this job's post-step, i.e. after the blob fetches
-    # below, so the cached tree carries the blobs with it.
+    # Keyed on the manifest, exact hit or clean fetch only.
     - uses: actions/cache@v5
       with:
         path: modules
@@ -109,11 +50,6 @@ jobs:
         sdk-version: ${{ env.zephyr_sdk }}
         enable-ccache: 'false'
 
-    # Both vendor BLE controller blobs, fetched here so they ride along in the
-    # modules cache above. `west blobs fetch` compares each blob's sha256 and
-    # skips the ones already present (zephyr/scripts/west_commands/blobs.py), so
-    # this is a cheap no-op on a cache hit — no need for a second cache layer or
-    # a cache-hit conditional.
     - name: Download vendor BLE controller blobs
       run: |
         west blobs fetch hal_espressif
@@ -132,27 +68,12 @@ jobs:
         cache: 'pip'
     - run: pip install -r requirements.txt
 
-    # Soft dependency: a miss here is self-healing, because `west update` in the
-    # next step just does the work itself. Contrast with the firmware handoff at
-    # the end of this job, which is NOT self-healing and therefore uses an
-    # artifact.
     - uses: actions/cache/restore@v5
       with:
         path: modules
         key: zephyr-modules-${{ runner.os }}-${{ hashFiles('zephcore/west.yml') }}
 
-    # ccache-cache-key is per-job. The action's default is the literal string
-    # "default" and its restore-keys is a bare `ccache-<key>-` prefix, so leaving
-    # it unset put all six jobs in one namespace: build-nrf would restore
-    # whatever build-esp32-companions saved last (arm objects vs xtensa objects —
-    # a near-zero hit rate), and each job's 512 MB save overwrote the previous
-    # one's useful content. The key also embeds a timestamp, so every job writes
-    # a NEW entry every run; six of those per push is up to ~3 GB against a 10 GB
-    # repo budget, which is what evicted the SDK, pip and module caches.
-    # Namespacing fixes both halves.
-    #
-    # Size knob if hit rates look poor: ccache-max-size (default 512MB).
-    # build-nrf compiles ~40 board/role combos and will churn inside that cap.
+    # ccache namespaced per job.
     - name: Setup Zephyr project
       uses: zephyrproject-rtos/action-zephyr-setup@be8136a8bba01580485d98b7ad2d32477c36a49a # v1.0.15
       with:
@@ -164,35 +85,21 @@ jobs:
     - name: build firmwares
       run: bash build.sh nrf
 
-    # Roles no manifest publishes still have to compile. Built, not packaged:
-    # nothing here reaches firmware/.
+    # Roles no manifest publishes: compiled, not packaged.
     - name: compile-only roles
       run: west build -b rak4631 zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/kiss_modem.conf"
 
-    # Hit rate is the entire point of the per-job ccache namespace above, but the
-    # action only prints stats at SETUP time — it runs `ccache -z -s -vv`, which
-    # reports the restored cache and then zeroes the counters. Without a stats
-    # call here the run ends with no record of whether ccache did anything at
-    # all. Read Hits/Misses to decide whether ccache-max-size needs raising.
     - name: ccache stats
       if: always()
       run: ccache -s -vv
 
-    # Job-to-job handoff is an artifact, not a cache. actions/cache/restore
-    # defaults to fail-on-cache-miss: false, so an entry evicted between this job
-    # and create-release made the release publish a SILENTLY incomplete firmware
-    # set — and publish-catalog force-push a matching incomplete catalog.json to
-    # the live Mesh America configurator feed. Artifacts are scoped to the run,
-    # cannot be evicted mid-run, and if-no-files-found: error fails loudly.
+    # Handoff to create-release is an artifact, not a cache: it cannot be evicted mid-run.
     - uses: actions/upload-artifact@v7
       with:
         name: firmware-part-${{ github.job }}
         path: firmware
         if-no-files-found: error
-        # Consumed within this run; the merged set is re-uploaded by
-        # create-release and attached to the release itself.
         retention-days: 1
-        # Lets a failed run be re-run without tripping "artifact already exists".
         overwrite: true
 
   build-esp32-repeaters:
@@ -221,8 +128,7 @@ jobs:
         sdk-version: ${{ env.zephyr_sdk }}
         ccache-cache-key: ${{ github.job }}
 
-    # No-op when the modules cache hit (the blobs came with it); the safety net
-    # for when it missed.
+    # No-op when the modules cache hit.
     - name: Download Espressif BLE controller blobs
       run: west blobs fetch hal_espressif
 
@@ -267,8 +173,7 @@ jobs:
         sdk-version: ${{ env.zephyr_sdk }}
         ccache-cache-key: ${{ github.job }}
 
-    # native_sim presets are cross-compiled for the target SBC architecture:
-    # femtofox = ARMv7-A (32-bit), rak6421 / rak6421_pi5 = aarch64 (64-bit).
+    # native_sim targets: femtofox ARMv7-A, rak6421 / rak6421_pi5 aarch64.
     - name: Install cross-compile toolchains
       run: |
         sudo apt-get update
@@ -291,11 +196,7 @@ jobs:
         retention-days: 1
         overwrite: true
 
-  # SWD-only ARM platforms: nRF54L15, EFR32MG24 and STM32WL. None of these SoCs
-  # has a USB device peripheral, so all three publish a bare zephyr.hex and are
-  # download-only tiles in the catalog. Grouped into one job because the board
-  # count is small (4 boards x 2 roles) and they share the arm-zephyr-eabi
-  # toolchain that `toolchains` already installs.
+  # nRF54L15, EFR32MG24 and STM32WL: no USB, bare zephyr.hex, one arm toolchain.
   build-swd:
     needs: setup-zephyr
     runs-on: ubuntu-24.04
@@ -322,8 +223,7 @@ jobs:
         sdk-version: ${{ env.zephyr_sdk }}
         ccache-cache-key: ${{ github.job }}
 
-    # MG24 only: the Silabs BLE controller is a binary blob, without which the
-    # xiao_mg24 companion cannot link. No-op when the modules cache hit.
+    # MG24 BLE controller blob; no-op when the modules cache hit.
     - name: Download Silicon Labs BLE controller blobs
       run: west blobs fetch hal_silabs
 
@@ -377,7 +277,6 @@ jobs:
     - name: build firmwares
       run: bash build.sh esp32 companions
 
-    # Roles no manifest publishes still have to compile (see build-nrf).
     - name: compile-only roles
       run: west build -b xiao_esp32c3 zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/kiss_modem.conf"
 
@@ -397,29 +296,17 @@ jobs:
     needs: [build-nrf, build-esp32-companions, build-esp32-repeaters, build-linux,
             build-swd]
     runs-on: ubuntu-24.04
-    # Needs write to create the release AND to delete/replace an existing one for
-    # the same version (see the "replace existing release" step below).
     permissions:
       contents: write
     outputs:
       release_tag: ${{ steps.tag.outputs.release_tag }}
-      # Re-exported as a job output because the `env` context is NOT available
-      # in a job-level `if:` — publish-catalog cannot read env.prerelease
-      # directly and has to gate on this instead.
+      # env is not readable in a job-level `if:`, so publish-catalog gates on this.
       prerelease: ${{ env.prerelease }}
 
     steps:
     - uses: actions/checkout@v6
 
-    # Tag the release with the firmware version string itself (the single source
-    # of truth in zephcore/CMakeLists.txt), NOT a build timestamp. The same value
-    # becomes the Mesh America catalog's version key, so the configurator can
-    # compare a running device's reported firmware against the catalog and know
-    # it's up to date. A timestamp tag could never match what the device reports.
-    #
-    # NOTE: the tag is only unique per version — pushing master again without
-    # bumping ZEPHCORE_FIRMWARE_VERSION updates the existing release in place
-    # rather than cutting a new one. Bump the version to cut a new release.
+    # Tag = ZEPHCORE_FIRMWARE_VERSION; re-pushing without a bump replaces that release.
     - name: derive release tag from firmware version
       id: tag
       run: |
@@ -431,9 +318,6 @@ jobs:
         echo "Release tag / catalog version: $version"
         echo "release_tag=$version" >> $GITHUB_OUTPUT
 
-    # Pull every build job's output back into a single firmware/ directory.
-    # merge-multiple flattens all five parts into that one path, which is what
-    # the release upload and gen_provider_catalog.py both expect.
     - uses: actions/download-artifact@v7
       with:
         pattern: firmware-part-*
@@ -458,11 +342,7 @@ jobs:
         if-no-files-found: error
         overwrite: true
 
-    # Publish releasenotes/RELEASE_NOTES_<version>.md as the release body. The
-    # filename matches the firmware version string exactly (= the release tag), so
-    # this is a direct lookup with no name munging. Write the notes for a version
-    # before bumping to it; a missing file only warns (empty body), never fails
-    # the release.
+    # Body: releasenotes/RELEASE_NOTES_<version>.md; missing only warns.
     - name: resolve release notes
       id: notes
       run: |
@@ -476,14 +356,7 @@ jobs:
           echo "notes_path=${RUNNER_TEMP}/empty_notes.md" >> $GITHUB_OUTPUT
         fi
 
-    # Replace any existing release for this version instead of piling onto it.
-    # Since the tag is the firmware version, re-pushing master without a bump
-    # reuses the tag. action-gh-release only overwrites assets with the SAME
-    # name, but our firmware filenames embed the commit hash — so a rebuild would
-    # ADD ~100 new assets beside the old ones and leave the tag pinned to the old
-    # commit. Deleting first (with the tag) makes each build a clean replacement:
-    # current assets only, tag re-created on the building commit.
-    # `|| true` — the first release of a version has nothing to delete.
+    # Delete an existing release and tag of this version so the rebuild replaces it.
     - name: replace existing release for this version
       env:
         GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -509,18 +382,9 @@ jobs:
         prerelease: ${{ env.prerelease }}
         files: firmware/*
 
-  # Publish firmware + provider catalog for the Mesh America configurator
-  # (apps.meshamerica.com). GitHub Release assets have no CORS header, so the
-  # browser flasher cannot fetch them; instead we force-push the firmware and a
-  # generated catalog.json to the `firmware-dist` orphan branch, served from
-  # CORS-clean hosts (firmware via jsDelivr, catalog via raw.githubusercontent).
-  # The stable catalog URL registered with Mesh America is:
+  # Force-pushes firmware + catalog.json to the firmware-dist branch for the Mesh America configurator
+  # (docs/PROVIDER_CATALOG.md). Registered URL:
   #   https://raw.githubusercontent.com/<owner>/<repo>/firmware-dist/catalog.json
-  #
-  # Skipped entirely on a pre-release (see the `prerelease` env at the top).
-  # This branch is force-pushed, so skipping is the whole mechanism: the
-  # previous release's firmware and catalog.json stay exactly as they are and
-  # the configurator keeps offering that version.
   publish-catalog:
     needs: create-release
     if: needs.create-release.outputs.prerelease != 'true'
@@ -535,19 +399,15 @@ jobs:
       with:
         python-version: '${{ env.python_version }}'
 
-    # gen_provider_catalog.py reads the board manifests (PyYAML).
     - run: pip install -r requirements.txt
 
-    # Pull every board's firmware back into a single firmware/ directory. This
-    # branch is force-pushed, so an incomplete set here silently DELETES boards
-    # from the live configurator feed — which is exactly why this handoff must
-    # not be a cache that can be evicted between jobs.
     - uses: actions/download-artifact@v7
       with:
         pattern: firmware-part-*
         merge-multiple: true
         path: firmware
 
+    # An incomplete set here would delete boards from the live feed.
     - name: verify firmware set arrived
       run: |
         count=$(find firmware -type f 2>/dev/null | wc -l)

@@ -39,7 +39,8 @@ touch before writing code. Decisions are in `docs/adr/`.
 
 - Byte compatibility with Arduino MeshCore on the air and on the companion protocol; `prefs.json` format.
 - Settings persist in `prefs.json` only. The legacy binary prefs files are frozen: no new fields in
-  `PrefsCodec`, no change to its size constants or to the pinned offsets and lengths in its tests.
+  `PrefsCodec`, no change to its size constants or to the pinned offsets and lengths in its tests
+  (`tests/support/prefs_layout.h`).
 - The wall clock only moves forward.
 - Mesh, GPS state and UI run on the main thread; loops are event-driven, no polling. A button, UI or work-queue
   thread that needs the mesh or the Bluetooth host sets a flag in `pending_ui_actions` and lets
@@ -60,8 +61,8 @@ touch before writing code. Decisions are in `docs/adr/`.
   work without a conflict.
 - Tabs for indentation, except the upstream-ported files.
 - Build with `--pristine` when the board or role changes; ESP32 S3/C-series repeaters need `--sysbuild`.
-- Host tests: `python3 tests/run.py run --profile quick` (Linux or WSL). A new case needs a
-  `tests/catalog.json` entry. A failing pinned test is a finding: do not edit the pinned values to make it pass.
+- Host tests: `python3 tests/run.py run --sanitize` (Linux or WSL). A new case is a `TEST()` in `tests/unit/`.
+  A failing pinned test is a finding: do not edit the pinned values to make it pass.
 - Logic that runs without hardware (a protocol parser, a state machine, a timing rule, a `// ZEPHCORE:` change
   to upstream behaviour) comes with host tests that pin it. Driver code in a Zephyr patch counts too: extract the
   functions from the patch at configure time, as `tests/support/extract_sx126x_helpers.py` does, and fake the bus.
