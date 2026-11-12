@@ -36,7 +36,28 @@ struct gps_state_info {
 	uint16_t satellites;    /* Current/last satellite count */
 	uint32_t last_fix_age_s;  /* Seconds since last validated fix (UINT32_MAX = never) */
 	uint32_t next_search_s;   /* Seconds until next search (0 = searching now or off) */
+	uint32_t acquiring_s;     /* Seconds into the current acquire window (0 unless acquiring) */
 };
+
+/* `gps fix_stats`: time from the start of an acquire window to its first good
+ * fix (last and longest), and the current run of windows that got one (ok) or
+ * ended without one (miss). A window cut short by `gps off` counts as neither. */
+struct gps_fix_stats {
+	uint32_t last_ttff_ms;
+	uint32_t max_ttff_ms;
+	uint32_t consecutive_fixes;
+	uint32_t consecutive_misses;
+};
+void gps_get_fix_stats(struct gps_fix_stats *stats);
+
+/* `gps once`: a fix now. Off: power on for one acquire window, then off again
+ * (prefs untouched; `gps on` meanwhile keeps it on). In standby: wake now. On:
+ * extend the current window, as gps_request_fresh_fix(). Main thread only. */
+#define GPS_ONCE_UNAVAILABLE  0
+#define GPS_ONCE_FROM_OFF     1
+#define GPS_ONCE_WOKEN        2
+#define GPS_ONCE_ALREADY_ON   3
+int gps_start_once(void);
 
 /* ===== GPS configuration diagnostics (runtime toggle, RAM only) =====
  * With diag on, the next GPS enable re-runs the module configuration and
@@ -133,6 +154,28 @@ void gps_set_repeater_mode(bool repeater);
  * gps_manager_init(): power the module down and release its UART, which would
  * otherwise stay powered and armed for the whole uptime. */
 void gps_park(void);
+
+/* The RTC's current epoch, for the GPS guard's time checks. Register at boot. */
+typedef uint32_t (*gps_clock_fn_t)(void);
+void gps_set_clock_source(gps_clock_fn_t now);
+
+/* GPS guard (CONFIG_ZEPHCORE_GPS_GUARD, helpers/gps_guard.h). Main thread.
+ * Without the option only gps_guard_clock_set_manually() exists, as a no-op. */
+void gps_guard_clock_set_manually(void);  /* another source set the clock */
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+void gps_guard_set_enabled(bool enabled);
+bool gps_guard_is_enabled(void);
+void gps_guard_set_fence(uint32_t metres);
+uint32_t gps_guard_get_fence(void);
+/* 0,0 = none (fence off). Servers: the configured lat/lon. */
+void gps_guard_set_reference(double lat, double lon);
+void gps_guard_get_reference(double *lat, double *lon);
+void gps_guard_format_status(char *out, size_t out_size);
+/* `gps guard accept`: write the alerted GPS time to the clock through the fix
+ * callback. 0 = done, -ENOENT = no alert, -EAGAIN = no current trusted fix
+ * with the alerted offset. */
+int gps_guard_accept(void);
+#endif
 
 #ifdef __cplusplus
 }

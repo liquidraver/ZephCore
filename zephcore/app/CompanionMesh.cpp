@@ -994,14 +994,19 @@ static bool isUpstreamCompanionCommand(const char *cmd)
 		"get path.hash.mode", "get multi.acks", "get txdelay", "get direct.txdelay",
 		"reboot", "poweroff", "shutdown", "get name", "get wifi.pwd", "set wifi.clear",
 		"get wifi.ssid", "get wifi.enabled", "get wifi.status", "get wifi.ip",
-		"board", "ver", "get tz.offset",
+		"board", "ver", "get tz.offset", "get adc.multiplier",
+		"gps", "gps fix", "gps period", "gps fix_stats", "gps diag",
+		"gps guard", "gps fence", "gps ref",  /* CONFIG_ZEPHCORE_GPS_GUARD */
 	};
 	static const char *const prefix[] = {
 		"set radio ", "set af ", "set dutycycle ", "set int.thresh ", "set cad ",
 		"set radio.rxgain ", "get tx ", "set tx ", "set rxdelay ", "set agc.reset.interval ",
 		"set path.hash.mode ", "set multi.acks ", "set txdelay ", "set direct.txdelay ",
 		"set name ", "set pin ", "set wifi.ssid ", "set wifi.pwd ", "set wifi.enabled ",
-		"set tz.offset ",
+		"set tz.offset ", "set adc.multiplier ",
+		/* upstream's CommonGpsPrefs, matched by prefix as there */
+		"gps once", "gps on", "gps off", "gps period ", "gps sync",
+		"gps guard ", "gps fence ",
 	};
 	for (const char *e : exact) {
 		if (strcmp(cmd, e) == 0) return true;

@@ -21,6 +21,10 @@ extern "C" void power_diag_line(int n, char *out, size_t cap);  /* TEMPORARY: he
 #include <helpers/AdvertDataHelpers.h>
 #include <adapters/board/ZephyrBoard.h>
 #include <adapters/gps/ZephyrGPSManager.h>
+#include <helpers/gps_cli_text.h>
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+#include <helpers/gps_guard.h>
+#endif
 #include <zephyr/logging/log.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +57,16 @@ static uint32_t _atoi(const char* sp) {
  * atoi()/atof() fold any non-number to 0, which is "off" on several knobs.
  * Every `set` with a default takes the literal `default` and rejects
  * trailing garbage. */
+
+/* The GPS guard's fence centre follows the configured position on a server;
+ * a companion has none (its lat/lon follows the GPS), as upstream. */
+static void gpsGuardReference(const NodePrefs* p) {
+#if defined(CONFIG_ZEPHCORE_GPS_GUARD) && !defined(ZEPHCORE_COMPANION)
+	gps_guard_set_reference(p->node_lat, p->node_lon);
+#else
+	ARG_UNUSED(p);
+#endif
+}
 
 /* The defaults are read out of initNodePrefs() itself rather than restated as
  * constants here, so `set <x> default` cannot drift from what a factory-fresh
@@ -595,91 +609,36 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 				*(dp - 1) = 0;  // remove last CR
 			}
 		}
-	} else if (memcmp(command, "gps on", 6) == 0) {
-		if (_sensors->setSettingValue("gps", "1")) {
-			_prefs->gps_enabled = 1;
-			savePrefs();
-			strcpy(reply, "ok");
-		} else {
-			strcpy(reply, "gps toggle not found");
-		}
-	} else if (memcmp(command, "gps off", 7) == 0) {
-		if (_sensors->setSettingValue("gps", "0")) {
-			_prefs->gps_enabled = 0;
-			savePrefs();
-			strcpy(reply, "ok");
-		} else {
-			strcpy(reply, "gps toggle not found");
-		}
-	} else if (memcmp(command, "gps sync", 8) == 0) {
-		/* ZEPHCORE: no LocationProvider::syncTime(); a fresh fix sets the
-		 * clock (gps_fix_callback in the mains) the same way. */
-		if (!_sensors->isGPSDetected()) {
-			strcpy(reply, "gps provider not found");
-		} else if (!gps_is_enabled()) {
-			strcpy(reply, "gps is off");
-		} else {
-			gps_request_fresh_fix();
-			strcpy(reply, "ok");
-		}
-	} else if (strcmp(command, "gps diag") == 0) {
-		/* ZEPHCORE: upstream asks the LocationProvider; here the GPS
-		 * manager formats the fields it has (see gps_format_diagnostics). */
-		if (_sensors->isGPSDetected()) {
-			const char* setting = _sensors->getSettingByKey("gps");
-			bool requested = setting != NULL && strcmp(setting, "1") == 0;
-			int prefix_len = snprintf(reply, 160, "req:%u ", requested ? 1U : 0U);
-			if (prefix_len < 0 || prefix_len >= 160) {
-				reply[159] = 0;
-			} else {
-				gps_format_diagnostics(reply + prefix_len, 160 - prefix_len);
-			}
-		} else {
-			strcpy(reply, "gps provider not found");
-		}
+	} else if (memcmp(command, "gps", 3) == 0 && handleGpsCmd(sender_timestamp, command, reply)) {
+		/* upstream's CommonGpsPrefs commands, see handleGpsCmd() */
 	} else if (memcmp(command, "gps setloc", 10) == 0) {
 		_prefs->node_lat = _sensors->node_lat;
 		_prefs->node_lon = _sensors->node_lon;
+		gpsGuardReference(_prefs);
 		savePrefs();
-		strcpy(reply, "ok");
+		strcpy(reply, "OK");
 	} else if (memcmp(command, "gps advert", 10) == 0) {
 		if (strlen(command) == 10) {
 			switch (_prefs->advert_loc_policy) {
 				case ADVERT_LOC_NONE:  strcpy(reply, "> none"); break;
 				case ADVERT_LOC_PREFS: strcpy(reply, "> prefs"); break;
 				case ADVERT_LOC_SHARE: strcpy(reply, "> share"); break;
-				default: strcpy(reply, "error");
+				default: strcpy(reply, "Error, invalid policy");
 			}
 		} else if (memcmp(command + 11, "none", 4) == 0) {
 			_prefs->advert_loc_policy = ADVERT_LOC_NONE;
 			savePrefs();
-			strcpy(reply, "ok");
+			strcpy(reply, "OK");
 		} else if (memcmp(command + 11, "share", 5) == 0) {
 			_prefs->advert_loc_policy = ADVERT_LOC_SHARE;
 			savePrefs();
-			strcpy(reply, "ok");
+			strcpy(reply, "OK");
 		} else if (memcmp(command + 11, "prefs", 5) == 0) {
 			_prefs->advert_loc_policy = ADVERT_LOC_PREFS;
 			savePrefs();
-			strcpy(reply, "ok");
+			strcpy(reply, "OK");
 		} else {
-			strcpy(reply, "error");
-		}
-	} else if (memcmp(command, "gps", 3) == 0) {
-		/* Upstream's line. "standby" where upstream says "deactivated": the
-		 * GPS is on but asleep between duty-cycle fixes. Detail: get gps. */
-		if (!_sensors->isGPSDetected()) {
-			strcpy(reply, "Can't find GPS");
-		} else if (!gps_is_enabled()) {
-			strcpy(reply, "off");
-		} else {
-			struct gps_state_info gsi;
-			struct gps_position pos;
-			gps_get_state_info(&gsi);
-			snprintf(reply, CLI_REPLY_SIZE, "on, %s, %s, %d sats",
-				 gsi.state == GPS_STATE_INFO_ACQUIRING ? "active" : "standby",
-				 gps_get_last_known_position(&pos) ? "fix" : "no fix",
-				 (int)gsi.satellites);
+			strcpy(reply, "Error, invalid policy");
 		}
 	} else if (memcmp(command, "powersaving on", 14) == 0) {
 		/* Upstream's replies.  ESP32 light-sleep builds: allowed again
@@ -740,6 +699,166 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 /* Radio keys, first, as upstream's CommonRadioPrefs::handleCommand. The
  * branches keep their relative order: several match on a prefix (radio vs
  * radio.rxgain, freq vs freqerr). */
+/* The GPS manager's state as the `gps` replies need it. */
+static void gpsCliView(struct gps_cli_view* v) {
+	struct gps_state_info gsi;
+	struct gps_position pos;
+
+	memset(v, 0, sizeof(*v));
+	gps_get_state_info(&gsi);
+	v->on = gps_is_enabled();
+	v->activity = gsi.state == GPS_STATE_INFO_ACQUIRING ? GPS_CLI_ACTIVE
+		    : gsi.state == GPS_STATE_INFO_STANDBY ? GPS_CLI_WAITING : GPS_CLI_INACTIVE;
+	v->acq_s = gsi.acquiring_s;
+	v->period_s = gps_get_poll_interval_sec();
+	if (gps_get_last_known_position(&pos)) {
+		int64_t age_ms = k_uptime_get() - pos.timestamp_ms;
+
+		v->has_fix = true;
+		v->sats = pos.satellites;
+		v->fix_age_s = (uint32_t)(age_ms / 1000);
+		/* Live: still acquiring and a fix in the last 2 s (1 Hz NMEA) */
+		v->fix_live = gsi.state == GPS_STATE_INFO_ACQUIRING && age_ms <= 2000;
+		v->lat = pos.latitude_ndeg / 1e9;
+		v->lon = pos.longitude_ndeg / 1e9;
+	}
+}
+
+/* Upstream's GPS commands (CommonGpsPrefs::handleCommand, upstream 6c9600e1
+ * and after) over ZephyrGPSManager. `gps period` is the duty interval of
+ * `set gps duty` (prefs gps_interval). False: not one of them. LLD 10. */
+bool CommonCLI::handleGpsCmd(uint32_t sender_timestamp, const char* command, char* reply) {
+	const size_t cap = replyCap(sender_timestamp);
+	const bool found = _sensors->isGPSDetected();
+
+	if (strcmp(command, "gps") == 0 || strcmp(command, "gps fix") == 0) {
+		if (!found) {
+			strcpy(reply, "Error, gps provider not found");
+			return true;
+		}
+		struct gps_cli_view v;
+		gpsCliView(&v);
+		if (command[3] == '\0') {
+			gps_cli_status(reply, cap, &v);
+		} else {
+			gps_cli_fix(reply, cap, &v);
+		}
+	} else if (memcmp(command, "gps once", 8) == 0) {  // before "gps on"
+		/* `-s` is accepted: every validated fix sets the clock here. */
+		switch (found ? gps_start_once() : GPS_ONCE_UNAVAILABLE) {
+			case GPS_ONCE_FROM_OFF:   strcpy(reply, "OK - turning on and acquiring"); break;
+			case GPS_ONCE_WOKEN:      strcpy(reply, "OK - waking gps"); break;
+			case GPS_ONCE_ALREADY_ON: strcpy(reply, "OK - gps already on"); break;
+			default:                  strcpy(reply, "Error, gps provider not found"); break;
+		}
+	} else if (memcmp(command, "gps on", 6) == 0 || memcmp(command, "gps off", 7) == 0) {
+		const bool on = command[5] == 'n';
+		if (_sensors->setSettingValue("gps", on ? "1" : "0")) {
+			_prefs->gps_enabled = on ? 1 : 0;
+			savePrefs();
+			strcpy(reply, "OK");
+		} else {
+			strcpy(reply, "Error, gps toggle not found");
+		}
+	} else if (strcmp(command, "gps period") == 0) {
+		uint32_t s = gps_get_poll_interval_sec();  // now-effective, as `get gps duty`
+		if (s == 0) strcpy(reply, "> 0 (continuous)");
+		else snprintf(reply, cap, "> %lu", (unsigned long)s);
+	} else if (memcmp(command, "gps period ", 11) == 0) {
+		uint32_t s;
+		if (!gps_cli_parse_period(command + 11, &s)) {
+			strcpy(reply, "Error, invalid gps period");
+		} else if (!found) {
+			strcpy(reply, "Error, gps provider not found");
+		} else {
+			/* As upstream: a period also turns the GPS on. Clamped as `set gps duty`. */
+			_prefs->gps_interval = clampGpsInterval(s);
+			gps_set_poll_interval_sec(_prefs->gps_interval);
+			_sensors->setSettingValue("gps", "1");
+			_prefs->gps_enabled = 1;
+			savePrefs();
+			strcpy(reply, "OK");
+		}
+	} else if (memcmp(command, "gps sync", 8) == 0) {
+		/* No LocationProvider::syncTime(): a fresh fix sets the clock
+		 * (gps_fix_callback in the mains). */
+		if (!found) {
+			strcpy(reply, "Error, gps provider not found");
+		} else if (!gps_is_enabled()) {
+			strcpy(reply, "Error, gps is off");
+		} else {
+			gps_request_fresh_fix();
+			strcpy(reply, "OK");
+		}
+	} else if (strcmp(command, "gps fix_stats") == 0) {
+		if (!found) {
+			strcpy(reply, "Error, gps provider not found");
+		} else {
+			struct gps_fix_stats st;
+			gps_get_fix_stats(&st);
+			gps_cli_fix_stats(reply, cap, st.last_ttff_ms, st.max_ttff_ms,
+					  st.consecutive_fixes, st.consecutive_misses);
+		}
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+	} else if (memcmp(command, "gps guard", 9) == 0 || memcmp(command, "gps fence", 9) == 0 ||
+		   strcmp(command, "gps ref") == 0) {
+		if (!found) {
+			strcpy(reply, "Error, gps guard not supported");
+		} else if (strcmp(command, "gps guard") == 0) {
+			reply[0] = '>';
+			reply[1] = ' ';
+			gps_guard_format_status(reply + 2, cap - 2);
+		} else if (strcmp(command, "gps guard on") == 0 || strcmp(command, "gps guard off") == 0) {
+			const bool on = command[11] == 'n';
+			gps_guard_set_enabled(on);
+			_prefs->gps_guard = on ? 1 : 0;
+			savePrefs();
+			strcpy(reply, "OK");
+		} else if (strcmp(command, "gps guard accept") == 0) {
+			switch (gps_guard_accept()) {
+				case 0:       strcpy(reply, "OK - clock set from GPS"); break;
+				case -ENOENT: strcpy(reply, "Error, no time alert"); break;
+				default:      strcpy(reply, "Error, no current trusted fix with the alerted time"); break;
+			}
+		} else if (strcmp(command, "gps fence") == 0) {
+			snprintf(reply, cap, "> %lu", (unsigned long)gps_guard_get_fence());
+		} else if (memcmp(command, "gps fence ", 10) == 0) {
+			char* end;
+			unsigned long metres = strtoul(command + 10, &end, 10);
+			if (command[10] < '0' || command[10] > '9' || *end != '\0' ||
+			    metres > GPS_GUARD_FENCE_MAX_M) {
+				strcpy(reply, "Error, invalid fence");
+			} else {
+				gps_guard_set_fence((uint32_t)metres);
+				_prefs->gps_fence = (int32_t)metres;
+				savePrefs();
+				strcpy(reply, "OK");
+			}
+		} else if (strcmp(command, "gps ref") == 0) {
+			double lat, lon;
+			gps_guard_get_reference(&lat, &lon);
+			snprintf(reply, cap, "> %.6f, %.6f", lat, lon);
+		} else {
+			return false;
+		}
+#endif
+	} else if (strcmp(command, "gps diag") == 0) {
+		/* Upstream asks the LocationProvider; here the GPS manager formats
+		 * the fields it has (see gps_format_diagnostics). */
+		if (!found) {
+			strcpy(reply, "Error, gps provider not found");
+		} else {
+			int n = snprintf(reply, cap, "> req:%u ", gps_is_enabled() ? 1U : 0U);
+			if (n > 0 && (size_t)n < cap) {
+				gps_format_diagnostics(reply + n, cap - n);
+			}
+		}
+	} else {
+		return false;
+	}
+	return true;
+}
+
 bool CommonCLI::handleRadioCmd(uint32_t sender_timestamp, const char* command, char* reply) {
 	if (memcmp(command, "get ", 4) == 0) {
 		const char* config = &command[4];
@@ -1051,6 +1170,13 @@ void CommonCLI::handleGetCmd(uint32_t sender_timestamp, const char* command, cha
 		snprintf(reply, CLI_REPLY_SIZE, "> %u", (uint32_t)_prefs->flood_advert_interval);
 	} else if (memcmp(config, "advert.interval", 15) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %u", ((uint32_t)_prefs->advert_interval) * 2);
+	} else if (memcmp(config, "advert.loc", 10) == 0) {
+		switch (_prefs->advert_loc_policy) {
+			case ADVERT_LOC_NONE:  strcpy(reply, "> none"); break;
+			case ADVERT_LOC_PREFS: strcpy(reply, "> prefs"); break;
+			case ADVERT_LOC_SHARE: strcpy(reply, "> share"); break;
+			default: strcpy(reply, "Error, invalid policy");
+		}
 	} else if (memcmp(config, "guest.password", 14) == 0) {
 		snprintf(reply, CLI_REPLY_SIZE, "> %s", _prefs->guest_password);
 	} else if (sender_timestamp == 0 && memcmp(config, "prv.key", 7) == 0) {
@@ -1499,6 +1625,20 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 			savePrefs();
 			strcpy(reply, "OK");
 		}
+	} else if (memcmp(config, "advert.loc ", 11) == 0) {
+		/* As upstream bed72861; the same setting as `gps advert <policy>` */
+		if (memcmp(config + 11, "none", 4) == 0) {
+			_prefs->advert_loc_policy = ADVERT_LOC_NONE;
+		} else if (memcmp(config + 11, "share", 5) == 0) {
+			_prefs->advert_loc_policy = ADVERT_LOC_SHARE;
+		} else if (memcmp(config + 11, "prefs", 5) == 0) {
+			_prefs->advert_loc_policy = ADVERT_LOC_PREFS;
+		} else {
+			strcpy(reply, "Error, invalid policy");
+			return;
+		}
+		savePrefs();
+		strcpy(reply, "OK");
 	} else if (memcmp(config, "guest.password ", 15) == 0) {
 		StrHelper::strzcpy(_prefs->guest_password, &config[15], sizeof(_prefs->guest_password));
 		savePrefs();
@@ -1546,11 +1686,13 @@ void CommonCLI::handleSetCmd(uint32_t sender_timestamp, const char* command, cha
 	} else if (memcmp(config, "lat ", 4) == 0) {
 		_prefs->node_lat = cliIsDefault(&config[4]) ? cliDefaults()->node_lat
 													: atof(&config[4]);
+		gpsGuardReference(_prefs);
 		savePrefs();
 		strcpy(reply, "OK");
 	} else if (memcmp(config, "lon ", 4) == 0) {
 		_prefs->node_lon = cliIsDefault(&config[4]) ? cliDefaults()->node_lon
 													: atof(&config[4]);
+		gpsGuardReference(_prefs);
 		savePrefs();
 		strcpy(reply, "OK");
 	} else if (memcmp(config, "flood.max.advert ", 17) == 0) {

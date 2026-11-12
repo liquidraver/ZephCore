@@ -398,6 +398,66 @@
       "source": "tests/unit/telemetry_text_tests.cpp"
     },
     {
+      "id": "UNIT-GPSCLI-001",
+      "name": "Durations use one unit, rounded down, as upstream's formatDuration",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSCLI-002",
+      "name": "gps period takes digits with an optional s/m/h/d suffix and refuses anything else",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSCLI-003",
+      "name": "gps status line: on/off, activity, last fix and mode",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSCLI-004",
+      "name": "gps fix: live fix, last fix with age and acquisition time, or no fix",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSCLI-005",
+      "name": "gps fix_stats: rounded TTFF last/max, dashes before any fix, run counters",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSCLI-006",
+      "name": "Replies stay inside a small buffer, terminated",
+      "source": "tests/unit/gps_cli_text_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-001",
+      "name": "Five consistent fixes make a trusted fix; a duplicate GPS second does not count",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-002",
+      "name": "Satellites, HDOP, region, fence and jump reject a fix and restart the count",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-003",
+      "name": "GPS time: trusted fix, build-date window, 10 min step, then drift only",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-004",
+      "name": "A steady GPS-clock offset raises an alert after an hour; accept clears it",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-005",
+      "name": "Off: every fix and time passes; on again starts over",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
+      "id": "UNIT-GPSGUARD-006",
+      "name": "Haversine distance",
+      "source": "tests/unit/gps_guard_tests.cpp"
+    },
+    {
       "id": "UNIT-POLICY-001",
       "name": "Reply routing and scope truth tables",
       "source": "tests/unit/policy_tests.cpp"

@@ -150,6 +150,9 @@ struct NodePrefs {
 	 * state between fixes, longer ones power it off fully. 0 = always off. */
 	uint32_t gps_standby_max;
 	uint8_t advert_loc_policy;
+	/* GPS guard (CONFIG_ZEPHCORE_GPS_GUARD), upstream's gps.fence / gps.guard */
+	int32_t gps_fence;              // metres, 0 = off, -1 = Kconfig default
+	uint8_t gps_guard;              // 1 = on
 	uint32_t discovery_mod_timestamp;
 	float adc_multiplier;
 	char owner_info[120];
@@ -342,6 +345,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->buzzer_quiet        = saneBool<uint8_t>(p->buzzer_quiet, 0);
 	p->gps_enabled         = saneBool<uint8_t>(p->gps_enabled, 0);
 	p->gps_enabled_set     = saneBool<uint8_t>(p->gps_enabled_set, 0);
+	p->gps_guard           = saneBool<uint8_t>(p->gps_guard, 1);
+	if (p->gps_fence < -1 || p->gps_fence > 20000000) p->gps_fence = -1;
 	p->auto_shutdown_set   = saneBool<uint8_t>(p->auto_shutdown_set, 0);
 	p->rx_duty_cycle       = saneBool<uint8_t>(p->rx_duty_cycle, 0);
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
@@ -461,6 +466,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->gps_interval = 300;        // 5 minutes
 	prefs->gps_standby_max = GPS_STANDBY_MAX_DEFAULT_SEC;
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;
+	prefs->gps_fence = -1;
+	prefs->gps_guard = 1;
 	prefs->adc_multiplier = 0.0f;
 	prefs->rx_boost = 1;              // Default to boosted RX for better sensitivity
 	/* Default ON: the FEM's chip-enable has always been asserted for RX on the

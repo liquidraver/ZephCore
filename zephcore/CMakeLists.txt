@@ -428,6 +428,7 @@ target_sources(app PRIVATE adapters/clock/ZephyrRTCDiscover.c)
 
 # SPA06-003 barometer. No upstream Zephyr driver; compiles to nothing when no
 # goertek,spa06 node is present.
+target_sources_ifdef(CONFIG_ZEPHCORE_GPS_GUARD app PRIVATE helpers/gps_guard.cpp)
 target_sources_ifdef(CONFIG_SENSOR app PRIVATE adapters/sensors/spa06.c)
 
 # T1000-E onboard NTC + photocell on the SAADC. Same deal: compiles to nothing
@@ -573,6 +574,7 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     helpers/compat/SHA256.cpp
     helpers/compat/ZephyrFS.cpp
     helpers/CommonCLI.cpp
+    helpers/gps_cli_text.cpp
   )
   # Headless build (e.g. native-Linux SBC): no display/buttons/buzzer, so the
   # real ui_* implementation (helpers/ui-button or helpers/ui-joystick) isn't
@@ -664,6 +666,7 @@ else()
     # must be compiled unconditionally. Builds without CONFIG_LOG/COMPANION_USB/
     # COMPANION_SERIAL (e.g. plain ESP32/S3 companions) failed to link otherwise.
     helpers/CommonCLI.cpp
+    helpers/gps_cli_text.cpp
   )
   # Companion transports: main_companion.cpp registers every one the build
   # has in upstream's MultiSerialInterface — BLE NUS when there is a

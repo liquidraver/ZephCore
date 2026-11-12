@@ -411,6 +411,11 @@ static void gps_event_callback(void)
 
 static RepeaterDataStore data_store;
 
+static uint32_t rtc_now(void)
+{
+	return rtc_clock.getCurrentTime();
+}
+
 /* GPS fix callback (main thread, from gps_process_event()) - syncs RTC from
  * GPS time.
  * Servers do NOT update prefs lat/lon from GPS — prefs coordinates are the
@@ -669,6 +674,7 @@ int server_main(const ServerRole &role)
 	if (gps_is_available()) {
 		gps_set_fix_callback(gps_fix_callback);
 		gps_set_event_callback(gps_event_callback);
+		gps_set_clock_source(rtc_now);
 	}
 
 	/* Initialize UI (display + buttons).  Shows splash screen, then auto-

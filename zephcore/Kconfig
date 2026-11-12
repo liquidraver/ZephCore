@@ -1136,6 +1136,62 @@ config ZEPHCORE_GPS_REAPPLY
 	  Turn it off in a board.conf only with a reason, e.g. a CASIC board
 	  proven to lose fixes to the navigation restart PCAS04 triggers.
 
+config ZEPHCORE_GPS_GUARD
+	bool "GPS anti-spoofing guard (upstream GPS_GUARD)"
+	depends on GNSS
+	help
+	  Check every GPS fix and GPS time before they are used. A fix is
+	  rejected for fewer than 4 satellites, HDOP above 4.0, a position
+	  outside the region box (ZEPHCORE_GPS_GUARD_REGION) or the fence
+	  around the configured lat/lon (repeater and room server), or a jump
+	  faster than 250 km/h from the last trusted fix; five consecutive
+	  fixes within 100 m make it trusted. Untrusted fixes set neither the
+	  position nor the clock. GPS time is taken only with a current
+	  trusted fix, not before the build date, at most 10 minutes off a
+	  plausible clock, and after the first sync only by clock drift; a
+	  steady disagreement raises an alert that `gps guard accept` clears.
+
+	  CLI: gps guard [on|off|accept], gps fence [<m>], gps ref. Saved as
+	  gps.guard and gps.fence in prefs.json, as upstream.
+
+config ZEPHCORE_GPS_GUARD_FENCE_M
+	int "GPS guard: default fence radius in metres (0 = off)"
+	depends on ZEPHCORE_GPS_GUARD
+	default 1000
+	range 0 20000000
+	help
+	  Fixes further than this from the configured lat/lon are rejected.
+	  Only when a reference is set (lat/lon not 0,0, servers only).
+	  `gps fence <m>` overrides it and is saved.
+
+config ZEPHCORE_GPS_GUARD_REGION
+	bool "GPS guard: reject fixes outside a lat/lon box"
+	depends on ZEPHCORE_GPS_GUARD
+
+if ZEPHCORE_GPS_GUARD_REGION
+
+config ZEPHCORE_GPS_GUARD_LAT_MIN_E6
+	int "Region: southern edge, micro-degrees"
+	range -90000000 90000000
+	default -90000000
+
+config ZEPHCORE_GPS_GUARD_LAT_MAX_E6
+	int "Region: northern edge, micro-degrees"
+	range -90000000 90000000
+	default 90000000
+
+config ZEPHCORE_GPS_GUARD_LON_MIN_E6
+	int "Region: western edge, micro-degrees"
+	range -180000000 180000000
+	default -180000000
+
+config ZEPHCORE_GPS_GUARD_LON_MAX_E6
+	int "Region: eastern edge, micro-degrees"
+	range -180000000 180000000
+	default 180000000
+
+endif # ZEPHCORE_GPS_GUARD_REGION
+
 endmenu
 
 menu "WiFi OTA Update"

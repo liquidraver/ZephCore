@@ -852,6 +852,11 @@ static void gps_event_callback(void)
 	k_event_post(&mesh_events, MESH_EVENT_GPS_ACTION);
 }
 
+static uint32_t rtc_now(void)
+{
+	return rtc_clock.getCurrentTime();
+}
+
 /* A validated fix (main thread, from gps_process_event()): set the clock and
  * the node position. */
 static void gps_fix_callback(double lat, double lon, int64_t utc_time)
@@ -999,6 +1004,7 @@ int main(void)
 		gps_set_enable_callback(gps_enable_callback);
 		gps_set_fix_callback(gps_fix_callback);
 		gps_set_event_callback(gps_event_callback);
+		gps_set_clock_source(rtc_now);
 	}
 
 	if (env_sensors_available()) {
@@ -1136,6 +1142,13 @@ int main(void)
 	/* The GPS is powered at boot: match its power to prefs, then start the
 	 * state machine if enabled. */
 	if (gps_is_available()) {
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		/* No reference on a companion: its lat/lon follows the GPS. */
+		gps_guard_set_enabled(companion_mesh.prefs.gps_guard != 0);
+		if (companion_mesh.prefs.gps_fence >= 0) {
+			gps_guard_set_fence((uint32_t)companion_mesh.prefs.gps_fence);
+		}
+#endif
 		gps_set_poll_interval_sec(companion_mesh.prefs.gps_interval);
 		gps_set_standby_max_sec(companion_mesh.prefs.gps_standby_max);
 		gps_ensure_power_state(companion_mesh.prefs.gps_enabled);

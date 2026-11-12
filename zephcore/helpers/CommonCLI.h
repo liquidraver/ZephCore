@@ -144,6 +144,7 @@ class CommonCLI {
 	void savePrefs();
 	void scheduleReboot(uint8_t type);
 	bool handleRadioCmd(uint32_t sender_timestamp, const char* command, char* reply);
+	bool handleGpsCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleGetCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleSetCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleRegionCmd(uint32_t sender_timestamp, char* command, char* reply);

@@ -818,7 +818,7 @@ and xiao_esp32c3. Build with `boards/common/kiss_modem.conf`.
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
 System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
-GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
+GPS: `gps`, `gps on/off/sync/setloc/advert`, `gps fix/once/period/fix_stats/diag` (upstream's 1.18 GPS CLI, helpers/gps_cli_text.cpp), `gps guard [on|off|accept]`, `gps fence`, `gps ref` (`CONFIG_ZEPHCORE_GPS_GUARD` builds), `get gps`, `set gps duty <sec>`, `get|set advert.loc`
 Sensors: `sensor get/set/list` (upstream's `SensorManager` settings: `gps`)
 Companion extras: `get|set autoshutdown`, `get|set v.contact`, `get|set v.batteryalert`, `help`
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
@@ -889,7 +889,7 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - The SoC light-sleep lock is held only while ACQUIRING (`gps_hold_sleep_lock()`, tracked 1:1), never through standby
 - Boot probe (upstream's GPS detection): the first acquire window since boot must parse a GGA or RMC sentence
   (`zephcore_gnss_rx_count()`) within 10 s, or the module is powered off and `gps_is_available()` is false until the
-  next boot (`gps`: `Can't find GPS`); `prefs.gps_enabled` is kept. For boards whose optional GPS header is empty
+  next boot (`gps`: `Error, gps provider not found`); `prefs.gps_enabled` is kept. For boards whose optional GPS header is empty
   (LLD 10 §21)
 - Boot: servers apply `prefs.gps_enabled` like upstream's `applyGpsPrefs()` (`zc.gps_set` in prefs.json marks it a real choice; older files are upgraded to on once, because older firmware ran the GPS regardless). The observer parks its GPS (`gps_park()`)
 
@@ -900,7 +900,19 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - **Duty cycling** (`gps_wake_interval_ms > 0`): after acquiring 5 good fixes the GPS powers down; the state machine wakes it again after the configured standby interval. The fix callback fires and then the GPS sleeps.
 - **Always-on** (`gps_wake_interval_ms == 0`): the GPS never powers down. `consecutive_good_fixes` is reset after each promotion so the 5-fix gate cycles continuously, streaming fresh positions. Flash writes and fix callbacks are rate-limited to once per `gps_acquire_timeout_ms` to avoid hammering storage.
 
-`gps_set_poll_interval_sec(0)` switches to always-on live; persisted via `prefs.gps_interval` (set by `set gps duty 0`).
+`gps_set_poll_interval_sec(0)` switches to always-on live; persisted via `prefs.gps_interval` (set by `set gps duty 0` or `gps period 0`; prefs.json key `gps.int`).
+
+**One-shot (`gps once`, `gps_start_once()`)**
+
+From off, the GPS is powered on for one bounded acquire window (the cold-start one) and powered off again after a validated fix or the timeout, in either mode; `gps_enabled` is true meanwhile, prefs are not written. `gps on` during the window keeps it on (and drops the timeout when always-on); `gps off` ends it. In standby it wakes the GPS, while acquiring it extends the window, both as `gps_request_fresh_fix()`.
+
+**Fix statistics (`gps fix_stats`, `gps_get_fix_stats()`)**
+
+Per acquire window: the time from its start to its first good fix (4+ satellites), last and longest, and the run of windows with a good fix or ending without one. A window cut short by `gps off` counts as neither. RAM only.
+
+**GPS guard (`CONFIG_ZEPHCORE_GPS_GUARD`, off by default, upstream's `GPS_GUARD`)**
+
+`helpers/gps_guard.{h,cpp}` (`GpsGuard`, host-tested) checks every real fix in `gnss_data_cb` under `gps_mutex`: fewer than 4 satellites, HDOP above 4.0, outside the Kconfig region box, outside `gps fence` metres of the reference position (servers: the configured `lat`/`lon`; companions: none) or a jump faster than 250 km/h from the last trusted fix rejects it and restarts the five-fix count; five consecutive fixes within 100 m make it trusted. Only a trusted fix becomes `current_pos` and completes validation, so an untrusted one sets neither the position nor the clock. In `gps_process_event()` the GPS time is checked against the RTC (`gps_set_clock_source()`) before `gps_fix_cb` gets it: a current trusted fix, not before the build day minus one, at most 10 min from a plausible clock, after the first accepted sync only 5 s + 100 ppm of the time since. A rejected time is passed as 0 (position only) and clears `gps_has_time_sync()`, so the app or the mesh may set the clock. The same offset for an hour raises an alert (`gps guard`, a log warning); `gps guard accept` takes the GPS time. Any non-GPS clock set (`time_sync_report()`) drops the drift anchor. prefs.json `gps.guard` / `gps.fence`, upstream's keys, written only by guard builds.
 
 **Timeout split**
 
@@ -943,7 +955,7 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
 - Battery reading cached 10 s for every caller (UI, telemetry, stats, alerts), under a mutex
-- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), power latch released, System OFF
+- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), then the board's `zephcore,poweroff-gpios` driven inactive (a soft-power latch, or a GPIO-enabled rail the latch would keep on: RAK4631 P1.05 + WB_IO2, RAK3401 1W FEM enable + WB_IO2), System OFF
 - Upstream's pwrmgt getters: reset cause from `boot_info`, the last fatal error from `fatal_reboot.c`'s `__noinit` record (reason, pc, lr, thread; resolve pc with `addr2line` on the same build), shutdown reason from the `/lfs/shutdn` marker, battery voltage at boot
 
 **Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1 (the SoC's die sensor: the `die-temp0` alias, which is `coretemp` on ESP32-S3/C3/C6, else the Nordic nodelabel `temp`; omitted where there is none: classic ESP32, STM32WL, MG24). Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
@@ -1024,6 +1036,8 @@ Hardware buttons → Zephyr input subsystem → Longpress filter → Multi-tap f
 ```
 
 Color TFT panels (T114, T096, Wireless Tracker) are wrapped as 1bpp displays for CFB via the `zephcore,mono-tft` shim (`display_mono_tft.c`).
+
+E-paper (SSD16xx): the auto-off keeps the image and puts the controller in deep sleep (`ssd16xx_deep_sleep()`, patch 0009); a frame drawn while off wakes it and it sleeps again after. Upstream's `GxEPDDisplay::turnOff()` hibernate (#3793).
 
 ### 8.2 Pages (Button UI)
 
@@ -1141,7 +1155,7 @@ Applied automatically at CMake configure time; a failed patch aborts the configu
 | 0006-blobs-py | LOW | Fix `west blobs fetch` KeyError |
 | 0007-spi-gpio-native-linux | LOW | Wires native-Linux SPI/GPIO drivers into the Zephyr build |
 | 0008-flash-sim-per-node-file | LOW | Flash simulator defaults to per-node settings file (native Linux) |
-| 0009-display-ssd16xx-fill-ram-white | LOW | E-paper full-refresh-to-white anti-ghosting helper |
+| 0009-display-ssd16xx-fill-ram-white | LOW | E-paper helpers: `ssd16xx_fill_ram_white()` (full-refresh-to-white anti-ghosting) and `ssd16xx_deep_sleep()` (deep sleep mode 1 when the screen goes off; the next display call wakes it with a hardware reset and reloads the profile, RAM kept) |
 | 0010-uarte-pm-suspend-bounded-rxto-wait | MEDIUM | Bounds the nRF UARTE STOPRX/RXTO spin on PM suspend; unbounded upstream, wedges the mesh thread |
 | 0017-wifi-esp32-rx-never-block | MEDIUM | ESP32 Wi-Fi RX callback drops a frame instead of waiting 100 ms for a net buffer; the wait livelocked RX under load |
 | 0019-usb-cdc-acm-poll-out-flush | MEDIUM | USB CDC ACM: a full TX buffer is handed to the stack from `poll_out()` and `fifo_fill()`, and only the current buffer counts as free space while the bus is suspended. Without it console bursts are cut at 64 bytes and a companion can hang on its first reply after boot |
@@ -1176,7 +1190,7 @@ Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Ad
 | Board | SoC | Radio | GPS | Display | Notable extras |
 |-------|-----|-------|-----|---------|----------------|
 | RAK4631 / WisMesh Pocket | nRF52840 | SX1262 | u-blox MAX-7Q (opt) | WisBlock OLED (opt) | I2C sensors |
-| RAK3401 1W | nRF52840 | SX1262+SKY66122 (30dBm) | u-blox MAX-7Q (opt) | - | I2C sensors |
+| RAK3401 1W | nRF52840 | SX1262+SKY66122 (30dBm) | u-blox MAX-7Q (opt) | - | I2C sensors; on a RAK4631 core, its onboard SX1262 is put to cold sleep at boot (`board_init.c`) |
 | RAK WisMesh Tag | nRF52840 | SX1262 | AT6558R | - | Accelerometer, buzzer, multitap |
 | T1000-E | nRF52840 | **LR1110** | AG3335 | - | Buzzer, button, multitap |
 | SenseCAP MeshTracker X1 | nRF52840 | **LR2021** | AG3335M (L1+L5) | - | SPA06 barometer, DRV2605L vibration, YSN8900 RTC, QSPI 8MB, RGB LEDs, buzzer |

@@ -152,3 +152,26 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 - **LR1110 and LR2021 boards never transmit when the channel check itself fails.** If the listen-before-talk check did
   not complete, the node used to transmit anyway. It now restores reception and tries again later.
 - **LR1110 and LR2021 boards report signal-to-noise in quarter-dB steps**, like SX1262 boards.
+- **GPS commands follow MeshCore 1.18's.** `gps` now reads like `> on, waiting, 7 sats 3m ago, periodic (300s)`
+  (`> off, continuous` when off), and replies are `OK` or `Error, ...` as in MeshCore. New: `gps fix` (the last
+  position and its age), `gps once` (one fix now; a GPS that was off goes back off afterwards), `gps period <time>`
+  (MeshCore's name for `set gps duty`; takes `30m`, `48h`, `2d`, and also turns the GPS on) and `gps fix_stats`
+  (how long fixes take). A companion contact you gave remote CLI rights can now run these `gps` commands and
+  `get/set adc.multiplier` over the mesh, as on MeshCore. Scripts that read the old `gps` line (`on, active, fix, 7 sats`)
+  or the lowercase `ok` need updating.
+- **`get advert.loc` / `set advert.loc`.** MeshCore's new name for the location-in-adverts setting
+  (`none`, `share` or `prefs`) works on every node. `gps advert` still works and changes the same setting.
+- **GPS anti-spoofing guard, as a build option.** Builds with `CONFIG_ZEPHCORE_GPS_GUARD` (off in the
+  release builds, as MeshCore's `GPS_GUARD`) check each GPS fix before using it: enough satellites and precision,
+  no jumps faster than 250 km/h, and on repeaters and room servers no further than `gps fence` metres (1000 by
+  default) from the configured location. GPS time sets the clock only from a trusted fix and, once the clock is
+  right, only by small steps; a GPS that keeps disagreeing raises an alert that `gps guard accept` resolves. New
+  commands: `gps guard`, `gps guard on|off|accept`, `gps fence`, `gps ref`.
+- **E-paper boards (T-Echo, ThinkNode M1): the display controller sleeps while the screen is off.** The image
+  stays; the controller wakes on the next screen update. Saves a little standby current, as MeshCore now does.
+- **RAK3401 firmware on a RAK4631 core with a RAK13302: the core's own radio is put to sleep.** It used to idle
+  powered for as long as the board ran.
+- **RAK4631 and RAK3401 1W draw less when switched off.** `poweroff` and the low-battery shutdown left the
+  WisBlock slot power on, so a GPS module, slot sensors and display (and on the RAK3401 1W the amplifier's 5 V
+  supply) kept running while the node was off. They are now switched off too. MeshCore measured a RAK4631 with
+  GPS going from about 30 mA to about 1.3 mA when off.

@@ -21,6 +21,10 @@ void time_sync_report(enum time_sync_source src)
 {
 	s_last = src;
 	s_last_uptime = k_uptime_get();
+	if (src != TIME_SYNC_GPS) {
+		/* The GPS guard's drift anchor no longer describes this clock. */
+		gps_guard_clock_set_manually();
+	}
 }
 
 enum time_sync_source time_sync_get_source(void)
