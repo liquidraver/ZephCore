@@ -2,7 +2,7 @@
 # SPDX-License-Identifier: MIT
 
 description: |
-  Board power-latch release list.
+  Board power-latch and switched-rail release list.
 
   Lists GPIOs that must be driven to their INACTIVE level as the very last
   step before sys_poweroff(), after every other peripheral has been shut down
@@ -15,6 +15,11 @@ description: |
   real power-off: the SoC enters System OFF at ~1 uA, but nRF GPIO output
   latches persist across the transition, so the hold line stays asserted and
   the rail (plus whatever else it feeds) keeps draining the battery.
+
+  The same applies to a switched rail that is enabled by a GPIO at boot (a
+  gpio-hog or a regulator-fixed enable): the latch keeps it on through
+  System OFF unless it is listed here (RAK4631 / RAK3401 1W: WB_IO2, the
+  WisBlock 3V3_S rail).
 
   Order matters and is preserved: list downstream loads first and the rail
   latch itself last, so the board is quiesced before the supply is cut.

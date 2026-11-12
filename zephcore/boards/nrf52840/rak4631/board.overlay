@@ -170,6 +170,18 @@
 	};
 };
 
+/* Power-off: both hogged rails are driven low last, or the nRF's GPIO latch
+ * keeps them on through System OFF (GPS, slot sensors and display powered
+ * while "off"). Upstream drops P1.05 in RAK4631Board::initiateShutdown() and
+ * measured the 3V3_S cut at 29.7 -> 1.30 mA. LLD 10 §26. */
+/ {
+	poweroff_gpios: poweroff-gpios {
+		compatible = "zephcore,poweroff-gpios";
+		gpios = <&gpio1 5 GPIO_ACTIVE_HIGH>,   /* onboard RF switch supply */
+			<&gpio1 2 GPIO_ACTIVE_HIGH>;   /* WB_IO2: 3V3_S */
+	};
+};
+
 /*
   * GPS on UART1 - RAK1910 (u-blox MAX-7Q) at 9600 baud, Slot A.
   *
