@@ -35,6 +35,7 @@ add_executable(zephcore_unit
   unit/gps_guard_tests.cpp
   unit/kiss_modem_tests.cpp
   unit/chat_contacts_tests.cpp
+  unit/env_sensor_tests.cpp
   support/hash_capture.cpp
   support/identity_utils_boundary.cpp
   ${PRODUCTION}/src/Dispatcher.cpp
@@ -57,14 +58,18 @@ add_executable(zephcore_unit
   ${PRODUCTION}/helpers/gps_cli_text.cpp
   ${PRODUCTION}/helpers/gps_guard.cpp
   ${PRODUCTION}/app/KissModem.cpp
+  ${PRODUCTION}/adapters/sensors/ZephyrEnvSensors.cpp
 )
 target_compile_features(zephcore_unit PRIVATE cxx_std_17)
 target_compile_definitions(zephcore_unit PRIVATE CONFIG_ZEPHCORE_PACKET_LOGGING=0
   CONFIG_ZEPHCORE_UI_DESIGN_JOYSTICK=1 CONFIG_ZEPHCORE_UI_DESIGN_BUTTON=0)
+set_source_files_properties(${PRODUCTION}/adapters/sensors/ZephyrEnvSensors.cpp
+  PROPERTIES COMPILE_DEFINITIONS "CONFIG_SENSOR=1;CONFIG_PM_DEVICE=1;CONFIG_ZEPHCORE_SENSORS_LOG_LEVEL=0")
 target_include_directories(zephcore_unit PRIVATE
   "${CMAKE_CURRENT_BINARY_DIR}" support unit ${PRODUCTION} ${PRODUCTION}/include ${PRODUCTION}/helpers ${PRODUCTION}/helpers/compat
   ${PRODUCTION}/lib/monocypher
   ${PRODUCTION}/adapters/radio
+  ${PRODUCTION}/adapters/sensors
   ${PRODUCTION}/patches/zephyr-new/include ${PRODUCTION}/patches/zephyr-new/drivers/lora/lr11xx)
 if(MSVC)
   target_compile_options(zephcore_unit PRIVATE /W4)
