@@ -190,3 +190,6 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
   WisBlock slot power on, so a GPS module, slot sensors and display (and on the RAK3401 1W the amplifier's 5 V
   supply) kept running while the node was off. They are now switched off too. MeshCore measured a RAK4631 with
   GPS going from about 30 mA to about 1.3 mA when off.
+- **INA219 current sensors draw about 4 µA between readings instead of about 0.6 mA.** The chip is
+  now powered down after each telemetry reading and woken for the next one. Measured on a XIAO
+  nRF52840 solar repeater, where it was about 6% of the node's draw.

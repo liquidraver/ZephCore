@@ -1,4 +1,5 @@
 #pragma once
+#include <cerrno>
 #include <cstdint>
 // Uptime only, not a simulated Zephyr scheduler: the time-sync target uses
 // k_uptime_get(), the KISS modem k_uptime_get_32() and k_msleep(); each test

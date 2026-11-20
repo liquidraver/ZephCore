@@ -11,6 +11,7 @@
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
+#include <zephyr/pm/device.h>
 #include <math.h>
 #include <string.h>
 
@@ -117,6 +118,34 @@ static bool channel_float(const struct device *dev, enum sensor_channel chan, fl
 	return true;
 }
 
+/* Runs a PM action on a power monitor; other sensors are left alone. A driver
+ * without PM, or a part already in that state, counts as success. */
+static int power_monitor_pm(const struct sensor_entry *e, enum pm_device_action action)
+{
+#ifdef CONFIG_PM_DEVICE
+	if (e->kind == KIND_POWER || e->kind == KIND_POWER_3221) {
+		int rc = pm_device_action_run(e->dev, action);
+
+		if (rc != -ENOSYS && rc != -EALREADY) {
+			return rc;
+		}
+	}
+#else
+	ARG_UNUSED(e);
+	ARG_UNUSED(action);
+#endif
+	return 0;
+}
+
+static void power_monitor_suspend(const struct sensor_entry *e)
+{
+	int rc = power_monitor_pm(e, PM_DEVICE_ACTION_SUSPEND);
+
+	if (rc != 0) {
+		LOG_WRN("%s: suspend failed (%d)", e->dev->name, rc);
+	}
+}
+
 #endif /* HAS_ENV_SENSORS */
 
 int env_sensors_init(void)
@@ -160,6 +189,10 @@ int env_sensors_init(void)
 	}
 	probe(ina2xx, KIND_POWER, "ina2xx");
 
+	for (uint8_t i = 0; i < s_count; i++) {
+		power_monitor_suspend(&s_sensors[i]);
+	}
+
 	if (s_count == 0) {
 		LOG_INF("No environment sensors found");
 	}
@@ -186,15 +219,9 @@ bool env_sensor_is_board_local(int index)
 #endif
 }
 
-int env_sensor_read(int index, struct env_sensor_reading *r)
-{
-	memset(r, 0, sizeof(*r));
 #if HAS_ENV_SENSORS
-	if (index < 0 || index >= s_count) {
-		return -EINVAL;
-	}
-	const struct sensor_entry *e = &s_sensors[index];
-
+static int read_entry(const struct sensor_entry *e, struct env_sensor_reading *r)
+{
 	if (e->kind == KIND_POWER_3221) {
 		struct sensor_value sel = { .val1 = e->sub, .val2 = 0 };
 
@@ -253,6 +280,25 @@ int env_sensor_read(int index, struct env_sensor_reading *r)
 		break;
 	}
 	return 0;
+}
+#endif /* HAS_ENV_SENSORS */
+
+int env_sensor_read(int index, struct env_sensor_reading *r)
+{
+	memset(r, 0, sizeof(*r));
+#if HAS_ENV_SENSORS
+	if (index < 0 || index >= s_count) {
+		return -EINVAL;
+	}
+	const struct sensor_entry *e = &s_sensors[index];
+
+	int rc = power_monitor_pm(e, PM_DEVICE_ACTION_RESUME);
+
+	if (rc == 0) {
+		rc = read_entry(e, r);
+	}
+	power_monitor_suspend(e);
+	return rc;
 #else
 	ARG_UNUSED(index);
 	return -ENOTSUP;

@@ -1,0 +1,23 @@
+Subject: [PATCH] sensor: ina219: power down on PM suspend
+
+PM_DEVICE_ACTION_SUSPEND wrote INA219_MODE_SLEEP (0b100, "ADC off") to the
+configuration register. The datasheet specifies the low supply current only
+for power-down mode (0b000): 6 uA typ / 15 uA max, against 0.7 mA typ / 1 mA
+max otherwise. Suspend now writes INA219_MODE_OFF, the same as TURN_OFF.
+
+Resume already runs ina219_init(), which resets the part and rewrites the
+configuration and calibration registers, so nothing is lost across suspend.
+
+diff --git a/drivers/sensor/ti/ina219/ina219.c b/drivers/sensor/ti/ina219/ina219.c
+index 9d88e60dc..2ee3da40e 100644
+--- a/drivers/sensor/ti/ina219/ina219.c
++++ b/drivers/sensor/ti/ina219/ina219.c
+@@ -234,7 +234,7 @@ static int ina219_pm_action(const struct device *dev,
+ 	case PM_DEVICE_ACTION_RESUME:
+ 		return ina219_init(dev);
+ 	case PM_DEVICE_ACTION_SUSPEND:
+-		reg_val = INA219_MODE_SLEEP;
++		reg_val = INA219_MODE_OFF;
+ 		break;
+ 	case PM_DEVICE_ACTION_TURN_OFF:
+ 		reg_val = INA219_MODE_OFF;
