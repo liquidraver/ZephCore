@@ -186,15 +186,9 @@ bool env_sensor_is_board_local(int index)
 #endif
 }
 
-int env_sensor_read(int index, struct env_sensor_reading *r)
-{
-	memset(r, 0, sizeof(*r));
 #if HAS_ENV_SENSORS
-	if (index < 0 || index >= s_count) {
-		return -EINVAL;
-	}
-	const struct sensor_entry *e = &s_sensors[index];
-
+static int read_entry(const struct sensor_entry *e, struct env_sensor_reading *r)
+{
 	if (e->kind == KIND_POWER_3221) {
 		struct sensor_value sel = { .val1 = e->sub, .val2 = 0 };
 
@@ -253,6 +247,17 @@ int env_sensor_read(int index, struct env_sensor_reading *r)
 		break;
 	}
 	return 0;
+}
+#endif /* HAS_ENV_SENSORS */
+
+int env_sensor_read(int index, struct env_sensor_reading *r)
+{
+	memset(r, 0, sizeof(*r));
+#if HAS_ENV_SENSORS
+	if (index < 0 || index >= s_count) {
+		return -EINVAL;
+	}
+	return read_entry(&s_sensors[index], r);
 #else
 	ARG_UNUSED(index);
 	return -ENOTSUP;
