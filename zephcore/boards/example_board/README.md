@@ -6,7 +6,7 @@ This directory is the template for a new board. It is not a buildable board.
 |---|---|---|
 | [`board.conf`](board.conf) | always | Kconfig that cannot be derived from devicetree: name, SoftDevice ID, radio type |
 | [`board.overlay`](board.overlay) | always, unless a custom `.dts` carries everything | Devicetree: radio, flash layout, console, peripherals. Every example is an `#if 0` block taken from a real board |
-| [`partitions.overlay`](partitions.overlay) | ESP32-S3, ESP32-C3, ESP32-C6 | The flash map, shared by the app and MCUboot |
+| [`partitions.overlay`](partitions.overlay) | ESP32-S3, ESP32-C3, ESP32-C6, ESP32-S31 | The flash map, shared by the app and MCUboot |
 | [`zephcore.yml`](zephcore.yml) | always | The board manifest: registers the board for releases, the catalog and the docs |
 
 Looking for something else?
@@ -61,7 +61,7 @@ Two rules hold for both patterns:
 |---|---|---|
 | `boards/nrf52840/` | `nrf52_common.conf` | nRF52840 with the Adafruit UF2 bootloader |
 | `boards/nrf54l/` | `nrf54l_common.conf` | nRF54L15, nRF54LM20A |
-| `boards/esp32/` | `esp32_common.conf` (+ `esp32c3s3_common.conf` on S3 and C3) | ESP32, ESP32-S3, ESP32-C3, ESP32-C6 |
+| `boards/esp32/` | `esp32_common.conf` (+ `esp32c3s3_common.conf` on S3 and C3) | ESP32, ESP32-S3, ESP32-C3, ESP32-C6, ESP32-S31 |
 | `boards/mg24/` | `mg24_common.conf` | EFR32MG24 |
 | `boards/stm32wl/` | `stm32wl_common.conf` | STM32WL |
 
@@ -211,7 +211,9 @@ Only `lora0` is required. Everything else enables its feature by being present.
   build light sleep (off until the user sends `powersaving on`); it needs the same pin holds and wake pins and
   about 4 KB of free DRAM, which a WiFi + BLE companion without PSRAM pays for in contacts. Being opt-in, it may
   be declared before `light_sleep`. Either way, give NSS, RESET and every MCU-driven
-  RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start.
+  RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start. `wifi_ota: false` keeps the
+  repeater's Wi-Fi OTA off on a SoC that has no Wi-Fi driver yet (ESP32-S31); `ble_ota: false` is the
+  companion's equivalent ([ADR 0011](../../../docs/adr/0011-esp32-companion-ble-ota.md)).
 - **RAM, not flash, limits the companion.** Boards without PSRAM lower `MAX_CONTACTS`; the classic ESP32 also
   trims channels and the offline queue.
 - **Classic ESP32 PICO-D4** bootloops in QIO flash mode: `CONFIG_SOC_FAMILY_ESPRESSIF_FLASH_MODE_DIO=y`. Console and CLI

@@ -211,8 +211,10 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     # management, so these builds need --sysbuild. Not on the classic ESP32
     # (".../esp32/..."): with WiFi functional, the driver buffers + 64 KB OTA heap
     # overflow its DRAM by ~10 KB, so the classic repeater stays CLI-only on simple
-    # boot.
-    if(ZEPHCORE_BUILD_ROLE STREQUAL "repeater" AND NOT BOARD MATCHES "/esp32/")
+    # boot. A board whose SoC has no Wi-Fi driver yet opts out with
+    # `wifi_ota: false` in its zephcore.yml.
+    if(ZEPHCORE_BUILD_ROLE STREQUAL "repeater" AND NOT BOARD MATCHES "/esp32/"
+       AND NOT ZEPHCORE_BOARD_NO_WIFI_OTA)
         zephcore_add_conf(${_zc}/wifi_ota.conf)
         message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
     endif()

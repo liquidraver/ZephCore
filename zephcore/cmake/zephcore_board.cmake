@@ -13,6 +13,7 @@
 #          ZEPHCORE_BOARD_LIGHT_SLEEP_COMPANION  TRUE if the board manifest declares it
 #          ZEPHCORE_BOARD_WIFI         TRUE if the board manifest declares it
 #          ZEPHCORE_BOARD_NO_BLE_OTA   TRUE if the manifest says `ble_ota: false`
+#          ZEPHCORE_BOARD_NO_WIFI_OTA  TRUE if the manifest says `wifi_ota: false`
 #          zephcore_board_file(<out-var> <file-name>)
 #              absolute path of <file-name> inside the board dir, or "".
 
@@ -88,6 +89,7 @@ set(ZEPHCORE_BOARD_LIGHT_SLEEP FALSE)
 set(ZEPHCORE_BOARD_LIGHT_SLEEP_COMPANION FALSE)
 set(ZEPHCORE_BOARD_WIFI FALSE)
 set(ZEPHCORE_BOARD_NO_BLE_OTA FALSE)
+set(ZEPHCORE_BOARD_NO_WIFI_OTA FALSE)
 zephcore_board_file(_zb_manifest zephcore.yml)
 if(_zb_manifest)
     file(STRINGS "${_zb_manifest}" _zb_ls REGEX "^  light_sleep: true[ \t]*$")
@@ -105,5 +107,9 @@ if(_zb_manifest)
     file(STRINGS "${_zb_manifest}" _zb_nobleota REGEX "^  ble_ota: false[ \t]*$")
     if(_zb_nobleota)
         set(ZEPHCORE_BOARD_NO_BLE_OTA TRUE)
+    endif()
+    file(STRINGS "${_zb_manifest}" _zb_nowifiota REGEX "^  wifi_ota: false[ \t]*$")
+    if(_zb_nowifiota)
+        set(ZEPHCORE_BOARD_NO_WIFI_OTA TRUE)
     endif()
 endif()
