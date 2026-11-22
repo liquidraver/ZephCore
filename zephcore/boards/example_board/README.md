@@ -111,9 +111,8 @@ Set only when the hardware calls for it (details and the values used in the tree
 | `CONFIG_ZEPHCORE_DEFAULT_TX_POWER_DBM`, `_MAX_TX_POWER_DBM` | External PA: keep the chip below the PA's maximum input |
 | `CONFIG_ZEPHCORE_MAX_CONTACTS`, `_MAX_CHANNELS`, `_OFFLINE_QUEUE_SIZE` | RAM-bound boards (ESP32 without PSRAM, classic ESP32, STM32WL) |
 | `CONFIG_HEAP_MEM_POOL_SIZE` | nRF with a panel larger than 128x64 |
-| `CONFIG_ESPTOOLPY_FLASHSIZE_8MB` / `_16MB` | ESP32 with more than 4 MB flash |
-| `CONFIG_SPIRAM_MODE_OCT` | ESP32-S3 with 8 MB octal PSRAM (R8) |
-| `CONFIG_ESPTOOLPY_FLASHMODE_DIO` (+ `_QIO=n`) | Classic ESP32 PICO-D4 |
+| `CONFIG_SOC_FAMILY_ESPRESSIF_SPIRAM_MODE_OCT` | ESP32-S3 with 8 MB octal PSRAM (R8) |
+| `CONFIG_SOC_FAMILY_ESPRESSIF_FLASH_MODE_DIO` (+ `_QIO=n`) | Classic ESP32 PICO-D4 |
 
 Do not set what devicetree already decides (`ZEPHCORE_UI_DISPLAY`, `ZEPHCORE_UI_BUZZER`, `PWM`, `SPI`,
 `NORDIC_QSPI_NOR`, `ESP_SPIRAM`), and do not put role or debug policy in a board: roles, logging and `BT=n`
@@ -203,7 +202,7 @@ Only `lora0` is required. Everything else enables its feature by being present.
   | Part | PSRAM | `board.conf` |
   |---|---|---|
   | `R2` | 2 MB quad | nothing |
-  | `R8` | 8 MB octal | `CONFIG_SPIRAM_MODE_OCT=y` |
+  | `R8` | 8 MB octal | `CONFIG_SOC_FAMILY_ESPRESSIF_SPIRAM_MODE_OCT=y` |
 
 - **Manifest capabilities:** `wifi: true` gives the companion a WiFi transport and belongs only on boards with
   the RAM for WiFi and BLE together ([ADR 0009](../../../docs/adr/0009-wifi-companion-boards.md)).
@@ -215,7 +214,7 @@ Only `lora0` is required. Everything else enables its feature by being present.
   RF switch or FEM line `ESP32_GPIO_SLEEP_HOLD_EN` from the start.
 - **RAM, not flash, limits the companion.** Boards without PSRAM lower `MAX_CONTACTS`; the classic ESP32 also
   trims channels and the offline queue.
-- **Classic ESP32 PICO-D4** bootloops in QIO flash mode: `CONFIG_ESPTOOLPY_FLASHMODE_DIO=y`. Console and CLI
+- **Classic ESP32 PICO-D4** bootloops in QIO flash mode: `CONFIG_SOC_FAMILY_ESPRESSIF_FLASH_MODE_DIO=y`. Console and CLI
   are on `uart0`.
 - GPIO32 and up are on `&gpio1`: GPIO41 is `<&gpio1 9 ...>`.
 

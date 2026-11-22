@@ -15,46 +15,7 @@ get_filename_component(ZEPHCORE_MODULES_DIR "${APP_DIR}/../modules" ABSOLUTE)
 include("${APP_DIR}/cmake/zephyr_patches.cmake")
 include("${APP_DIR}/cmake/zephyr_new_files.cmake")
 
-# Auto-propagate flash size from board.conf to MCUboot.
-#
-# MCUboot is built as a separate image and does NOT inherit the app's board.conf
-# or esp32_common.conf. Boards with non-default flash sizes set
-# CONFIG_ESPTOOLPY_FLASHSIZE_<N>MB=y in their board.conf, but without this
-# block MCUboot builds with whatever its defconfig/Kconfig default is.
-# A mismatch between MCUboot's image header flash size and the actual hardware
-# causes the ROM bootloader to misconfigure the SPI flash controller, making
-# MCUboot hang at "spi_flash: detected chip:".
-#
-# We set mcuboot_EXTRA_CONF_FILE BEFORE find_package(Sysbuild) so it takes
-# priority — sysbuild_extensions.cmake uses CACHE INTERNAL (no FORCE) which
-# only writes if the variable is not already set.
-#
-# Static conf files (mcuboot_flashsize_*.conf) are used instead of generating
-# a temp file to avoid Windows line-ending issues with cmake file(WRITE).
-#
-# The board directory comes from the same resolver the app uses, so both images
-# always read the same board.
 include("${APP_DIR}/cmake/zephcore_board.cmake")
-zephcore_board_file(_board_conf board.conf)
-if(_board_conf)
-    file(READ "${_board_conf}" _board_conf_content)
-
-    set(_flashsize_fragment "")
-    foreach(_size 16MB 8MB 32MB 64MB 128MB)
-        if(_board_conf_content MATCHES "CONFIG_ESPTOOLPY_FLASHSIZE_${_size}=y")
-            string(TOLOWER "${_size}" _size_lower)
-            set(_flashsize_fragment
-                "${CMAKE_CURRENT_SOURCE_DIR}/mcuboot_flashsize_${_size_lower}.conf")
-            break()
-        endif()
-    endforeach()
-
-    if(_flashsize_fragment AND EXISTS "${_flashsize_fragment}")
-        set(mcuboot_EXTRA_CONF_FILE
-            "${CMAKE_CURRENT_SOURCE_DIR}/mcuboot.conf;${_flashsize_fragment}"
-            CACHE INTERNAL "MCUboot conf: global + flash size auto-propagated from board.conf")
-    endif()
-endif()
 
 # Share the app's flash partition layout with MCUboot.
 #

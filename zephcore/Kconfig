@@ -5,11 +5,11 @@
 # Kconfig.zephyr, because a choice takes its first matching default and the
 # driver's own ESP_WIFI_HEAP default is unconditional.
 choice ESP_WIFI_HEAP
-	default ESP_WIFI_HEAP_SPIRAM if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+	default ESP_WIFI_HEAP_SPIRAM if ZEPHCORE_COMPANION_WIFI && SOC_FAMILY_ESPRESSIF_SPIRAM
 endchoice
 
 config ESP32_WIFI_NET_ALLOC_SPIRAM
-	default y if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+	default y if ZEPHCORE_COMPANION_WIFI && SOC_FAMILY_ESPRESSIF_SPIRAM
 
 # WiFi companion on an ESP32-S3 without PSRAM: the WiFi heap is the system heap,
 # and Espressif's ADD_SIZE reservation (51 KB for WiFi alone) is sized for its
@@ -21,16 +21,16 @@ config ESP32_WIFI_NET_ALLOC_SPIRAM
 # ~12 KB of DRAM, spent on contacts. S3 only: C3/C6 and the classic ESP32 run
 # different BLE controllers with different heap needs, not measured here.
 config HEAP_MEM_POOL_IGNORE_MIN
-	default y if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default y if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_STATIC_RX_BUFFER_NUM
-	default 6 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 6 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM
-	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM
-	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 # Main thread stack. Measured 2026-09-24 (CONFIG_ZEPHCORE_MEM_STATS,
 # devdocs/tools/mem_load.py: fresh BLE pairing + bonded reconnects, protocol

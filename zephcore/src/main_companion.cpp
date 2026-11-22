@@ -577,7 +577,7 @@ static StaticPoolPacketManager packet_mgr;
  * offline queue are ~110 KB) in PSRAM, so WiFi and BLE fit in internal DRAM.
  * Safe: only the main thread touches it, never an ISR or a flash operation,
  * and the SoC boot zeroes .ext_ram.bss before any constructor runs. */
-#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && IS_ENABLED(CONFIG_ESP_SPIRAM)
+#if IS_ENABLED(CONFIG_ZEPHCORE_COMPANION_WIFI) && IS_ENABLED(CONFIG_SOC_FAMILY_ESPRESSIF_SPIRAM)
 #define COMPANION_MESH_SECTION __attribute__((section(".ext_ram.bss.companion_mesh")))
 #else
 #define COMPANION_MESH_SECTION
