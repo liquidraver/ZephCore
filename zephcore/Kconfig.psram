@@ -21,5 +21,5 @@
 
 config SOC_FAMILY_ESPRESSIF_SPIRAM
 	default y if (SOC_SERIES_ESP32 || SOC_SERIES_ESP32S2 || SOC_SERIES_ESP32S3 || \
-		     SOC_SERIES_ESP32C5) && \
+		     SOC_SERIES_ESP32C5 || SOC_SERIES_ESP32S31) && \
 		"$(dt_node_int_prop_int,$(dt_nodelabel_path,psram0),size)" != 0

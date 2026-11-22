@@ -1,0 +1,4 @@
+# ZephCore board manifest — schema in zephcore/scripts/board_manifest.py
+target: esp32s31_function_coreboard/esp32s31/hpcore
+capabilities:
+  wifi_ota: false

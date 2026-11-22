@@ -104,6 +104,7 @@ own, so a local build of the same board and role is the same firmware.
 | ESP32 companion | `west flash` (image at 0x0) | Simple boot, no MCUboot ([ADR 0001](adr/0001-esp32-boot-and-flash-layout.md)) |
 | ESP32-S3 companion | esptool on the ROM's USB-Serial-JTAG port | Native USB: esptool auto-reset does not work, enter the bootloader with `start dfu` or a 1200-baud touch ([ADR 0002](adr/0002-esp32s3-native-usb-companion.md)) |
 | ESP32 repeater (S3, C-series) | `west flash` after a `--sysbuild` build | MCUboot image; without `--sysbuild` the board silently stops enumerating USB |
+| ESP32-S31 repeater | `west flash` after a `--sysbuild` build | MCUboot at 0x2000 on this SoC; source-only, repeater only (no BLE/Wi-Fi driver yet) |
 | nRF54L | `zephyr.hex` over SWD | Build with `--no-sysbuild`; no USB peripheral, so no UF2 |
 | EFR32MG24 | `west flash --runner pyocd` | Needs the `hal_silabs` blobs |
 | STM32WL | `west flash` over SWD / ST-Link | No BLE or USB device: companion protocol and CLI run on USART1 |

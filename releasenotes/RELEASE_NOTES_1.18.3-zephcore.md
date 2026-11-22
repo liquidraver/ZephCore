@@ -121,6 +121,14 @@ wristband every few minutes, which showed up as dropped Bluetooth connections.
 - **The GPS works.** ZephCore switched the GPS off when it meant to switch it on, so the
   wristband never found its GPS and the app showed GPS as not supported.
 
+## ESP32-S31 bring-up (source-only)
+
+The Espressif ESP32-S31-Function-CoreBoard-1 with an SX1262 module on its J2 header builds as a
+repeater (`esp32s31_function_coreboard/esp32s31/hpcore`, `--sysbuild`). The SoC has no BLE controller
+or Wi-Fi driver in Zephyr yet, so there is no companion build and no Wi-Fi OTA; the CLI is on UART0.
+No firmware is published for it. Zephyr now comes from a pinned fork commit carrying the S31 port
+(ADR 0012); patch `0017` (ESP32 Wi-Fi RX) is gone because upstream fixed it.
+
 ## Other changes
 
 - **A node no longer falls silent after 25 days.** A node whose transmits had all gone out at the first try for

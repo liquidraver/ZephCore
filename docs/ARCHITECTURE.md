@@ -1137,6 +1137,7 @@ prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
 - **nRF54L15**: Same BLE controller as nRF52, CMSIS-DAP via SAMD11 bridge, no native USB
 - **nRF54LM20A** (the LR2021 EVK with a XIAO nRF54LM20A, its own board directory): built and flashed like the nRF54L15 (`--no-sysbuild`, CMSIS-DAP); source-only, no published firmware
 - **ESP32-C3/C6/S3**: Espressif proprietary BLE blob, 32KB heap, asserts disabled (blob IRQ false positives); simple-boot by default, MCUboot only with `--sysbuild` (releases; WiFi OTA on repeaters, BLE OTA on companions)
+- **ESP32-S31**: RISC-V, MCUboot at 0x2000 (ROM reserves 8 KB), 16 MB flash and octal PSRAM; repeater only (CLI on `uart0`) until the SoC gets a BLE controller and Wi-Fi driver, `wifi_ota: false` in its manifest; source-only. Zephyr comes from the fork pin in `west.yml` ([ADR 0012](adr/0012-zephyr-fork-pin-for-pre-upstream-soc.md))
 - **ESP32 classic (PICO-D4)**: much smaller DRAM — contact/queue caps shrunk in `board.conf`; console/CLI on `uart0` (no native USB); DIO flash mode required (QIO bootloops)
 - **EFR32MG24**: SiLabs proprietary BLE blob, 32KB heap, SEMAILBOX enabled for hardware TRNG/crypto entropy, ADC disabled (no battery divider), CMSIS-DAP via onboard SAMD11
 - **STM32WL (LoRa-E5)**: no BLE, no USB device — companion protocol and CLI run over USART1; 64KB SRAM caps contacts/queues hard; TRNG entropy; single app partition, flash via SWD
@@ -1177,6 +1178,7 @@ New drivers in `patches/zephyr-new/` (LR11xx, LR20xx, native-Linux SPI/GPIO, DTS
 **nRF52840 SD v7**: SoftDevice 156KB → App 676KB → NVS 16KB → LFS 128KB → UF2 48KB
 **ESP32 (4MB)**: Boot + App → LFS 192KB + NVS 16KB
 **ESP32-S3 (8/16MB)**: Boot + App → LFS 384KB + NVS 16KB
+**ESP32-S31 (16MB)**: MCUboot @0x2000 → App slots @0x10000 (2 × 7.75MB) → LFS 384KB → NVS 16KB
 **nRF54L15**: MCUboot 64KB → App 1272KB → LFS 92KB
 **EFR32MG24**: MCUboot 48KB (reserved) → App 1344KB → LFS 144KB
 **STM32WL**: App at flash origin → LFS (no bootloader)
@@ -1213,6 +1215,7 @@ Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Ad
 | XIAO ESP32-C3 | ESP32-C3 | SX1262 | - | - | Contacts capped at 300 |
 | XIAO ESP32-C6 | ESP32-C6 | SX1262 | - | - | - |
 | LilyGo TLoRa C6 | ESP32-C6 | SX1262 | - | - | - |
+| ESP32-S31-Function-CoreBoard-1 | ESP32-S31 | SX1262 (header module) | - | - | Repeater only, source-only |
 | XIAO ESP32-S3 | ESP32-S3 | SX1262 | - | - | 8MB flash, 8MB PSRAM |
 | Station G2 | ESP32-S3 | SX1262+PA | UART GNSS | OLED (SH1106) | 16MB flash, 8MB PSRAM |
 | Heltec V3 | ESP32-S3 | SX1262 | - | OLED (SSD1306) | Console on `uart0` |
