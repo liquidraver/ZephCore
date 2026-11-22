@@ -22,7 +22,7 @@ WiFi + BLE on every board that can hold both; fewer contacts on the no-PSRAM one
 
 ## Consequences
 
-Watch patch `0017` on every west update: upstream's RX path still blocks for 100 ms.
+Patch `0017` was dropped on the 2026-11 bump: upstream `30ccc940f63` no longer blocks the RX path.
 
 The four no-PSRAM WiFi boards also go without BLE OTA (`ble_ota: false`, 2026-10-26): it needs about 6 KB
 more DRAM than they have at these contact counts, and the contacts were kept ([ADR 0011](0011-esp32-companion-ble-ota.md)).

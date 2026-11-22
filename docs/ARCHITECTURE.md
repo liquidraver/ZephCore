@@ -1157,7 +1157,6 @@ Applied automatically at CMake configure time; a failed patch aborts the configu
 | 0008-flash-sim-per-node-file | LOW | Flash simulator defaults to per-node settings file (native Linux) |
 | 0009-display-ssd16xx-fill-ram-white | LOW | E-paper helpers: `ssd16xx_fill_ram_white()` (full-refresh-to-white anti-ghosting) and `ssd16xx_deep_sleep()` (deep sleep mode 1 when the screen goes off; the next display call wakes it with a hardware reset and reloads the profile, RAM kept) |
 | 0010-uarte-pm-suspend-bounded-rxto-wait | MEDIUM | Bounds the nRF UARTE STOPRX/RXTO spin on PM suspend; unbounded upstream, wedges the mesh thread |
-| 0017-wifi-esp32-rx-never-block | MEDIUM | ESP32 Wi-Fi RX callback drops a frame instead of waiting 100 ms for a net buffer; the wait livelocked RX under load |
 | 0019-usb-cdc-acm-poll-out-flush | MEDIUM | USB CDC ACM: a full TX buffer is handed to the stack from `poll_out()` and `fifo_fill()`, and only the current buffer counts as free space while the bus is suspended. Without it console bursts are cut at 64 bytes and a companion can hang on its first reply after boot |
 
 **One patch per file.** No upstream file is touched by more than one patch, so
@@ -1167,6 +1166,8 @@ lines. Consolidated 2026-08-20 (15 → 9): `0002` folded into `0001`, and
 in that patch's preamble. `0002` is a deliberate numbering gap. Add a new
 sx126x fix by regenerating `0003`, never by stacking an `0016` on it — see
 `WEST_UPDATE.md`.
+
+`0017-wifi-esp32-rx-never-block` was dropped on the 2026-11 bump: upstream `30ccc940f63` makes the RX callback allocate with `K_NO_WAIT` and count the drops.
 
 New drivers in `patches/zephyr-new/` (LR11xx, LR20xx, native-Linux SPI/GPIO, DTS bindings) are copied — not patched — into the Zephyr tree at configure time.
 
