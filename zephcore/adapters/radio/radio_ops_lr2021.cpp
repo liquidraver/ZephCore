@@ -50,10 +50,11 @@ const LoRaRadioOps kLoRaRadioOps = {
 	.cad_base_peak = lr20xx_cad_base_peak,
 	.cad_peak_min = lr20xx_cad_peak_min,
 	.cad_peak_max = lr20xx_cad_peak_max,
-	.post_begin = nullptr,
 	.side_detectors = lr20xx_configure_side_detectors,
 	.reset_stats = lr20xx_reset_freq_offset,
 	.format_freq_error = lr2021_format_freq_error,
+	.lbt_rx_evidence = nullptr,
+	.last_snr_x4 = lr20xx_get_last_snr_x4,
 };
 
 } /* namespace mesh */

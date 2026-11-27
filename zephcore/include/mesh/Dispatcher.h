@@ -89,8 +89,9 @@ public:
   // Radio not command-ready (e.g. BUSY high); the Dispatcher defers TX.
   virtual bool isRadioReady() { return true; }
 
-  // Reset the radio into a known good RX state: called on CAD timeout, when
-  // isReceiving() stayed true past getCADFailMaxDuration(). Radios that can
+  // Reset the radio into a known good RX state: called when isReceiving() kept
+  // deferring TX for getRxStuckDuration() with no reception ending (ZEPHCORE;
+  // upstream: getCADFailMaxDuration(), counted from the first hold). Radios that can
   // stall walk the chip cancel -> REST -> fresh RX, clearing IRQs and latches.
   virtual void recoverRxState() { }
 
@@ -113,6 +114,27 @@ public:
   // Human-readable status blocks; return chars written (0 = unsupported).
   virtual int formatCadStatus(char* buf, int cap) { return 0; }
   virtual int formatFreqErrorStatus(char* buf, int cap) { return 0; }
+  // LBT outcome counters (clear/busy/error/gate/busy-then-RX), appended to
+  // Dispatcher::formatLbtStatus(); 0 = none.
+  virtual int formatLbtCounters(char* buf, int cap) { return 0; }
+  virtual void resetLbtCounters() { }
+  // One LBT CAD plus the RX->TX turnaround: two nodes whose CADs start closer
+  // than this both read clear. Backoff slot width; 0 = unknown.
+  virtual uint32_t getLbtSlotMs() { return 0; }
+  // ZEPHCORE: LBT CAD length in symbols as programmed (0 = no CAD), and a RAM-only
+  // request for 4, 8 or 16 (LBT-logging trial builds); false = refused.
+  virtual uint8_t getLbtCadSymbols() { return 0; }
+  virtual bool setLbtCadSymbols(uint8_t n) { (void)n; return false; }
+  // Outcome of the last startSendRaw() as short text ("clr", "busy rssi=-97",
+  // "err=-116", "gate=rx"...), for the LBT diagnostic log; 0 = none.
+  virtual int formatLastTxAttempt(char* buf, int cap) { return 0; }
+  // Receptions that have ended (packet or CRC/header error), wrapping; a
+  // deferral waits for it to move. Constant = cannot tell (timer only).
+  virtual uint32_t getRxEndSeq() { return 0; }
+  // When the last reception ended, on the MillisecondClock's time base
+  // (0 = unknown): the retry counts from here, not from when the mesh
+  // thread got round to noticing it.
+  virtual uint32_t getLastRxEndMillis() { return 0; }
 
   // Receiver hygiene (deaf-aware AGC unstick, temperature-drift recal). Both
   // sleep the radio, so called only from the maintenance tick.
@@ -144,9 +166,8 @@ public:
   virtual Packet* removeOutboundByIdx(int i) = 0;
   // ZEPHCORE: no inbound queue (queueInbound/getNextInbound) — received packets
   // are processed immediately; the adaptive contention window replaces upstream's
-  // score-based RX delay. Instead, schedule access for reactive backoff:
+  // score-based RX delay. Instead, schedule access:
   virtual uint32_t getOutboundSchedule(int i) const = 0;
-  virtual bool rescheduleOutbound(int i, uint32_t new_scheduled_for) = 0;
   virtual uint8_t peekNextOutboundPriority(uint32_t now) const = 0;
 };
 
@@ -187,6 +208,7 @@ class Dispatcher {
   uint32_t n_sent_flood, n_sent_direct;
   uint32_t n_recv_flood, n_recv_direct;
   uint32_t tx_budget_ms;
+  uint8_t tx_budget_frac;  // ZEPHCORE: refill remainder, hundredths of a ms
   uint32_t last_budget_update;
   uint32_t duty_cycle_window_ms;
 
@@ -195,6 +217,11 @@ class Dispatcher {
   uint8_t outbound_priority;
   uint32_t lbt_busy_start;
   uint32_t lbt_next_warn;
+  uint32_t lbt_streak_max;
+  uint8_t lbt_refusals;
+  bool tx_hold;               // next_tx_time is a live hold (a stale stamp must not hold)
+  bool wait_rx_end;           // deferred: retry once a reception ends
+  uint32_t rx_end_seq_seen;   // getRxEndSeq() when the deferral began
   int8_t cad_offset_shadow;
   bool cad_offset_shadow_valid;
   tx_queued_callback_t _tx_queued_cb;
@@ -224,6 +251,8 @@ protected:
 
   virtual uint32_t getCADFailRetryDelay() const;
   virtual uint32_t getCADFailMaxDuration() const;
+  // ZEPHCORE: ms since the last reception ended; 0 without a stamp or over 2 s old.
+  uint32_t msSinceRxEnd(uint32_t now) const;
   virtual int getInterferenceThreshold() const { return 0; }    // disabled by default
   virtual uint32_t getDutyCycleWindowMs() const { return 3600000; }
 
@@ -234,8 +263,19 @@ protected:
   // How long the driver's LBT may refuse every transmit before we conclude the
   // detector is too sensitive and relax it one step (see checkSend()).
   virtual uint32_t getTxStarvationDuration() const;
+  // ZEPHCORE: how long "receiving" may defer TX with no reception ending before
+  // the radio is judged stuck and recoverRxState() runs.
+  virtual uint32_t getRxStuckDuration() const;
   // Adaptive CAD moved the operating detPeak offset; subclasses persist it.
   virtual void onCadOffsetChanged(int8_t offset) { }
+  // LBT refusals since the last transmit that got out (saturating); logged as
+  // ref= on LBT lines, does not size the backoff window.
+  uint8_t getLbtRefusals() const { return lbt_refusals; }
+  // LBT diagnostic hook (CONFIG_ZEPHCORE_LBT_LOGGING builds only): every
+  // transmit attempt and hold-back, with the backoff picked. pkt is NULL for an
+  // RX-busy hold, where nothing has been dequeued yet.
+  virtual void logTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms) { }
+  void stampQueued(Packet* pkt, uint32_t delay_ms);  // ZEPHCORE: LBT logging
   void notifyTxQueued(uint32_t delay_ms) {
     if (_tx_queued_cb) _tx_queued_cb(delay_ms, _tx_queued_user_data);
   }
@@ -264,10 +304,15 @@ public:
   void resetStats() {
     n_sent_flood = n_sent_direct = n_recv_flood = n_recv_direct = 0;
     _err_flags = 0;
+    resetLbtStats();  // ZEPHCORE: `clear stats` covers `get lbt.stats` too
   }
 
   // ZEPHCORE: error flags and event-loop callbacks.
   uint16_t getErrFlags() const { return _err_flags; }
+  // `get lbt.stats`: refusal streaks and backoff, then the radio's counters.
+  int formatLbtStatus(char* buf, int cap);
+  void resetLbtStats();
+  uint32_t getLbtStreakMaxMs() const { return lbt_streak_max; }
   void setTxQueuedCallback(tx_queued_callback_t cb, void* user_data) {
     _tx_queued_cb = cb;
     _tx_queued_user_data = user_data;
@@ -292,7 +337,11 @@ private:
   // refusal escalation).
   uint32_t getMaxTxBudgetMs() const;
   bool txBudgetAllowsSend(uint32_t now);
-  void onLbtRefused(uint32_t now, int len);
+  void onLbtRefused(uint32_t now, int len, uint32_t rx_seq);
+  void waitForRxEnd(uint32_t rx_seq) { wait_rx_end = true; rx_end_seq_seen = rx_seq; }
+  // Hold every transmit until t. The only writer of next_tx_time after begin().
+  void holdTxUntil(uint32_t t) { next_tx_time = t; tx_hold = true; }
+  void noteTxAttempt(const Packet* pkt, const char* outcome, uint32_t retry_ms);
   void checkRecv();
   void checkSend();
 };

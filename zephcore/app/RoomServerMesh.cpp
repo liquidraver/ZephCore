@@ -42,6 +42,7 @@ LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 
 #define CLI_REPLY_DELAY_MILLIS      600
 #define LAZY_CONTACTS_WRITE_DELAY   5000
+#define REPLAY_BOOT_SLACK           10    // seconds below the boot clock where replay marks start
 #define SERVER_RESPONSE_DELAY       300
 #define TXT_ACK_DELAY               200
 
@@ -55,15 +56,6 @@ LOG_MODULE_REGISTER(zephcore_room, CONFIG_ZEPHCORE_MAIN_LOG_LEVEL);
 #define PUSH_ACK_TIMEOUT_FACTOR     2000
 #define POST_SYNC_DELAY_SECS        2
 
-
-/* Helper: futureMillis */
-static inline unsigned long futureMillis(uint32_t delta_ms) {
-  return k_uptime_get() + delta_ms;
-}
-
-static inline bool millisHasNowPassed(unsigned long target) {
-  return (int64_t)k_uptime_get() >= (int64_t)target;
-}
 
 static void radio_set_tx_power(uint8_t power_dbm) {
   /* TX power is configured as part of lora_config() in radio_set_params
@@ -316,6 +308,10 @@ void RoomServerMesh::logTxFail(mesh::Packet* pkt, int len) {
       pkt->payload_len);
   }
 }
+// ZEPHCORE: ours. LBT diagnostic lines (CONFIG_ZEPHCORE_LBT_LOGGING), helpers/PacketLog.h.
+void RoomServerMesh::logTxAttempt(const mesh::Packet* pkt, const char* outcome, uint32_t retry_ms) {
+  packet_log_lbt(outcome, pkt, getLbtRefusals(), retry_ms, _radio->getNoiseFloor());
+}
 
 // ZEPHCORE: no calcRxDelay() here: rx delay is replaced by the adaptive contention window
 
@@ -336,13 +332,14 @@ const char* RoomServerMesh::getLogDateTime() {
   return tmp;
 }
 
-// ZEPHCORE: ours. Adaptive contention window.
+// ZEPHCORE: ours. Flood and direct forwards: one LBT slot draw (LLD 02 §21).
 uint32_t RoomServerMesh::getRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveFloodDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
-// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RoomServerMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveDirectDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
 
 // ZEPHCORE: ours. The room server never forwards (UPSTREAM_TRACKER fad11c90).
@@ -392,6 +389,13 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
   }
 
   if (client == nullptr) {
+    /* No password is compared, the right one included, while the failed-login
+     * limit is spent: otherwise guessing is limited by airtime only. */
+    if (login_fail_limiter.blocked(getRTCClock()->getCurrentTime())) {
+      LOG_WRN("Room login rate-limited");
+      return;
+    }
+
     /* Constant-time compare against both stored passwords, zero-padded into
      * cleared buffers first. Admin grants ADMIN; the guest/room password grants
      * READ_WRITE; allow_read_only downgrades any other login to GUEST. */
@@ -411,6 +415,8 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
      * compares above still run unconditionally, so timing is unchanged.
      * allow_read_only below remains the intended way to run an open room. */
     if (_prefs.guest_password[0] == 0) guest_match = false;
+    /* Likewise an empty stored admin password: admin only through the ACL. */
+    if (_prefs.password[0] == 0) admin_match = false;
 
     uint8_t perms;
     if (admin_match) {
@@ -429,6 +435,7 @@ void RoomServerMesh::onAnonDataRecv(mesh::Packet* packet, const uint8_t* secret,
     }
 
     client = acl.putClient(sender, 0);
+    if (client->last_timestamp < _replay_floor) client->last_timestamp = _replay_floor;  // a new entry too
     if (sender_timestamp <= client->last_timestamp) {
       LOG_WRN("Possible login replay attack!");
       return;
@@ -746,8 +753,15 @@ void RoomServerMesh::begin(RepeaterDataStore* store) {
    * begin() — the radio reads freq/bw/sf/cr through _prefs during
    * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
   mesh::Mesh::begin();
-  _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
   acl.load(_store->getFS(), self_id);
+  /* last_timestamp is RAM only: every client starts at the boot clock less
+   * REPLAY_BOOT_SLACK, so frames recorded before that do not run again after a
+   * reboot (devdocs/lld/07-server-roles.md section 22). */
+  {
+    uint32_t now = getRTCClock()->getCurrentTime();
+    _replay_floor = now > REPLAY_BOOT_SLACK ? now - REPLAY_BOOT_SLACK : 0;
+    for (int i = 0; i < acl.getNumClients(); i++) acl.getClientByIdx(i)->last_timestamp = _replay_floor;
+  }
   region_map.load(_store->getFS());
 
   // establish default-scope from persisted default region (if any)
@@ -976,6 +990,8 @@ void RoomServerMesh::handleCommand(uint32_t sender_timestamp, char* command, cha
       if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
         if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
           if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+          ClientInfo* c = acl.getClient(pubkey, hex_len / 2);  // a new entry starts at the floor
+          if (c && c->last_timestamp < _replay_floor) c->last_timestamp = _replay_floor;
           strcpy(reply, "OK");
         } else {
           strcpy(reply, "Err - invalid params");

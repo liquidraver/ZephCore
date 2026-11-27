@@ -45,6 +45,10 @@ protected:
 		def("en", _p->gps_enabled);
 		def("int", _p->gps_interval);
 		def("adv_loc", _p->advert_loc_policy);
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		def("fence", _p->gps_fence);
+		def("guard", _p->gps_guard);
+#endif
 	}
 
 public:

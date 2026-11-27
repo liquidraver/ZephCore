@@ -73,6 +73,10 @@ void lr20xx_recalibrate(const struct device *dev);
  * every LBT CAD from the next one on, clamped to [lr20xx_cad_peak_min(),
  * lr20xx_cad_peak_max()]. */
 void lr20xx_cad_set_peak_offset(const struct device *dev, int8_t offset);
+/* SNR of the last received packet in quarter dB (the RX callback carries
+ * whole dB). Valid inside that callback, for the packet it is delivering. */
+int8_t lr20xx_get_last_snr_x4(const struct device *dev);
+
 uint8_t lr20xx_cad_base_peak(const struct device *dev);
 uint8_t lr20xx_cad_peak_min(void);
 uint8_t lr20xx_cad_peak_max(void);

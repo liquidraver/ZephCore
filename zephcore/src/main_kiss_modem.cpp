@@ -11,6 +11,8 @@
  * for the soonest modem or radio-maintenance deadline each wake KissModem::loop().
  */
 
+#include <string.h>
+
 #include <zephyr/kernel.h>
 #include <zephyr/devicetree.h>
 #include <zephyr/drivers/gpio.h>
@@ -102,9 +104,50 @@ static void wake_timer_fn(struct k_timer *timer)
 
 K_TIMER_DEFINE(wake_timer, wake_timer_fn, NULL);
 
-static mesh::ZephyrBoard board;
+/* KissModem reaches FEM gain through the board's `get/set radio.fem.*` commands
+ * (upstream's board CLI). Ours live in CommonCLI, so this board answers the RX one
+ * from the radio; no ZephCore board has a switchable FEM PA, so no `txgain`. */
+class KissBoard : public mesh::ZephyrBoard {
+public:
+	bool handleCommand(const char *command, uint32_t sender_timestamp, char *reply) override;
+};
+
+static KissBoard board;
 static const struct device *const lora_dev = DEVICE_DT_GET(DT_ALIAS(lora0));
 static mesh::LoRaRadio radio(lora_dev, board);
+
+/* Set at boot: the radio answers setFemRxEnable() only where the board wires an
+ * LNA bypass line. RAM only, as every KISS setting. */
+static bool fem_rx_supported;
+static bool fem_rx_on;
+
+bool KissBoard::handleCommand(const char *command, uint32_t sender_timestamp, char *reply)
+{
+	ARG_UNUSED(sender_timestamp);
+
+	if (!fem_rx_supported) {
+		return false;
+	}
+	if (strcmp(command, "get radio.fem.rxgain") == 0) {
+		strcpy(reply, fem_rx_on ? "> on" : "> off");
+		return true;
+	}
+	if (strncmp(command, "set radio.fem.rxgain ", 21) == 0) {
+		const char *arg = &command[21];
+		bool on = strcmp(arg, "on") == 0;
+
+		if (!on && strcmp(arg, "off") != 0) {
+			strcpy(reply, "Error: on or off");
+		} else if (radio.setFemRxEnable(on)) {
+			fem_rx_on = on;
+			strcpy(reply, "OK");
+		} else {
+			strcpy(reply, "Error: not applied");
+		}
+		return true;
+	}
+	return false;
+}
 static mesh::ZephyrRNG rng;
 static mesh::LocalIdentity identity;
 static RepeaterDataStore data_store;
@@ -150,6 +193,32 @@ static void on_get_stats(uint32_t *rx, uint32_t *tx, uint32_t *errors)
 	*rx = radio.getPacketsRecv();
 	*tx = radio.getPacketsSent();
 	*errors = radio.getPacketsRecvErrors();
+}
+
+/* Hands received packets to the modem while the host keeps up; the rest wait in
+ * the driver until HOST_TX_IDLE. */
+static void drain_rx(void)
+{
+	uint8_t rx_buf[256];
+	int rx_len;
+
+	while (!modem.isHostOutputBackedUp() &&
+	       (rx_len = radio.recvRaw(rx_buf, sizeof(rx_buf))) > 0) {
+		int8_t snr = (int8_t)(radio.getLastSNR() * 4);
+		int8_t rssi = (int8_t)radio.getLastRSSI();
+
+		modem.onPacketReceived(snr, rssi, rx_buf, rx_len);
+	}
+}
+
+static bool on_set_rx_boosted_gain(bool enable)
+{
+	return radio.setRxBoost(enable);
+}
+
+static bool on_get_rx_boosted_gain(void)
+{
+	return radio.isRxBoostEnabled();
 }
 
 static void arm_wake(void)
@@ -219,8 +288,10 @@ int main(void)
 	radio.setTxDoneCallback(post_lora_tx_done, nullptr);
 	radio.setPrefs(&prefs);
 	radio.begin();
-	radio.setRxBoost(prefs.rx_boost != 0);
-	radio.setFemRxEnable(prefs.fem_rxgain != 0);
+	bool rx_boost_supported = radio.setRxBoost(prefs.rx_boost != 0);
+
+	fem_rx_supported = radio.setFemRxEnable(prefs.fem_rxgain != 0);
+	fem_rx_on = prefs.fem_rxgain != 0;
 	apply_cad_prefs();
 
 	if (!host.begin(host_dev, post_host_rx, post_host_tx_idle)) {
@@ -231,6 +302,10 @@ int main(void)
 	modem.setTxPowerCallback(on_set_tx_power);
 	modem.setGetCurrentRssiCallback(on_get_current_rssi);
 	modem.setGetStatsCallback(on_get_stats);
+	modem.setPollRxCallback(drain_rx);
+	if (rx_boost_supported) {
+		modem.setRxBoostedGainCallbacks(on_set_rx_boosted_gain, on_get_rx_boosted_gain);
+	}
 	modem.begin();
 
 	for (;;) {
@@ -239,16 +314,7 @@ int main(void)
 		modem.loop();
 		modem.loop();
 
-		uint8_t rx_buf[256];
-		int rx_len;
-
-		while (!modem.isHostOutputBackedUp() &&
-		       (rx_len = radio.recvRaw(rx_buf, sizeof(rx_buf))) > 0) {
-			int8_t snr = (int8_t)(radio.getLastSNR() * 4);
-			int8_t rssi = (int8_t)radio.getLastRSSI();
-
-			modem.onPacketReceived(snr, rssi, rx_buf, rx_len);
-		}
+		drain_rx();
 
 		radio.triggerNoiseFloorCalibrate(0);
 		radio.cadMaintenance();

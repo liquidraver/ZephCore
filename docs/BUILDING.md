@@ -45,6 +45,7 @@ west build -b <board> zephcore --pristine -- -DEXTRA_CONF_FILE="boards/common/<f
 | `kiss_modem.conf` | KISS modem | Raw packets over USB or the console port, or a UART the devicetree names `zephcore,kiss-uart`; the console is off |
 | `debug.conf` | Logging and asserts | Combine with any role |
 | `packet_logging.conf` | One RAW/RX/TX line per packet | Logging subsystem stays off, so the console carries only these lines and the CLI |
+| `lbt_logging.conf` | One `LBT ...` line per transmit attempt and hold-back | Diagnostic; after `packet_logging.conf`. Version gets `+lbtlog`; mctomqtt ignores the lines |
 | `repeater_uplink.conf` | Repeater WiFi + MQTT uplink | ESP32, with `repeater.conf` |
 | `wifi_ota.conf` | WiFi AP + HTTP firmware update | ESP32 repeaters; needs MCUboot, so `--sysbuild` |
 | `wifi_companion.conf` | App over TCP on your WiFi | Added automatically for boards whose manifest declares `wifi: true` |
@@ -103,6 +104,7 @@ own, so a local build of the same board and role is the same firmware.
 | ESP32 companion | `west flash` (image at 0x0) | Simple boot, no MCUboot ([ADR 0001](adr/0001-esp32-boot-and-flash-layout.md)) |
 | ESP32-S3 companion | esptool on the ROM's USB-Serial-JTAG port | Native USB: esptool auto-reset does not work, enter the bootloader with `start dfu` or a 1200-baud touch ([ADR 0002](adr/0002-esp32s3-native-usb-companion.md)) |
 | ESP32 repeater (S3, C-series) | `west flash` after a `--sysbuild` build | MCUboot image; without `--sysbuild` the board silently stops enumerating USB |
+| ESP32-S31 repeater | `west flash` after a `--sysbuild` build | MCUboot at 0x2000 on this SoC; source-only, repeater only (no BLE/Wi-Fi driver yet) |
 | nRF54L | `zephyr.hex` over SWD | Build with `--no-sysbuild`; no USB peripheral, so no UF2 |
 | EFR32MG24 | `west flash --runner pyocd` | Needs the `hal_silabs` blobs |
 | STM32WL | `west flash` over SWD / ST-Link | No BLE or USB device: companion protocol and CLI run on USART1 |
@@ -146,6 +148,7 @@ Set them in a board conf or with `-DCONFIG_...=`. The full list with help texts 
 | `ZEPHCORE_GPS_FIRST_FIX_TIMEOUT_SEC` | 300 | Window for a fix after a full GPS power-off: boot, `gps on`, and every wake when the GPS interval is above `gps standby` |
 | `ZEPHCORE_REPEATER_GPS_INTERVAL_SEC` | 172800 | Repeater and room server GPS interval (48 h); 0 = always on |
 | `ZEPHCORE_PACKET_LOGGING` | n | Upstream-format packet log lines (`packet_logging.conf`) |
+| `ZEPHCORE_LBT_LOGGING` | n | Listen-before-talk diagnostic lines (`lbt_logging.conf`), needs packet logging |
 | `ZEPHCORE_WIFI_OTA` | n | WiFi AP + HTTP firmware update (ESP32 repeaters) |
 | `ZEPHCORE_BLE_OTA` | n | MCUmgr firmware update over BLE (ESP32 companions, `ble_ota.conf`) |
 | `ZEPHCORE_BLE_OTA_WINDOW_S` | 600 | How long `start ota` keeps the BLE OTA window open |
@@ -157,5 +160,5 @@ Set them in a board conf or with `-DCONFIG_...=`. The full list with help texts 
 Host regression tests live in `tests/` and run in CI under ASan and UBSan. Locally (Linux or WSL):
 
 ```bash
-python3 tests/run.py run --profile quick
+python3 tests/run.py run --sanitize
 ```

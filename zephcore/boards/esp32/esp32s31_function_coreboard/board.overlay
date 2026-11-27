@@ -1,0 +1,78 @@
+/*
+ * SPDX-License-Identifier: MIT
+ * ESP32-S31-Function-CoreBoard-1 + SX1262 LoRa module on the J2 header
+ *
+ * Pin mapping (J2 header pin -> GPIO -> SX1262):
+ *   26  GPIO20  SCK      (SPI2 IO MUX pad, SD_D0 label)
+ *   27  GPIO21  MOSI     (SPI2 IO MUX pad, SD_D1 label)
+ *   28  GPIO22  MISO     (SPI2 IO MUX pad, SD_D2 label)
+ *   29  GPIO23  NSS      (SPI2 IO MUX pad, SD_D3 label)
+ *   30  GPIO24  BUSY     (SD_CLK label)
+ *   31  GPIO25  DIO1     (SD_CMD label)
+ *   22  GPIO38  RESET    (&gpio1 6: gpio1 starts at GPIO32)
+ *   21  GPIO39  RXEN     (&gpio1 7) -- modules without RXEN: drop the property
+ *
+ * These are the header pins with no on-board load: GPIO4-19/35 are Ethernet,
+ * GPIO36/37 strapping, GPIO50-57 the audio codec and JTAG.
+ * Module assumptions: 1.8 V TCXO on DIO3, DIO2 drives the TX switch.
+ *
+ * Console: UART0 (board default, on-board USB-UART bridge).
+ */
+
+#include <zephyr/dt-bindings/lora/sx126x.h>
+
+/ {
+	aliases {
+		lora0 = &lora;
+	};
+};
+
+&pinctrl {
+	spim2_default: spim2_default {
+		group1 {
+			pinmux = <SPIM2_SCLK_GPIO20>,
+				 <SPIM2_MOSI_GPIO21>;
+		};
+		group2 {
+			pinmux = <SPIM2_MISO_GPIO22>;
+			input-enable;
+		};
+	};
+};
+
+&spi2 {
+	/* The S31 SoC dtsi does not declare the SPI child-address cells. */
+	#address-cells = <1>;
+	#size-cells = <0>;
+	pinctrl-0 = <&spim2_default>;
+	pinctrl-names = "default";
+	cs-gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;
+	status = "okay";
+
+	lora: lora@0 {
+		compatible = "semtech,sx1262";
+		reg = <0>;
+		spi-max-frequency = <8000000>;
+
+		reset-gpios = <&gpio1 6 GPIO_ACTIVE_LOW>;
+		busy-gpios = <&gpio0 24 GPIO_ACTIVE_HIGH>;
+		dio1-gpios = <&gpio0 25 (GPIO_PULL_DOWN | GPIO_ACTIVE_HIGH)>;
+
+		rx-enable-gpios = <&gpio1 7 GPIO_ACTIVE_HIGH>;
+		dio2-tx-enable;
+
+		dio3-tcxo-voltage = <SX126X_DIO3_TCXO_1V8>;
+		tcxo-power-startup-delay-ms = <10>;
+
+		rx-boosted;
+	};
+};
+
+/*
+ * Flash partitions live in partitions.overlay (this dir) so the identical map
+ * is fed to both the app and the MCUboot image — see that file and
+ * sysbuild/CMakeLists.txt.
+ */
+
+/* LittleFS auto-mount — standard /lfs mount point */
+#include "../../common/filesystem.dtsi"

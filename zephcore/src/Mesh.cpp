@@ -1,4 +1,5 @@
 #include <mesh/Mesh.h>
+#include <mesh/LbtBackoff.h>  // ZEPHCORE: post-busy retry delay
 //#include <Arduino.h>
 
 // ZEPHCORE: log module backing MESH_DEBUG_PRINTLN (see MeshCore.h).
@@ -15,7 +16,7 @@ void Mesh::loop() {
   Dispatcher::loop();
 }
 
-// ZEPHCORE: deadline-driven maintenance and the adaptive contention window.
+// ZEPHCORE: deadline-driven maintenance and the contention estimate.
 void Mesh::maintenanceLoop() {
   Dispatcher::maintenanceLoop();
   _contention.tick((uint32_t)_ms->getMillis());
@@ -26,44 +27,18 @@ uint32_t Mesh::msUntilNextMaintenance() {
                            _contention.msUntilNextTick((uint32_t)_ms->getMillis()));
 }
 
-// A duplicate of a flood we are about to retransmit was heard: defer our copy
-// by one backoff_multiplier x airtime window (per dupe, from NOW), within the
-// per-packet reactive headroom.
-void Mesh::extendPendingRetransmit(uint32_t hash32) {
-  uint32_t now = (uint32_t)_ms->getMillis();
-  int total = _mgr->getOutboundTotal();
-  for (int i = 0; i < total; i++) {
-    Packet* pkt = _mgr->getOutboundByIdx(i);
-    if (pkt && pkt->isRouteFlood() && ContentionTracker::computePacketHash32(pkt) == hash32) {
-      uint32_t airtime = _radio->getEstAirtimeFor(pkt->getRawLength());
-      uint16_t delay = _contention.getReactiveHeadroom(hash32, airtime);
-      if (delay == 0) break;
-      _mgr->rescheduleOutbound(i, now + delay);
-      _contention.addReactiveExtension(hash32, delay);
-      notifyTxQueued(delay);
-      break;
-    }
-  }
+// ZEPHCORE: a forward is released by the reception that carried it, together
+// with every node that heard it end, so it draws the same LBT slot window as a
+// post-busy retry, counted from that end (LLD 02 §21). At least 1 ms, so the
+// queue always schedules a wake.
+uint32_t Mesh::computeForwardDelay() {
+  uint32_t d = getCADFailRetryDelay();
+  uint32_t lag = msSinceRxEnd((uint32_t)_ms->getMillis());
+  return d > lag ? d - lag : 1;
 }
 
-// Adaptive flood jitter: 5 x airtime x EMA factor, capped at 6 airtimes and
-// 2000 ms absolute; +20 ms floor so downstream nodes are back in RX first.
-uint32_t Mesh::computeAdaptiveFloodDelay(const Packet* packet) {
-  float factor = getContentionTracker().getFloodDelayFactor();
-  uint32_t airtime = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
-  uint32_t max_jitter = (uint32_t)(5 * airtime * factor);
-  uint32_t airtime_cap = 6 * airtime;
-  if (max_jitter > airtime_cap) max_jitter = airtime_cap;
-  if (max_jitter > 2000) max_jitter = 2000;
-  return 20 + _rng->nextInt(0, max_jitter + 1);
-}
-
-// Direct: jitter around upstream's 0.3 factor, per-packet in [0.25, 0.40]; +20 ms floor.
-uint32_t Mesh::computeAdaptiveDirectDelay(const Packet* packet) {
-  uint32_t airtime = _radio->getEstAirtimeFor(packet->getPathByteLen() + packet->payload_len + 2);
-  uint32_t factor_milli = (uint32_t)_rng->nextInt(250, 401);
-  uint32_t max_jitter = (airtime * factor_milli) / 1000;
-  return 20 + _rng->nextInt(0, max_jitter + 1);
+uint32_t Mesh::lbtWindowSlots() const {
+  return lbtBackoffSlots(_contention.isWarmedUp() ? _contention.getContentionEstimate() : -1.0f);
 }
 
 bool Mesh::allowPacketForward(const mesh::Packet* packet) { 
@@ -82,7 +57,11 @@ uint8_t Mesh::getExtraAckTransmitCount() const {
 }
 
 uint32_t Mesh::getCADFailRetryDelay() const {
-  return _rng->nextInt(1, 4)*120;
+  // ZEPHCORE: random slot in a window sized from the contention estimate
+  // (mesh/LbtBackoff.h); upstream: _rng->nextInt(1, 4)*120.
+  uint32_t slot = _radio->getLbtSlotMs();
+  if (slot == 0) slot = LBT_BACKOFF_SLOT_FALLBACK_MS;
+  return lbtBackoffDelayMs(slot * lbtWindowSlots(), slot, _rng->nextInt(0, 0xFFFFFFFFu));
 }
 
 int Mesh::searchPeersByHash(const uint8_t* hash) {
@@ -110,6 +89,8 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
       uint16_t offset = (uint16_t)pkt->path_len << path_sz;
       if (offset >= len) {   // TRACE has reached end of given path
         onTraceRecv(pkt, trace_tag, auth_code, flags, pkt->path, &pkt->payload[i], len);
+      } else if (offset + (1 << path_sz) > len) {
+        // ZEPHCORE: the next hash entry must be whole
       } else if (self_id.isHashMatch(&pkt->payload[i + offset], 1 << path_sz) && allowPacketForward(pkt) && !_tables->wasSeen(pkt)) {
         _tables->markSeen(pkt);
         // append SNR (Not hash!)
@@ -166,13 +147,11 @@ DispatcherAction Mesh::onRecvPacket(Packet* pkt) {
 
   if (pkt->isRouteFlood() && filterRecvFloodPacket(pkt)) return ACTION_RELEASE;
 
-  // ZEPHCORE: record dupes for contention tracking + reactive backoff; on nodes
-  // that don't relay, track first hearings so the EMA still reflects contention.
+  // ZEPHCORE: count dupes for the contention EMA; on nodes that don't relay,
+  // track first hearings so the EMA still reflects contention.
   if (pkt->isRouteFlood()) {
     uint32_t h = ContentionTracker::computePacketHash32(pkt);
-    if (_contention.recordDupeIfTracked(h, (uint32_t)_ms->getMillis())) {
-      extendPendingRetransmit(h);
-    } else if (passivelyTrackFloods()) {
+    if (!_contention.recordDupeIfTracked(h, (uint32_t)_ms->getMillis()) && passivelyTrackFloods()) {
       _contention.trackRetransmit(h, (uint32_t)_ms->getMillis());
     }
   }

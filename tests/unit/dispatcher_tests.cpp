@@ -1,4 +1,7 @@
 #include "dispatcher_fixture.h"
+#include <mesh/LbtBackoff.h>
+#include <cstring>
+#include <set>
 using namespace test_support;
 
 TEST(dispatch_send, "UNIT-DISPATCH-001", "Immediate wake delayed dispatch and exactly-once completion") {
@@ -29,7 +32,9 @@ TEST(dispatch_timeout, "UNIT-DISPATCH-002", "TX timeout releases ownership and n
 TEST(dispatch_refusal, "UNIT-DISPATCH-003", "Driver refusal preserves priority schedule and accounting") {
     Fixture f; f.begin(); f.radio.accept = false;
     auto p = f.packet(); f.dispatcher.sendPacket(p, 3); f.dispatcher.loop();
-    CHECK(f.pool.getOutboundByIdx(0) == p && f.pool.getOutboundSchedule(0) == 200);
+    // Re-queued due now; the retry (200) is held by next_tx_time, so the wait
+    // for a reception end still sees a due packet.
+    CHECK(f.pool.getOutboundByIdx(0) == p && f.pool.getOutboundSchedule(0) == 100);
     CHECK(f.pool.peekNextOutboundPriority(200) == 3);
     CHECK(f.dispatcher.getTotalAirTime() == 0 && f.dispatcher.getNumSentFlood() == 0);
     f.clock.now = 199; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
@@ -64,7 +69,8 @@ TEST(dispatch_busy_recovery, "UNIT-DISPATCH-006", "Persistent RX busy recovers a
     Fixture f; f.begin(); f.radio.receiving = true;
     f.dispatcher.sendPacket(f.packet(), 0);
     f.clock.now = 101; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
-    f.clock.now = 4102; f.dispatcher.loop();
+    f.clock.now = 4102; f.dispatcher.loop(); CHECK(f.radio.recoveries == 0);
+    f.clock.now = 10102; f.dispatcher.loop();
     CHECK(f.radio.recoveries == 1 && f.radio.attempts == 1);
     CHECK((f.dispatcher.getErrFlags() & ERR_EVENT_CAD_TIMEOUT) != 0);
     f.complete(); CHECK(f.pool.getFreeCount() == 32);
@@ -185,4 +191,141 @@ TEST(dispatch_generated_rx, "UNIT-DISPATCH-017", "Generated dispatcher inputs ob
     // Packet::readFrom has a stricter nonempty-payload contract; don't conflate them.
     const uint8_t empty[] = {9, 0}; mesh::Packet p;
     CHECK(f.dispatcher.tryParsePacket(&p, empty, sizeof(empty)) && p.payload_len == 0);
+}
+TEST(dispatch_post_busy_hold, "UNIT-DISPATCH-018", "Busy deferral holds every transmit until the retry even after the channel clears") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 101);
+    f.radio.receiving = false; f.clock.now = 150; f.dispatcher.loop();  // RX ended
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 51);
+    f.clock.now = 200; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_lbt_backoff_state, "UNIT-DISPATCH-019", "LBT refusals are counted, RX busy is not, a send resets the count") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();         // RX-busy deferral
+    f.radio.receiving = false; f.radio.accept = false;
+    f.clock.now = 200; f.dispatcher.loop();                              // LBT refusal 1
+    f.clock.now = 300; f.dispatcher.loop();                              // LBT refusal 2
+    CHECK(f.dispatcher.refusals_seen == std::vector<uint8_t>({0, 0, 1}));
+    f.radio.accept = true; f.clock.now = 400; f.dispatcher.loop();
+    CHECK(f.radio.sent.size() == 1 && f.dispatcher.getLbtStreakMaxMs() == 200);
+    f.complete(); f.dispatcher.sendPacket(f.packet(), 0);
+    f.radio.accept = false; f.clock.now = 500; f.dispatcher.loop();
+    CHECK(f.dispatcher.refusals_seen.back() == 0);                       // the send reset it
+    f.radio.accept = true; f.clock.now = 600; f.dispatcher.loop(); f.complete();
+    CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_lbt_status, "UNIT-DISPATCH-020", "lbt.stats reports streaks, stays inside its buffer and clears with stats") {
+    Fixture f; f.begin(); f.radio.accept = false;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    f.clock.now = 200; f.dispatcher.loop(); f.clock.now = 250;
+    char buf[64];
+    int n = f.dispatcher.formatLbtStatus(buf, sizeof(buf));
+    CHECK(std::strcmp(buf, "streak:150ms max:150ms ref:2") == 0 && n == int(std::strlen(buf)));
+    char tiny[8];
+    n = f.dispatcher.formatLbtStatus(tiny, sizeof(tiny));
+    CHECK(n == 7 && std::strlen(tiny) == 7);
+    f.radio.accept = true; f.clock.now = 300; f.dispatcher.loop(); f.complete();
+    CHECK(f.dispatcher.getLbtStreakMaxMs() == 200);
+    f.dispatcher.resetStats(); CHECK(f.dispatcher.getLbtStreakMaxMs() == 0);
+}
+TEST(dispatch_rx_end_retry, "UNIT-DISPATCH-021", "A deferral retries one backoff after the reception ends, not on its own timer") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // hold-rx, fallback 200
+    f.radio.receiving = false; f.radio.rx_end_seq = 1;
+    f.clock.now = 150; f.dispatcher.loop();                            // reception ended
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 101);
+    f.clock.now = 200; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
+    f.clock.now = 250; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete();
+    // An LBT refusal waits for the packet it heard the same way, and the
+    // re-queued packet stays due so the end is noticed.
+    f.radio.accept = false; f.dispatcher.sendPacket(f.packet(), 0);
+    f.clock.now = 300; f.dispatcher.loop();                            // refused, retry 400
+    CHECK(f.radio.attempts == 2 && f.pool.getOutboundCount(300) == 1);
+    f.radio.accept = true; f.radio.rx_end_seq = 2;
+    f.clock.now = 330; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.clock.now = 400; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.clock.now = 430; f.dispatcher.loop(); CHECK(f.radio.attempts == 3);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_rx_stuck, "UNIT-DISPATCH-022", "Recovery needs 10 s of RX busy with no reception ending") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // busy since 100
+    f.clock.now = 6000; f.radio.rx_end_seq = 1; f.dispatcher.loop();  // one ended, the next began
+    f.clock.now = 6100; f.dispatcher.loop();                           // busy since 6100
+    f.clock.now = 15000; f.dispatcher.loop();
+    CHECK(f.radio.recoveries == 0 && f.radio.attempts == 0);
+    f.clock.now = 16200; f.dispatcher.loop();
+    CHECK(f.radio.recoveries == 1 && f.radio.attempts == 1);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(dispatch_rx_end_stamp, "UNIT-DISPATCH-023", "The retry counts from the stamped reception end, a stale stamp from now") {
+    Fixture f; f.begin(); f.radio.receiving = true;
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();       // hold at 100
+    f.radio.receiving = false; f.radio.rx_end_seq = 1; f.radio.rx_end_ms = 150;
+    f.clock.now = 190; f.dispatcher.loop();                            // noticed 40 ms late
+    CHECK(f.radio.attempts == 0 && f.dispatcher.wakes.back() == 61);   // due 150 + 100
+    f.clock.now = 249; f.dispatcher.loop(); CHECK(f.radio.attempts == 0);
+    f.clock.now = 250; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.complete();
+    f.radio.receiving = true; f.dispatcher.sendPacket(f.packet(), 0);
+    f.clock.now = 3000; f.dispatcher.loop();                           // hold
+    f.radio.receiving = false; f.radio.rx_end_seq = 2; f.radio.rx_end_ms = 500;
+    f.clock.now = 3010; f.dispatcher.loop();                           // stamp 2.5 s old: from now
+    f.clock.now = 3109; f.dispatcher.loop(); CHECK(f.radio.attempts == 1);
+    f.clock.now = 3110; f.dispatcher.loop(); CHECK(f.radio.attempts == 2);
+    f.complete(); CHECK(f.pool.getFreeCount() == 32);
+}
+TEST(lbt_backoff, "UNIT-LBT-001", "LBT backoff delays fill whole slots of a fixed window") {
+    using namespace mesh;
+    std::set<uint32_t> seen;
+    for (uint32_t rnd = 0; rnd < 1000; ++rnd) {
+        uint32_t d = lbtBackoffDelayMs(398, 12, rnd * 2654435761u);
+        CHECK(d >= 12 && d <= 396 && d % 12 == 0);
+        seen.insert(d);
+    }
+    CHECK(seen.size() == 33);                                          // every slot reachable
+    CHECK(lbtBackoffDelayMs(398, 0, 0) == 10);                         // fallback slot
+    CHECK(lbtBackoffDelayMs(5, 12, 0) == 12 && lbtBackoffDelayMs(5, 12, 1) == 24);
+    CHECK(lbtBackoffDelayMs(2500, 12, 0xFFFFFFFFu) <= 2500);          // slow preset: one packet
+}
+TEST(dispatch_hold_no_stale, "UNIT-DISPATCH-024", "A transmit hold ends at its time and does not return half a clock wrap later") {
+    Fixture f; f.begin();                                              // boot at 100, never defers
+    f.clock.now = 100u + 0x80000001u;                                  // 24.9 days of uptime
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 1); f.complete();
+    Fixture g; g.begin(); g.radio.receiving = true;
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();       // hold until 200
+    g.radio.receiving = false; g.clock.now = 200; g.dispatcher.loop();
+    CHECK(g.radio.attempts == 1); g.complete();
+    g.clock.now = 200u + 0x80000001u;                                  // 24.9 days after that hold
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();
+    CHECK(g.radio.attempts == 2); g.complete();
+    CHECK(g.pool.getFreeCount() == 32);
+}
+TEST(dispatch_budget_long_idle, "UNIT-DISPATCH-025", "Budget refill survives a long silence and keeps the division remainder") {
+    Fixture f; f.dispatcher.window = 3600000; f.begin(10);             // 360 s budget
+    f.radio.airtime = 400000;                                          // one send drains it
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop(); f.complete();
+    CHECK(f.dispatcher.getRemainingTxBudget() == 0);
+    f.radio.airtime = 100;
+    f.clock.now = 100u + 429496800u;                                   // 4.97 days: elapsed * 10 passes 2^32
+    f.dispatcher.sendPacket(f.packet(), 0); f.dispatcher.loop();
+    CHECK(f.radio.attempts == 2 && f.dispatcher.getRemainingTxBudget() == 360000);
+    f.complete();
+    Fixture g; g.begin(10);                                            // 100 ms budget, 50 ms threshold
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop(); g.complete();
+    g.dispatcher.sendPacket(g.packet(), 0); g.dispatcher.loop();       // budget 0: held
+    g.clock.now = 115; g.dispatcher.loop(); CHECK(g.dispatcher.getRemainingTxBudget() == 1);
+    g.clock.now = 130; g.dispatcher.loop(); CHECK(g.dispatcher.getRemainingTxBudget() == 3);  // 5 ms carried
+    g.clock.now = 600; g.dispatcher.loop(); CHECK(g.radio.attempts == 2);
+    g.complete(); CHECK(g.pool.getFreeCount() == 32);
+    Fixture h; h.begin(11);                                            // 110 ms budget
+    h.dispatcher.sendPacket(h.packet(), 0); h.dispatcher.loop(); h.complete();
+    h.dispatcher.sendPacket(h.packet(), 0);
+    for (uint32_t t = 100; t <= 200; t += 10) { h.clock.now = t; h.dispatcher.loop(); }
+    CHECK(h.radio.attempts == 1 && h.dispatcher.getRemainingTxBudget() == 21);  // 10 + 11 % of 100 ms
+    h.clock.now = 1000; h.dispatcher.loop(); h.complete(); CHECK(h.pool.getFreeCount() == 32);
 }

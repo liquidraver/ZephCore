@@ -253,17 +253,26 @@ loop():
      - Process immediately (no inbound queue / score-based RX delay: the
        adaptive contention window replaces upstream's rxdelay)
   4. checkSend(): Check outbound queue
-     - CAD: if channel busy (`isReceiving()` returns true or radio not ready),
-            retry every 100-200ms (jittered) up to 4s total. On 4s timeout,
+     - Busy: if `isReceiving()` is true or the radio is not ready, or the
+            driver's LBT refuses, wait for the reception to end
+            (`Radio::getRxEndSeq()` moves on every packet or RX error), then
+            a random backoff from that moment (`getLastRxEndMillis()`, the
+            stamp taken in the RX callback; `mesh/LbtBackoff.h`: whole slots
+            of one LBT CAD + turnaround, fixed window of 10 slots, 120 ms at
+            SF7/62.5; it does not widen with refusals). The
+            backoff drawn at the hold is the fallback when no reception
+            ends. Nothing transmits before the retry time. After 10 s (or 3
+            max-length packets) of `isReceiving()` with no reception ending,
             call `_radio->recoverRxState()` (cancel + restart, clears IRQ +
-            latch + grace timestamp) and re-wake the loop instead of falling
-            through to TX.
-     - Duty cycle: if exceeded, defer 5 seconds (admin packets exempt)
+            latch + grace timestamp) and try the transmit, which still has to
+            pass the final gate and the driver's LBT CAD: a CAD busy is never
+            transmitted over.
+     - Duty cycle: if the budget is short, wake when it has refilled (admin packets exempt)
      - Final `isReceiving()` check right before TX (closes timing gap)
      - Serialize and transmit
 ```
 
-**Duty Cycle**: Fixed 1-hour sliding window. Default 10%. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt.
+**Duty Cycle**: a budget of transmit time that holds at most one hour's allowance and refills at the duty percentage (exactly, at any loop rate). Default 10%; `zcDutyCyclePercent()` turns the airtime factor (0-9, every setter and the loader) into a whole percent, never 0. A transmit needs half a maximum packet's airtime in the budget. Admin packets (REQ, RESPONSE, ANON_REQ, CONTROL) are exempt. A busy deferral holds every transmit until its retry time (`tx_hold`); the hold ends when that time is reached.
 
 ### 4.6 Maintenance Loop
 
@@ -274,45 +283,34 @@ Called every ~5 seconds from the main event loop:
 3. **AGC reset** (`agcIdleMaintenance()`): warm sleep + recalibration, **SX126x only** — gated on `hwNeedsAgcReset()`, which only that family declares. Semtech prescribe it for a jammed AGC on the SX126x; neither the LR11xx UM nor the LR2021 DS describes such a fault, and running it there cost packets (T1000-E, 2026-08-24: 7.4% miss rate in the 60 s after a fire vs 0.6% elsewhere). Triggered by long silence **and** corroborating evidence — a frozen noise-floor reading — never by silence alone, which is a normal condition rather than a fault.
 4. **Image-calibration drift** (`imageCalMaintenance()`): unrelated to the AGC despite the shared hook — LR11xx/LR2021 only, where the datasheets give a temperature threshold. Temperature is read from the **board** (`Board::getMCUTemperature()`), never from the radio; only the delta matters and the die sensor tracks the same ambient without costing the radio an SPI command. Polled hourly, deferred after TX so PA self-heating is not read as ambient drift, and confirmed by a second reading before recalibrating.
 
-### 4.7 Adaptive Contention Window
+### 4.7 Contention Window
 
-Replaces Arduino MeshCore's static `txdelay`/`rxdelay` with three complementary mechanisms.
+Replaces Arduino MeshCore's static `txdelay`/`rxdelay` (ADR 0007). Every forward and every retry after a busy CAD waits one draw from the same LBT slot window, counted from the end of a reception; the window grows with the measured contention.
 
-**EMA Delay Factor (proactive)**
+**Contention estimate**
 
-`ContentionTracker` measures observed duplicates per retransmitted packet using a **24-entry ring buffer** (sized for ~50-neighbor hilltop topologies with multiple concurrent in-flight floods). Each entry tracks a packet (identified by FNV-1a hash) and records how many dupes arrive within a 10-second observation window. When the window closes, the entry is finalized and an EMA is updated with alpha = 1/8. The resulting estimate feeds the delay factor formula:
+`ContentionTracker` measures observed duplicates per retransmitted packet using a **24-entry ring buffer** (sized for ~50-neighbor hilltop topologies with multiple concurrent in-flight floods). Each entry tracks a packet (FNV-1a hash) and counts the dupes heard within a 10-second window; when the window closes the count is folded into an EMA with alpha = 1/8. The EMA is trusted after 4 samples and decays 1/8 per 5 s after 5 minutes without traffic. A heard duplicate only counts: it does not move a pending TX (the per-dupe reactive backoff was retired in 1.18.3). The joystick UI also reads per-packet dupe counts ("heard a repeat?").
 
-```
-factor = 0.05 + 0.170 * sqrt(est)
-```
+**LBT slot window**
 
-Capped at 2.0. During warmup (fewer than 4 finalized entries), factor defaults to 0.5. Sparse nodes converge toward near-zero delay; dense nodes get proportionally higher delay.
+`lbtBackoffSlots(est)` (`include/mesh/LbtBackoff.h`): `2·est + 2` slots, clamped to 10..64, and 10 before warmup. A slot is about one CAD plus the RX→TX turnaround (`getLbtSlotMs()`, 12 ms at SF7/62.5 kHz). `Mesh::getCADFailRetryDelay()` draws a whole number of slots in the window (devdocs LLD 02 §18-§21).
 
-The flood retransmit jitter window is `5·airtime·factor` clamped by **two ceilings**:
-- Airtime-scaled: `6·airtime` — keeps SF7/narrow-BW configs from wasting time in oversized windows.
-- Absolute: `2000ms` — bounds per-hop latency in dense areas even when airtime is large.
+**Forwards**
 
-**Per-Dupe Reactive Backoff**
-
-When a duplicate of a pending outbound packet is heard, TX is rescheduled to `now + backoff_multiplier * airtime`. Each dupe triggers a full delay (not diminishing). Cumulative reactive extension is capped at `min(2000ms, 12·airtime)` per packet; after the cap, CAD handles remaining channel activity. `backoff_multiplier` is configurable via `set backoff.multiplier X` (range 0.0–2.0).
+Flood and direct forwards (repeater, room server, companion off-grid repeat) wait `Mesh::computeForwardDelay()`: one slot draw less the time since the reception ended (`Dispatcher::msSinceRxEnd()`), at least 1 ms. Then CAD: clear → transmit; busy → wait for that reception to end and draw again from its end (ADR 0006). A repeater's discover response is the exception: it waits upstream's `4 × rand(0, 2.5 airtimes)`, since every repeater in range answers the same request.
 
 **Initial-Flood Jitter (companion-only)**
 
-Companions don't retransmit floods, but they observe mesh contention and need to spread their *originated* transmissions to avoid colliding with repeaters still busy in TX/RX. `Mesh::passivelyTrackFloods()` (overridden to `true` on `CompanionMesh`) registers every first-hearing of a flood with the ContentionTracker, so the EMA warms up even without forwarding. `Mesh::getInitialFloodJitter(packet)` is added to the caller-supplied delay in both `sendFlood` overloads; on companion this is `rand(0, min(1000ms, 3·airtime, 5·airtime·factor))` — half the repeater's ceilings. Repeaters keep the default 0 (no double-jitter on forwards).
-
-**Direct Packets**
-
-Direct (source-routed) packets bypass adaptive scaling entirely. They use minimal fixed jitter: `20 + rand(0, airtime / 10)` ms.
+Companions spread their originated floods with `getInitialFloodJitter()`, a fixed `20..150 ms`. `Mesh::passivelyTrackFloods()` stays false on every role, so a companion's estimate only warms from what it forwards in off-grid repeat. Repeaters keep an initial jitter of 0.
 
 **CLI**
 
-- `get txdelay` — shows current adaptive state (EMA estimate, delay factor, backoff multiplier).
-- `set backoff.multiplier X` — controls per-dupe reactive delay (0.0–2.0).
+- `get txdelay` — `slots (est=<EMA> win=<slots>)`.
 - `txdelay`, `rxdelay`, `direct.txdelay` — accepted for prefs compatibility but ignored at runtime.
 
 **ContentionTracker Resource Usage**
 
-~260 bytes RAM (24-entry ring buffer × ~16B/entry + state). FNV-1a packet hash, 10-second observation window, EMA with alpha = 1/8.
+~310 bytes RAM (24-entry ring buffer × 12 B/entry + state). FNV-1a packet hash, 10-second observation window, EMA with alpha = 1/8.
 
 ### 4.8 Encryption
 
@@ -377,6 +375,8 @@ mesh::Radio (abstract interface)
 
 Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR2021` / `_SX127X` Kconfig options, resolved in `RadioIncludes.h`. The native SX126x path is the default and covers SX1261/62/68, LLCC68, and the STM32WL integrated sub-GHz radio.
 
+The three native drivers share `zc_lora_timing.h`: the true LoRa bandwidths (`zc_lora_bw_hz()`), the LDRO rule (`zc_lora_ldro()`, symbol time over 16.38 ms; both ends of a link must agree on it), and the RX-busy bounds. Packet SNR reaches `LoRaRadio` in quarter dB from all three native drivers (`last_snr_x4` in the ops table); the SX127x backend reports whole dB. A radio bandwidth is accepted only when `zcRadioBwValid()` (`NodePrefs.h`) knows it as a LoRa bandwidth of the build's radio; every setter and prefs loader uses that one test.
+
 ### 5.2 LoRaRadio State Machine
 
 **TX Flow** (LBT — current default; `cad.mode == LORA_CAD_MODE_LBT` is set unconditionally in `buildModemConfig`):
@@ -384,6 +384,18 @@ Compile-time selection via the `CONFIG_ZEPHCORE_RADIO_NATIVE` / `_LR1110` / `_LR
 2. SX126x `send_async` entry CAS accepts both `REST_STATE → TX` and `RX → TX`, recording `was_rx`. LBT branch issues `set_standby(RC)` then SetCAD. On CAD-busy: in-driver `sx126x_restart_rx` puts the chip back in RX before `-EBUSY` returns. C++ failure path calls `startReceive()`, which the driver's `lora_recv_async` short-circuits when state is already RX.
 3. On TX success: `_in_recv_mode = 0`, TX wait thread blocks on semaphore (5 s timeout).
 4. On DIO1 `TX_DONE` interrupt → signal raised → restart RX → update stats.
+5. Every attempt is counted for `get lbt.stats`: CAD clear (TX started), CAD busy, other driver error, or refused before
+   the driver (not ready, receiving, previous TX winding down). A busy verdict arms a one-max-packet window in which
+   the next reception (good or CRC error) counts as `rx`, evidence the channel really was busy. `getLbtSlotMs()` is the
+   dispatcher's backoff slot: one LBT CAD + 3 ms turnaround (4 symbols by default, 12 ms at SF7/62.5 kHz; the CAD
+   length is `lbtCadSymbolsFor()`, capped so 8 preamble symbols survive it, and `set lbt.cadsym 4|8|16` in LBT-logging
+   builds, LLD 03 §20). With `lbt_logging.conf`
+   every attempt and hold-back is also printed as one `LBT ...` line (`formatLastTxAttempt()` →
+   `Dispatcher::logTxAttempt()` → `packet_log_lbt()`), alongside the packet lines. On SX126x a busy line also carries
+   the RX status latched just before the CAD and the age of the last preamble that gave no header, and each such
+   preamble gets an `fpre` line (`sx126x_lbt_rx_evidence()`, which reads foreign-sync-word evidence; LLD 03 §19).
+   Lines with a packet carry `q=` (ms since it was first queued) and `d=` (the jitter it was queued with), the per-hop
+   delay; `Dispatcher::stampQueued()` keeps them in two `Packet` fields that exist only in LBT-logging builds.
 
 **RX Flow**:
 1. `lora_recv_async()` with callback. SX126x `recv_async` clears `IRQ_ALL` and resets the RX-busy signals on every fresh entry.
@@ -413,7 +425,7 @@ The poll path is otherwise non-destructive — IRQ bits are cleared only by the 
 
 ### 5.2.2 CAD-Timeout Recovery
 
-`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed. If 4 s elapse (`getCADFailMaxDuration()`), the dispatcher calls `_radio->recoverRxState()` and returns. `LoRaRadio::recoverRxState()` does:
+`Dispatcher::checkSend()` tracks `cad_busy_start` while `isReceiving()` keeps the TX gate closed; every reception that ends resets it. If `getRxStuckDuration()` elapses (max(10 s, 3 x max-packet airtime); upstream uses `getCADFailMaxDuration()`, 4 s from the first hold), the dispatcher calls `_radio->recoverRxState()` and then tries the pending transmit. That attempt still passes the final `isReceiving()` gate and the driver's LBT CAD, so a fresh busy reading re-queues it; nothing is transmitted over a CAD busy. `LoRaRadio::recoverRxState()` does:
 
 ```cpp
 hwCancelReceive();              // RX → IDLE → STANDBY → SLEEP (REST_STATE)
@@ -422,7 +434,7 @@ _config_cached = false;         // force full lora_config on the way back
 startReceive();                 // CAS(REST → RX) clears latch + IRQ
 ```
 
-This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX. After recovery, the dispatcher fires `_tx_queued_cb(1, ...)` to re-wake the loop promptly.
+This walks the chip through REST so the driver's `lora_recv_async` entry CAS (`REST_STATE → RX`) actually succeeds — a bare `startReceive()` from `state == RX` would fail with `-EBUSY` and set `_in_recv_mode = 0` while the driver still thinks it's in RX.
 
 ### 5.2.3 Received Header Without Payload CRC
 
@@ -437,13 +449,25 @@ In explicit-header mode the chip checks the payload CRC only when the received h
 
 One register or command read per received LoRa frame. GFSK and a CRC-off configuration are unchanged. Evidence and limits: `devdocs/lld/03-radio-contract.md` §15.
 
+### 5.2.4 Heltec SX126x receive workaround
+
+With `CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH`, the driver sets register `0x08B5` bit 0 while awake under its
+configuration lock, before configuration ends in warm sleep. The register joins RX gain and TX modulation in
+the retention list and is reapplied after AGC recalibration. There is no post-RX adapter write. Configuration
+and initialization propagate SPI/retention errors; the void AGC path logs them and completes its normal cleanup.
+
 ### 5.3 Noise Floor EMA
 
 Algorithm in `triggerNoiseFloorCalibrate()`:
 - 8 RSSI samples per tick, take median (insertion-sort midpoint)
-- Threshold filter: reject samples ≥ floor + 14dB (after 8-tick warmup)
+- Confirmation: a seed, or a median ≥ 6 dB below the floor, is read again 10 ms later (the RSSI start-up dip after
+  an RX entry the sampler cannot see); `c` in `get cad.stats`
+- Below thermal noise for the bandwidth (`noise_floor_min_dbm()`, -126 dBm at 62.5 kHz): dropped, never clamped in;
+  `l` in `get cad.stats`
+- Warm-up (8 ticks after the seed): accepts everything, running mean (1/2 .. 1/8)
+- Threshold filter: reject samples ≥ floor + 14dB (after warm-up)
 - Periodic bypass: every 16th tick accepts unconditionally
-- EMA: `floor += round_nearest((sample - floor) / 8)`, clamped to [-120, -50] dBm
+- EMA: `floor += round_nearest((sample - floor) / 8)`, clamped to [thermal minimum, -50] dBm
 
 ### 5.3.1 Adaptive CAD (LBT detPeak calibration)
 
@@ -457,10 +481,12 @@ to the family's per-SF base detPeak, restarts RX, and classifies busy verdicts
 with a ground-truth filter. **Key property:** the probe is *skipped* when RSSI >
 floor+7 dB, so probes only ever sample the quiet/faint regime — the whole loop
 is a faint-rejection tuner and `busy%` is faint-regime, not total occupancy.
-Post-busy classification watches a ~12-symbol window for RX re-sync **or** an
-RSSI climb above floor+guard (the energy path recovers real packets whose
-preamble the probe's RX-restart ate — the fix for the FP over-count that used to
-drive the staircase to the ceiling) → `tp`, else `fp`. Counters decay 6-hourly,
+The probe runs as CAD_RX: on a busy verdict the chip goes straight into Rx on
+the signal (no preamble race), and the driver reports the first terminal event
+within one max-packet airtime: a packet or CRC error → `tp`; a timeout after a
+preamble, header or header error was seen → `u` (real, undecoded; not an FP,
+since 2026-11-09); a timeout with nothing seen → `fp`; no terminal event → the
+sample is withdrawn (`*_cad_rx_outcome()`, LLD 03 §18). Counters decay 6-hourly,
 reset on any RF param change.
 
 With `cad.auto on` the staircase is **knee-seeking**: probes sample op / op−1 /
@@ -469,7 +495,7 @@ op+1 (½/¼/¼); it steps **up** when the level above is ≥`CAD_KNEE_SLOPE_PERM
 (`≤CAD_PLATEAU_CLEAN_PERMILLE`), else holds — slope-based so convergence is
 independent of a site's FP floor. Highest-priority override: **airtime / faint
 cap** — step up when the operating busy rate exceeds `cad_busycap` (percent,
-`set cad.busycap`, default 25, 0=off); self-targeting since only busy nodes
+`set cad.busycap`, default 15, 0=off); self-targeting since only busy nodes
 reach it, and effectively a faint-tolerance dial (lower = reject faint harder).
 Each step needs ≥`CAD_STEP_MIN_PROBES` (120); offset clamped to **−8…+12**
 *narrowed by the driver's own detPeak clamp* (SX126x 12–48, LR11xx 40–100,
@@ -488,7 +514,8 @@ for SX126x (base from Semtech's LBM table, bandwidth-aware), tuned to catch fain
 it. Probe +
 offset plumbing is per-driver extension API (`*_cad_probe`,
 `*_cad_set_peak_offset`, `*_cad_base_peak`); LBT CAD runs 4 symbols (set in
-`buildModemConfig`), drivers scale their blocking-CAD timeout to
+`buildModemConfig`; the SX126x driver encodes the count as the chip's `cadSymbolNum` code, which until build
+20261110f it did not, so SX126x ran 16, LLD 03 §20), drivers scale their blocking-CAD timeout to
 `nSym·Tsym + margin`. CLI: `get cad.stats` (3-rung window, `*`=operating, `bc:`=cap),
 `set cad.auto/offset/probe.interval/busycap/reset`. SX127x: unsupported (no HW
 CAD). Full mental model + tuning: `ADAPTIVE_CAD.md`.
@@ -742,10 +769,10 @@ default) is migrated to 3200 once (`zc.aoff_set`).
 ### 6.3 RepeaterMesh
 
 Autonomous operation features:
-- **Authentication**: Password-based login with timestamp replay protection (120s window)
+- **Authentication**: Password-based login; replay protection by each client's newest accepted timestamp (`ClientInfo::last_timestamp`, RAM only: logins, requests and CLI must be newer). At boot every client starts at the node's clock less 10 s (`REPLAY_BOOT_SLACK`), so frames recorded before a reboot do not run again, as long as the clock survives the reboot (RTC chip, or a warm reboot)
 - **Permission levels**: GUEST(0), READ_ONLY(1), READ_WRITE(2), ADMIN(3)
 - **Region filtering**: `RegionMap` with transport key matching per flood packet. Un-scoped floods (`mesh::isUnscopedFlood()`: plain floods, and transport floods with code 0 as upstream 1.18.0) go to the wildcard `*`, whose deny-flood flag and `flood.max.unscoped` apply to both, as upstream since `bd882a2a` (LLD 02 sections 16-17)
-- **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s
+- **Rate limiting**: 4 requests per 120s (discovery), 4 per 180s (anonymous), 4 failed logins per 180s: after the fourth no password is checked, the right one included, until the window ends (`RateLimiter::blocked()`). An empty stored admin password matches no login
 - **Node discovery**: answers discovery requests only while forwarding is on. With `advert.interval` and `flood.advert.interval` both `0` the node is hidden and does not answer, as upstream (`isHiddenNode()`); the request still counts against the discovery rate limit
 - **Neighbor tracking**: RSSI/SNR/name/timestamp table (`CONFIG_ZEPHCORE_MAX_NEIGHBOURS`, default 50 slots)
 - **Temporary radio params**: `tempradio` command applies freq/bw/sf/cr via `LoRaRadio::setRadioOverride()` (does not mutate `_prefs`); auto-revert timer calls `clearRadioOverride()` to fall back to saved prefs
@@ -776,7 +803,10 @@ deadline. Differences from upstream:
   airtime of a 255-byte packet from the start of CSMA), then reports TX failed; upstream reports it at once.
 - A transmit times out only once the radio has concluded it, as in `Dispatcher::loop()`.
 - `SetRadio` outside the `ZC_RADIO_*` ranges (NodePrefs.h) is refused with `HW_ERR_INVALID_PARAM`.
-- No periodic AGC reset: the radio's own deaf-aware maintenance replaces it, as in every role.
+- No periodic AGC reset: the radio's own deaf-aware maintenance replaces it, as in every role. Protocol v2's AGC
+  interval commands answer `Unsupported` and GetCapabilities leaves bit 0 clear.
+- Protocol v2 FEM control is RX gain only, where the board wires `lna-bypass-gpios` (answered by `KissBoard` in
+  `main_kiss_modem.cpp`, as upstream's board CLI would); boosted RX gain on SX126x, LR11xx and LR2021, not SX127x.
 Radio settings live in RAM only (upstream: the same); the identity is `/lfs/repeater/_main.id`, shared with the
 server roles. No UI: at boot the LEDs are driven off and a display is blanked (`mc_display_off()`, or
 `oled_sleep()` without the display UI), as a server leaves them after its auto-off. Host tests: `UNIT-KISS-*`
@@ -788,7 +818,7 @@ and xiao_esp32c3. Build with `boards/common/kiss_modem.conf`.
 System: `ver`, `board`, `reboot`, `start dfu`, `start ota`, `erase`
 Config: `set name/freq/radio/tx/flood.max/password/...`, corresponding getters
 System (power): `poweroff`/`shutdown`, `get pwrmgt.support/source/bootreason/bootmv`
-GPS: `gps`, `gps on/off/sync/setloc/advert`, `get gps`, `set gps duty <sec>`
+GPS: `gps`, `gps on/off/sync/setloc/advert`, `gps fix/once/period/fix_stats/diag` (upstream's 1.18 GPS CLI, helpers/gps_cli_text.cpp), `gps guard [on|off|accept]`, `gps fence`, `gps ref` (`CONFIG_ZEPHCORE_GPS_GUARD` builds), `get gps`, `set gps duty <sec>`, `get|set advert.loc`
 Sensors: `sensor get/set/list` (upstream's `SensorManager` settings: `gps`)
 Companion extras: `get|set autoshutdown`, `get|set v.contact`, `get|set v.batteryalert`, `help`
 Stats: `stats-core/stats-radio/stats-packets`, `clear stats`
@@ -859,7 +889,7 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - The SoC light-sleep lock is held only while ACQUIRING (`gps_hold_sleep_lock()`, tracked 1:1), never through standby
 - Boot probe (upstream's GPS detection): the first acquire window since boot must parse a GGA or RMC sentence
   (`zephcore_gnss_rx_count()`) within 10 s, or the module is powered off and `gps_is_available()` is false until the
-  next boot (`gps`: `Can't find GPS`); `prefs.gps_enabled` is kept. For boards whose optional GPS header is empty
+  next boot (`gps`: `Error, gps provider not found`); `prefs.gps_enabled` is kept. For boards whose optional GPS header is empty
   (LLD 10 §21)
 - Boot: servers apply `prefs.gps_enabled` like upstream's `applyGpsPrefs()` (`zc.gps_set` in prefs.json marks it a real choice; older files are upgraded to on once, because older firmware ran the GPS regardless). The observer parks its GPS (`gps_park()`)
 
@@ -870,7 +900,19 @@ Loading also range-checks `freq`/`sf`/`bw` and falls back to the compile-time de
 - **Duty cycling** (`gps_wake_interval_ms > 0`): after acquiring 5 good fixes the GPS powers down; the state machine wakes it again after the configured standby interval. The fix callback fires and then the GPS sleeps.
 - **Always-on** (`gps_wake_interval_ms == 0`): the GPS never powers down. `consecutive_good_fixes` is reset after each promotion so the 5-fix gate cycles continuously, streaming fresh positions. Flash writes and fix callbacks are rate-limited to once per `gps_acquire_timeout_ms` to avoid hammering storage.
 
-`gps_set_poll_interval_sec(0)` switches to always-on live; persisted via `prefs.gps_interval` (set by `set gps duty 0`).
+`gps_set_poll_interval_sec(0)` switches to always-on live; persisted via `prefs.gps_interval` (set by `set gps duty 0` or `gps period 0`; prefs.json key `gps.int`).
+
+**One-shot (`gps once`, `gps_start_once()`)**
+
+From off, the GPS is powered on for one bounded acquire window (the cold-start one) and powered off again after a validated fix or the timeout, in either mode; `gps_enabled` is true meanwhile, prefs are not written. `gps on` during the window keeps it on (and drops the timeout when always-on); `gps off` ends it. In standby it wakes the GPS, while acquiring it extends the window, both as `gps_request_fresh_fix()`.
+
+**Fix statistics (`gps fix_stats`, `gps_get_fix_stats()`)**
+
+Per acquire window: the time from its start to its first good fix (4+ satellites), last and longest, and the run of windows with a good fix or ending without one. A window cut short by `gps off` counts as neither. RAM only.
+
+**GPS guard (`CONFIG_ZEPHCORE_GPS_GUARD`, off by default, upstream's `GPS_GUARD`)**
+
+`helpers/gps_guard.{h,cpp}` (`GpsGuard`, host-tested) checks every real fix in `gnss_data_cb` under `gps_mutex`: fewer than 4 satellites, HDOP above 4.0, outside the Kconfig region box, outside `gps fence` metres of the reference position (servers: the configured `lat`/`lon`; companions: none) or a jump faster than 250 km/h from the last trusted fix rejects it and restarts the five-fix count; five consecutive fixes within 100 m make it trusted. Only a trusted fix becomes `current_pos` and completes validation, so an untrusted one sets neither the position nor the clock. In `gps_process_event()` the GPS time is checked against the RTC (`gps_set_clock_source()`) before `gps_fix_cb` gets it: a current trusted fix, not before the build day minus one, at most 10 min from a plausible clock, after the first accepted sync only 5 s + 100 ppm of the time since. A rejected time is passed as 0 (position only) and clears `gps_has_time_sync()`, so the app or the mesh may set the clock. The same offset for an hour raises an alert (`gps guard`, a log warning); `gps guard accept` takes the GPS time. Any non-GPS clock set (`time_sync_report()`) drops the drift anchor. prefs.json `gps.guard` / `gps.fence`, upstream's keys, written only by guard builds.
 
 **Timeout split**
 
@@ -908,11 +950,12 @@ Repeaters and room servers default to `CONFIG_ZEPHCORE_REPEATER_GPS_INTERVAL_SEC
 ### 7.5 Board (`adapters/board/`)
 
 - Battery ADC with optional regulator-gated voltage divider, 8-sample average (boards with `zephyr,user` ADC node; MG24 has no battery divider, ADC disabled). A board with a fuel gauge (AXP2101) reads voltage and charge from it instead; one with an nPM1300 charger (XIAO nRF54LM20A) reads the voltage from the PMIC's own ADC through the sensor API and takes the percentage from the discharge curve
+- Board hardware with no Zephyr driver is set up by an optional `boards/<platform>/<board>/board_init.c` (compiled in when present, registers itself with `SYS_INIT`). The T-Impulse Plus uses it for its SGM41562 charger on I2C1: charging on, watchdog off at boot, re-asserted every 20 s and reapplied if the chip reset (LLD 10 §22)
 - UF2 bootloader entry via GPREGRET magic (0x57 = UF2, 0xA8 = BLE DFU)
 - TX LED bracketing for LoRa transmissions (gated by the LED master switch below)
 - Bootloader version detection via flash memory scan
 - Battery reading cached 10 s for every caller (UI, telemetry, stats, alerts), under a mutex
-- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), power latch released, System OFF
+- `powerOff()` (CLI `poweroff`/`shutdown`, UI power-off, low-battery shutdown all end in `zephcore_power_off()`, `board/zephyr_poweroff.c`): UI hook (heartbeat, display), GPS/sensor/buzzer rails off, LoRa held in reset, sw0 SENSE armed (nRF), then the board's `zephcore,poweroff-gpios` driven inactive (a soft-power latch, or a GPIO-enabled rail the latch would keep on: RAK4631 P1.05 + WB_IO2, RAK3401 1W FEM enable + WB_IO2), System OFF
 - Upstream's pwrmgt getters: reset cause from `boot_info`, the last fatal error from `fatal_reboot.c`'s `__noinit` record (reason, pc, lr, thread; resolve pc with `addr2line` on the same build), shutdown reason from the `/lfs/shutdn` marker, battery voltage at boot
 
 **Telemetry** (`REQ_TYPE_GET_TELEMETRY_DATA`, every role, upstream's shape): battery on channel 1, then `sensors.querySensors()` (`adapters/sensors/ZephyrSensorManager.cpp`): GPS position on channel 1 while the GPS is on and has a fix, each environment sensor and power-monitor channel found at boot on its own channel from 2 up (probe order), board-local analog sensors (T1000-E) on channel 1; then the MCU temperature on channel 1 (the SoC's die sensor: the `die-temp0` alias, which is `coretemp` on ESP32-S3/C3/C6, else the Nordic nodelabel `temp`; omitted where there is none: classic ESP32, STM32WL, MG24). Servers give guests battery + MCU temperature only and honour the requester's inverse permission mask, as upstream. Encoded by `helpers/compat/CayenneLPP.h`: upstream's library API and wire format, but values round to the nearest step where the library truncates.
@@ -932,7 +975,8 @@ Does not cover the display backlight, which has its own UI brightness setting (`
 `lora-tx-pwm-led` drives that LED through PWM (`zephcore_led_pwm_write()`), and the PWM alias wins over
 `led0` / `lora-tx-led`. `CONFIG_ZEPHCORE_LED_PWM` follows the aliases: it selects `CONFIG_PWM` and stops
 the server and observer mains from configuring `led0` as a GPIO, because that pin belongs to the PWM
-driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files.
+driver. Persisted in `prefs.json` as `zc.leds_brightness`; it is not part of the legacy binary files. A new node
+starts at `CONFIG_ZEPHCORE_LED_DEFAULT_BRIGHTNESS` (100; `sensecap_solar` 10).
 
 ### 7.6 WiFi / MQTT / TCP Transports
 
@@ -992,6 +1036,8 @@ Hardware buttons → Zephyr input subsystem → Longpress filter → Multi-tap f
 ```
 
 Color TFT panels (T114, T096, Wireless Tracker) are wrapped as 1bpp displays for CFB via the `zephcore,mono-tft` shim (`display_mono_tft.c`).
+
+E-paper (SSD16xx): the auto-off keeps the image and puts the controller in deep sleep (`ssd16xx_deep_sleep()`, patch 0009); a frame drawn while off wakes it and it sleeps again after. Upstream's `GxEPDDisplay::turnOff()` hibernate (#3793).
 
 ### 8.2 Pages (Button UI)
 
@@ -1091,6 +1137,7 @@ prj.conf (base: console; production defaults — LOG=n, ASSERT=n)
 - **nRF54L15**: Same BLE controller as nRF52, CMSIS-DAP via SAMD11 bridge, no native USB
 - **nRF54LM20A** (the LR2021 EVK with a XIAO nRF54LM20A, its own board directory): built and flashed like the nRF54L15 (`--no-sysbuild`, CMSIS-DAP); source-only, no published firmware
 - **ESP32-C3/C6/S3**: Espressif proprietary BLE blob, 32KB heap, asserts disabled (blob IRQ false positives); simple-boot by default, MCUboot only with `--sysbuild` (releases; WiFi OTA on repeaters, BLE OTA on companions)
+- **ESP32-S31**: RISC-V, MCUboot at 0x2000 (ROM reserves 8 KB), 16 MB flash and octal PSRAM; repeater only (CLI on `uart0`) until the SoC gets a BLE controller and Wi-Fi driver, `wifi_ota: false` in its manifest; source-only. Zephyr comes from the fork pin in `west.yml` ([ADR 0012](adr/0012-zephyr-fork-pin-for-pre-upstream-soc.md))
 - **ESP32 classic (PICO-D4)**: much smaller DRAM — contact/queue caps shrunk in `board.conf`; console/CLI on `uart0` (no native USB); DIO flash mode required (QIO bootloops)
 - **EFR32MG24**: SiLabs proprietary BLE blob, 32KB heap, SEMAILBOX enabled for hardware TRNG/crypto entropy, ADC disabled (no battery divider), CMSIS-DAP via onboard SAMD11
 - **STM32WL (LoRa-E5)**: no BLE, no USB device — companion protocol and CLI run over USART1; 64KB SRAM caps contacts/queues hard; TRNG entropy; single app partition, flash via SWD
@@ -1103,15 +1150,14 @@ Applied automatically at CMake configure time; a failed patch aborts the configu
 | Patch | Risk | Purpose |
 |-------|------|---------|
 | 0001-lora-lr11xx-lr20xx-build | LOW | Registers the LR11xx and LR20xx drivers in the Zephyr LoRa build |
-| 0003-lora-sx126x-native | **HIGH** | DIO1 work queue, duty cycle, CAD, RX-busy gating, band RSSI/AGC calibration, PA/OCP tuning, extension API |
+| 0003-lora-sx126x-native | **HIGH** | DIO1 work queue, duty cycle, CAD (symbol count encoded as `cadSymbolNum`), RX-busy gating, band RSSI/AGC calibration, PA/OCP tuning, extension API |
 | 0004-lora-sx127x-62k5-bandwidth | LOW | Adds 62.5 kHz bandwidth to the loramac-node backend |
 | 0005-gnss-config-and-version-query | MEDIUM | Air530Z nav-rate config + `$PCAS06` version query; NMEA generic dump |
 | 0006-blobs-py | LOW | Fix `west blobs fetch` KeyError |
 | 0007-spi-gpio-native-linux | LOW | Wires native-Linux SPI/GPIO drivers into the Zephyr build |
 | 0008-flash-sim-per-node-file | LOW | Flash simulator defaults to per-node settings file (native Linux) |
-| 0009-display-ssd16xx-fill-ram-white | LOW | E-paper full-refresh-to-white anti-ghosting helper |
+| 0009-display-ssd16xx-fill-ram-white | LOW | E-paper helpers: `ssd16xx_fill_ram_white()` (full-refresh-to-white anti-ghosting) and `ssd16xx_deep_sleep()` (deep sleep mode 1 when the screen goes off; the next display call wakes it with a hardware reset and reloads the profile, RAM kept) |
 | 0010-uarte-pm-suspend-bounded-rxto-wait | MEDIUM | Bounds the nRF UARTE STOPRX/RXTO spin on PM suspend; unbounded upstream, wedges the mesh thread |
-| 0017-wifi-esp32-rx-never-block | MEDIUM | ESP32 Wi-Fi RX callback drops a frame instead of waiting 100 ms for a net buffer; the wait livelocked RX under load |
 | 0019-usb-cdc-acm-poll-out-flush | MEDIUM | USB CDC ACM: a full TX buffer is handed to the stack from `poll_out()` and `fifo_fill()`, and only the current buffer counts as free space while the bus is suspended. Without it console bursts are cut at 64 bytes and a companion can hang on its first reply after boot |
 
 **One patch per file.** No upstream file is touched by more than one patch, so
@@ -1122,6 +1168,8 @@ in that patch's preamble. `0002` is a deliberate numbering gap. Add a new
 sx126x fix by regenerating `0003`, never by stacking an `0016` on it — see
 `WEST_UPDATE.md`.
 
+`0017-wifi-esp32-rx-never-block` was dropped on the 2026-11 bump: upstream `30ccc940f63` makes the RX callback allocate with `K_NO_WAIT` and count the drops.
+
 New drivers in `patches/zephyr-new/` (LR11xx, LR20xx, native-Linux SPI/GPIO, DTS bindings) are copied — not patched — into the Zephyr tree at configure time.
 
 ### 9.5 Flash Partition Layouts
@@ -1130,6 +1178,7 @@ New drivers in `patches/zephyr-new/` (LR11xx, LR20xx, native-Linux SPI/GPIO, DTS
 **nRF52840 SD v7**: SoftDevice 156KB → App 676KB → NVS 16KB → LFS 128KB → UF2 48KB
 **ESP32 (4MB)**: Boot + App → LFS 192KB + NVS 16KB
 **ESP32-S3 (8/16MB)**: Boot + App → LFS 384KB + NVS 16KB
+**ESP32-S31 (16MB)**: MCUboot @0x2000 → App slots @0x10000 (2 × 7.75MB) → LFS 384KB → NVS 16KB
 **nRF54L15**: MCUboot 64KB → App 1272KB → LFS 92KB
 **EFR32MG24**: MCUboot 48KB (reserved) → App 1344KB → LFS 144KB
 **STM32WL**: App at flash origin → LFS (no bootloader)
@@ -1144,7 +1193,7 @@ Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Ad
 | Board | SoC | Radio | GPS | Display | Notable extras |
 |-------|-----|-------|-----|---------|----------------|
 | RAK4631 / WisMesh Pocket | nRF52840 | SX1262 | u-blox MAX-7Q (opt) | WisBlock OLED (opt) | I2C sensors |
-| RAK3401 1W | nRF52840 | SX1262+SKY66122 (30dBm) | u-blox MAX-7Q (opt) | - | I2C sensors |
+| RAK3401 1W | nRF52840 | SX1262+SKY66122 (30dBm) | u-blox MAX-7Q (opt) | - | I2C sensors; on a RAK4631 core, its onboard SX1262 is put to cold sleep at boot (`board_init.c`) |
 | RAK WisMesh Tag | nRF52840 | SX1262 | AT6558R | - | Accelerometer, buzzer, multitap |
 | T1000-E | nRF52840 | **LR1110** | AG3335 | - | Buzzer, button, multitap |
 | SenseCAP MeshTracker X1 | nRF52840 | **LR2021** | AG3335M (L1+L5) | - | SPA06 barometer, DRV2605L vibration, YSN8900 RTC, QSPI 8MB, RGB LEDs, buzzer |
@@ -1166,6 +1215,7 @@ Build strings: `docs/supported_boards.md`. Flash methods: `docs/BUILDING.md`. Ad
 | XIAO ESP32-C3 | ESP32-C3 | SX1262 | - | - | Contacts capped at 300 |
 | XIAO ESP32-C6 | ESP32-C6 | SX1262 | - | - | - |
 | LilyGo TLoRa C6 | ESP32-C6 | SX1262 | - | - | - |
+| ESP32-S31-Function-CoreBoard-1 | ESP32-S31 | SX1262 (header module) | - | - | Repeater only, source-only |
 | XIAO ESP32-S3 | ESP32-S3 | SX1262 | - | - | 8MB flash, 8MB PSRAM |
 | Station G2 | ESP32-S3 | SX1262+PA | UART GNSS | OLED (SH1106) | 16MB flash, 8MB PSRAM |
 | Heltec V3 | ESP32-S3 | SX1262 | - | OLED (SSD1306) | Console on `uart0` |
@@ -1309,8 +1359,8 @@ parse falls back to the legacy file, then to defaults.
 
 **Legacy binary files.** Firmware before `prefs.json` wrote field-by-field binary files: companion
 `/lfs/new_prefs` (272 bytes) and servers `/lfs/repeater/prefs` (311 bytes; `leds_disabled` at 120
-is magic-encoded `0xA0`/`0xA1`). `helpers/PrefsCodec.cpp` reads (and, for tests, writes) both,
-pinned by host tests. On the first boot without `prefs.json` the legacy file is decoded and
+is magic-encoded `0xA0`/`0xA1`). `helpers/PrefsCodec.cpp` decodes both (no encoders),
+pinned by host tests against offset tables in `tests/support/prefs_layout.h`. On the first boot without `prefs.json` the legacy file is decoded and
 `prefs.json` written; the legacy file is **kept**, so a downgrade still boots with the settings as
 they were at the upgrade. Byte maps: `memory/prefs-format.md`.
 
@@ -1364,12 +1414,14 @@ main event loop (every 5s) → Dispatcher::maintenanceLoop()
   → radio->triggerNoiseFloorCalibrate(threshold)
     → guards: in RX? TX active? duty cycle? mid-receive?
     → read 8 RSSI samples, take median
+    → seed, or median ≥ 6 dB below floor: sleep 10 ms, read 8 again, use that median
+    → below thermal minimum for the BW: drop, retry soon
     → first sample: seed directly
-    → warmup (<8 ticks): accept unconditionally
+    → warmup (<8 ticks): accept unconditionally, running mean
     → periodic bypass (every 16th): accept unconditionally
     → otherwise: reject if sample ≥ floor + 14dB
     → EMA: floor += round((sample - floor) / 8)
-    → clamp [-120, -50] dBm
+    → clamp [thermal minimum, -50] dBm
 ```
 
 ---
@@ -1421,7 +1473,7 @@ Timeouts and deadlines that are watchdogs in everything but name:
 |-----------|----------|--------|
 | RX-latch payload deadline | all three custom radio paths: SX126x `patch 0003` ("Bound the lifetime of the RX-busy latch"), `lr11xx_lora.c`, `lr20xx_lora.c` (`header_seen_at_ms` + `*_max_payload_ms()`) | A `HEADER_VALID` whose packet never completes would pin the TX gate closed and silently mute the node — continuous RX has no symbol timer. Released at 255-byte airtime +25% +100 ms. See [5.2.1](#521-rx-busy-gate-tx-during-rx-prevention). |
 | Stuck-DIO1 counter | `lr11xx_lora.c` and `lr20xx_lora.c` | 5 empty DIO1 cycles → hardware reset. Counting rather than timing; on the LR11xx it complements the wedge watchdog rather than replacing it. |
-| CAD timeout | `Dispatcher::checkSend()` | 4 s (~20 retry attempts) → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, rather than falling through to TX. See [5.2.2](#522-cad-timeout-recovery). |
+| CAD timeout | `Dispatcher::checkSend()` | 10 s (or 3 max-length packets) of `isReceiving()` busy with no reception ending → `ERR_EVENT_CAD_TIMEOUT` + `recoverRxState()`, then the transmit is tried through the final gate and the driver's LBT CAD (never over a CAD busy). See [5.2.2](#522-cad-timeout-recovery). |
 | Chip-side TX timeout | SX126x `SetTx` deadline (`patch 0003`, "Scale the chip-side Tx timeout from airtime instead of a fixed 10 s"; airtime +25% +500 ms, floored at 10 s, clamped 262143 ms); LR2021 `TIMEOUT` IRQ handler | The chip stops the transmission when this fires, so a fixed value is a truncation, not a safeguard — at SF12/BW62.5 the old flat 10 s cut every packet from 76 bytes up. |
 | Serial partial-frame resync | `ZephyrCompanionUSB.cpp` (`USB_FRAME_TIMEOUT_MS`) | 2 s. Parser-level only — deliberately **not** a session or idle timeout; an idle-but-connected companion sits in `RX_IDLE` indefinitely. |
 | TCP send timeout | `TcpCompanionTransport.c` (`TX_SEND_TIMEOUT_SEC`, `SO_SNDTIMEO`) | 2 s per send. Native Linux and WiFi companions. A peer that can't accept a frame in the window is wedged → close it, rather than hang the whole queue. Needs `CONFIG_NET_CONTEXT_SNDTIMEO`, which `ZEPHCORE_TRANSPORT_TCP` selects; before 1.18.1 it was off, the option silently failed and sends waited up to 10 s per attempt (`NET_SOCKET_MAX_SEND_WAIT`). |

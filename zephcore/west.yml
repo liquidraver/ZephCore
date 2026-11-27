@@ -2,11 +2,16 @@ manifest:
   remotes:
     - name: zephyrproject-rtos
       url-base: https://github.com/zephyrproject-rtos
+    - name: marekmatej
+      url-base: https://github.com/marekmatej
 
   projects:
+    # Zephyr main (upstream 2d023177b54, 2026-11-13) plus the Espressif
+    # feature/esp32s31-initial-support branch, until the ESP32-S31 SoC is
+    # upstream (docs/adr/0012-zephyr-fork-pin-for-pre-upstream-soc.md).
     - name: zephyr
-      remote: zephyrproject-rtos
-      revision: 0534e997eacb94bae1df6c9a7dd4a9a6cbf1cecf
+      remote: marekmatej
+      revision: 8b485ee52d7d0cd45a5a9c999b7aa0eb5c042645
       import: true
 
   self:

@@ -5,11 +5,11 @@
 # Kconfig.zephyr, because a choice takes its first matching default and the
 # driver's own ESP_WIFI_HEAP default is unconditional.
 choice ESP_WIFI_HEAP
-	default ESP_WIFI_HEAP_SPIRAM if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+	default ESP_WIFI_HEAP_SPIRAM if ZEPHCORE_COMPANION_WIFI && SOC_FAMILY_ESPRESSIF_SPIRAM
 endchoice
 
 config ESP32_WIFI_NET_ALLOC_SPIRAM
-	default y if ZEPHCORE_COMPANION_WIFI && ESP_SPIRAM
+	default y if ZEPHCORE_COMPANION_WIFI && SOC_FAMILY_ESPRESSIF_SPIRAM
 
 # WiFi companion on an ESP32-S3 without PSRAM: the WiFi heap is the system heap,
 # and Espressif's ADD_SIZE reservation (51 KB for WiFi alone) is sized for its
@@ -21,16 +21,16 @@ config ESP32_WIFI_NET_ALLOC_SPIRAM
 # ~12 KB of DRAM, spent on contacts. S3 only: C3/C6 and the classic ESP32 run
 # different BLE controllers with different heap needs, not measured here.
 config HEAP_MEM_POOL_IGNORE_MIN
-	default y if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default y if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_STATIC_RX_BUFFER_NUM
-	default 6 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 6 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_DYNAMIC_RX_BUFFER_NUM
-	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 config ESP32_WIFI_DYNAMIC_TX_BUFFER_NUM
-	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !ESP_SPIRAM
+	default 16 if ZEPHCORE_COMPANION_WIFI && SOC_SERIES_ESP32S3 && !SOC_FAMILY_ESPRESSIF_SPIRAM
 
 # Main thread stack. Measured 2026-09-24 (CONFIG_ZEPHCORE_MEM_STATS,
 # devdocs/tools/mem_load.py: fresh BLE pairing + bonded reconnects, protocol
@@ -710,7 +710,8 @@ config ZEPHCORE_SX126X_HELTEC_REG_PATCH
 	depends on ZEPHCORE_RADIO_NATIVE
 	default n
 	help
-	  Sets the LSB of undocumented register 0x8B5 after the first lora_config().
+	  Sets the LSB of undocumented register 0x8B5 while awake during radio
+	  configuration and retains it across warm sleep and AGC recalibration.
 	  Described by Heltec engineer @Quency-D in MeshCore PR#1398 — consistently
 	  improves RX reception on boards with GC1109 or KCT8103L PA (Heltec V4/V4.3/V4-R8).
 	  Upstream MeshCore also enables it for the RAK3401's SKY66122 FEM, so it is
@@ -766,6 +767,16 @@ config ZEPHCORE_LED_PWM
 	  alias: that LED is driven through PWM and dimmed by leds.brightness.
 	  Pulls in CONFIG_PWM automatically.
 
+config ZEPHCORE_LED_DEFAULT_BRIGHTNESS
+	int "Default PWM LED brightness (%)"
+	depends on ZEPHCORE_LED_PWM
+	range 0 100
+	default 100
+	help
+	  leds.brightness on a node with no saved value. A board whose PWM
+	  LED is too bright for an always-on heartbeat lowers it in
+	  board.conf.
+
 endmenu
 
 menu "Debug & Logging"
@@ -781,6 +792,20 @@ config ZEPHCORE_PACKET_LOGGING
 	  The lines are printk(), so they need no logging subsystem:
 	  packet_logging.conf keeps CONFIG_LOG=n and the console carries
 	  nothing else.
+
+config ZEPHCORE_LBT_LOGGING
+	bool "Log every listen-before-talk outcome (diagnostic)"
+	default n
+	depends on ZEPHCORE_PACKET_LOGGING
+	help
+	  One "LBT ..." line per transmit attempt and per hold-back: CAD
+	  clear/busy (with the RSSI right after a busy), driver errors,
+	  gate refusals, RX-busy holds, the 4 s recovery, the starvation
+	  relax, and the backoff picked. Printed like the packet lines, on
+	  the mesh thread, so packet lines stay whole; line-parsing tools
+	  such as mctomqtt ignore them. Adds "+lbtlog" to the version.
+	  Build with lbt_logging.conf after packet_logging.conf. Format:
+	  docs/CLI_commands.md (get lbt.stats) and LLD 03.
 
 endmenu
 
@@ -1110,6 +1135,62 @@ config ZEPHCORE_GPS_REAPPLY
 
 	  Turn it off in a board.conf only with a reason, e.g. a CASIC board
 	  proven to lose fixes to the navigation restart PCAS04 triggers.
+
+config ZEPHCORE_GPS_GUARD
+	bool "GPS anti-spoofing guard (upstream GPS_GUARD)"
+	depends on GNSS
+	help
+	  Check every GPS fix and GPS time before they are used. A fix is
+	  rejected for fewer than 4 satellites, HDOP above 4.0, a position
+	  outside the region box (ZEPHCORE_GPS_GUARD_REGION) or the fence
+	  around the configured lat/lon (repeater and room server), or a jump
+	  faster than 250 km/h from the last trusted fix; five consecutive
+	  fixes within 100 m make it trusted. Untrusted fixes set neither the
+	  position nor the clock. GPS time is taken only with a current
+	  trusted fix, not before the build date, at most 10 minutes off a
+	  plausible clock, and after the first sync only by clock drift; a
+	  steady disagreement raises an alert that `gps guard accept` clears.
+
+	  CLI: gps guard [on|off|accept], gps fence [<m>], gps ref. Saved as
+	  gps.guard and gps.fence in prefs.json, as upstream.
+
+config ZEPHCORE_GPS_GUARD_FENCE_M
+	int "GPS guard: default fence radius in metres (0 = off)"
+	depends on ZEPHCORE_GPS_GUARD
+	default 1000
+	range 0 20000000
+	help
+	  Fixes further than this from the configured lat/lon are rejected.
+	  Only when a reference is set (lat/lon not 0,0, servers only).
+	  `gps fence <m>` overrides it and is saved.
+
+config ZEPHCORE_GPS_GUARD_REGION
+	bool "GPS guard: reject fixes outside a lat/lon box"
+	depends on ZEPHCORE_GPS_GUARD
+
+if ZEPHCORE_GPS_GUARD_REGION
+
+config ZEPHCORE_GPS_GUARD_LAT_MIN_E6
+	int "Region: southern edge, micro-degrees"
+	range -90000000 90000000
+	default -90000000
+
+config ZEPHCORE_GPS_GUARD_LAT_MAX_E6
+	int "Region: northern edge, micro-degrees"
+	range -90000000 90000000
+	default 90000000
+
+config ZEPHCORE_GPS_GUARD_LON_MIN_E6
+	int "Region: western edge, micro-degrees"
+	range -180000000 180000000
+	default -180000000
+
+config ZEPHCORE_GPS_GUARD_LON_MAX_E6
+	int "Region: eastern edge, micro-degrees"
+	range -180000000 180000000
+	default 180000000
+
+endif # ZEPHCORE_GPS_GUARD_REGION
 
 endmenu
 

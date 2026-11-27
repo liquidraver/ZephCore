@@ -102,7 +102,7 @@ All of this is local behaviour. Nothing here changes the wire protocol, so mixed
 | Platform | Boards | With published firmware |
 |---|---|---|
 | nRF52840 | 22 | 21 |
-| ESP32 family | 16 | 14 |
+| ESP32 family | 17 | 14 |
 | nRF54L | 4 | 3 |
 | EFR32MG24 | 1 | 1 |
 | STM32WL | 1 | 1 |

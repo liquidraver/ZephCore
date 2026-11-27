@@ -31,6 +31,9 @@ Zephyr main" below.  On top of upstream:
   * CAD as a first-class operation -- sx126x_lora_cad() / _cad_async(),
     SF-scaled detection thresholds (sx126x_cad_detect_peak()), and the adaptive
     tuning hooks sx126x_cad_set_peak_offset() / _cad_base_peak() / _cad_probe().
+    A positive probe continues into Rx; sx126x_cad_rx_outcome() reports a
+    packet (RX_DONE/CRC_ERR), a preamble/header/header error seen with nothing
+    decoded (cad_rx_signal, noted on every IRQ status read), or nothing at all.
 
   * The RX-busy gate the TX path interlocks against: the rx_packet_active latch
     promoted on HEADER_VALID, the SF-aware preamble grace
@@ -58,8 +61,9 @@ Zephyr main" below.  On top of upstream:
   * Extension API for the C++ adapter (sx126x_ext.h): sx126x_is_chip_busy,
     sx126x_is_receiving, sx126x_set_rx_boost, sx126x_set_fem_rx_enable,
     sx126x_reset_agc, sx126x_get_rssi_inst, sx126x_get_wakeup_time_us, the
-    dc-restart counters, the CAD tuning trio, and
-    sx126x_apply_heltec_reg_patch.
+    dc-restart counters, the CAD tuning trio, sx126x_lbt_rx_evidence (status
+    latched before each pre-TX CAD, last header-less preamble; LLD 03 §19).
+    The Heltec RX workaround is applied and retained inside the driver.
 
 In sx126x_hal.c, SX1262 Tx params use a measured-optimal PaConfig table indexed
 by requested power (RadioLib PR #1662) instead of the datasheet's fixed
@@ -292,6 +296,9 @@ with rather than the one about to be reapplied.  A healthy node logs
 
   retention[install]: list ok n=2 [0]=0x08AC [1]=0x0889
 
+(n=3 on boards with CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH, whose third
+entry 0x08B5 the check also verifies)
+
 at boot and "retention[dc-rx]: ok gain=0x.." on the first duty-cycled packet and
 every 64th after that; a broken one warns on the first packet following a sleep
 and carries a running bad/total tally.
@@ -490,6 +497,11 @@ followed by a symbol-count correction: -1 at 4 symbols, -2 at 8 or 16, since
 more looks at the same correlation reach the same detection quality at a lower
 threshold.  We run 4 symbols everywhere and applied no such correction.
 
+SetCadParams takes cadSymbolNum as a code (DS Table 13-72: 0x00..0x04 for 1,
+2, 4, 8, 16 symbols), so sx126x_cad_symb_code() encodes the count from
+lora_modem_config.  From 2026-07 to 2026-11 the count was written as-is, and
+the 4 that LoRaRadio asked for ran as 16 (ZephCore LLD 03 section 20).
+
 The error this leaves is mild on this family -- 1-3 counts per octave of
 bandwidth -- which is why SF+13 survived so long.  It is not nil: against the
 BW500 column SF+13 is ten counts too sensitive at SF12, and `set bw` accepts
@@ -657,6 +669,23 @@ rather than reverting it:
 CONFIG_LORA_GFSK is off in every ZephCore build, so sx126x_gfsk.c is not
 compiled and SX126X_IS_GFSK() is constant false.
 
+== Rebased onto the SX1268/LLCC68 variants (2026-11-08, upstream eee6a309582) ==
+
+Upstream replaced sx126x_hal_config.is_sx1261 with an enum sx126x_variants
+field (SX1261, SX1262, SX1268, LLCC68, STM32WL) and rewrote SX126X_INIT to
+take a node id and a variant (DT_FOREACH_STATUS_OKAY_VARGS per compatible)
+instead of DT_DRV_COMPAT instances.  Two conflict hunks:
+
+- SX126X_INIT is upstream's, plus our .lna_bypass field in node-id form.
+- The high-power branch of sx126x_hal_configure_tx_params() (now SX1262,
+  SX1268 and LLCC68) keeps our measured PaConfig table.  The table was
+  measured on SX1262; no ZephCore board uses the sx1268 or llcc68
+  compatibles, so it is unverified on those parts.
+
+Our two is_sx1261 tests (Sec 15.2 TX clamp, OCP) became
+variant != / == SX126X_SX1261, which is what the SX1268 and LLCC68 errata
+call for and is the same code path on every SX1262 board.
+
 == Reject a received header that says the payload carries no CRC ==
 
 In explicit-header mode the received header says whether the payload carries a
@@ -668,6 +697,30 @@ register 0x076B bit 4 (DS Table 12-1, "LoRa CRC configuration Rx"), and rejects
 the frame like a CRC error when the flag is off. One register read per received
 LoRa frame; GFSK and a CRC-off configuration are unchanged. Field evidence and
 the other radio families: devdocs/lld/03-radio-contract.md.
+
+== Shared LDRO rule, standby before sleep, quarter-dB SNR (2026-11-11) ==
+
+Found by reading the driver against DS rev 2.2; the audit notes are in
+devdocs/audit/01-sx126x.md and LLD 03.
+
+  * bandwidth_to_hz() now takes its figures from zc_lora_bw_hz()
+    (zc_lora_timing.h) and should_enable_ldro() from zc_lora_ldro().  The
+    table here held the datasheet's bandwidths rounded to 10 Hz, and 15630 Hz
+    put SF8/BW15.6 at 16378 us, under the 16.38 ms threshold, where the true
+    15625 Hz gives 16384 us: LDRO was off on this chip and on with RadioLib
+    and the LR11xx, and the header does not carry LDRO.
+
+  * sx126x_reset_agc() and the TX_DONE handler issue SetStandby(STDBY_RC)
+    before SetSleep.  DS 13.1.1 specifies SetSleep from STDBY only and DS
+    13.1.12 Calibrate from STDBY_RC only; reset_agc used to send both with
+    the chip still in RX, and TX_DONE leaves the chip in FS (the fallback
+    mode).  Whether the chip tolerates the old order was never measured.
+
+  * sx126x_get_last_snr_x4() returns the last packet's SNR in quarter dB.
+    The LoRa API's callback carries whole dB, floored.
+
+  * sx126x_lora_airtime() uses the SF5/SF6 packet format (6.25 sync symbols,
+    no +8 in the payload numerator) at those spreading factors.
 
 == Why this is one patch ==
 
@@ -703,6 +756,15 @@ already touched sx126x.c (only the DIO1 wakeup did not), so a conflict there
 always meant rebasing the large patch anyway.  Per-change provenance moves from
 filenames into the section headings above.
 
+== Rebased 2026-11-22 (Zephyr 8b485ee52d7, ESP32-S31 branch) ==
+Upstream added sx126x_clear_device_errors() and calls it after the TCXO is
+configured in chip_init and in ensure_ready (2bfb2eef8de, "clear TCXO startup
+errors": a TCXO leaves XOSC_START_ERR latched after reset).  Kept as upstream
+has it.  Upstream 5728464cb87 also made sx126x_set_rf_path() call
+sx126x_hal_set_rf_switch() even with dio2-tx-enable; our version already
+drives rx-enable-gpios / tx-enable-gpios explicitly in that case and adds the
+FEM select, so ours stands.
+
 Regenerate with:
 
   git -C zephyr diff -- drivers/lora/native/sx126x/ \
@@ -711,7 +773,7 @@ Regenerate with:
 appended to this preamble.
 
 diff --git a/drivers/lora/native/sx126x/sx126x.c b/drivers/lora/native/sx126x/sx126x.c
-index f68bf508853..3ecdb2a4e04 100644
+index 289d19ec4ee..7acaf7451f8 100644
 --- a/drivers/lora/native/sx126x/sx126x.c
 +++ b/drivers/lora/native/sx126x/sx126x.c
 @@ -6,15 +6,54 @@
@@ -769,10 +831,55 @@ index f68bf508853..3ecdb2a4e04 100644
  #define SX126X_REST_STATE \
  	(IS_ENABLED(CONFIG_LORA_SX126X_NATIVE_SLEEP) \
  	 ? SX126X_STATE_SLEEP : SX126X_STATE_IDLE)
-@@ -103,6 +142,82 @@ static int bandwidth_to_hz(enum lora_signal_bandwidth bw, uint32_t *bw_hz)
- 	}
- }
+@@ -67,40 +106,106 @@ static int bandwidth_to_reg(enum lora_signal_bandwidth bw, uint8_t *reg)
  
+ static int bandwidth_to_hz(enum lora_signal_bandwidth bw, uint32_t *bw_hz)
+ {
+-	switch (bw) {
+-	case BW_7_KHZ:
+-		*bw_hz = 7810;
+-		return 0;
+-	case BW_10_KHZ:
+-		*bw_hz = 10420;
+-		return 0;
+-	case BW_15_KHZ:
+-		*bw_hz = 15630;
+-		return 0;
+-	case BW_20_KHZ:
+-		*bw_hz = 20830;
+-		return 0;
+-	case BW_31_KHZ:
+-		*bw_hz = 31250;
+-		return 0;
+-	case BW_41_KHZ:
+-		*bw_hz = 41670;
+-		return 0;
+-	case BW_62_KHZ:
+-		*bw_hz = 62500;
+-		return 0;
+-	case BW_125_KHZ:
+-		*bw_hz = 125000;
+-		return 0;
+-	case BW_250_KHZ:
+-		*bw_hz = 250000;
+-		return 0;
+-	case BW_500_KHZ:
+-		*bw_hz = 500000;
+-		return 0;
+-	default:
++	uint8_t reg;
++
++	/* Only the bandwidths this chip has, at their true width: the shared
++	 * table (zc_lora_timing.h), not the datasheet's figures rounded to
++	 * 10 Hz, which put SF8/BW15.6 on the wrong side of the LDRO threshold.
++	 */
++	if (bandwidth_to_reg(bw, &reg) < 0) {
+ 		return -EINVAL;
+ 	}
++	*bw_hz = zc_lora_bw_hz((uint16_t)bw);
++	return 0;
++}
++
 +/* Reset all software state that indicates "we are currently receiving":
 + * the rx_packet_active latch (and its deadline timestamp), the
 + * preamble-grace timestamp and the raw-HEADER_VALID deadline.  Paired write
@@ -782,8 +889,9 @@ index f68bf508853..3ecdb2a4e04 100644
 +/* cad_rx_state values -- see the field comment in sx126x.h. */
 +#define SX126X_CAD_RX_IDLE   0
 +#define SX126X_CAD_RX_ARMED  1
-+#define SX126X_CAD_RX_PACKET 2
-+#define SX126X_CAD_RX_TMOUT  3
++#define SX126X_CAD_RX_PACKET   2
++#define SX126X_CAD_RX_TMOUT    3
++#define SX126X_CAD_RX_PREAMBLE 4
 +
 +/* Resolve an in-flight CAD_RX with the terminal event that just arrived.
 + * A no-op unless a CAD_RX is actually armed, so the packet path pays one
@@ -793,6 +901,18 @@ index f68bf508853..3ecdb2a4e04 100644
 +static inline bool sx126x_cad_rx_resolve(struct sx126x_data *data, int outcome)
 +{
 +	return atomic_cas(&data->cad_rx_state, SX126X_CAD_RX_ARMED, outcome);
++}
++
++/* Called with every IRQ status read: while a CAD_RX is armed, a preamble,
++ * header or header error in the status means a LoRa transmitter was there,
++ * whether or not anything decodes. */
++static inline void sx126x_cad_rx_note(struct sx126x_data *data, uint16_t irq)
++{
++	if ((irq & (SX126X_IRQ_PREAMBLE_DETECTED | SX126X_IRQ_HEADER_VALID |
++		    SX126X_IRQ_HEADER_ERR)) &&
++	    atomic_get(&data->cad_rx_state) == SX126X_CAD_RX_ARMED) {
++		atomic_set(&data->cad_rx_signal, 1);
++	}
 +}
 +
 +static inline void sx126x_reset_rx_busy_signals(struct sx126x_data *data)
@@ -847,12 +967,25 @@ index f68bf508853..3ecdb2a4e04 100644
 +		bw_hz = 0;  /* unconfigured: the helper's safe default */
 +	}
 +	return zc_lora_max_payload_ms((uint8_t)data->config.datarate, bw_hz);
-+}
-+
+ }
+ 
  static bool should_enable_ldro(enum lora_datarate sf, enum lora_signal_bandwidth bw,
- 			       const struct sx126x_hal_config *config)
- {
-@@ -347,10 +462,128 @@ static int sx126x_set_sync_word(const struct device *dev, const struct lora_mode
+@@ -115,12 +220,8 @@ static bool should_enable_ldro(enum lora_datarate sf, enum lora_signal_bandwidth
+ 
+ 	ret = bandwidth_to_hz(bw, &bw_hz);
+ 	__ASSERT_NO_MSG(ret == 0);
+-	/* Symbol time = 2^SF / BW (in seconds) */
+-	/* 16.38 ms = 16380 us */
+-	/* 2^SF / BW > 0.01638 => 2^SF * 1000000 / BW > 16380 */
+-	uint32_t symbol_time_us = ((1 << sf) * 1000000UL) / bw_hz;
+-
+-	return symbol_time_us > 16380;
++	/* Symbol time above 16.38 ms: the rule every radio family shares. */
++	return zc_lora_ldro((uint8_t)sf, bw_hz);
+ }
+ 
+ static int sx126x_validate_config(const struct device *dev, const struct lora_modem_config *config)
+@@ -371,10 +472,128 @@ static int sx126x_set_sync_word(const struct device *dev, const struct lora_mode
  	return sx126x_hal_write_regs(dev, SX126X_REG_LORA_SYNC_WORD_MSB, buf, 2);
  }
  
@@ -983,7 +1116,13 @@ index f68bf508853..3ecdb2a4e04 100644
  	return sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &val, 1);
  }
  
-@@ -445,7 +678,7 @@ static int sx126x_get_packet_status(const struct device *dev,
+@@ -464,17 +683,22 @@ static int sx126x_get_packet_status(const struct device *dev,
+ 			*rssi = -((int16_t)buf[2] >> 1);
+ 			/* GFSK estimates no signal-to-noise ratio */
+ 			*snr = 0;
++			data->last_snr_x4 = 0;
+ 		}
+ 
  		return ret;
  	}
  
@@ -992,7 +1131,16 @@ index f68bf508853..3ecdb2a4e04 100644
  	if (ret == 0) {
  		/* RSSI is -value/2 dBm */
  		*rssi = -((int16_t)buf[0] >> 1);
-@@ -473,6 +706,12 @@ static int sx126x_add_reg_to_retention(const struct device *dev, uint16_t addr)
+ 		/* SNR is value/4 dB (signed) */
+ 		*snr = ((int8_t)buf[1]) >> 2;
++		/* The API above carries whole dB; keep the quarter-dB reading
++		 * for sx126x_get_last_snr_x4().
++		 */
++		data->last_snr_x4 = (int8_t)buf[1];
+ 	}
+ 
+ 	return ret;
+@@ -497,6 +721,12 @@ static int sx126x_add_reg_to_retention(const struct device *dev, uint16_t addr)
  
  	n = buf[0];
  
@@ -1005,8 +1153,8 @@ index f68bf508853..3ecdb2a4e04 100644
  	for (uint8_t i = 0; i < n; i++) {
  		if (sys_get_be16(&buf[1 + 2 * i]) == addr) {
  			return 0;
-@@ -490,6 +729,92 @@ static int sx126x_add_reg_to_retention(const struct device *dev, uint16_t addr)
- 	return sx126x_hal_write_regs(dev, SX126X_REG_RETENTION_LIST, buf, sizeof(buf));
+@@ -521,6 +751,130 @@ static int sx126x_clear_device_errors(const struct device *dev)
+ 	return sx126x_hal_write_cmd(dev, SX126X_CMD_CLR_DEVICE_ERRORS, buf, sizeof(buf));
  }
  
 +/* The registers that must survive a warm-start wake.
@@ -1017,7 +1165,10 @@ index f68bf508853..3ecdb2a4e04 100644
 + * intervene, because those sleep->RX transitions are chip-internal.
 + *
 + * 0x0889 (Tx modulation): carries the sec 15.1 500 kHz workaround, which is
-+ * otherwise lost on the same wakes. */
++ * otherwise lost on the same wakes.
++ *
++ * 0x08B5 (CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH only): bit 0 is the Heltec
++ * RX workaround set by sx126x_apply_heltec_rx_patch(), lost on the same wakes. */
 +#ifdef CONFIG_ZEPHCORE_LORA_RETENTION_DEBUG
 +/* Does installing the retention list once actually hold?
 + *
@@ -1048,9 +1199,12 @@ index f68bf508853..3ecdb2a4e04 100644
 +		return;
 +	}
 +
-+	bad = (list[0] != 2) ||
++	bad = (list[0] !=
++	       (IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH) ? 3 : 2)) ||
 +	      (sys_get_be16(&list[1]) != SX126X_REG_RX_GAIN) ||
-+	      (sys_get_be16(&list[3]) != SX126X_REG_TX_MODULATION);
++	      (sys_get_be16(&list[3]) != SX126X_REG_TX_MODULATION) ||
++	      (IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH) &&
++	       sys_get_be16(&list[5]) != 0x08B5);
 +
 +	if (check_gain) {
 +		want = sx126x_rx_gain_byte(dev, data->rx_boost_enabled);
@@ -1088,17 +1242,49 @@ index f68bf508853..3ecdb2a4e04 100644
 +#define sx126x_retention_debug_check(dev, when, check_gain) ((void)0)
 +#endif /* CONFIG_ZEPHCORE_LORA_RETENTION_DEBUG */
 +
-+static void sx126x_install_retention_list(const struct device *dev)
++static int sx126x_apply_heltec_rx_patch(const struct device *dev)
 +{
-+	(void)sx126x_add_reg_to_retention(dev, SX126X_REG_RX_GAIN);
-+	(void)sx126x_add_reg_to_retention(dev, SX126X_REG_TX_MODULATION);
++	if (!IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)) {
++		return 0;
++	}
++
++	uint8_t value;
++	int ret = sx126x_hal_read_regs(dev, 0x08B5, &value, 1);
++	if (ret < 0) {
++		return ret;
++	}
++	value |= 0x01;
++	return sx126x_hal_write_regs(dev, 0x08B5, &value, 1);
++}
++
++static int sx126x_install_retention_list(const struct device *dev)
++{
++	int ret = sx126x_add_reg_to_retention(dev, SX126X_REG_RX_GAIN);
++	if (ret < 0) {
++		return ret;
++	}
++	ret = sx126x_add_reg_to_retention(dev, SX126X_REG_TX_MODULATION);
++	if (ret < 0) {
++		return ret;
++	}
++	if (IS_ENABLED(CONFIG_ZEPHCORE_SX126X_HELTEC_REG_PATCH)) {
++		ret = sx126x_add_reg_to_retention(dev, 0x08B5);
++		if (ret < 0) {
++			return ret;
++		}
++		ret = sx126x_apply_heltec_rx_patch(dev);
++		if (ret < 0) {
++			return ret;
++		}
++	}
 +	sx126x_retention_debug_check(dev, "install", false);
++	return 0;
 +}
 +
  static int sx126x_chip_init(const struct device *dev)
  {
  	const struct sx126x_hal_config *config = dev->config;
-@@ -550,6 +875,26 @@ static int sx126x_chip_init(const struct device *dev)
+@@ -588,6 +942,26 @@ static int sx126x_chip_init(const struct device *dev)
  		return ret;
  	}
  
@@ -1125,7 +1311,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	/* Set packet type to LoRa */
  	ret = sx126x_set_packet_type(dev, SX126X_PACKET_TYPE_LORA);
  	if (ret < 0) {
-@@ -557,10 +902,23 @@ static int sx126x_chip_init(const struct device *dev)
+@@ -595,10 +969,23 @@ static int sx126x_chip_init(const struct device *dev)
  		return ret;
  	}
  
@@ -1152,7 +1338,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	if (ret < 0) {
  		LOG_ERR("Set IRQ params failed: %d", ret);
  		return ret;
-@@ -573,21 +931,9 @@ static int sx126x_chip_init(const struct device *dev)
+@@ -611,19 +998,10 @@ static int sx126x_chip_init(const struct device *dev)
  		return ret;
  	}
  
@@ -1167,17 +1353,15 @@ index f68bf508853..3ecdb2a4e04 100644
 -	}
 -
 -	ret = sx126x_add_reg_to_retention(dev, SX126X_REG_TX_MODULATION);
--	if (ret < 0) {
--		LOG_ERR("Add TX_MODULATION to retention failed: %d", ret);
--		return ret;
--	}
 +	/* Install the warm-start retention list once, here, rather than on
 +	 * every duty-cycle re-arm. */
-+	sx126x_install_retention_list(dev);
++	ret = sx126x_install_retention_list(dev);
+ 	if (ret < 0) {
+-		LOG_ERR("Add TX_MODULATION to retention failed: %d", ret);
+ 		return ret;
+ 	}
  
- 	LOG_INF("SX126x initialized");
- 	return 0;
-@@ -597,15 +943,44 @@ static void sx126x_dio1_callback(const struct device *dev)
+@@ -635,14 +1013,46 @@ static void sx126x_dio1_callback(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
  
@@ -1187,11 +1371,12 @@ index f68bf508853..3ecdb2a4e04 100644
  
  static void sx126x_set_rf_path(const struct device *dev, bool enable, bool tx)
  {
- 	const struct sx126x_hal_config *config = dev->config;
++	const struct sx126x_hal_config *config = dev->config;
 +	struct sx126x_data *data = dev->data;
- 
++
  	sx126x_hal_set_antenna_enable(dev, enable);
--	if (!config->dio2_tx_enable) {
+-	/* GPIOs may control external amplifiers even when DIO2 controls the RF switch. */
+-	sx126x_hal_set_rf_switch(dev, enable, tx);
 +
 +	/* FEM receive-path select, on boards that wire one (lna-bypass-gpios).
 +	 * HIGH = bypass, LOW = through the LNA.  Deliberately independent of
@@ -1221,10 +1406,12 @@ index f68bf508853..3ecdb2a4e04 100644
 +			gpio_pin_set_dt(&config->rx_enable, enable && !tx);
 +		}
 +	} else {
- 		sx126x_hal_set_rf_switch(dev, enable, tx);
- 	}
++		sx126x_hal_set_rf_switch(dev, enable, tx);
++	}
  }
-@@ -625,6 +1000,7 @@ static void sx126x_disconnect_rf_gpios(const struct device *dev)
+ 
+ #ifdef CONFIG_PM_DEVICE
+@@ -660,6 +1070,7 @@ static void sx126x_disconnect_rf_gpios(const struct device *dev)
  	sx126x_disconnect_gpio(&config->antenna_enable);
  	sx126x_disconnect_gpio(&config->tx_enable);
  	sx126x_disconnect_gpio(&config->rx_enable);
@@ -1232,7 +1419,7 @@ index f68bf508853..3ecdb2a4e04 100644
  }
  
  static int sx126x_reconnect_rf_gpios(const struct device *dev)
-@@ -650,10 +1026,232 @@ static int sx126x_reconnect_rf_gpios(const struct device *dev)
+@@ -685,10 +1096,233 @@ static int sx126x_reconnect_rf_gpios(const struct device *dev)
  		return ret;
  	}
  
@@ -1428,6 +1615,7 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * would stall the HAL and force-wake the chip. */
 +	if (!sx126x_hal_is_busy(dev) &&
 +	    sx126x_get_irq_status(dev, &irq_status) == 0) {
++		sx126x_cad_rx_note(data, irq_status);
 +		parked = (irq_status & SX126X_IRQ_PREAMBLE_DETECTED) &&
 +			 !(irq_status & SX126X_IRQ_HEADER_VALID);
 +	}
@@ -1465,7 +1653,21 @@ index f68bf508853..3ecdb2a4e04 100644
  int sx126x_set_sleep(const struct device *dev)
  {
  	struct sx126x_data *data = dev->data;
-@@ -727,25 +1325,21 @@ static void sx126x_handle_irq_tx_done(const struct device *dev)
+@@ -759,6 +1393,13 @@ static void sx126x_handle_irq_tx_done(const struct device *dev)
+ 	struct sx126x_tx_result result = { .status = 0 };
+ 
+ 	LOG_DBG("TX done");
++	/* The chip is in FS here (the fallback mode set at init) and SetSleep
++	 * is specified from STDBY only (DS sec 13.1.1).  Without native sleep
++	 * nothing is sent and the chip stays in FS for the next operation.
++	 */
++	if (IS_ENABLED(CONFIG_LORA_SX126X_NATIVE_SLEEP)) {
++		sx126x_set_standby(dev, SX126X_STANDBY_RC);
++	}
+ 	sx126x_set_sleep(dev);
+ 
+ 	if (data->tx_async_signal != NULL) {
+@@ -768,25 +1409,21 @@ static void sx126x_handle_irq_tx_done(const struct device *dev)
  	k_msgq_put(&data->tx_msgq, &result, K_NO_WAIT);
  }
  
@@ -1477,11 +1679,11 @@ index f68bf508853..3ecdb2a4e04 100644
 +				     const struct sx126x_data *data)
  {
 -	struct sx126x_data *data = dev->data;
--
--	if (atomic_get(&data->state) == SX126X_STATE_RX_DUTY_CYCLE) {
--		int ret;
 +	uint8_t reg;
  
+-	if (atomic_get(&data->state) == SX126X_STATE_RX_DUTY_CYCLE) {
+-		int ret;
+-
 -		ret = sx126x_set_rx_duty_cycle(dev,
 -					       data->duty_cycle.rx_period,
 -					       data->duty_cycle.sleep_period);
@@ -1503,7 +1705,7 @@ index f68bf508853..3ecdb2a4e04 100644
  }
  
  static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_status)
-@@ -753,68 +1347,212 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
+@@ -794,68 +1431,215 @@ static void sx126x_handle_irq_rx_done(const struct device *dev, uint16_t irq_sta
  	struct sx126x_data *data = dev->data;
  	struct sx126x_rx_result result = { 0 };
  	uint8_t payload_len = 0, offset = 0;
@@ -1568,23 +1770,15 @@ index f68bf508853..3ecdb2a4e04 100644
  	}
  
 -	sx126x_get_packet_status(dev, &result.rssi, &result.snr);
--
--	if (irq_status & SX126X_IRQ_CRC_ERR) {
--		LOG_WRN("CRC error");
--		result.status = -EIO;
--		goto out;
--	}
 +	k_mutex_lock(&data->lock, K_FOREVER);
 +	rx_cb = data->rx_cb;
 +	rx_cb_user_data = data->rx_cb_user_data;
 +	rx_cb_gen = atomic_get(&data->rx_cb_gen);
 +	k_mutex_unlock(&data->lock);
  
--	result.len = MIN(payload_len, sizeof(data->rx_buf));
--	ret = sx126x_hal_read_buffer(dev, offset, data->rx_buf, result.len);
--	if (ret < 0) {
--		LOG_ERR("Failed to read RX buffer");
--		result.status = ret;
+-	if (irq_status & SX126X_IRQ_CRC_ERR) {
+-		LOG_WRN("CRC error");
+-		result.status = -EIO;
 -		goto out;
 -	}
 +	/* Handle async callback or signal sync receiver */
@@ -1603,6 +1797,14 @@ index f68bf508853..3ecdb2a4e04 100644
 +		}
 +		sx126x_restart_rx(dev, data);
  
+-	result.len = MIN(payload_len, sizeof(data->rx_buf));
+-	ret = sx126x_hal_read_buffer(dev, offset, data->rx_buf, result.len);
+-	if (ret < 0) {
+-		LOG_ERR("Failed to read RX buffer");
+-		result.status = ret;
+-		goto out;
+-	}
+-
 -	result.status = result.len;
 -	LOG_DBG("RX done: %d bytes, RSSI=%d, SNR=%d",
 -		result.len, result.rssi, result.snr);
@@ -1671,7 +1873,10 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * packet behind it.  Resolved first, before anything below re-arms the
 +	 * node's normal Rx mode, and the verdict is kept because the duty-cycle
 +	 * branch must not count this timeout (see there). */
-+	was_cad_rx = sx126x_cad_rx_resolve(data, SX126X_CAD_RX_TMOUT);
++	was_cad_rx = sx126x_cad_rx_resolve(data,
++					   atomic_get(&data->cad_rx_signal) ?
++					   SX126X_CAD_RX_PREAMBLE :
++					   SX126X_CAD_RX_TMOUT);
 +
 +	/* Terminal event -- clear the RX-busy latch and preamble-grace
 +	 * timestamp.  Fires for DC preamble false-positive re-arm and any
@@ -1691,8 +1896,8 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * duty cycle and is parked in STDBY_RC.  Without this re-arm the
 +	 * driver silently falls out of duty cycle after the first noisy
 +	 * window and goes to sleep.  Re-entering via sx126x_restart_rx()
-+	 * preserves the stored rx/sleep timing and re-applies AGC reset +
-+	 * StopTimerOnPreamble.
++	 * preserves the stored rx/sleep timing and re-applies
++	 * StopTimerOnPreamble and the RX gain.
 +	 *
 +	 * Gated on state != TX.  A chip-side Tx timeout raises the same
 +	 * IRQ_RX_TX_TIMEOUT, and on a duty-cycled node both conditions above
@@ -1755,7 +1960,15 @@ index f68bf508853..3ecdb2a4e04 100644
  		return;
  	}
  
-@@ -857,13 +1595,100 @@ static void sx126x_irq_work_handler(struct k_work *work)
+@@ -887,6 +1671,7 @@ static void sx126x_irq_work_handler(struct k_work *work)
+ 		LOG_ERR("Failed to get IRQ status");
+ 		return;
+ 	}
++	sx126x_cad_rx_note(data, irq_status);
+ 
+ 	LOG_DBG("IRQ status: 0x%04x", irq_status);
+ 
+@@ -898,13 +1683,101 @@ static void sx126x_irq_work_handler(struct k_work *work)
  	}
  
  	if (irq_status & SX126X_IRQ_RX_DONE) {
@@ -1804,6 +2017,7 @@ index f68bf508853..3ecdb2a4e04 100644
 +					sx126x_max_payload_ms(data), 64000U);
 +
 +			sys_put_be24(tmo, rxbuf);
++			atomic_set(&data->cad_rx_signal, 0);
 +			atomic_set(&data->cad_rx_state, SX126X_CAD_RX_ARMED);
 +			sx126x_hal_write_cmd(dev, SX126X_CMD_SET_RX, rxbuf, 3);
 +		}
@@ -1856,7 +2070,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	/* Re-enable the DIO1 interrupt for the next event (unless sleeping) */
  	if (atomic_get(&data->state) != SX126X_REST_STATE) {
  		sx126x_hal_dio1_irq_enable(dev);
-@@ -935,7 +1760,7 @@ int sx126x_config_carrier(const struct device *dev, uint32_t frequency, int8_t t
+@@ -976,7 +1849,7 @@ int sx126x_config_carrier(const struct device *dev, uint32_t frequency, int8_t t
  		return ret;
  	}
  
@@ -1865,7 +2079,7 @@ index f68bf508853..3ecdb2a4e04 100644
  }
  
  static int sx126x_lora_config(const struct device *dev, const struct lora_modem_config *config)
-@@ -989,6 +1814,15 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
+@@ -1030,6 +1903,15 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
  		goto out;
  	}
  
@@ -1881,7 +2095,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	/* Set modulation parameters */
  	ret = bandwidth_to_reg(config->bandwidth, &bw_reg);
  	__ASSERT_NO_MSG(ret == 0);
-@@ -999,6 +1833,12 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
+@@ -1040,6 +1922,12 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
  		goto out;
  	}
  
@@ -1894,7 +2108,20 @@ index f68bf508853..3ecdb2a4e04 100644
  	/* Set sync word */
  	ret = sx126x_set_sync_word(dev, config);
  	if (ret < 0) {
-@@ -1023,6 +1863,10 @@ out:
+@@ -1052,6 +1940,12 @@ static int sx126x_lora_config(const struct device *dev, const struct lora_modem_
+ 		goto out;
+ 	}
+ 
++	/* Apply while awake and locked, before configuration's warm sleep. */
++	ret = sx126x_apply_heltec_rx_patch(dev);
++	if (ret < 0) {
++		goto out;
++	}
++
+ 	data->gfsk = false;
+ 	data->config_valid = true;
+ 	LOG_DBG("Config: freq=%u, SF=%d, BW=%d, CR=%d, power=%d",
+@@ -1064,6 +1958,10 @@ out:
  	return ret;
  }
  
@@ -1905,7 +2132,7 @@ index f68bf508853..3ecdb2a4e04 100644
  static int sx126x_lora_send_async(const struct device *dev,
  				  uint8_t *data_buf, uint32_t data_len,
  				  struct k_poll_signal *async)
-@@ -1050,11 +1894,27 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1091,11 +1989,27 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return -EINVAL;
  	}
  
@@ -1935,18 +2162,26 @@ index f68bf508853..3ecdb2a4e04 100644
  	k_mutex_lock(&data->lock, K_FOREVER);
  
  	ret = sx126x_ensure_ready(dev);
-@@ -1064,12 +1924,65 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1105,6 +2019,73 @@ static int sx126x_lora_send_async(const struct device *dev,
  		return ret;
  	}
  
--	data->tx_async_signal = async;
--	k_msgq_purge(&data->tx_msgq);
--
--	/* Set packet parameters */
--	ret = sx126x_set_configured_packet_params(dev, data_len, false);
--	if (ret < 0) {
 +	/* LBT: perform blocking CAD before transmitting */
 +	if (data->config.cad.mode == LORA_CAD_MODE_LBT) {
++		/* Diagnostics: what the receiver latched before CAD replaces
++		 * RX (one status read; see sx126x_lbt_rx_evidence()). */
++		uint16_t pre_irq = 0;
++		atomic_val_t pre = 0;
++
++		if (was_rx && sx126x_get_irq_status(dev, &pre_irq) == 0) {
++			pre = ((pre_irq & SX126X_IRQ_PREAMBLE_DETECTED) ?
++				       SX126X_LBT_PRE_PREAMBLE : 0) |
++			      ((pre_irq & SX126X_IRQ_HEADER_VALID) ?
++				       SX126X_LBT_PRE_HEADER : 0) |
++			      ((pre_irq & SX126X_IRQ_HEADER_ERR) ?
++				       SX126X_LBT_PRE_HEADER_ERR : 0);
++		}
++		atomic_set(&data->lbt_pre_flags, pre);
 +		k_mutex_unlock(&data->lock);
 +		atomic_set(&data->state, SX126X_REST_STATE);
 +		int cad_ret = sx126x_lora_cad(dev,
@@ -1998,16 +2233,10 @@ index f68bf508853..3ecdb2a4e04 100644
 +		}
 +	}
 +
-+	data->tx_async_signal = async;
-+	k_msgq_purge(&data->tx_msgq);
-+
-+	/* Set packet parameters */
-+	ret = sx126x_set_configured_packet_params(dev, data_len, false);
-+	if (ret < 0) {
- 		goto out_error;
- 	}
+ 	data->tx_async_signal = async;
+ 	k_msgq_purge(&data->tx_msgq);
  
-@@ -1088,8 +2001,90 @@ static int sx126x_lora_send_async(const struct device *dev,
+@@ -1129,8 +2110,91 @@ static int sx126x_lora_send_async(const struct device *dev,
  	/* Enable antenna and set TX path */
  	sx126x_set_rf_path(dev, true, true);
  
@@ -2044,14 +2273,15 @@ index f68bf508853..3ecdb2a4e04 100644
 +		goto out_error;
 +	}
 +
-+#ifdef CONFIG_LORA_SX126X_NATIVE_STANDALONE /* STM32WL HAL clamps in its own configure_tx_params; its config has no is_sx1261 */
-+	/* Sec 15.2 TX Clamp workaround (datasheet errata) -- SX1262 only.
++#ifdef CONFIG_LORA_SX126X_NATIVE_STANDALONE /* STM32WL HAL clamps in its own configure_tx_params */
++	/* Sec 15.2 TX Clamp workaround (datasheet errata) -- high-power PA
++	 * parts only (SX1262, SX1268, LLCC68), not SX1261.
 +	 * Set bits [4:1] of register 0x08D8 before SetTx to prevent
 +	 * PA overshoot that can damage the device. */
 +	{
 +		const struct sx126x_hal_config *hal_cfg = dev->config;
 +
-+		if (!hal_cfg->is_sx1261) {
++		if (hal_cfg->variant != SX126X_SX1261) {
 +			uint8_t clamp;
 +
 +			ret = sx126x_hal_read_regs(dev, SX126X_REG_TX_CLAMP_CFG,
@@ -2100,7 +2330,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	if (ret < 0) {
  		goto out_error;
  	}
-@@ -1158,6 +2153,8 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
+@@ -1199,6 +2263,8 @@ static int sx126x_lora_recv(const struct device *dev, uint8_t *data_buf,
  	}
  
  	data->rx_cb = NULL;
@@ -2109,7 +2339,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	k_msgq_purge(&data->rx_msgq);
  
  	/* Set packet parameters for variable length reception */
-@@ -1222,6 +2219,8 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1263,6 +2329,8 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		/* Stop async reception */
  		data->rx_cb = NULL;
  		data->rx_cb_user_data = NULL;
@@ -2118,7 +2348,7 @@ index f68bf508853..3ecdb2a4e04 100644
  		if (atomic_cas(&data->state, SX126X_STATE_RX, SX126X_STATE_IDLE)) {
  			sx126x_set_standby(dev, SX126X_STANDBY_RC);
  			sx126x_set_sleep(dev);
-@@ -1236,6 +2235,19 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1277,6 +2345,19 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		return -EINVAL;
  	}
  
@@ -2138,7 +2368,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	if (!atomic_cas(&data->state, SX126X_REST_STATE, SX126X_STATE_RX)) {
  		LOG_ERR("Busy");
  		k_mutex_unlock(&data->lock);
-@@ -1249,13 +2261,24 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1290,13 +2371,24 @@ static int sx126x_lora_recv_async(const struct device *dev,
  		return ret;
  	}
  
@@ -2163,7 +2393,7 @@ index f68bf508853..3ecdb2a4e04 100644
  		sx126x_set_sleep(dev);
  		k_mutex_unlock(&data->lock);
  		return ret;
-@@ -1268,11 +2291,21 @@ static int sx126x_lora_recv_async(const struct device *dev,
+@@ -1309,11 +2401,21 @@ static int sx126x_lora_recv_async(const struct device *dev,
  	ret = sx126x_set_rx(dev, 0);
  	if (ret < 0) {
  		data->rx_cb = NULL;
@@ -2174,10 +2404,10 @@ index f68bf508853..3ecdb2a4e04 100644
  		return ret;
  	}
  
-+	/* Re-apply RX gain after SetRx -- register 0x08AC is reset on every
-+	 * SetRx without retention, and lora_config sets gain before going to
-+	 * sleep, so without this the first packet would be received in
-+	 * power-saving gain regardless of DTS rx-boosted. */
++	/* Re-apply RX gain after SetRx: lora_config() wrote the DTS value
++	 * before sleeping, and rx_boost_enabled (the pref) may differ from it.
++	 * What the datasheet says about the gain surviving is in
++	 * sx126x_set_rx_gain(). */
 +	uint8_t gain = sx126x_rx_gain_byte(dev, data->rx_boost_enabled);
 +
 +	sx126x_hal_write_regs(dev, SX126X_REG_RX_GAIN, &gain, 1);
@@ -2185,7 +2415,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	k_mutex_unlock(&data->lock);
  	return 0;
  }
-@@ -1330,151 +2363,6 @@ static void sx126x_duty_cycle_stop(const struct device *dev)
+@@ -1371,158 +2473,13 @@ static void sx126x_duty_cycle_stop(const struct device *dev)
  	sx126x_set_sleep(dev);
  }
  
@@ -2337,7 +2567,41 @@ index f68bf508853..3ecdb2a4e04 100644
  static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
  {
  	struct sx126x_data *data = dev->data;
-@@ -1575,7 +2463,7 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
+ 	uint32_t t_preamble_us, t_payload_us, t_sym_us, n_payload, bw_hz;
+ 	uint8_t sf, cr, hdr_len;
+ 	int32_t tmp;
+-	bool de, crc;
++	bool de, crc, fine_sync;
+ 	int ret;
+ 
+ 	if (!data->config_valid) {
+@@ -1554,8 +2511,14 @@ static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
+ 	/* In microseconds: (2^SF * 1000000) / BW */
+ 	t_sym_us = ((1UL << sf) * 1000000UL) / bw_hz;
+ 
+-	/* Preamble time (4.25 extra symbols) */
+-	t_preamble_us = (data->config.preamble_len + 4) * t_sym_us +
++	/* At SF5 and SF6 the packet has two more sync symbols and its header
++	 * block carries eight more payload bits than at SF7 and up (the chip's
++	 * packet format, as Semtech's and RadioLib's time-on-air code have it).
++	 */
++	fine_sync = (sf <= 6);
++
++	/* Preamble time (4.25 extra symbols, 6.25 at SF5/SF6) */
++	t_preamble_us = (data->config.preamble_len + 4 + (fine_sync ? 2 : 0)) * t_sym_us +
+ 			(t_sym_us / 4);
+ 
+ 	/* Payload symbol count calculation (from LoRa modem designer's guide) */
+@@ -1564,7 +2527,7 @@ static uint32_t sx126x_lora_airtime(const struct device *dev, uint32_t data_len)
+ 	cr = data->config.coding_rate;
+ 	hdr_len = data->config.explicit_header_disable ? 0 : 20;
+ 
+-	tmp = 8 * data_len - 4 * sf + 8 + hdr_len + 16 * crc;
++	tmp = 8 * data_len - 4 * sf + (fine_sync ? 0 : 8) + hdr_len + 16 * crc;
+ 	if (tmp < 0) {
+ 		tmp = 0;
+ 	}
+@@ -1616,7 +2579,7 @@ static int sx126x_lora_test_cw(const struct device *dev, uint32_t frequency,
  
  	/* Set PA config and TX power */
  	ret = sx126x_hal_configure_tx_params(dev, tx_power, frequency,
@@ -2346,7 +2610,7 @@ index f68bf508853..3ecdb2a4e04 100644
  	if (ret < 0) {
  		goto out_sleep;
  	}
-@@ -1607,53 +2495,1125 @@ out_unlock:
+@@ -1648,53 +2611,1150 @@ out_unlock:
  	return ret;
  }
  
@@ -2473,6 +2737,7 @@ index f68bf508853..3ecdb2a4e04 100644
 +	}
 +
 +	sx126x_get_irq_status(dev, &irq_status);
++	sx126x_cad_rx_note(data, irq_status);
 +
 +	/* HEADER_VALID raw bit, bounded.  Normally this is just the narrow
 +	 * window between DIO1 firing and the work handler running, and the
@@ -2553,6 +2818,8 @@ index f68bf508853..3ecdb2a4e04 100644
 +		/* Grace expired with no HEADER_VALID: assume foreign sync
 +		 * word, release the bit so TX can proceed.  Hardware CAD
 +		 * inside send_async still gates over actually-busy channel. */
++		atomic_set(&data->foreign_pre_ms, (atomic_val_t)seen);
++		atomic_inc(&data->foreign_pre_count);
 +		sx126x_clear_irq_status(dev, SX126X_IRQ_PREAMBLE_DETECTED);
 +		atomic_set(&data->preamble_seen_at_ms, 0);
 +		k_mutex_unlock(&data->lock);
@@ -2650,6 +2917,11 @@ index f68bf508853..3ecdb2a4e04 100644
 +		sx126x_hal_wakeup(dev);
 +	}
 +
++	/* Out of RX first: SetSleep is specified from STDBY only (DS sec
++	 * 13.1.1) and Calibrate from STDBY_RC only (DS sec 13.1.12).  A no-op
++	 * when the wake above already left the chip in STDBY_RC. */
++	sx126x_set_standby(dev, SX126X_STANDBY_RC);
++
 +	/* Warm sleep -- powers down the analog frontend (resets AGC state)
 +	 * but preserves register configuration. */
 +	uint8_t sleep_cfg = SX126X_SLEEP_WARM_START;
@@ -2689,7 +2961,10 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * it here rather than defending the list on every duty-cycle re-arm.
 +	 * Idempotent: sx126x_add_reg_to_retention() returns early when the entry
 +	 * is already present. */
-+	sx126x_install_retention_list(dev);
++	int ret = sx126x_install_retention_list(dev);
++	if (ret < 0) {
++		LOG_ERR("AGC reset: retention/workaround restore failed: %d", ret);
++	}
 +
 +	/* Re-apply DIO2 as RF switch if configured */
 +	if (config->dio2_tx_enable) {
@@ -2758,21 +3033,6 @@ index f68bf508853..3ecdb2a4e04 100644
 +	return us;
 +}
 +
-+void sx126x_apply_heltec_reg_patch(const struct device *dev)
-+{
-+	struct sx126x_data *data = dev->data;
-+	uint8_t val = 0;
-+
-+	/* Set LSB of undocumented register 0x8B5 to improve RX performance.
-+	 * Described by Heltec engineer @Quency-D in MeshCore PR#1398 --
-+	 * consistently improves reception on boards with GC1109/KCT8103L PA
-+	 * (Heltec V4/V4.3). Must be called after lora_config(). */
-+	k_mutex_lock(&data->lock, K_FOREVER);
-+	sx126x_hal_read_regs(dev, 0x08B5, &val, 1);
-+	val |= 0x01;
-+	sx126x_hal_write_regs(dev, 0x08B5, &val, 1);
-+	k_mutex_unlock(&data->lock);
-+}
 +
 +/* -- Driver API: CAD -- */
 +
@@ -2850,8 +3110,9 @@ index f68bf508853..3ecdb2a4e04 100644
 +	}
 +
 +	/* More symbols means more looks at the same correlation, so the same
-+	 * detection quality is reached at a lower threshold.  We run 4 symbols
-+	 * everywhere (LORA_CAD_SYMB_4 in LoRaRadioBase::buildModemConfig). */
++	 * detection quality is reached at a lower threshold.  Semtech's
++	 * correction: -1 at 4 symbols, -2 at 8 and 16.  The count comes from
++	 * LoRaRadio::buildModemConfig() (LLD 03 §20). */
 +	if (symb_nb >= 8) {
 +		peak -= 2;
 +	} else if (symb_nb >= 4) {
@@ -2867,8 +3128,9 @@ index f68bf508853..3ecdb2a4e04 100644
 + * collapse onto one peak and the staircase reads sampling noise between
 + * identical configurations as curvature.
 + *
-+ * The ceiling covers the widest-band base (34 at SF12/BW500 with 4 symbols)
-+ * plus the full CAD_LEVEL_MAX excursion of +12.  The floor stops two counts
++ * The ceiling covers the highest base (35 at SF12/BW500 with 1 or 2 symbols)
++ * plus the full CAD_LEVEL_MAX excursion of +12, with one count to spare.  The
++ * floor stops two counts
 + * above cadDetMin, which is pinned at 10 everywhere: a detPeak at or below the
 + * correlator's own noise-estimate floor does not express a threshold at all.
 + * At the most sensitive base (18, SF5 narrow-band) that does clip the bottom
@@ -2931,6 +3193,22 @@ index f68bf508853..3ecdb2a4e04 100644
 +	return MAX(ms, 200U);
 +}
 +
++/* cadSymbolNum is a code, not a count (DS Table 13-72): 1, 2, 4, 8, 16
++ * symbols are 0x00..0x04.  A count of 4 written as-is asks for 16. */
++static uint8_t sx126x_cad_symb_code(uint8_t symb_nb)
++{
++	if (symb_nb >= 16) {
++		return 0x04;
++	} else if (symb_nb >= 8) {
++		return 0x03;
++	} else if (symb_nb >= 4) {
++		return 0x02;
++	} else if (symb_nb >= 2) {
++		return 0x01;
++	}
++	return 0x00;
++}
++
 +static int sx126x_do_cad(const struct device *dev, struct sx126x_data *data)
 +{
 +	struct lora_modem_config *mc = &data->config;
@@ -2972,20 +3250,11 @@ index f68bf508853..3ecdb2a4e04 100644
 +	/* SetCadParams: symb_nb, detect_peak, detect_min, exit_mode,
 +	 * timeout (3 bytes, used only by CAD_RX).
 +	 *
-+	 * Exit mode is per-CAD, not global.  The calibration probe arms CAD_RX
-+	 * (DS §13.4.7 0x01) so a positive detection flows straight into Rx on
-+	 * the signal it found; the pre-TX LBT keeps CAD_ONLY, because there the
-+	 * verdict is all the caller wants and entering Rx would put the chip
-+	 * somewhere the transmit path does not expect.  Detection itself is
-+	 * identical either way -- same symbol count, same detPeak, same detMin --
-+	 * so the probe still measures exactly the configuration LBT runs.
-+	 *
-+	 * The timeout bounds the Rx that a positive CAD_RX enters, in 15.625 us
-+	 * steps (DS §13.1.5's unit, the same one SX126X_MS_TO_TIMEOUT converts
-+	 * to).  Max-length-packet airtime at the current SF/BW is the right
-+	 * bound: shorter would cut off the very packet the detection was for.
-+	 * It is a chip-side deadline that always raises RX_TX_TIMEOUT, which is
-+	 * what lets the outcome be *observed* rather than polled for. */
++	 * The pre-TX LBT and the calibration probe program the same CAD --
++	 * same symbol count, same detPeak, same detMin -- so the probe
++	 * measures exactly the configuration LBT runs.  They differ only in
++	 * what follows a positive verdict: LBT wants the verdict alone, the
++	 * probe continues into a bounded Rx on the signal it found. */
 +	uint8_t buf[7];
 +	/* Always CAD_ONLY on the wire.  cadTimeout is NOT honoured once
 +	 * SetRxDutyCycle has run -- the DS command table says that command
@@ -2999,7 +3268,7 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * see the cad_exit_rx branch in the DIO1 work handler. */
 +	uint32_t cad_timeout = 0U;
 +
-+	buf[0] = symb_nb;
++	buf[0] = sx126x_cad_symb_code(symb_nb);
 +	buf[1] = detect_peak;
 +	buf[2] = mc->cad.detection_minimum ? mc->cad.detection_minimum : 10;
 +	buf[3] = 0x00;  /* CAD_ONLY -- see the cad_timeout note above */
@@ -3186,6 +3455,23 @@ index f68bf508853..3ecdb2a4e04 100644
 +	return ret;
 +}
 +
++int8_t sx126x_get_last_snr_x4(const struct device *dev)
++{
++	struct sx126x_data *data = dev->data;
++
++	return data->last_snr_x4;
++}
++
++void sx126x_lbt_rx_evidence(const struct device *dev, uint8_t *pre_flags,
++			    uint32_t *foreign_ms, uint32_t *foreign_count)
++{
++	struct sx126x_data *data = dev->data;
++
++	*pre_flags = (uint8_t)atomic_get(&data->lbt_pre_flags);
++	*foreign_ms = (uint32_t)atomic_get(&data->foreign_pre_ms);
++	*foreign_count = (uint32_t)atomic_get(&data->foreign_pre_count);
++}
++
 +uint32_t sx126x_cad_rx_timeout_ms(const struct device *dev)
 +{
 +	struct sx126x_data *data = dev->data;
@@ -3200,12 +3486,15 @@ index f68bf508853..3ecdb2a4e04 100644
 +	struct sx126x_data *data = dev->data;
 +	atomic_val_t st = atomic_get(&data->cad_rx_state);
 +
-+	if (st != SX126X_CAD_RX_PACKET && st != SX126X_CAD_RX_TMOUT) {
++	if (st != SX126X_CAD_RX_PACKET && st != SX126X_CAD_RX_TMOUT &&
++	    st != SX126X_CAD_RX_PREAMBLE) {
 +		return 0;  /* nothing armed, or still awaiting the terminal IRQ */
 +	}
 +
 +	atomic_set(&data->cad_rx_state, SX126X_CAD_RX_IDLE);
-+	return (st == SX126X_CAD_RX_PACKET) ? 1 : 2;
++	/* 1 packet, 2 nothing seen, 3 preamble/header but nothing decoded */
++	return (st == SX126X_CAD_RX_PACKET) ? 1 :
++	       (st == SX126X_CAD_RX_PREAMBLE) ? 3 : 2;
 +}
 +
 +/* -- Driver API: recv_duty_cycle -- */
@@ -3273,12 +3562,12 @@ index f68bf508853..3ecdb2a4e04 100644
 +	 * later attempt hits the same failed CAS -- the node quietly listens
 +	 * at full RX current until it is rebooted.
 +	 *
-+	 * sx126x_restart_rx() runs the identical entry sequence to the one
-+	 * below (Calibrate(ALL) AGC reset, CalibrateImage, DIO2 RF switch,
-+	 * StopTimerOnPreamble, RX-gain retention, SetRxDutyCycle), so re-arming
-+	 * through it gives up nothing.  When the chip is already duty cycling
-+	 * on these exact periods there is nothing to re-arm and only the
-+	 * callback is refreshed: no SPI traffic, no ~5 ms calibration, no
++	 * sx126x_restart_rx() clears the IRQs, re-issues StopTimerOnPreamble
++	 * and SetRxDutyCycle with the stored periods and re-applies the RX
++	 * gain.  It skips the Calibrate(ALL) of the fresh entry below, which a
++	 * chip that is already receiving does not need.  When the chip is
++	 * already duty cycling on these exact periods there is nothing to
++	 * re-arm and only the callback is refreshed: no SPI traffic, no
 +	 * dropped RX window. */
 +	if (atomic_get(&data->state) == SX126X_STATE_RX) {
 +		const bool rearm = !data->rx_duty_cycle_enabled ||
@@ -3511,16 +3800,15 @@ index f68bf508853..3ecdb2a4e04 100644
  
  	/* Initialize HAL */
  	ret = sx126x_hal_init(dev);
-@@ -1715,6 +3675,8 @@ static int sx126x_init(const struct device *dev)
- 						      {0}),			\
- 		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
- 						      {0}),			\
-+		.lna_bypass = GPIO_DT_SPEC_INST_GET_OR(inst, lna_bypass_gpios,	\
-+						       {0}),			\
- 		.dio2_tx_enable = DT_INST_PROP(inst, dio2_tx_enable),		\
- 		.dio3_tcxo_enable = DT_INST_NODE_HAS_PROP(inst, dio3_tcxo_voltage), \
- 		.dio3_tcxo_voltage = DT_INST_PROP_OR(inst, dio3_tcxo_voltage, 0), \
-@@ -1769,6 +3731,8 @@ DT_INST_FOREACH_STATUS_OKAY_VARGS(SX126X_INIT, true)
+@@ -1751,6 +3811,7 @@ static int sx126x_init(const struct device *dev)
+ 		.antenna_enable = GPIO_DT_SPEC_GET_OR(node_id, antenna_enable_gpios, {0}),	\
+ 		.tx_enable = GPIO_DT_SPEC_GET_OR(node_id, tx_enable_gpios, {0}),		\
+ 		.rx_enable = GPIO_DT_SPEC_GET_OR(node_id, rx_enable_gpios, {0}),		\
++		.lna_bypass = GPIO_DT_SPEC_GET_OR(node_id, lna_bypass_gpios, {0}),		\
+ 		.dio2_tx_enable = DT_PROP(node_id, dio2_tx_enable),				\
+ 		.dio3_tcxo_enable = DT_NODE_HAS_PROP(node_id, dio3_tcxo_voltage),		\
+ 		.dio3_tcxo_voltage = DT_PROP_OR(node_id, dio3_tcxo_voltage, 0),			\
+@@ -1800,6 +3861,8 @@ DT_FOREACH_STATUS_OKAY_VARGS(semtech_llcc68, SX126X_INIT, SX126X_LLCC68)
  						      {0}),			\
  		.rx_enable = GPIO_DT_SPEC_INST_GET_OR(inst, rx_enable_gpios,	\
  						      {0}),			\
@@ -3530,10 +3818,19 @@ index f68bf508853..3ecdb2a4e04 100644
  		.dio3_tcxo_enable = DT_INST_NODE_HAS_PROP(inst, dio3_tcxo_voltage), \
  		.dio3_tcxo_voltage = DT_INST_PROP_OR(inst, dio3_tcxo_voltage, 0), \
 diff --git a/drivers/lora/native/sx126x/sx126x.h b/drivers/lora/native/sx126x/sx126x.h
-index 07c50f0044d..fccb7e63228 100644
+index 07c50f0044d..a2c2073e23c 100644
 --- a/drivers/lora/native/sx126x/sx126x.h
 +++ b/drivers/lora/native/sx126x/sx126x.h
-@@ -62,6 +62,7 @@ struct sx126x_data {
+@@ -59,9 +59,16 @@ struct sx126x_data {
+ 	/* RX data buffer (shared between IRQ handler and recv) */
+ 	uint8_t rx_buf[SX126X_MAX_PAYLOAD_LEN];
+ 
++	/* SNR of the last received packet in quarter dB, as the chip reports
++	 * it.  Written by the DIO1 work handler before it calls the RX
++	 * callback; read by sx126x_get_last_snr_x4().
++	 */
++	int8_t last_snr_x4;
++
  	/* Async RX callback */
  	lora_recv_cb rx_cb;
  	void *rx_cb_user_data;
@@ -3541,7 +3838,7 @@ index 07c50f0044d..fccb7e63228 100644
  
  	/* RX duty cycle parameters (in SX126x timeout ticks) */
  	struct {
-@@ -74,7 +75,133 @@ struct sx126x_data {
+@@ -74,7 +81,145 @@ struct sx126x_data {
  
  	/* Deferred work for interrupt handling */
  	struct k_work irq_work;
@@ -3664,19 +3961,31 @@ index 07c50f0044d..fccb7e63228 100644
 +	 * poll or infer:
 +	 *   IDLE   nothing in flight
 +	 *   ARMED  positive CAD, chip in Rx, awaiting a terminal IRQ
-+	 *   PACKET RX_DONE or CRC_ERR arrived -- the detection was real
-+	 *   TMOUT  RX_TX_TIMEOUT at cadTimeout -- nothing decodable followed
++	 *   PACKET   RX_DONE or CRC_ERR arrived -- the detection was real
++	 *   PREAMBLE cadTimeout, but a preamble, header or header error was
++	 *            seen while armed -- a LoRa transmitter, nothing decoded
++	 *   TMOUT    RX_TX_TIMEOUT at cadTimeout with nothing seen at all
++	 * cad_rx_signal records the "seen" part; every IRQ status read notes it.
 +	 * Read and consumed by sx126x_cad_rx_outcome(). */
 +	bool cad_exit_rx;
 +	atomic_t cad_rx_state;
++	atomic_t cad_rx_signal;
 +
 +	int8_t cad_peak_offset;
 +	uint8_t cad_probe_peak;
++
++	/* LBT diagnostics, read by sx126x_lbt_rx_evidence(): what the receiver
++	 * had latched just before the last pre-TX CAD (SX126X_LBT_PRE_* flags),
++	 * and the last preamble that produced no HEADER_VALID within the grace
++	 * (its first-seen k_uptime ms, 0 = none yet) with a running count. */
++	atomic_t lbt_pre_flags;
++	atomic_t foreign_pre_ms;
++	atomic_t foreign_pre_count;
  };
  
  int sx126x_set_packet_type(const struct device *dev, uint8_t type);
 diff --git a/drivers/lora/native/sx126x/sx126x_hal.c b/drivers/lora/native/sx126x/sx126x_hal.c
-index 34f7089584f..7093bf6b622 100644
+index 87d9412e6a8..ff273392670 100644
 --- a/drivers/lora/native/sx126x/sx126x_hal.c
 +++ b/drivers/lora/native/sx126x/sx126x_hal.c
 @@ -183,6 +183,14 @@ int sx126x_hal_init(const struct device *dev)
@@ -3698,10 +4007,10 @@ index 34f7089584f..7093bf6b622 100644
  		}
  		tx_power = CLAMP(power, SX1261_MIN_POWER, SX1261_MAX_POWER_TX_PARAM);
  	} else {
--		/* SX1262: High power PA, up to +22 dBm */
+-		/* SX1262, SX1268, LLCC68: High power PA, up to +22 dBm */
 -		ret = sx126x_hal_set_pa_config(dev, SX1262_PA_DUTY_CYCLE,
 -					       SX1262_HP_MAX,
-+		/* SX1262: High power PA, up to +22 dBm.
++		/* SX1262, SX1268, LLCC68: High power PA, up to +22 dBm.
 +		 *
 +		 * Measured-optimal PaConfig per requested power instead of the
 +		 * datasheet's fixed (dutyCycle=4, hpMax=7): same RF output at
@@ -3745,7 +4054,7 @@ index 34f7089584f..7093bf6b622 100644
 +	 * or the PA is current-limited and output drops to ~14-16 dBm.
 +	 * Mirrors what the STM32WL HAL does and what RadioLib's
 +	 * setCurrentLimit() programs on Arduino MeshCore. */
-+	uint8_t ocp_value = config->is_sx1261 ? 0x18 /* 60 mA  */
++	uint8_t ocp_value = (config->variant == SX126X_SX1261) ? 0x18 /* 60 mA  */
 +					      : 0x38 /* 140 mA */;
 +	ret = sx126x_hal_write_regs(dev, SX126X_REG_OCP, &ocp_value, 1);
 +	if (ret < 0) {
@@ -3754,10 +4063,10 @@ index 34f7089584f..7093bf6b622 100644
  
  	uint8_t buf[2] = { (uint8_t)tx_power, ramp_time };
 diff --git a/drivers/lora/native/sx126x/sx126x_hal.h b/drivers/lora/native/sx126x/sx126x_hal.h
-index e4b26ba60bd..558890ad54c 100644
+index 93239087373..3388db4e8e8 100644
 --- a/drivers/lora/native/sx126x/sx126x_hal.h
 +++ b/drivers/lora/native/sx126x/sx126x_hal.h
-@@ -29,6 +29,10 @@ struct sx126x_hal_config {
+@@ -39,6 +39,10 @@ struct sx126x_hal_config {
  	struct gpio_dt_spec antenna_enable;
  	struct gpio_dt_spec tx_enable;
  	struct gpio_dt_spec rx_enable;

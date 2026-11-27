@@ -19,6 +19,10 @@ class MeshTimeSync;
 /* A local caller's reply buffer (sender_timestamp 0) */
 #define CLI_REPLY_SIZE 256
 
+/* Longest `tempradio` window: the revert deadline (2 s + minutes) has to stay
+ * under 2^31 ms ahead for the 32-bit millisecond clock. About 24 days. */
+#define ZC_TEMPRADIO_MAX_MINS 35000
+
 /* A remote reply rides in the caller's packet buffer, temp[5 + this] with the
  * text at offset 5; see replyCap(). */
 #define CLI_REMOTE_REPLY_SIZE 161
@@ -85,10 +89,9 @@ public:
 	virtual bool isOffgridActive() const { return false; }
 	virtual void setOffgridMode(bool on, char* reply) { (void)on; (void)reply; }
 
-	// Adaptive contention window
+	// Contention estimate and the LBT slot window it sizes
 	virtual float getContentionEstimate() const { return -1.0f; }
-	virtual float getFloodDelayFactor() const { return 0.5f; }
-	virtual void setBackoffMultiplier(float m) { (void)m; }
+	virtual uint32_t getLbtWindowSlots() const { return 0; }
 
 	// Duty-cycle preamble false-positive counter (SX126x only)
 	virtual uint32_t getDutyCycleTimeoutRestarts() const { return 0; }
@@ -101,6 +104,11 @@ public:
 	virtual int formatFreqErrorStatus(char* buf, int cap) { (void)buf; (void)cap; return 0; }
 	virtual void applyCadPrefs() {}
 	virtual void resetCadStats() {}
+	/* `get lbt.stats`: refusal streaks plus per-attempt LBT outcomes. */
+	virtual int formatLbtStats(char* buf, int cap) { (void)buf; (void)cap; return 0; }
+	/* `get/set lbt.cadsym` (LBT-logging builds): LBT CAD length, RAM only. */
+	virtual uint8_t getLbtCadSymbols() { return 0; }
+	virtual bool setLbtCadSymbols(uint8_t n) { (void)n; return false; }
 
 	// Mesh time sync (all roles wire one; nullptr = not compiled/available)
 	virtual MeshTimeSync* getMeshTimeSync() { return nullptr; }
@@ -140,6 +148,7 @@ class CommonCLI {
 	void savePrefs();
 	void scheduleReboot(uint8_t type);
 	bool handleRadioCmd(uint32_t sender_timestamp, const char* command, char* reply);
+	bool handleGpsCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleGetCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleSetCmd(uint32_t sender_timestamp, const char* command, char* reply);
 	void handleRegionCmd(uint32_t sender_timestamp, char* command, char* reply);

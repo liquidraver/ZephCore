@@ -51,6 +51,7 @@ xiao_nrf52840
 
 <!-- boards:esp32 -->
 ```
+esp32s31_function_coreboard/esp32s31/hpcore   # source-only, no published firmware
 heltec_wifi_lora32_v3/esp32s3/procpu
 heltec_wifi_lora32_v4/esp32s3/procpu
 heltec_wifi_lora32_v43/esp32s3/procpu
@@ -61,8 +62,8 @@ lilygo_t3s3/esp32s3/procpu
 lilygo_tlora_c6/esp32c6/hpcore
 meshnology_w12/esp32s3/procpu
 station_g2/esp32s3/procpu
-thinknode_m9/esp32s3/procpu                 # source-only, no published firmware
-ttgo_lora32/esp32/procpu                    # source-only, no published firmware
+thinknode_m9/esp32s3/procpu                   # source-only, no published firmware
+ttgo_lora32/esp32/procpu                      # source-only, no published firmware
 ttgo_tbeam/esp32/procpu
 xiao_esp32c3
 xiao_esp32c6/esp32c6/hpcore

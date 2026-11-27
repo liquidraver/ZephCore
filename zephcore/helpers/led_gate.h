@@ -37,7 +37,11 @@ void zephcore_leds_set_disabled(bool disabled);
 /* Shared PWM brightness (0-100) for PWM-capable heartbeat/TX LEDs. Persisted
  * as prefs.led_brightness; the default only applies to a node with no saved
  * value. Independent of the on/off gate above. */
+#ifdef CONFIG_ZEPHCORE_LED_DEFAULT_BRIGHTNESS
+#define ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT CONFIG_ZEPHCORE_LED_DEFAULT_BRIGHTNESS
+#else
 #define ZEPHCORE_LED_DEFAULT_BRIGHTNESS_PCT 100
+#endif
 
 uint8_t zephcore_led_brightness_pct(void);
 void zephcore_led_set_brightness_pct(uint8_t pct);

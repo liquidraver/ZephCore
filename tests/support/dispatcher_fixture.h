@@ -17,6 +17,8 @@ struct Radio : mesh::Radio {
     unsigned completion_queries = 0, relaxations = 0, cad_ticks = 0, radio_ticks = 0;
     uint32_t airtime = 100, maintenance = mesh::MAINTENANCE_IDLE;
     int8_t cad_offset = 0;
+    uint32_t rx_end_seq = 0;  // stays 0 unless a test ends a reception
+    uint32_t rx_end_ms = 0;   // 0 = end time unknown
     std::deque<std::vector<uint8_t>> incoming;
     std::vector<std::vector<uint8_t>> sent;
     int recvRaw(uint8_t *bytes, int size) override {
@@ -54,6 +56,8 @@ struct Radio : mesh::Radio {
     void radioMaintenance() override { ++radio_ticks; }
     int8_t getCadOffset() const override { return cad_offset; }
     uint32_t msUntilNextMaintenance() override { return maintenance; }
+    uint32_t getRxEndSeq() override { return rx_end_seq; }
+    uint32_t getLastRxEndMillis() override { return rx_end_ms; }
 };
 struct Dispatcher : mesh::Dispatcher {
     uint8_t duty = 0;
@@ -76,7 +80,10 @@ struct Dispatcher : mesh::Dispatcher {
     }
     uint8_t getDutyCyclePercent() const override { return duty; }
     uint32_t getDutyCycleWindowMs() const override { return window; }
-    uint32_t getCADFailRetryDelay() const override { return 100; }
+    mutable std::vector<uint8_t> refusals_seen;  // getLbtRefusals() at each retry pick
+    uint32_t getCADFailRetryDelay() const override {
+        refusals_seen.push_back(getLbtRefusals()); return 100;
+    }
     void logTx(mesh::Packet*, int) override { ++successes; }
     void logTxFail(mesh::Packet*, int) override { ++failures; }
     void onCadOffsetChanged(int8_t offset) override { offsets.push_back(offset); }

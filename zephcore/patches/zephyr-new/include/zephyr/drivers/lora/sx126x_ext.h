@@ -32,13 +32,27 @@ int16_t sx126x_get_rssi_inst(const struct device *dev);
 /**
  * @brief Check if radio is actively receiving a packet
  *
- * Checks IRQ status for preamble/header detection.
- * Uses non-blocking mutex — returns false if SPI is busy.
+ * The header latch, or else the IRQ status read for preamble/header
+ * detection.  The driver mutex is tried without waiting: when it is held
+ * the answer is "receiving" if the driver is in RX.  The status read itself
+ * waits on BUSY, so during a duty-cycle sleep phase the call returns at the
+ * chip's next RX window.
  *
  * @param dev LoRa device
  * @return true if preamble or header detected
  */
 bool sx126x_is_receiving(const struct device *dev);
+
+/**
+ * @brief SNR of the last received packet, in quarter dB
+ *
+ * The chip's own resolution; the LoRa API's RX callback carries whole dB.
+ * Valid inside that callback, for the packet it is delivering.
+ *
+ * @param dev LoRa device
+ * @return SNR * 4 (0 for a GFSK packet)
+ */
+int8_t sx126x_get_last_snr_x4(const struct device *dev);
 
 /**
  * @brief Enable/disable RX boosted mode
@@ -87,19 +101,6 @@ bool sx126x_set_fem_rx_enable(const struct device *dev, bool enable);
  * @return true if BUSY pin is high (chip sleeping / processing)
  */
 bool sx126x_is_chip_busy(const struct device *dev);
-
-/**
- * @brief Apply undocumented register 0x8B5 RX improvement for Heltec V4
- *
- * Sets the LSB of register 0x8B5 which consistently improves RX reception
- * on boards with GC1109 or KCT8103L PA (Heltec V4/V4.3). Described by
- * Heltec engineer @Quency-D in MeshCore PR#1398.
- *
- * Must be called after the first lora_config() completes.
- *
- * @param dev LoRa device
- */
-void sx126x_apply_heltec_reg_patch(const struct device *dev);
 
 /**
  * @brief Reset AGC by performing warm sleep + full recalibration
@@ -227,6 +228,26 @@ int sx126x_cad_rx_outcome(const struct device *dev);
  * guess of its own.
  */
 uint32_t sx126x_cad_rx_timeout_ms(const struct device *dev);
+
+/* Flags for sx126x_lbt_rx_evidence(): status latched before the last LBT CAD. */
+#define SX126X_LBT_PRE_PREAMBLE   0x01  /* PREAMBLE_DETECTED */
+#define SX126X_LBT_PRE_HEADER     0x02  /* HEADER_VALID (our sync word) */
+#define SX126X_LBT_PRE_HEADER_ERR 0x04  /* HEADER_ERR */
+
+/**
+ * @brief Receiver evidence around listen-before-talk (diagnostics)
+ *
+ * @param dev           LoRa device
+ * @param pre_flags     SX126X_LBT_PRE_* latched in RX just before the last
+ *                      pre-TX CAD (0 when the chip was not in RX)
+ * @param foreign_ms    k_uptime ms at which the last preamble without a
+ *                      HEADER_VALID was first seen by sx126x_is_receiving()
+ *                      (released after the grace as a foreign sync word or a
+ *                      failed sync); 0 = none since boot
+ * @param foreign_count Number of such preambles since boot
+ */
+void sx126x_lbt_rx_evidence(const struct device *dev, uint8_t *pre_flags,
+			    uint32_t *foreign_ms, uint32_t *foreign_count);
 
 #ifdef __cplusplus
 }

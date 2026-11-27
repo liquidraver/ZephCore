@@ -252,3 +252,155 @@ TEST(kiss_wake_deadlines, "UNIT-KISS-005",
     n.advance(30);
     CHECK(n.modem.msUntilNextTx() == KISS_DEFAULT_SLOTTIME * 10 - 30);
 }
+
+// Protocol v2 (upstream 5527a26f..f4f394c0): GetCapabilities, FEM state through
+// the board's `get/set radio.fem.*` commands, radio boosted RX gain. ZephCore has
+// no timed AGC reset, so capability bit 0 is clear and the AGC commands are Unsupported.
+namespace {
+// As main_kiss_modem.cpp's KissBoard: RX gain only, while `fem_rx` is wired.
+struct FemBoard : Board {
+    bool fem_rx = true, rx_on = true;
+    unsigned sets = 0;
+    bool handleCommand(const char *command, uint32_t, char *reply) override {
+        if (!fem_rx) return false;
+        if (strcmp(command, "get radio.fem.rxgain") == 0) {
+            strcpy(reply, rx_on ? "> on" : "> off");
+            return true;
+        }
+        if (strncmp(command, "set radio.fem.rxgain ", 21) == 0) {
+            ++sets;
+            rx_on = strcmp(&command[21], "on") == 0;
+            strcpy(reply, "OK");
+            return true;
+        }
+        return false;
+    }
+};
+struct FemModem {
+    HostStream host;
+    test_support::Radio radio;
+    ZeroRng rng;
+    FemBoard board;
+    SensorManager sensors;
+    mesh::LocalIdentity identity;
+    KissModem modem{host, identity, rng, radio, board, sensors};
+
+    FemModem() { kiss_now = 1000; radio.airtime = 1000; modem.begin(); }
+    void hw(const std::vector<uint8_t>& d) {
+        for (uint8_t b : escaped(KISS_CMD_SETHARDWARE, d)) host.in.push_back(b);
+    }
+    void pass() { for (int i = 0; i < 4; i++) modem.loop(); }
+    // SetHardware replies since the last call, sub-command first.
+    std::vector<std::vector<uint8_t>> replies() {
+        std::vector<std::vector<uint8_t>> r;
+        for (auto& f : frames(host.out)) {
+            if (f[0] == KISS_CMD_SETHARDWARE) r.emplace_back(f.begin() + 1, f.end());
+        }
+        host.out.clear();
+        return r;
+    }
+};
+const std::vector<uint8_t> unsupported{HW_RESP_ERROR, HW_ERR_UNSUPPORTED};
+
+bool boost_on = false;
+unsigned boost_sets = 0, rx_polls = 0;
+bool set_boost(bool en) { ++boost_sets; boost_on = en; return true; }
+bool get_boost() { return boost_on; }
+}
+
+TEST(kiss_capabilities_no_agc, "UNIT-KISS-006",
+     "GetCapabilities reports FEM RX and boosted gain where present, never AGC; AGC commands are Unsupported") {
+    FemModem m;
+    m.hw({HW_CMD_GET_VERSION});
+    m.hw({HW_CMD_GET_CAPABILITIES});
+    m.pass();
+    auto r = m.replies();
+    CHECK(r.size() == 2);
+    CHECK(r[0][0] == HW_RESP(HW_CMD_GET_VERSION) && r[0][1] == 2);
+    CHECK((r[1] == std::vector<uint8_t>{HW_RESP(HW_CMD_GET_CAPABILITIES), uint8_t(HW_CAP_FEM_RX_GAIN), 0, 0, 0}));
+
+    m.modem.setRxBoostedGainCallbacks(set_boost, get_boost);
+    m.board.fem_rx = false;
+    m.hw({HW_CMD_GET_CAPABILITIES});
+    m.hw({HW_CMD_SET_AGC_RESET_INTERVAL, 32, 0});
+    m.hw({HW_CMD_GET_AGC_RESET_INTERVAL});
+    m.pass();
+    r = m.replies();
+    CHECK(r.size() == 3);
+    CHECK((r[0] == std::vector<uint8_t>{HW_RESP(HW_CMD_GET_CAPABILITIES), uint8_t(HW_CAP_RX_BOOSTED_GAIN), 0, 0, 0}));
+    CHECK(r[1] == unsupported);
+    CHECK(r[2] == unsupported);
+}
+
+TEST(kiss_fem_state_order, "UNIT-KISS-007",
+     "SetFemState is all-or-nothing, held during a TX, and answered in arrival order after TxDone") {
+    FemModem m;
+    // TX gain is not controllable: the whole request is refused and nothing changes.
+    m.hw({HW_CMD_SET_FEM_STATE, HW_FEM_RX_GAIN | HW_FEM_TX_GAIN, 0});
+    m.pass();
+    CHECK(m.replies() == std::vector<std::vector<uint8_t>>{unsupported});
+    CHECK(m.board.sets == 0 && m.board.rx_on);
+
+    // A Set during a TX waits for TxDone; the Get behind it waits too.
+    for (uint8_t b : escaped(KISS_CMD_TXDELAY, {0})) m.host.in.push_back(b);
+    for (uint8_t b : escaped(KISS_CMD_DATA, {0xAB})) m.host.in.push_back(b);
+    m.pass();
+    CHECK(m.modem.isActuallyTransmitting());
+    m.replies();
+    m.hw({HW_CMD_SET_FEM_STATE, HW_FEM_RX_GAIN, 0});
+    m.hw({HW_CMD_GET_FEM_STATE});
+    m.pass();
+    CHECK(m.replies().empty());
+    CHECK(m.board.sets == 0);
+
+    m.radio.completion = true;
+    m.pass();
+    auto r = m.replies();
+    CHECK(r.size() == 3);
+    CHECK((r[0] == std::vector<uint8_t>{HW_RESP_TX_DONE, 0x01}));
+    CHECK((r[1] == std::vector<uint8_t>{HW_RESP(HW_CMD_GET_FEM_STATE), HW_FEM_RX_GAIN, 0}));
+    CHECK((r[2] == std::vector<uint8_t>{HW_RESP(HW_CMD_GET_FEM_STATE), HW_FEM_RX_GAIN, 0}));
+    CHECK(m.board.sets == 1 && !m.board.rx_on);
+}
+
+TEST(kiss_rx_boosted_gain, "UNIT-KISS-008",
+     "SetRxBoostedGain is Unsupported without the radio hook, refused during TX, and drains RX before applying") {
+    FemModem m;
+    m.hw({HW_CMD_SET_RX_BOOSTED_GAIN, 1});
+    m.hw({HW_CMD_GET_RX_BOOSTED_GAIN});
+    m.pass();
+    CHECK((m.replies() == std::vector<std::vector<uint8_t>>{unsupported, unsupported}));
+
+    boost_on = false; boost_sets = 0; rx_polls = 0;
+    m.modem.setRxBoostedGainCallbacks(set_boost, get_boost);
+    static FemModem *cur;
+    cur = &m;
+    m.modem.setPollRxCallback([] {
+        ++rx_polls;
+        const uint8_t pkt[] = {0x42};
+        cur->modem.onPacketReceived(-4, -80, pkt, 1);
+    });
+
+    // Refused while a packet is on air.
+    for (uint8_t b : escaped(KISS_CMD_TXDELAY, {0})) m.host.in.push_back(b);
+    for (uint8_t b : escaped(KISS_CMD_DATA, {0xCD})) m.host.in.push_back(b);
+    m.pass();
+    CHECK(m.modem.isActuallyTransmitting());
+    m.replies();
+    m.hw({HW_CMD_SET_RX_BOOSTED_GAIN, 1});
+    m.pass();
+    CHECK((m.replies() == std::vector<std::vector<uint8_t>>{{HW_RESP_ERROR, HW_ERR_TX_BUSY}}));
+    CHECK(boost_sets == 0 && rx_polls == 0);
+    m.radio.completion = true;
+    m.pass();
+    m.replies();
+
+    // Idle: the pending packet goes to the host first, then the gain, read back.
+    m.hw({HW_CMD_SET_RX_BOOSTED_GAIN, 1});
+    m.pass();
+    auto out = frames(m.host.out);
+    CHECK(rx_polls == 1 && boost_sets == 1 && boost_on);
+    CHECK(out.size() == 3);
+    CHECK((out[0] == std::vector<uint8_t>{KISS_CMD_DATA, 0x42}));
+    CHECK((out[2] == std::vector<uint8_t>{KISS_CMD_SETHARDWARE, HW_RESP(HW_CMD_GET_RX_BOOSTED_GAIN), 0x01}));
+}

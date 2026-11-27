@@ -38,6 +38,9 @@
 #include <zephyr/sys/timeutil.h>
 #include <string.h>
 #include <stdio.h>
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+#include <helpers/gps_guard.h>
+#endif
 
 LOG_MODULE_REGISTER(zephcore_gps, CONFIG_ZEPHCORE_GPS_LOG_LEVEL);
 
@@ -51,6 +54,13 @@ static K_MUTEX_DEFINE(gps_mutex);
 static gps_enable_callback_t gps_enable_cb = NULL;
 static gps_fix_callback_t gps_fix_cb = NULL;
 static gps_event_callback_t gps_event_cb = NULL;
+static gps_clock_fn_t gps_clock_now = NULL;
+
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+/* Under gps_mutex: fed from gnss_data_cb (system workqueue) and the main thread. */
+static GpsGuard guard(FIRMWARE_BUILD_EPOCH, CONFIG_ZEPHCORE_GPS_GUARD_FENCE_M);
+static bool guard_alert_logged;
+#endif
 
 /* Pending GPS actions — set by work handlers (system work queue),
  * consumed by gps_process_event() (main thread).
@@ -103,6 +113,22 @@ static inline bool gps_duty_cycling(void)
 {
 	return gps_wake_interval_ms != 0;
 }
+
+/* `gps once` from off: one bounded acquire window, then the GPS goes back to
+ * off instead of standby. gps_enabled is true meanwhile; prefs are not touched. */
+static bool gps_once_active = false;
+
+/* The acquire window ends (fix or timeout) rather than streaming. */
+static inline bool gps_windowed(void)
+{
+	return gps_duty_cycling() || gps_once_active;
+}
+
+/* `gps fix_stats`: time from the start of an acquire window to its first good
+ * fix, and runs of windows with and without one. Under gps_mutex. */
+static int64_t acq_start_ms = 0;
+static bool fix_in_window = false;
+static struct gps_fix_stats fix_stats;
 
 /* k_uptime of the last always-on fix-callback invocation — rate-limits the
  * RTC sync / node-position update to gps_acquire_timeout_ms while streaming
@@ -291,17 +317,55 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 			return;
 		}
 
-		current_pos.latitude_ndeg = data->nav_data.latitude;
-		current_pos.longitude_ndeg = data->nav_data.longitude;
-		current_pos.altitude_mm = data->nav_data.altitude;
-		current_pos.satellites = data->info.satellites_cnt;
-		current_pos.valid = true;
-		current_pos.timestamp_ms = k_uptime_get();
-		current_utc = data->utc;
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		/* Only a trusted fix becomes the position; a settling one still
+		 * counts towards the validation below. */
+		uint32_t hdop10 = data->info.hdop / 100U;
+		GpsGuard::Verdict verdict = guard.checkFix(
+			(double)data->nav_data.latitude / 1000000000.0,
+			(double)data->nav_data.longitude / 1000000000.0,
+			data->info.satellites_cnt,
+			(uint8_t)(hdop10 < GPS_GUARD_HDOP_UNKNOWN ? hdop10 : GPS_GUARD_HDOP_UNKNOWN - 1),
+			(uint32_t)gnss_time_to_unix(&data->utc), (uint32_t)k_uptime_get());
+
+		if (verdict == GpsGuard::REJECT) {
+			char st[48];
+
+			guard.formatStatus(st, sizeof(st), (uint32_t)k_uptime_get());
+			LOG_DBG("GPS guard: fix rejected (%s)", st);
+			consecutive_good_fixes = 0;
+			k_mutex_unlock(&gps_mutex);
+			return;
+		}
+		const bool trusted = verdict == GpsGuard::TRUSTED;
+#else
+		const bool trusted = true;
+#endif
+
+		if (trusted) {
+			current_pos.latitude_ndeg = data->nav_data.latitude;
+			current_pos.longitude_ndeg = data->nav_data.longitude;
+			current_pos.altitude_mm = data->nav_data.altitude;
+			current_pos.satellites = data->info.satellites_cnt;
+			current_pos.valid = true;
+			current_pos.timestamp_ms = k_uptime_get();
+			current_utc = data->utc;
+		}
 
 		/* Fix validation during acquisition */
 		if (gps_current_state == GPS_STATE_ACQUIRING) {
 			if (data->info.satellites_cnt >= GPS_MIN_SATELLITES) {
+				if (!fix_in_window) {
+					uint32_t ttff = (uint32_t)(k_uptime_get() - acq_start_ms);
+
+					fix_in_window = true;
+					fix_stats.last_ttff_ms = ttff;
+					if (ttff > fix_stats.max_ttff_ms) {
+						fix_stats.max_ttff_ms = ttff;
+					}
+					fix_stats.consecutive_fixes++;
+					fix_stats.consecutive_misses = 0;
+				}
 				consecutive_good_fixes++;
 				LOG_INF("GPS: Good fix %d/%d (sats=%d) lat=%lld lon=%lld",
 					consecutive_good_fixes, GPS_GOOD_FIX_COUNT,
@@ -309,8 +373,8 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 					current_pos.latitude_ndeg / 1000000,
 					current_pos.longitude_ndeg / 1000000);
 
-				if (consecutive_good_fixes >= GPS_GOOD_FIX_COUNT) {
-					bool duty = gps_duty_cycling();
+				if (consecutive_good_fixes >= GPS_GOOD_FIX_COUNT && trusted) {
+					bool duty = gps_windowed();
 					bool first_ever = !first_fix_acquired;
 
 					LOG_INF("GPS: Got %d good fixes, updating location/time",
@@ -319,8 +383,8 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 					/* Mark first fix acquired (enables timeout for future cycles) */
 					first_fix_acquired = true;
 
-					/* Mark time as synced from GPS - blocks phone time sync */
-					gps_time_synced = true;
+					/* gps_time_synced is set in gps_process_event(),
+					 * once the time has been taken. */
 					last_fix_uptime_ms = k_uptime_get();
 
 					if (duty) {
@@ -380,6 +444,9 @@ static void gnss_data_cb(const struct device *dev, const struct gnss_data *data)
 			LOG_DBG("GPS: No fix, resetting counter");
 			consecutive_good_fixes = 0;
 		}
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		guard.noFix(data->info.satellites_cnt);
+#endif
 
 		/* Periodic status at INF level so user knows NMEA is flowing.
 		 * Without this, GPS is completely silent until first fix (all
@@ -507,6 +574,18 @@ static uint32_t gps_acquire_window_ms(void)
 	return gps_acquire_timeout_ms;
 }
 
+/* An acquire window ran its course (fix or timeout): a window without a good
+ * fix is a miss. Not called when `gps off` cuts a window short. */
+static void gps_window_end(void)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	if (!fix_in_window) {
+		fix_stats.consecutive_misses++;
+		fix_stats.consecutive_fixes = 0;
+	}
+	k_mutex_unlock(&gps_mutex);
+}
+
 /* Go to standby and schedule next wake.
  * GPIO power control only — keep VRTC for warm start on T1000-E,
  * FORCE_ON de-asserted for L76K hardware standby. */
@@ -520,6 +599,7 @@ static void gps_go_to_standby(void)
 	LOG_INF("GPS: Going to standby for %llu s%s",
 		(unsigned long long)(wake_interval / 1000),
 		gps_repeater_mode ? " (repeater time sync)" : "");
+	gps_window_end();
 	gps_current_state = GPS_STATE_STANDBY;
 	consecutive_good_fixes = 0;
 	/* The one-time long cold-start window (if any) is now spent — later
@@ -564,6 +644,10 @@ static void gps_go_to_standby(void)
 static void gps_start_acquiring(void)
 {
 	LOG_INF("GPS: Waking for %s", gps_repeater_mode ? "time sync" : "position fix");
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	acq_start_ms = k_uptime_get();
+	fix_in_window = false;
+	k_mutex_unlock(&gps_mutex);
 	gps_current_state = GPS_STATE_ACQUIRING;
 	consecutive_good_fixes = 0;
 	gps_hold_sleep_lock(true);
@@ -582,9 +666,9 @@ static void gps_start_acquiring(void)
 
 	/* Schedule the standby timeout — unless always-on (interval 0), where the
 	 * GPS stays in continuous acquisition and never sleeps. Every duty window
-	 * is bounded (the first cold-start window is just longer; see
-	 * gps_acquire_window_ms). */
-	if (gps_duty_cycling()) {
+	 * and a `gps once` window is bounded (the first cold-start window is just
+	 * longer; see gps_acquire_window_ms). */
+	if (gps_windowed()) {
 		uint32_t timeout_ms = gps_acquire_window_ms();
 		LOG_INF("GPS: Acquire window %u s", timeout_ms / 1000U);
 		k_work_schedule(&gps_timeout_work, K_MSEC(timeout_ms));
@@ -671,6 +755,7 @@ static void gps_probe_check(void)
 
 	gps_current_state = GPS_STATE_OFF;
 	gps_enabled = false;
+	gps_once_active = false;
 	gps_available = false;
 }
 
@@ -798,6 +883,12 @@ static int gnss_init(void)
 int gps_manager_init(void)
 {
 #if HAS_GNSS
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD_REGION
+	guard.setRegion(CONFIG_ZEPHCORE_GPS_GUARD_LAT_MIN_E6 / 1000000.0,
+			CONFIG_ZEPHCORE_GPS_GUARD_LAT_MAX_E6 / 1000000.0,
+			CONFIG_ZEPHCORE_GPS_GUARD_LON_MIN_E6 / 1000000.0,
+			CONFIG_ZEPHCORE_GPS_GUARD_LON_MAX_E6 / 1000000.0);
+#endif
 	/* Nothing to configure on a module that did not come up: the GNSS API
 	 * would drive modem_chat on a failed device. */
 	if (gnss_init() != 0) {
@@ -881,12 +972,93 @@ void gps_set_repeater_mode(bool repeater)
 #endif
 }
 
+#if HAS_GNSS
+/* From off: power on and acquire (`gps on` and `gps once`). */
+static void gps_power_up(void)
+{
+	/* The same wake as the duty cycle's: UART, module power, sleep
+	 * lock, and the first (longer) acquire window unless always-on. */
+	gps_start_acquiring();
+
+	/* gps_module_configure() runs once at boot (see gps_manager_init path);
+	 * gps_start_acquiring() re-sends the CASIC settings a power cut loses.
+	 * Do NOT call modem_chat_run_script() here — the chip needs
+	 * ~300ms to boot after GPIO power restore and calling it
+	 * immediately deadlocks the main thread. */
+	gps_diag_maybe_reconfigure();
+}
+
+/* To off: timers, module, UART and sleep lock (`gps off` and the end of a
+ * `gps once` window). */
+static void gps_power_down(void)
+{
+	/* Cancel any pending work */
+	k_work_cancel_delayable(&gps_wake_work);
+	k_work_cancel_delayable(&gps_timeout_work);
+	gps_reapply_cancel();
+	/* A probe cut short is run again by the next enable. */
+	if (k_work_delayable_is_pending(&gps_probe_work)) {
+		probe_pending = true;
+	}
+	gps_probe_cancel();
+
+	/* Full power-off on every board: this off has no end, and any
+	 * state-keeping one (backup sleep, standby pin, VRTC) draws all
+	 * the time. Boards with no power line get the UART sleep
+	 * commands, as in the duty cycle's standby. The next enable is
+	 * a cold start and gets the long window (flags below). */
+	gps_module_power(false, false);
+
+	/* GPS is off until re-enabled — release the UART. */
+	gps_uart_set_power(false);
+	gps_hold_sleep_lock(false);
+
+	gps_current_state = GPS_STATE_OFF;
+	consecutive_good_fixes = 0;
+
+	/* Zero the stale satellite count so a re-enable doesn't briefly
+	 * report a live fix (e.g. joystick UI showing "3D FIX") off old
+	 * data before any new NMEA sentence arrives. lat/lon/valid are
+	 * deliberately left alone — telemetry/UI "last known position"
+	 * reads (gps_get_position) intentionally survive an on/off
+	 * toggle; only the live fix-quality indicator resets. */
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	current_pos.satellites = 0;
+	k_mutex_unlock(&gps_mutex);
+
+	/* Clear first-fix flags so the next enable gets a fresh long
+	 * first-acquisition window again — the user explicitly toggled GPS
+	 * expecting it to try hard for a fix. */
+	first_fix_acquired = false;
+	first_acquire_used = false;
+	standby_powered_off = false;
+
+	/* Clear time sync flag - time will drift, allow phone sync again */
+	gps_time_synced = false;
+}
+#endif /* HAS_GNSS */
+
 void gps_enable(bool enable)
 {
 #if HAS_GNSS
 	if (!gps_available) {
 		LOG_WRN("GPS not available");
 		return;
+	}
+
+	if (gps_once_active) {
+		/* `gps on` keeps the GPS running past the one-shot window; `gps off`
+		 * ends it like any other off. */
+		gps_once_active = false;
+		if (enable) {
+			if (!gps_duty_cycling()) {
+				k_work_cancel_delayable(&gps_timeout_work);
+			}
+			if (gps_enable_cb) {
+				gps_enable_cb(true);
+			}
+			return;
+		}
 	}
 
 	if (enable == gps_enabled) {
@@ -897,63 +1069,10 @@ void gps_enable(bool enable)
 
 	if (enable) {
 		LOG_INF("GPS enabled - starting acquisition");
-
-		/* The same wake as the duty cycle's: UART, module power, sleep
-		 * lock, and the first (longer) acquire window unless always-on. */
-		gps_start_acquiring();
-
-		/* gps_module_configure() runs once at boot (see gps_manager_init path);
-		 * gps_start_acquiring() re-sends the CASIC settings a power cut loses.
-		 * Do NOT call modem_chat_run_script() here — the chip needs
-		 * ~300ms to boot after GPIO power restore and calling it
-		 * immediately deadlocks the main thread. */
-		gps_diag_maybe_reconfigure();
+		gps_power_up();
 	} else {
 		LOG_INF("GPS disabled - canceling timers and powering off");
-
-		/* Cancel any pending work */
-		k_work_cancel_delayable(&gps_wake_work);
-		k_work_cancel_delayable(&gps_timeout_work);
-		gps_reapply_cancel();
-		/* A probe cut short is run again by the next enable. */
-		if (k_work_delayable_is_pending(&gps_probe_work)) {
-			probe_pending = true;
-		}
-		gps_probe_cancel();
-
-		/* Full power-off on every board: this off has no end, and any
-		 * state-keeping one (backup sleep, standby pin, VRTC) draws all
-		 * the time. Boards with no power line get the UART sleep
-		 * commands, as in the duty cycle's standby. The next enable is
-		 * a cold start and gets the long window (flags below). */
-		gps_module_power(false, false);
-
-		/* GPS is off until re-enabled — release the UART. */
-		gps_uart_set_power(false);
-		gps_hold_sleep_lock(false);
-
-		gps_current_state = GPS_STATE_OFF;
-		consecutive_good_fixes = 0;
-
-		/* Zero the stale satellite count so a re-enable doesn't briefly
-		 * report a live fix (e.g. joystick UI showing "3D FIX") off old
-		 * data before any new NMEA sentence arrives. lat/lon/valid are
-		 * deliberately left alone — telemetry/UI "last known position"
-		 * reads (gps_get_position) intentionally survive an on/off
-		 * toggle; only the live fix-quality indicator resets. */
-		k_mutex_lock(&gps_mutex, K_FOREVER);
-		current_pos.satellites = 0;
-		k_mutex_unlock(&gps_mutex);
-
-		/* Clear first-fix flags so the next enable gets a fresh long
-		 * first-acquisition window again — the user explicitly toggled GPS
-		 * expecting it to try hard for a fix. */
-		first_fix_acquired = false;
-		first_acquire_used = false;
-		standby_powered_off = false;
-
-		/* Clear time sync flag - time will drift, allow phone sync again */
-		gps_time_synced = false;
+		gps_power_down();
 	}
 
 	/* Notify callback (for persistence in main.cpp) */
@@ -1007,7 +1126,9 @@ void gps_set_poll_interval_sec(uint32_t interval)
 		return;
 	}
 	if (gps_current_state == GPS_STATE_ACQUIRING) {
-		if (interval == 0) {
+		if (gps_once_active) {
+			/* A `gps once` window keeps its timeout. */
+		} else if (interval == 0) {
 			/* Switch to always-on: drop the standby timeout so it won't sleep. */
 			k_work_cancel_delayable(&gps_timeout_work);
 		} else if (!k_work_delayable_is_pending(&gps_timeout_work)) {
@@ -1099,7 +1220,7 @@ void gps_request_fresh_fix(void)
 	} else if (gps_current_state == GPS_STATE_ACQUIRING) {
 		/* Already acquiring: restart the timeout so the request gets a full window.
 		 * Always-on has no timeout to extend. */
-		if (gps_duty_cycling()) {
+		if (gps_windowed()) {
 			uint32_t timeout_ms = gps_acquire_window_ms();
 			LOG_INF("GPS: Fresh fix requested, extending acquire timeout to %u s",
 				timeout_ms / 1000U);
@@ -1109,12 +1230,163 @@ void gps_request_fresh_fix(void)
 #endif
 }
 
+int gps_start_once(void)
+{
+#if HAS_GNSS
+	if (!gps_available) {
+		return GPS_ONCE_UNAVAILABLE;
+	}
+	if (!gps_enabled) {
+		LOG_INF("GPS: once - powering on for one fix");
+		gps_once_active = true;
+		gps_enabled = true;
+		gps_power_up();
+		return GPS_ONCE_FROM_OFF;
+	}
+	bool asleep = gps_current_state == GPS_STATE_STANDBY;
+
+	gps_request_fresh_fix();
+	return asleep ? GPS_ONCE_WOKEN : GPS_ONCE_ALREADY_ON;
+#else
+	return GPS_ONCE_UNAVAILABLE;
+#endif
+}
+
+void gps_get_fix_stats(struct gps_fix_stats *stats)
+{
+#if HAS_GNSS
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	*stats = fix_stats;
+	k_mutex_unlock(&gps_mutex);
+#else
+	memset(stats, 0, sizeof(*stats));
+#endif
+}
+
+void gps_set_clock_source(gps_clock_fn_t now)
+{
+#if HAS_GNSS
+	gps_clock_now = now;
+#else
+	ARG_UNUSED(now);
+#endif
+}
+
+void gps_guard_clock_set_manually(void)
+{
+#if HAS_GNSS && defined(CONFIG_ZEPHCORE_GPS_GUARD)
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	guard.clockSetManually();
+	guard_alert_logged = false;
+	k_mutex_unlock(&gps_mutex);
+#endif
+}
+
+#if defined(CONFIG_ZEPHCORE_GPS_GUARD) && HAS_GNSS
+void gps_guard_set_enabled(bool enabled)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	guard.setEnabled(enabled);
+	k_mutex_unlock(&gps_mutex);
+}
+
+bool gps_guard_is_enabled(void)
+{
+	return guard.isEnabled();
+}
+
+void gps_guard_set_fence(uint32_t metres)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	guard.setFence(metres);
+	k_mutex_unlock(&gps_mutex);
+}
+
+uint32_t gps_guard_get_fence(void)
+{
+	return guard.fence();
+}
+
+void gps_guard_set_reference(double lat, double lon)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	guard.setReference(lat, lon);
+	k_mutex_unlock(&gps_mutex);
+}
+
+void gps_guard_get_reference(double *lat, double *lon)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	*lat = guard.refLat();
+	*lon = guard.refLon();
+	k_mutex_unlock(&gps_mutex);
+}
+
+void gps_guard_format_status(char *out, size_t out_size)
+{
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	guard.formatStatus(out, out_size, (uint32_t)k_uptime_get());
+	k_mutex_unlock(&gps_mutex);
+}
+
+int gps_guard_accept(void)
+{
+	if (gps_clock_now == NULL || gps_fix_cb == NULL) {
+		return -EAGAIN;
+	}
+	uint32_t clock_time = gps_clock_now();
+
+	k_mutex_lock(&gps_mutex, K_FOREVER);
+	if (!guard.isTimeAlert()) {
+		k_mutex_unlock(&gps_mutex);
+		return -ENOENT;
+	}
+	int64_t now_ms = k_uptime_get();
+	int64_t gps_time = current_pos.valid ? gnss_time_to_unix(&current_utc) : 0;
+
+	if (gps_time > 0) {
+		gps_time += (now_ms - current_pos.timestamp_ms) / 1000;
+	}
+	bool ok = gps_time > 0 &&
+		  guard.acceptAlertedTime((int32_t)(gps_time - (int64_t)clock_time),
+					  (uint32_t)gps_time, (uint32_t)now_ms);
+	double lat = (double)current_pos.latitude_ndeg / 1000000000.0;
+	double lon = (double)current_pos.longitude_ndeg / 1000000000.0;
+
+	k_mutex_unlock(&gps_mutex);
+
+	if (!ok) {
+		return -EAGAIN;
+	}
+	LOG_INF("GPS guard: alerted GPS time accepted by the operator");
+	guard_alert_logged = false;
+	gps_time_synced = true;
+	last_fix_uptime_ms = now_ms;
+	gps_fix_cb(lat, lon, gps_time);
+	return 0;
+}
+#elif defined(CONFIG_ZEPHCORE_GPS_GUARD)
+void gps_guard_set_enabled(bool enabled) { ARG_UNUSED(enabled); }
+bool gps_guard_is_enabled(void) { return false; }
+void gps_guard_set_fence(uint32_t metres) { ARG_UNUSED(metres); }
+uint32_t gps_guard_get_fence(void) { return 0; }
+void gps_guard_set_reference(double lat, double lon) { ARG_UNUSED(lat); ARG_UNUSED(lon); }
+void gps_guard_get_reference(double *lat, double *lon) { *lat = 0; *lon = 0; }
+void gps_guard_format_status(char *out, size_t out_size) { snprintf(out, out_size, "off"); }
+int gps_guard_accept(void) { return -ENOENT; }
+#endif /* CONFIG_ZEPHCORE_GPS_GUARD */
+
 void gps_get_state_info(struct gps_state_info *info)
 {
 	memset(info, 0, sizeof(*info));
 #if HAS_GNSS
 	info->state = (uint8_t)gps_current_state;
 	info->satellites = current_pos.satellites;
+	if (gps_current_state == GPS_STATE_ACQUIRING) {
+		k_mutex_lock(&gps_mutex, K_FOREVER);
+		info->acquiring_s = (uint32_t)((k_uptime_get() - acq_start_ms) / 1000);
+		k_mutex_unlock(&gps_mutex);
+	}
 
 	if (last_fix_uptime_ms > 0) {
 		/* Seconds since last validated fix */
@@ -1207,6 +1479,33 @@ void gps_process_event(void)
 		if (utc_time > 0) {
 			utc_time += (k_uptime_get() - at_ms) / 1000;  /* time spent queued */
 		}
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		if (utc_time > 0 && gps_clock_now != NULL) {
+			uint32_t clock_time = gps_clock_now();
+
+			k_mutex_lock(&gps_mutex, K_FOREVER);
+			bool ok = guard.acceptTime((uint32_t)utc_time, clock_time,
+						   (uint32_t)k_uptime_get());
+			bool alert = guard.isTimeAlert();
+			k_mutex_unlock(&gps_mutex);
+
+			if (!ok) {
+				LOG_INF("GPS guard: time not taken (GPS-clock %+lld s)",
+					utc_time - (int64_t)clock_time);
+				utc_time = 0;
+				/* Another source may set the clock meanwhile. */
+				gps_time_synced = false;
+			}
+			if (alert && !guard_alert_logged) {
+				LOG_WRN("GPS guard: time alert, `gps guard accept` to take GPS time");
+			}
+			guard_alert_logged = alert;
+		}
+#endif
+		if (utc_time > 0) {
+			/* Blocks phone time sync, see gps_has_time_sync(). */
+			gps_time_synced = true;
+		}
 		gps_fix_cb((double)lat_ndeg / 1000000000.0, (double)lon_ndeg / 1000000000.0,
 			   utc_time);
 	}
@@ -1218,7 +1517,13 @@ void gps_process_event(void)
 			gps_start_acquiring();
 		}
 	} else if (actions & (GPS_ACTION_TIMEOUT | GPS_ACTION_FIX_DONE)) {
-		if (gps_current_state == GPS_STATE_ACQUIRING) {
+		if (gps_current_state == GPS_STATE_ACQUIRING && gps_once_active) {
+			LOG_INF("GPS: once - window over, powering off");
+			gps_window_end();
+			gps_once_active = false;
+			gps_enabled = false;
+			gps_power_down();
+		} else if (gps_current_state == GPS_STATE_ACQUIRING) {
 			gps_go_to_standby();
 		}
 	} else if (actions & GPS_ACTION_PROBE) {

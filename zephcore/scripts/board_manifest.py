@@ -58,7 +58,7 @@ PLATFORM_DIRS = {"nrf52840": "nrf52", "nrf54l": "nrf54l", "esp32": "esp32",
                  "mg24": "mg24", "stm32wl": "stm32wl"}
 ROLES = ("companion", "repeater", "room_server", "observer")
 KEYS = {"target", "capabilities", "release", "catalog", "linux"}
-CAPS = {"ble_ota", "light_sleep", "light_sleep_companion", "wifi"}
+CAPS = {"ble_ota", "light_sleep", "light_sleep_companion", "wifi", "wifi_ota"}
 CATALOG_KEYS = {"device", "maker", "new", "img", "own_img", "subtitle"}
 CAP_LINE = re.compile(r"^  (\w+): (true|false)\s*$", re.M)
 

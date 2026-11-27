@@ -30,6 +30,11 @@ public:
 		return true;
 	}
 
+	/* The window's maximum is reached: allow() would deny. Counts nothing. */
+	bool blocked(uint32_t now) const {
+		return now < _start_timestamp + _secs && _count >= _maximum;
+	}
+
 	void reset() {
 		_start_timestamp = 0;
 		_count = 0;

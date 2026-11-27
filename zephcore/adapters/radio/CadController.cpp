@@ -106,6 +106,7 @@ void CadController::decayStats()
 		_stats[i].busy >>= 1;
 		_stats[i].fp >>= 1;
 		_stats[i].tp >>= 1;
+		_stats[i].pre >>= 1;
 	}
 }
 
@@ -163,6 +164,8 @@ void CadController::resolvePending(int outcome)
 		ps.tp++;
 	} else if (outcome == 2) {
 		ps.fp++;
+	} else if (outcome == 3) {
+		ps.pre++;
 	} else {
 		/* No terminal event: an invented verdict would poison the curve,
 		 * so withdraw the sample (probe and busy, to keep both rates

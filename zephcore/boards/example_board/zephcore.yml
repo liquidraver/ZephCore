@@ -31,6 +31,9 @@ target: my_board
 #                       # `powersaving on`). Needs the same pin holds and
 #                       # wake pins, and about 4 KB of DRAM. It does not need
 #                       # light_sleep: opt-in, so it may come first
+#   wifi_ota: false     # no Wi-Fi OTA on the repeater: the SoC has no Wi-Fi
+#                       # driver (ESP32-S31). ble_ota: false is the companion's
+#                       # opt-out (ADR 0011)
 
 # Leave `release:` out while the board is in bring-up: it then builds locally
 # and is listed as "source-only", but no release carries firmware for it.

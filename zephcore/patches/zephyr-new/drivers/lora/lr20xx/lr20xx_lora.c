@@ -110,8 +110,8 @@ struct lr20xx_data {
 	 * must reuse these exact values, never recompute: the window sizing
 	 * (detection budget, datasheet completion rule, wake transition) is
 	 * owned by the adapter layer. */
-	uint32_t dc_rx_ms;
-	uint32_t dc_sleep_ms;
+	uint32_t dc_rx_steps;      /* 32.768 kHz RTC steps */
+	uint32_t dc_sleep_steps;
 
 	/* CAD state */
 	lora_cad_cb cad_cb;
@@ -130,6 +130,9 @@ struct lr20xx_data {
 	 * (bounded by the 524 ms cad_timeout). */
 	bool cad_probe_rx;
 	atomic_t cad_rx_state;
+	/* A preamble, header or header error was seen while a probe Rx was armed:
+	 * a transmitter was there even if nothing decodes. */
+	atomic_t cad_rx_signal;
 
 	/* CAD_DONE -> carrier-up latency (k_cycle_get_32 units); 0 = no CAD
 	 * preceded this transmit.  Only reached on the >524 ms fallback path. */
@@ -179,6 +182,10 @@ struct lr20xx_data {
 	int32_t freq_off_max_hz;
 	int64_t freq_off_sum_hz;
 	uint32_t freq_off_count;
+
+	/* SNR of the last received packet in quarter dB, as the chip reports it.
+	 * Written by the DIO1 handler before the RX callback. */
+	int8_t last_snr_x4;
 
 	/* RX data buffer */
 	uint8_t rx_buf[256];
@@ -254,6 +261,21 @@ static lr20xx_radio_lora_bw_t bw_enum_to_lr20xx(enum lora_signal_bandwidth bw)
 	}
 }
 
+/* The bandwidths bw_enum_to_lr20xx() knows. It maps everything else to
+ * 125 kHz, so lr20xx_lora_config() refuses it first; the chip has nothing
+ * below 31.25 kHz. */
+static bool lr20xx_bw_supported(enum lora_signal_bandwidth bw)
+{
+	switch (bw) {
+	case BW_31_KHZ: case BW_41_KHZ: case BW_62_KHZ: case BW_125_KHZ:
+	case BW_250_KHZ: case BW_500_KHZ: case BW_200_KHZ: case BW_400_KHZ:
+	case BW_800_KHZ: case BW_1000_KHZ:
+		return true;
+	default:
+		return false;
+	}
+}
+
 static lr20xx_radio_lora_cr_t cr_enum_to_lr20xx(enum lora_coding_rate cr)
 {
 	switch (cr) {
@@ -290,42 +312,22 @@ static lr20xx_system_tcxo_supply_voltage_t get_tcxo_voltage(uint16_t mv)
 	return LR20XX_SYSTEM_TCXO_CTRL_1_6V;
 }
 
-/* Get kHz value from Zephyr BW enum — used for LDRO/PPM calculation */
-static float bw_enum_to_khz(enum lora_signal_bandwidth bw)
+/* True bandwidth in Hz for the Zephyr BW enum, from the table every radio
+ * family shares (zc_lora_timing.h). An unknown enum reads as 125 kHz. */
+static uint32_t lr20xx_bw_hz(enum lora_signal_bandwidth bw)
 {
-	switch (bw) {
-	case BW_7_KHZ:   return 7.81f;
-	case BW_10_KHZ:  return 10.42f;
-	case BW_15_KHZ:  return 15.63f;
-	case BW_20_KHZ:  return 20.83f;
-	case BW_31_KHZ:  return 31.25f;
-	case BW_41_KHZ:  return 41.67f;
-	case BW_62_KHZ:  return 62.5f;
-	case BW_125_KHZ: return 125.0f;
-	case BW_250_KHZ: return 250.0f;
-	case BW_500_KHZ: return 500.0f;
-	/* Real chip bandwidths, not the enum's round names — these feed the LDRO
-	 * symbol-time test and the airtime maths, so they have to be the values
-	 * the modem actually runs at (DS Table: 203, 406, 812, 1000 kHz). */
-	case BW_200_KHZ:  return 203.0f;
-	case BW_400_KHZ:  return 406.0f;
-	case BW_800_KHZ:  return 812.0f;
-	case BW_1000_KHZ: return 1000.0f;
-	default:         return 125.0f;
-	}
+	uint32_t hz = zc_lora_bw_hz((uint16_t)bw);
+
+	return hz ? hz : 125000U;
 }
 
 /* LDRO rule: symbol time > 16.38 ms, NOT the SF-based rule DS 9.9.1
- * recommends.  Deliberate — LDRO must match between transmitter and receiver,
+ * recommends.  Deliberate: LDRO must match between transmitter and receiver,
  * and the rest of the mesh (SX126x, RadioLib) uses symbol time.  One copy so
  * apply_modem_config, apply_side_detectors and airtime cannot disagree. */
 static inline bool lr20xx_ldro_enabled(uint8_t sf, uint32_t bw_hz)
 {
-	if (bw_hz == 0U) {
-		return false;
-	}
-	/* SF12 is the worst case: 4096 * 1e6 fits in uint32_t. */
-	return (((1U << sf) * 1000000U) / bw_hz) > 16380U;
+	return zc_lora_ldro(sf, bw_hz);
 }
 
 /* The CAD symbol count actually programmed.  LoRaRadio asks for
@@ -865,7 +867,7 @@ static void lr20xx_apply_side_detectors(struct lr20xx_data *data, bool enable)
 		return;
 	}
 
-	bw_hz = (uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f);
+	bw_hz = lr20xx_bw_hz(data->modem_cfg.bandwidth);
 
 	for (uint8_t i = 0; i < n; i++) {
 		det[i].sf = (lr20xx_radio_lora_sf_t)data->side_det_sf[i];
@@ -932,7 +934,7 @@ static void lr20xx_apply_modem_config(struct lr20xx_data *data,
 	data->rx_boost_applied = data->rx_boost_enabled;
 	CHECK_CMD(ctx, "set_rx_path");
 
-	uint32_t bw_hz = (uint32_t)(bw_enum_to_khz(mc->bandwidth) * 1000.0f);
+	uint32_t bw_hz = lr20xx_bw_hz(mc->bandwidth);
 
 	lr20xx_radio_lora_mod_params_t mod = {
 		.sf  = (lr20xx_radio_lora_sf_t)mc->datarate,
@@ -1118,7 +1120,7 @@ static bool lr20xx_apply_rx_duty_cycle(struct lr20xx_data *data)
 {
 	void *ctx = &data->hal_ctx;
 
-	if (data->dc_rx_ms == 0 || data->dc_sleep_ms == 0) {
+	if (data->dc_rx_steps == 0 || data->dc_sleep_steps == 0) {
 		LOG_WRN("No duty-cycle timing stored — continuous RX");
 		data->rx_duty_cycle_enabled = false;
 		lr20xx_radio_common_set_rx_with_timeout_in_rtc_step(
@@ -1139,13 +1141,13 @@ static bool lr20xx_apply_rx_duty_cycle(struct lr20xx_data *data)
 	/* The second SetRxDutyCycle field is cycle_time (rx + sleep), not sleep time
 	 * (DS Table 6-14); the SDK names it sleep_period. cycle_time < rx_max_time is
 	 * a CMD_ERR, which is what the X1 showed the moment a cycle armed. */
-	lr20xx_radio_common_set_rx_duty_cycle(ctx, data->dc_rx_ms,
-		data->dc_rx_ms + data->dc_sleep_ms,
+	lr20xx_radio_common_set_rx_duty_cycle_with_timing_in_rtc_step(
+		ctx, data->dc_rx_steps, data->dc_rx_steps + data->dc_sleep_steps,
 		LR20XX_RADIO_COMMON_RX_DUTY_CYCLE_MODE_RX);
 
-	LOG_DBG("RX duty cycle re-armed: rx=%ums sleep=%ums (cycle=%ums)",
-		data->dc_rx_ms, data->dc_sleep_ms,
-		data->dc_rx_ms + data->dc_sleep_ms);
+	LOG_DBG("RX duty cycle re-armed: rx=%u sleep=%u cycle=%u RTC steps",
+		data->dc_rx_steps, data->dc_sleep_steps,
+		data->dc_rx_steps + data->dc_sleep_steps);
 	return true;
 }
 
@@ -1189,6 +1191,7 @@ static void lr20xx_dc_resume(struct lr20xx_data *data, bool was_armed)
 }
 
 static uint32_t lr20xx_preamble_grace_ms(struct lr20xx_data *data);
+static inline void lr20xx_cad_rx_note(struct lr20xx_data *data, uint32_t irq);
 
 /* Is a duty-cycled reception under way? Ask before dc_suspend(), which would
  * end it (the LR11xx lost ~1 packet in 40 without this). Non-destructive
@@ -1203,6 +1206,7 @@ static bool lr20xx_dc_rx_in_flight(struct lr20xx_data *data)
 	if (lr20xx_system_get_status(&data->hal_ctx, NULL, NULL, &irq) != LR20XX_STATUS_OK) {
 		return false;
 	}
+	lr20xx_cad_rx_note(data, irq);
 	if (irq & LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID) {
 		return true;
 	}
@@ -1514,8 +1518,9 @@ static void lr20xx_dio1_callback(void *user_data);
 /* cad_rx_state values -- mirrors the SX126x/LR11xx probe outcome tracker. */
 #define LR20XX_CAD_RX_IDLE   0
 #define LR20XX_CAD_RX_ARMED  1
-#define LR20XX_CAD_RX_PACKET 2
-#define LR20XX_CAD_RX_TMOUT  3
+#define LR20XX_CAD_RX_PACKET   2
+#define LR20XX_CAD_RX_TMOUT    3
+#define LR20XX_CAD_RX_PREAMBLE 4  /* timeout, but a transmitter was seen */
 
 static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data);
 
@@ -1524,6 +1529,18 @@ static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data);
 static inline bool lr20xx_cad_rx_resolve(struct lr20xx_data *data, int outcome)
 {
 	return atomic_cas(&data->cad_rx_state, LR20XX_CAD_RX_ARMED, outcome);
+}
+
+/* Called with every IRQ status read: while a probe Rx is armed, a preamble,
+ * header or header error means a LoRa transmitter was there, decoded or not. */
+static inline void lr20xx_cad_rx_note(struct lr20xx_data *data, uint32_t irq)
+{
+	if ((irq & (LR20XX_SYSTEM_IRQ_PREAMBLE_DETECTED |
+		    LR20XX_SYSTEM_IRQ_SYNC_WORD_HEADER_VALID |
+		    LR20XX_SYSTEM_IRQ_LORA_HEADER_ERROR)) &&
+	    atomic_get(&data->cad_rx_state) == LR20XX_CAD_RX_ARMED) {
+		atomic_set(&data->cad_rx_signal, 1);
+	}
 }
 
 /* The DIO1 handler is one pass over the IRQ word, case by case, in this order.
@@ -1537,6 +1554,8 @@ static inline bool lr20xx_cad_rx_resolve(struct lr20xx_data *data, int outcome)
 static void lr20xx_irq_status_notes(struct lr20xx_data *data, uint32_t irq)
 {
 	void *ctx = &data->hal_ctx;
+
+	lr20xx_cad_rx_note(data, irq);
 
 	if (irq & (LR20XX_SYSTEM_IRQ_ERROR | LR20XX_SYSTEM_IRQ_CMD_ERROR)) {
 		lr20xx_log_chip_errors(ctx, (irq & LR20XX_SYSTEM_IRQ_CMD_ERROR)
@@ -1614,15 +1633,13 @@ static bool lr20xx_irq_rx_done(struct lr20xx_data *data, uint32_t irq,
 		lr20xx_restart_rx(data);
 		*rx_restarted = true;
 
-		/* SNR < 0: prefer the signal RSSI. Dead in practice (the signal RSSI is
-		 * always lower then), and kept in step with the LR11xx: fix both or neither. */
+		/* The packet RSSI, as on the other families. The callback carries
+		 * whole dB; the quarter-dB reading is kept for
+		 * lr20xx_get_last_snr_x4(). */
 		int16_t rssi = pkt_stat.rssi_pkt_in_dbm;
 		int8_t snr = ((int8_t)pkt_stat.snr_pkt_raw + 2) >> 2;
 
-		if (snr < 0 &&
-		    pkt_stat.rssi_signal_pkt_in_dbm > rssi) {
-			rssi = pkt_stat.rssi_signal_pkt_in_dbm;
-		}
+		data->last_snr_x4 = (int8_t)pkt_stat.snr_pkt_raw;
 
 		/* Carrier frequency error: SDK v2.0.2 reads 3 status bytes the DS does not
 		 * document; implausible values are dropped as junk. */
@@ -1677,6 +1694,7 @@ static bool lr20xx_irq_cad_done(struct lr20xx_data *data, uint32_t irq,
 		uint32_t steps = zc_lora_ms_to_steps24(lr20xx_max_payload_ms(data),
 						       LR20XX_RTC_FREQ_HZ);
 
+		atomic_set(&data->cad_rx_signal, 0);
 		atomic_set(&data->cad_rx_state, LR20XX_CAD_RX_ARMED);
 		lr20xx_radio_common_set_rx_with_timeout_in_rtc_step(&data->hal_ctx,
 								   steps);
@@ -1732,7 +1750,8 @@ static void lr20xx_irq_timeout(struct lr20xx_data *data,
 
 	/* The probe's own Rx window expiring with nothing decoded: the
 	 * detection had no packet behind it. */
-	lr20xx_cad_rx_resolve(data, LR20XX_CAD_RX_TMOUT);
+	lr20xx_cad_rx_resolve(data, atomic_get(&data->cad_rx_signal) ?
+				    LR20XX_CAD_RX_PREAMBLE : LR20XX_CAD_RX_TMOUT);
 	if (data->tx_active) {
 		/* Chip TX timeout (DS §6.3.6): TX_DONE will never come. Re-arm RX but do NOT
 		 * raise tx_signal (it means "sent"); the adapter wait thread owns the loss. */
@@ -1951,6 +1970,11 @@ static int lr20xx_lora_config(const struct device *dev,
 {
 	struct lr20xx_data *data = dev->data;
 
+	if (!lr20xx_bw_supported(config->bandwidth)) {
+		LOG_ERR("Unsupported bandwidth: %d kHz", (int)config->bandwidth);
+		return -EINVAL;
+	}
+
 	if (!data->hw_initialized) {
 		int ret = lr20xx_hw_init(data, dev->config);
 		if (ret != 0) {
@@ -1994,7 +2018,7 @@ static uint32_t lr20xx_lora_airtime(const struct device *dev,
 	struct lora_modem_config *mc = &data->modem_cfg;
 
 	uint8_t sf = (uint8_t)mc->datarate;
-	float bw = bw_enum_to_khz(mc->bandwidth) * 1000.0f;
+	float bw = (float)lr20xx_bw_hz(mc->bandwidth);
 	uint8_t cr = (uint8_t)mc->coding_rate + 4;
 
 	float ts = (float)(1 << sf) / bw;
@@ -2028,7 +2052,7 @@ static uint32_t lr20xx_cad_timeout_ms(struct lr20xx_data *data)
 	 * defaults to 4, which would have under-budgeted the wait if
 	 * buildModemConfig() ever stopped setting symbol_num explicitly. */
 	uint8_t symb_nb = lr20xx_cad_symb_nb(mc);
-	uint32_t bw_hz = (uint32_t)(bw_enum_to_khz(mc->bandwidth) * 1000.0f);
+	uint32_t bw_hz = lr20xx_bw_hz(mc->bandwidth);
 
 	if (bw_hz == 0 || sf < 5 || sf > 12) {
 		return 200;
@@ -2228,8 +2252,16 @@ static int lr20xx_lora_send_async(const struct device *dev,
 			return -EBUSY;
 		}
 		if (cad_ret < 0 && cad_ret != -ENOSYS) {
-			LOG_WRN("LBT: CAD failed (%d), proceeding with TX",
-				cad_ret);
+			/* No verdict is not a clear channel: do not transmit. Re-arm
+			 * as after a busy verdict; the full RX start also recovers a
+			 * chip that did not answer. */
+			LOG_WRN("LBT: CAD failed (%d), restoring RX", cad_ret);
+			if (was_in_rx || data->rx_duty_cycle_enabled) {
+				k_mutex_lock(&data->spi_mutex, K_FOREVER);
+				lr20xx_start_rx(data, cfg);
+				k_mutex_unlock(&data->spi_mutex);
+			}
+			return cad_ret;
 		}
 	}
 
@@ -2411,7 +2443,7 @@ static int lr20xx_lora_recv(const struct device *dev, uint8_t *buf,
  * the old 1 ms. */
 static uint32_t lr20xx_rssi_settle_us(struct lr20xx_data *data)
 {
-	uint32_t bw_khz = (uint32_t)bw_enum_to_khz(data->modem_cfg.bandwidth);
+	uint32_t bw_khz = lr20xx_bw_hz(data->modem_cfg.bandwidth) / 1000U;
 	uint32_t settle;
 
 	if (bw_khz == 0) {
@@ -2488,7 +2520,7 @@ static uint32_t lr20xx_preamble_grace_ms(struct lr20xx_data *data)
 {
 	return zc_lora_preamble_grace_ms(
 		(uint8_t)data->modem_cfg.datarate,
-		(uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f),
+		lr20xx_bw_hz(data->modem_cfg.bandwidth),
 		data->modem_cfg.preamble_len);
 }
 
@@ -2501,7 +2533,7 @@ static uint32_t lr20xx_max_payload_ms(struct lr20xx_data *data)
 {
 	return zc_lora_max_payload_ms(
 		(uint8_t)data->modem_cfg.datarate,
-		(uint32_t)(bw_enum_to_khz(data->modem_cfg.bandwidth) * 1000.0f));
+		lr20xx_bw_hz(data->modem_cfg.bandwidth));
 }
 
 int lr20xx_get_rssi_burst(const struct device *dev, int16_t *out, int n,
@@ -2735,6 +2767,13 @@ void lr20xx_reset_dc_timeout_restarts(const struct device *dev)
 	struct lr20xx_data *data = dev->data;
 
 	atomic_set(&data->dc_timeout_restarts, 0);
+}
+
+int8_t lr20xx_get_last_snr_x4(const struct device *dev)
+{
+	struct lr20xx_data *data = dev->data;
+
+	return data->last_snr_x4;
 }
 
 uint32_t lr20xx_get_wakeup_time_us(const struct device *dev)
@@ -3115,12 +3154,15 @@ int lr20xx_cad_rx_outcome(const struct device *dev)
 	struct lr20xx_data *data = dev->data;
 	atomic_val_t st = atomic_get(&data->cad_rx_state);
 
-	if (st != LR20XX_CAD_RX_PACKET && st != LR20XX_CAD_RX_TMOUT) {
+	if (st != LR20XX_CAD_RX_PACKET && st != LR20XX_CAD_RX_TMOUT &&
+	    st != LR20XX_CAD_RX_PREAMBLE) {
 		return 0;  /* nothing armed, or still awaiting the terminal IRQ */
 	}
 
 	atomic_set(&data->cad_rx_state, LR20XX_CAD_RX_IDLE);
-	return (st == LR20XX_CAD_RX_PACKET) ? 1 : 2;
+	/* 1 packet, 2 nothing seen, 3 preamble/header but nothing decoded */
+	return (st == LR20XX_CAD_RX_PACKET) ? 1 :
+	       (st == LR20XX_CAD_RX_PREAMBLE) ? 3 : 2;
 }
 
 /* ── Driver API: recv_duty_cycle ────────────────────────────────────── */
@@ -3154,17 +3196,27 @@ static int lr20xx_lora_recv_duty_cycle(const struct device *dev,
 		return -EINVAL;
 	}
 
-	uint32_t rx_ms = k_ticks_to_ms_ceil32(rx_period.ticks);
-	uint32_t slp_ms = k_ticks_to_ms_ceil32(sleep_period.ticks);
-	if (rx_ms < 1) rx_ms = 1;
-	if (slp_ms < 1) slp_ms = 1;
+	/* RTC steps straight from the caller's microseconds: the RX window rounds
+	 * up, the sleep rounds down, so the deaf time never exceeds what the
+	 * adapter budgeted. Whole milliseconds cost up to 1 ms of sleep, more
+	 * than the budget's margin on fast presets. The cycle time the chip takes
+	 * is their sum and has 24 bits. */
+	uint32_t rx_us = k_ticks_to_us_ceil32(rx_period.ticks);
+	uint32_t slp_us = k_ticks_to_us_floor32(sleep_period.ticks);
+	uint32_t rx_steps = (uint32_t)(((uint64_t)rx_us * 32768U + 999999U) / 1000000U);
+	uint32_t slp_steps = (uint32_t)(((uint64_t)slp_us * 32768U) / 1000000U);
+
+	if (rx_steps < 1U) rx_steps = 1U;
+	if (slp_steps < 1U) slp_steps = 1U;
+	if (rx_steps > 0x007FFFFFU) rx_steps = 0x007FFFFFU;
+	if (slp_steps > 0x007FFFFFU) slp_steps = 0x007FFFFFU;
 
 	k_mutex_lock(&data->spi_mutex, K_FOREVER);
 
 	/* A cycle already armed on these periods: refresh the callback and stay on
 	 * air. Anything else takes the full path (and its AGC reset). */
 	if (data->in_rx_mode && data->rx_duty_cycle_enabled &&
-	    data->dc_rx_ms == rx_ms && data->dc_sleep_ms == slp_ms) {
+	    data->dc_rx_steps == rx_steps && data->dc_sleep_steps == slp_steps) {
 		data->async_rx_cb = cb;
 		data->async_rx_user_data = user_data;
 		k_mutex_unlock(&data->spi_mutex);
@@ -3183,15 +3235,14 @@ static int lr20xx_lora_recv_duty_cycle(const struct device *dev,
 
 	/* Store for the re-arm paths (lr20xx_start_rx / lr20xx_restart_rx)
 	 * so every re-entry uses exactly this timing. */
-	data->dc_rx_ms = rx_ms;
-	data->dc_sleep_ms = slp_ms;
+	data->dc_rx_steps = rx_steps;
+	data->dc_sleep_steps = slp_steps;
 	data->rx_duty_cycle_enabled = true;
 	/* Arm through the shared helper so the cycle_time conversion lives in
 	 * exactly one place — this site and the re-arm path had to agree, and
 	 * two copies of that conversion is how they would stop agreeing. */
 	lr20xx_apply_rx_duty_cycle(data);
-	LOG_INF("recv_duty_cycle: rx=%ums sleep=%ums (cycle=%ums)",
-		rx_ms, slp_ms, rx_ms + slp_ms);
+	LOG_INF("recv_duty_cycle: rx=%uus sleep=%uus", rx_us, slp_us);
 
 	lr20xx_system_clear_irq_status(ctx, LR20XX_SYSTEM_IRQ_ALL_MASK);
 	data->in_rx_mode = true;

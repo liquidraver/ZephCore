@@ -30,6 +30,14 @@ static inline void apply_boot_prefs(const NodePrefs *p, bool gps_time_sync)
 	LOG_INF("LEDs: %s (from prefs)", leds_off ? "disabled" : "enabled");
 
 	if (gps_time_sync && gps_is_available()) {
+#ifdef CONFIG_ZEPHCORE_GPS_GUARD
+		/* The fence is around the configured position. */
+		gps_guard_set_enabled(p->gps_guard != 0);
+		if (p->gps_fence >= 0) {
+			gps_guard_set_fence((uint32_t)p->gps_fence);
+		}
+		gps_guard_set_reference(p->node_lat, p->node_lon);
+#endif
 		gps_set_poll_interval_sec(p->gps_interval);
 		gps_set_standby_max_sec(p->gps_standby_max);
 		gps_set_repeater_mode(true);

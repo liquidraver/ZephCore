@@ -120,7 +120,7 @@ bool RepeaterDataStore::loadLegacyPrefs(const char* path, NodePrefs& prefs) {
 		memcpy(&bw, &buf[116], sizeof(bw));
 		if (freq < ZC_RADIO_FREQ_MIN_MHZ || freq > ZC_RADIO_FREQ_MAX_MHZ ||
 		    buf[112] < 5 || buf[112] > 12 ||
-		    bw < ZC_RADIO_BW_MIN_KHZ || bw > ZC_RADIO_BW_MAX_KHZ) {
+		    !zcRadioBwValid(bw)) {
 			LOG_WRN("Invalid radio params in prefs, using defaults: freq=%.3f sf=%u bw=%.1f",
 				(double)freq, buf[112], (double)bw);
 		}

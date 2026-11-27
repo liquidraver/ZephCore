@@ -36,6 +36,43 @@
 	#define ZC_RADIO_BW_RANGE_STR "7-500"
 #endif
 
+/* The narrowest bandwidth each radio family has, as its whole-kHz name. */
+#if defined(CONFIG_ZEPHCORE_RADIO_SX127X)
+	#define ZC_RADIO_BW_FLOOR_KHZ 62U   /* loramac-node backend: 62.5, 125, 250, 500 */
+#elif defined(CONFIG_ZEPHCORE_RADIO_LR2021)
+	#define ZC_RADIO_BW_FLOOR_KHZ 31U   /* LR20xx: 31.25 kHz and up */
+#elif defined(CONFIG_ZEPHCORE_RADIO_LR1110)
+	#define ZC_RADIO_BW_FLOOR_KHZ 10U   /* LR11xx: 10.42 kHz and up */
+#else
+	#define ZC_RADIO_BW_FLOOR_KHZ 7U    /* SX126x: 7.81 kHz and up */
+#endif
+
+/* Is `khz` a bandwidth this build's radio has? LoRa bandwidths are a fixed
+ * set and the adapter names them by their whole-kHz part (bw_khz_to_enum()):
+ * 7.8 and 7.81 are 7, 62.5 is 62. A value in range but outside the set (42,
+ * 100), or one the radio lacks, is refused by every setter and loader,
+ * never run as 125 kHz. */
+static inline bool zcRadioBwValid(float khz)
+{
+	if (!(khz >= ZC_RADIO_BW_MIN_KHZ && khz <= ZC_RADIO_BW_MAX_KHZ)) {
+		return false;
+	}
+	if ((unsigned)khz < ZC_RADIO_BW_FLOOR_KHZ) {
+		return false;
+	}
+	switch ((unsigned)khz) {
+	case 7: case 10: case 15: case 20: case 31: case 41: case 62:
+	case 125: case 250: case 500:
+		return true;
+#ifdef CONFIG_ZEPHCORE_RADIO_LR2021
+	case 200: case 203: case 400: case 406: case 800: case 812: case 1000:
+		return true;
+#endif
+	default:
+		return false;
+	}
+}
+
 #define TELEM_MODE_DENY            0
 #define TELEM_MODE_ALLOW_FLAGS     1
 #define TELEM_MODE_ALLOW_ALL       2
@@ -80,7 +117,7 @@ struct NodePrefs {
 	float tx_delay_factor;
 	char guest_password[16];
 	float direct_tx_delay_factor;
-	float backoff_multiplier;       // per-dupe reactive backoff (0.0 = disabled)
+	float backoff_multiplier;       // retired 2026-11-10 (ADR 0007); kept so the stored layout holds
 	uint32_t guard;
 	uint8_t sf;
 	uint8_t cr;
@@ -113,6 +150,9 @@ struct NodePrefs {
 	 * state between fixes, longer ones power it off fully. 0 = always off. */
 	uint32_t gps_standby_max;
 	uint8_t advert_loc_policy;
+	/* GPS guard (CONFIG_ZEPHCORE_GPS_GUARD), upstream's gps.fence / gps.guard */
+	int32_t gps_fence;              // metres, 0 = off, -1 = Kconfig default
+	uint8_t gps_guard;              // 1 = on
 	uint32_t discovery_mod_timestamp;
 	float adc_multiplier;
 	char owner_info[120];
@@ -214,6 +254,17 @@ static inline T sanePrefFloat(T v, T lo, T hi, T fallback) {
 	return v;
 }
 
+/* Largest airtime factor a setter or the loader accepts (10 % duty cycle). */
+#define ZC_AIRTIME_FACTOR_MAX 9.0f
+
+/* Duty cycle in whole percent for an airtime factor: 100 / (af + 1), rounded
+ * to nearest and never under 1, since 0 means "no limit" to the Dispatcher. */
+static inline uint8_t zcDutyCyclePercent(float af) {
+	float pct = 100.0f / (af + 1.0f) + 0.5f;
+	if (!(pct >= 1.0f)) return 1;
+	return pct >= 100.0f ? (uint8_t)100 : (uint8_t)pct;
+}
+
 /* A byte that is neither 0 nor 1 carries no user intent — take the default
  * rather than clamping, which would round every garbage value up to "on". */
 template <typename T>
@@ -275,15 +326,13 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->wifi_pwd[sizeof(p->wifi_pwd) - 1] = '\0';
 	p->wifi_enabled = saneBool(p->wifi_enabled, (uint8_t)1);
 
-	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, 9.0f, 9.0f);
+	p->airtime_factor = sanePrefFloat(p->airtime_factor, 0.0f, ZC_AIRTIME_FACTOR_MAX, ZC_AIRTIME_FACTOR_MAX);
 	p->rx_delay_base  = sanePrefFloat(p->rx_delay_base, 0.0f, 3600.0f, 0.0f);
 	p->adc_multiplier = sanePrefFloat(p->adc_multiplier, 0.0f, 30000.0f, 0.0f);
 	p->offgrid_home_freq = sanePrefFloat(p->offgrid_home_freq, ZC_RADIO_FREQ_MIN_MHZ,
 					      ZC_RADIO_FREQ_MAX_MHZ, 0.0f);
-	/* Range matches the CLI (0.0-2.0).  0.0 is a legal value meaning "reactive
-	 * backoff off" and must survive: this guard exists for NaN and corruption
-	 * only.  RepeaterDataStore used to coerce 0.0 -> 0.2 here, which silently
-	 * undid the documented way to disable the feature on every boot. */
+	/* Unused since the reactive backoff was retired; still sanitised and
+	 * stored so older firmware reads a valid value after a downgrade. */
 	p->backoff_multiplier = sanePrefFloat(p->backoff_multiplier, 0.0f, 2.0f, 0.2f);
 	p->node_lat = sanePrefFloat(p->node_lat, -90.0, 90.0, 0.0);
 	p->node_lon = sanePrefFloat(p->node_lon, -180.0, 180.0, 0.0);
@@ -307,6 +356,8 @@ static inline void sanitizeNodePrefs(NodePrefs* p) {
 	p->buzzer_quiet        = saneBool<uint8_t>(p->buzzer_quiet, 0);
 	p->gps_enabled         = saneBool<uint8_t>(p->gps_enabled, 0);
 	p->gps_enabled_set     = saneBool<uint8_t>(p->gps_enabled_set, 0);
+	p->gps_guard           = saneBool<uint8_t>(p->gps_guard, 1);
+	if (p->gps_fence < -1 || p->gps_fence > 20000000) p->gps_fence = -1;
 	p->auto_shutdown_set   = saneBool<uint8_t>(p->auto_shutdown_set, 0);
 	p->rx_duty_cycle       = saneBool<uint8_t>(p->rx_duty_cycle, 0);
 	p->leds_disabled       = saneBool<uint8_t>(p->leds_disabled, 0);
@@ -401,11 +452,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->advert_interval = 0;       // 0 = periodic local advert off; else minutes = value * 2
 	prefs->flood_advert_interval = 47;  // hours
 	prefs->rx_delay_base = 0.0f;
-	/* Must match mesh::ContentionTracker::DEFAULT_BACKOFF_MULT.  Left at the
-	 * memset 0 (= backoff disabled) until now, with RepeaterDataStore coercing
-	 * 0.0 -> 0.2 on load to paper over it — which also undid a deliberate 0.0.
-	 * Companions never apply this (only Repeater/RoomServer call
-	 * setBackoffMultiplier), so setting it here changes no existing node. */
+	/* Unused (reactive backoff retired); 0.2 is the old default, so firmware
+	 * from before the retirement gets its default after a downgrade. */
 	prefs->backoff_multiplier = 0.2f;
 	prefs->tx_delay_factor = 0.5f;
 	prefs->direct_tx_delay_factor = 0.3f;
@@ -429,6 +477,8 @@ static inline void initNodePrefs(NodePrefs* prefs) {
 	prefs->gps_interval = 300;        // 5 minutes
 	prefs->gps_standby_max = GPS_STANDBY_MAX_DEFAULT_SEC;
 	prefs->advert_loc_policy = ADVERT_LOC_NONE;
+	prefs->gps_fence = -1;
+	prefs->gps_guard = 1;
 	prefs->adc_multiplier = 0.0f;
 	prefs->rx_boost = 1;              // Default to boosted RX for better sensitivity
 	/* Default ON: the FEM's chip-enable has always been asserted for RX on the

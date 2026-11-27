@@ -53,6 +53,7 @@ LOG_MODULE_REGISTER(zephcore_ui_actions, CONFIG_ZEPHCORE_UI_ACTIONS_LOG_LEVEL);
 #define UI_ACTION_GPS_DUTY_SAVE     BIT(12)
 #define UI_ACTION_DISPLAY_ROTATE_SAVE BIT(13)
 #define UI_ACTION_INPUT_ROTATE_SAVE BIT(14)
+#define UI_ACTION_BLE_OTA_OPEN      BIT(15)
 
 /* Module-local pointers, set by init */
 static CompanionMesh *s_mesh;
@@ -122,9 +123,7 @@ extern "C" void mesh_gps_set_enabled(bool enable)
 
 extern "C" void mesh_ble_set_enabled(bool enable)
 {
-#if IS_ENABLED(CONFIG_BT)
-	zephcore_ble_set_enabled(enable);
-#endif
+	/* Bluetooth host calls run on the mesh thread (LLD 11 §21). */
 	atomic_set(&pending_ble_disabled, enable ? 0 : 1);
 	atomic_or(&pending_ui_actions, UI_ACTION_BLE_TOGGLE);
 	k_event_post(s_mesh_events, s_mesh_event_ui_action);
@@ -222,15 +221,12 @@ extern "C" void mesh_reboot_to_ota_dfu(void)
 	/* Never returns on nRF52; returns elsewhere (no BLE DFU bootloader). */
 }
 
-extern "C" bool mesh_ble_ota_open(void)
+extern "C" void mesh_ble_ota_open(void)
 {
-#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_OTA)
-	int err = ble_ota_start();
-
-	return err == 0 || err == -EALREADY;
-#else
-	return false;
-#endif
+	/* Opened on the mesh thread (LLD 11 §21); the UIs poll
+	 * mesh_ble_ota_remaining_s() for the result. */
+	atomic_or(&pending_ui_actions, UI_ACTION_BLE_OTA_OPEN);
+	k_event_post(s_mesh_events, s_mesh_event_ui_action);
 }
 
 extern "C" uint32_t mesh_ble_ota_remaining_s(void)
@@ -298,9 +294,21 @@ extern "C" void mesh_handle_ui_actions(void)
 
 	if (actions & UI_ACTION_BLE_TOGGLE) {
 		bool bd = atomic_get(&pending_ble_disabled) != 0;
+#if IS_ENABLED(CONFIG_BT)
+		zephcore_ble_set_enabled(!bd);
+#endif
 		s_mesh->prefs.ble_disabled = bd ? 1 : 0;
 		LOG_INF("ble_disabled=%d (button)", bd);
 		need_save = true;
+	}
+
+	if (actions & UI_ACTION_BLE_OTA_OPEN) {
+#if IS_ENABLED(CONFIG_ZEPHCORE_BLE_OTA)
+		int err = ble_ota_start();
+
+		LOG_INF("BLE OTA window: %s (button)",
+			(err == 0 || err == -EALREADY) ? "open" : "failed");
+#endif
 	}
 
 	if (actions & UI_ACTION_BRIGHTNESS_SAVE) {

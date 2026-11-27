@@ -35,8 +35,10 @@ public:
 	struct LevelStats {
 		uint16_t probes;   /* probes run at this level */
 		uint16_t busy;     /* raw busy verdicts */
-		uint16_t fp;       /* busy with nothing decoded after it (false positive) */
+		uint16_t fp;       /* busy with no transmitter seen after it (false positive) */
 		uint16_t tp;       /* busy that turned into a received packet */
+		uint16_t pre;      /* busy with a preamble/header seen but nothing
+				    * decoded: a real transmitter, not an FP */
 	};
 
 	explicit CadController(CadHw &hw);
@@ -84,8 +86,10 @@ public:
 	bool hasPending() const { return _pending_level != INT8_MIN; }
 	int8_t pendingLevel() const { return _pending_level; }
 	int64_t pendingDeadline() const { return _pending_deadline_ms; }
-	/* outcome: 1 = packet (true positive), 2 = chip timeout (false
-	 * positive), anything else = unresolved, the sample is withdrawn. */
+	/* outcome: 1 = packet (true positive), 2 = chip timeout with no
+	 * transmitter seen (false positive), 3 = timeout after a preamble or
+	 * header (real, undecoded: not an FP), anything else = unresolved, the
+	 * sample is withdrawn. */
 	void resolvePending(int outcome);
 
 	/* After a verdict: the safety rung first; the optimiser only when the

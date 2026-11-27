@@ -86,4 +86,19 @@
 			bias-pull-up;
 		};
 	};
+
+	/* White heartbeat LED, PWM path (pwm_led_white); same P0.15 net as the
+	 * gpio-leds node, no other peripheral claims it. */
+	pwm0_default: pwm0_default {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 15)>;
+		};
+	};
+
+	pwm0_sleep: pwm0_sleep {
+		group1 {
+			psels = <NRF_PSEL(PWM_OUT0, 0, 15)>;
+			low-power-enable;
+		};
+	};
 };

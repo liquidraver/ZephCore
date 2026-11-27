@@ -8,6 +8,7 @@
 #include <helpers/TxtDataHelpers.h>
 #include <helpers/MeshcoreJson.h>
 #include <adapters/radio/LoRaRadio.h>
+#include <adapters/datastore/ZephyrFsUtil.h>
 #include <adapters/sensors/ZephyrSensorManager.h>
 #include <adapters/gps/ZephyrGPSManager.h>
 #include <zephyr/kernel.h>
@@ -63,15 +64,6 @@ static void uplink_time_sync_cb(uint32_t unix_ts)
   }
 }
 #endif
-
-/* Helper: futureMillis */
-static inline unsigned long futureMillis(uint32_t delta_ms) {
-  return k_uptime_get() + delta_ms;
-}
-
-static inline bool millisHasNowPassed(unsigned long target) {
-  return (int64_t)k_uptime_get() >= (int64_t)target;
-}
 
 static void radio_set_tx_power(uint8_t power_dbm) {
   /* TX power is configured as part of lora_config() in radio_set_params
@@ -142,6 +134,7 @@ static void radio_set_tx_power(uint8_t power_dbm) {
 #define CLI_REPLY_DELAY_MILLIS      600
 
 #define LAZY_CONTACTS_WRITE_DELAY    5000
+#define REPLAY_BOOT_SLACK            10   // seconds below the boot clock where replay marks start
 
 void RepeaterMesh::putNeighbour(const mesh::Identity &id, uint32_t timestamp, float snr) {
 #if MAX_NEIGHBOURS // check if neighbours enabled
@@ -181,6 +174,13 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
   if (client == nullptr) {
     uint8_t perms;
 
+    /* No password is compared, the right one included, while the failed-login
+     * limit is spent: otherwise guessing is limited by airtime only. */
+    if (login_fail_limiter.blocked(getRTCClock()->getCurrentTime())) {
+      LOG_WRN("Login rate-limited (failed attempts exceeded)");
+      return 0;
+    }
+
     /* Constant-time comparison: zero-pad both the received and the stored
      * passwords into cleared buffers (up to the NUL) and compare full-width.
      * The stored buffer can carry garbage past the NUL. */
@@ -198,6 +198,10 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     bool guest_match = mesh::Utils::constantTimeEqual(received,
                   guest_pw,
                   sizeof(received));
+
+    /* An empty stored admin password matches nothing: an empty login is a guest
+     * login, and admin is then reached only through the ACL. */
+    if (_prefs.password[0] == 0) admin_match = false;
 
     /* An empty stored guest password means open guest access on a repeater, as
      * Arduino MeshCore. Deliberately not what RoomServerMesh does, where it
@@ -220,6 +224,7 @@ uint8_t RepeaterMesh::handleLoginReq(const mesh::Identity& sender, const uint8_t
     }
 
     client = acl.putClient(sender, 0);
+    if (client->last_timestamp < _replay_floor) client->last_timestamp = _replay_floor;  // a new entry too
     if (sender_timestamp <= client->last_timestamp) {
       LOG_WRN("Possible login replay attack!");
       return 0;
@@ -590,7 +595,36 @@ bool RepeaterMesh::allowPacketForward(const mesh::Packet *packet) {
       return false;
     }
   }
+  // ZEPHCORE: the list rules again (for a copy the receive hook let through as
+  // ours), then the request limit, once per distinct packet.
+  if (packet->isRouteFlood()
+      && (_filter.matches(packet) || _filter.overLimit(packet, (uint32_t)_ms->getMillis()))) {
+    return false;
+  }
   return true;
+}
+
+// ZEPHCORE: ours. Drops a blacklisted flood copy before it is marked seen, so
+// a later clean copy is still handled; a packet for this node is kept.
+bool RepeaterMesh::filterRecvFloodPacket(mesh::Packet* packet) {
+  if (FwdFilter::isAddressedTo(packet, self_id.pub_key[0])) return false;
+  return _filter.matches(packet);
+}
+
+// ZEPHCORE: ours. The filter state as one small file, replaced atomically.
+void RepeaterMesh::loadFilter() {
+  char path[48];
+  uint8_t buf[FwdFilter::BLOB_MAX];
+  size_t len = 0;
+  snprintf(path, sizeof(path), "%s/filter", _store->getBasePath());
+  if (zephcore_fs_read_file(path, buf, sizeof(buf), &len)) _filter.load(buf, len);
+}
+void RepeaterMesh::saveFilter() {
+  char path[48];
+  uint8_t buf[FwdFilter::BLOB_MAX];
+  size_t len = _filter.save(buf, sizeof(buf));
+  snprintf(path, sizeof(path), "%s/filter", _store->getBasePath());
+  if (len > 0) zephcore_fs_atomic_replace(path, buf, len, "filter");
 }
 
 // ZEPHCORE: ours. Zephyr clock formatting.
@@ -663,15 +697,21 @@ void RepeaterMesh::logTxFail(mesh::Packet* pkt, int len) {
   }
 }
 
+// ZEPHCORE: ours. LBT diagnostic lines (CONFIG_ZEPHCORE_LBT_LOGGING), helpers/PacketLog.h.
+void RepeaterMesh::logTxAttempt(const mesh::Packet* pkt, const char* outcome, uint32_t retry_ms) {
+  packet_log_lbt(outcome, pkt, getLbtRefusals(), retry_ms, _radio->getNoiseFloor());
+}
+
 // ZEPHCORE: no calcRxDelay() here: rx delay is replaced by the adaptive contention window
 
-// ZEPHCORE: ours. Adaptive contention window.
+// ZEPHCORE: ours. Flood and direct forwards: one LBT slot draw (LLD 02 §21).
 uint32_t RepeaterMesh::getRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveFloodDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
-// ZEPHCORE: ours. Adaptive contention window.
 uint32_t RepeaterMesh::getDirectRetransmitDelay(const mesh::Packet* packet) {
-  return computeAdaptiveDirectDelay(packet);
+  (void)packet;
+  return computeForwardDelay();
 }
 
 // ZEPHCORE: ours. Also records whether the packet was an unscoped flood; a
@@ -954,7 +994,10 @@ void RepeaterMesh::onControlDataRecv(mesh::Packet* packet) {
       memcpy(&data[6], self_id.pub_key, PUB_KEY_SIZE);
       auto resp = createControlData(data, prefix_only ? 6 + 8 : 6 + PUB_KEY_SIZE);
       if (resp) {
-        sendZeroHop(resp, getRetransmitDelay(resp)*4);  // apply random delay (widened x4), as multiple nodes can respond to this
+        // ZEPHCORE: every repeater in range answers at once: upstream's spread
+        // (0-10 airtimes at txdelay 0.5), not the forward slot draw.
+        uint32_t air = _radio->getEstAirtimeFor(resp->getRawLength());
+        sendZeroHop(resp, 4 * getRNG()->nextInt(0, 5 * air / 2 + 1));  // apply random delay (widened x4), as multiple nodes can respond to this
       }
     }
   } else if (type == CTL_TYPE_NODE_DISCOVER_RESP && packet->payload_len >= 6) {
@@ -1071,9 +1114,17 @@ void RepeaterMesh::begin(RepeaterDataStore* store) {
    * begin() — the radio reads freq/bw/sf/cr through _prefs during
    * Mesh::begin() → Dispatcher::begin() → Radio::begin(). */
   mesh::Mesh::begin();
-  _contention.setBackoffMultiplier(_prefs.backoff_multiplier);
   acl.load(_store->getFS(), self_id);
+  /* last_timestamp is RAM only: every client starts at the boot clock less
+   * REPLAY_BOOT_SLACK, so frames recorded before that do not run again after a
+   * reboot (devdocs/lld/07-server-roles.md section 22). */
+  {
+    uint32_t now = getRTCClock()->getCurrentTime();
+    _replay_floor = now > REPLAY_BOOT_SLACK ? now - REPLAY_BOOT_SLACK : 0;
+    for (int i = 0; i < acl.getNumClients(); i++) acl.getClientByIdx(i)->last_timestamp = _replay_floor;
+  }
   region_map.load(_store->getFS());
+  loadFilter();  // ZEPHCORE
 
   // establish default-scope from persisted default region (if any)
   {
@@ -1346,6 +1397,16 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
   }
 #endif
 
+  // ZEPHCORE: `idkfa` and, once unlocked, `filter ...`; a locked `filter`
+  // falls through and is answered like any unknown command.
+  {
+    bool changed = false;
+    if (_filter.command(command, reply, CLI_REMOTE_REPLY_SIZE - hdr_used, &changed)) {
+      if (changed) saveFilter();
+      return;
+    }
+  }
+
   // ACL commands - supports BOTH formats for app compatibility:
   //   Old Arduino: setperm {pubkey-hex} {permissions}   (pubkey is long, perms is short)
   //   MeshCore App: setperm {permissions} {pubkey-hex}  (perms is short 2-char hex, pubkey is long)
@@ -1380,6 +1441,8 @@ void RepeaterMesh::handleCommand(uint32_t sender_timestamp, char* command, char*
       if (mesh::Utils::fromHex(pubkey, hex_len / 2, hex)) {
         if (acl.applyPermissions(self_id, pubkey, hex_len / 2, perms)) {
           if (!dirty_contacts_expiry) dirty_contacts_expiry = futureMillis(LAZY_CONTACTS_WRITE_DELAY);
+          ClientInfo* c = acl.getClient(pubkey, hex_len / 2);  // ZEPHCORE: a new entry starts at the floor
+          if (c && c->last_timestamp < _replay_floor) c->last_timestamp = _replay_floor;
           strcpy(reply, "OK");
         } else {
           strcpy(reply, "Err - invalid params");

@@ -25,6 +25,9 @@ static uint16_t preambleLengthForSF(uint8_t sf)
 	return (sf <= 8) ? 32 : 16;
 }
 
+/* Requested LBT CAD length in symbols; lbtCadSymbolsFor() caps it per SF. */
+#define LBT_CAD_SYMBOLS 4U
+
 /* Minimum preamble symbols that must land inside one open duty-cycle RX
  * window for guaranteed detection.  8 is Semtech's own figure for sniff
  * mode (AN1200.36 §4: "8 symbols in LoRa make up the time required to
@@ -54,17 +57,22 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _rssi_bursts(0), _rssi_spread_sum(0), _rssi_degenerate(0),
 	  _cad(*this), _probe_interval_s(0), _cad_last_decay_ms(0),
 	  _rx_duty_cycle_enabled(IS_ENABLED(CONFIG_ZEPHCORE_LORA_RX_DUTY_CYCLE)),
+	  _cad_symbols(LBT_CAD_SYMBOLS),
 	  _rx_boost_enabled(kLoRaRadioOps.set_rx_boost != nullptr),
 	  _dc_last_rx_us(0), _dc_last_sleep_us(0),
 	  _agc_rx_count_shadow(0), _agc_last_activity_ms(0),
 	  _agc_rssi_last(0), _agc_rssi_frozen(0),
 	  _rssi_reads_ok(0), _rssi_reads_busy(0), _rssi_bursts_abandoned(0),
-	  _rssi_dc_blocked(0),
+	  _rssi_dc_blocked(0), _rssi_confirms(0), _rssi_below_min(0),
 	  _silence_last_report_ms(0),
 	  _image_cal_last_temp_c(INT16_MIN),
 	  _image_cal_last_ms(0), _image_cal_wait_ms(0),
 	  _image_cal_started(false), _image_cal_confirming(false),
 	  _last_tx_start_ms(0),
+	  _lbt_clear(0), _lbt_busy(0), _lbt_err(0), _lbt_gate(0),
+	  _lbt_busy_rx(0), _lbt_busy_until(0),
+	  _last_tx(LAST_NONE), _last_tx_err(0), _last_busy_rssi{},
+	  _last_busy_pre(0xFF), _last_busy_fp_age(UINT32_MAX), _foreign_seen(0),
 	  _config_cached(false),
 	  _has_radio_override(false),
 	  _override_freq(0), _override_bw(0),
@@ -72,7 +80,8 @@ LoRaRadio::LoRaRadio(const struct device *lora_dev, MainBoard &board)
 	  _rx_cb(nullptr), _rx_cb_user_data(nullptr),
 	  _tx_done_cb(nullptr), _tx_done_cb_user_data(nullptr),
 	  _tx_thread_running(false), _tx_len(0),
-	  _packets_recv(0), _packets_sent(0), _packets_recv_errors(0)
+	  _packets_recv(0), _packets_sent(0), _packets_recv_errors(0),
+	  _rx_end_seq(0), _rx_end_ms(0), _rx_end_log{}, _rx_end_log_head(0), _rx_end_log_tail(0)
 {
 	k_poll_signal_init(&_tx_signal);
 	k_sem_init(&_tx_start_sem, 0, 1);
@@ -238,11 +247,19 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 {
 	LoRaRadio *self = static_cast<LoRaRadio *>(user_data);
 
+	self->noteRxAfterLbtBusy();
+	self->noteRxEnd(size, rssi, snr);
+
 	/* NULL data = RX error (CRC/header error) */
 	if (data == NULL && size == 0) {
 		atomic_inc(&self->_packets_recv_errors);
 		LOG_DBG("RX error (CRC/header), total errors: %u",
 			(uint32_t)atomic_get(&self->_packets_recv_errors));
+		/* Wake the mesh thread anyway: a deferred transmit waits for any
+		 * reception to end (Dispatcher::checkSend). */
+		if (self->_rx_cb) {
+			self->_rx_cb(self->_rx_cb_user_data);
+		}
 		return;
 	}
 
@@ -267,11 +284,15 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 	memcpy(pkt->data, data, copy_len);
 	pkt->len = copy_len;
 	pkt->rssi = rssi;
-	pkt->snr = snr;
+	/* Quarter dB where the family reports it (the callback's snr is whole
+	 * dB); the driver holds this packet's value while the callback runs. */
+	pkt->snr_x4 = self->_ops.last_snr_x4
+		? self->_ops.last_snr_x4(dev)
+		: (int8_t)CLAMP((int)snr * 4, INT8_MIN, INT8_MAX);
 
 	atomic_set(&self->_rx_head, next_head);
 	self->_last_rssi = (float)rssi;
-	self->_last_snr = (float)snr;
+	self->_last_snr = (float)pkt->snr_x4 / 4.0f;
 	atomic_inc(&self->_packets_recv);
 
 	/* Activity LED: after the error return, so it blinks on valid packets only. */
@@ -283,6 +304,24 @@ void LoRaRadio::rxCallbackStatic(const struct device *dev, uint8_t *data,
 }
 
 /* ── Config helpers ───────────────────────────────────────────────────── */
+
+/* What the backoff slot adds to the CAD: the host's CAD-done -> SetTx step
+ * plus the PA ramp (LLD 03 §16). */
+#define LBT_TURNAROUND_US   3000U
+
+/* LBT CAD length actually used: the request, halved (not below 4) until a
+ * packet whose preamble starts with the CAD keeps 8 symbols plus about one
+ * for the CAD tail and RX restart (LLD 03 §16, §20). With a 32-symbol
+ * preamble (SF <= 8) 4, 8 and 16 fit; with 16 (SF9+) only 4. */
+static uint8_t lbtCadSymbolsFor(uint8_t want, uint8_t sf)
+{
+	uint16_t pre = preambleLengthForSF(sf);
+
+	while (want > 4U && (uint16_t)(want + 9U) > pre) {
+		want /= 2U;
+	}
+	return want;
+}
 
 void LoRaRadio::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 {
@@ -318,13 +357,10 @@ void LoRaRadio::buildModemConfig(struct lora_modem_config &cfg, bool tx)
 	 * never read cad.mode, so this is harmless during receive. */
 	cfg.cad.mode = LORA_CAD_MODE_LBT;
 
-	/* 4-symbol CAD at every SF (drivers default to 2 when this is 0).
-	 * Our LBT runs against mesh packets that are mostly payload airtime;
-	 * payload chirps correlate less reliably per symbol than preamble
-	 * upchirps, so the extra looks matter — AN1200.48 itself recommends
-	 * 4 symbols at SF9+.  The drivers scale their blocking-CAD timeout
-	 * from this value, so slow presets stay covered. */
-	cfg.cad.symbol_num = LORA_CAD_SYMB_4;
+	/* LBT CAD length in symbols (a count; drivers default to 2 when it is
+	 * 0, and the SX126x driver encodes it for the chip). The drivers take
+	 * detPeak and the blocking-CAD timeout from it (LLD 03 §20). */
+	cfg.cad.symbol_num = (enum lora_cad_symbol_num)lbtCadSymbolsFor(_cad_symbols, sf);
 }
 
 uint32_t LoRaRadio::getActiveFrequencyHz() const
@@ -501,10 +537,6 @@ void LoRaRadio::begin()
 
 	LOG_INF("radio started: freq=%u bw=%u sf=%u cr=%u pwr=%d",
 		freq, bw_khz, sf, cr, tx_pwr);
-
-	if (_ops.post_begin) {
-		_ops.post_begin(_dev);
-	}
 }
 
 void LoRaRadio::reconfigure()
@@ -649,8 +681,71 @@ void LoRaRadio::startReceive()
 
 /* ── RX/TX ────────────────────────────────────────────────────────────── */
 
+/* RX callback context. The sequence always moves; the timeline entry only in
+ * LBT-logging builds. len 0 = CRC/header error. */
+void LoRaRadio::noteRxEnd(uint16_t len, int16_t rssi, int8_t snr)
+{
+	uint32_t now = k_uptime_get_32();
+
+	/* Time before sequence: a reader that sees the new sequence sees its time. */
+	atomic_set(&_rx_end_ms, (atomic_val_t)(now ? now : 1U));
+	atomic_inc(&_rx_end_seq);
+	if (!IS_ENABLED(CONFIG_ZEPHCORE_LBT_LOGGING)) {
+		return;
+	}
+	uint8_t head = (uint8_t)atomic_get(&_rx_end_log_head);
+	uint8_t next = (uint8_t)((head + 1) % RX_END_LOG_SIZE);
+
+	if (next == (uint8_t)atomic_get(&_rx_end_log_tail)) {
+		return;
+	}
+	_rx_end_log[head] = { now, len, rssi, snr };
+	atomic_set(&_rx_end_log_head, next);
+}
+
+extern "C" void zc_console_line_start(void);
+
+/* Mesh thread: one `LBT t=<ms> rxend ...` line per reception end, so the
+ * channel's busy/idle timeline can be laid against the transmit attempts
+ * (LLD 03 §17). */
+void LoRaRadio::printRxEnds()
+{
+#ifdef CONFIG_ZEPHCORE_LBT_LOGGING
+	uint8_t tail = (uint8_t)atomic_get(&_rx_end_log_tail);
+
+	while (tail != (uint8_t)atomic_get(&_rx_end_log_head)) {
+		const RxEndEvt &e = _rx_end_log[tail];
+
+		zc_console_line_start();
+		if (e.len) {
+			printk("LBT t=%u rxend ok len=%u air=%u rssi=%d snr=%d\n",
+			       e.t, e.len, getEstAirtimeFor(e.len), e.rssi, e.snr);
+		} else {
+			printk("LBT t=%u rxend err\n", e.t);
+		}
+		tail = (uint8_t)((tail + 1) % RX_END_LOG_SIZE);
+		atomic_set(&_rx_end_log_tail, tail);
+	}
+	/* Preambles released without a header since the last check: only the
+	 * latest first-seen time is kept, n says how many there were. */
+	if (_ops.lbt_rx_evidence) {
+		uint8_t flags;
+		uint32_t fms, fcount;
+
+		_ops.lbt_rx_evidence(_dev, &flags, &fms, &fcount);
+		if (fcount != _foreign_seen) {
+			zc_console_line_start();
+			printk("LBT t=%u fpre n=%u\n", fms, fcount - _foreign_seen);
+			_foreign_seen = fcount;
+		}
+	}
+#endif
+}
+
 int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 {
+	printRxEnds();
+
 	uint8_t tail = (uint8_t)atomic_get(&_rx_tail);
 	if (atomic_get(&_rx_head) == tail) {
 		return 0;
@@ -664,7 +759,7 @@ int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 
 	memcpy(bytes, pkt->data, len);
 	_last_rssi = (float)pkt->rssi;
-	_last_snr = (float)pkt->snr;
+	_last_snr = (float)pkt->snr_x4 / 4.0f;
 	atomic_set(&_rx_tail, (tail + 1) % RX_RING_SIZE);
 	return (int)len;
 }
@@ -672,16 +767,21 @@ int LoRaRadio::recvRaw(uint8_t *bytes, int sz)
 bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 {
 	if (len > (int)sizeof(_tx_buf)) {
+		_last_tx = LAST_TOO_LONG;
 		return false;
 	}
 
 	/* Defensive gate: callers should defer TX while radio is BUSY. */
 	if (!isRadioReady()) {
+		_lbt_gate++;
+		_last_tx = LAST_GATE_READY;
 		return false;
 	}
 
 	/* Final gate before leaving RX: the same isReceiving() as the dispatcher. */
 	if (isReceiving()) {
+		_lbt_gate++;
+		_last_tx = LAST_GATE_RX;
 		return false;
 	}
 
@@ -690,6 +790,8 @@ bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 	 * re-queue. Before onBeforeTransmit() so a refusal lights no LED. */
 	if (!atomic_cas(&_tx_active, 0, 1)) {
 		LOG_DBG("startSendRaw: previous transmit still winding down");
+		_lbt_gate++;
+		_last_tx = LAST_GATE_TX;
 		return false;
 	}
 	/* An uncollected completion belongs to the previous packet. */
@@ -716,10 +818,20 @@ bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 	if (ret < 0) {
 		if (ret == -EBUSY) {
 			/* LBT refused (channel busy): the designed outcome, the
-			 * dispatcher re-queues. Not an error. */
+			 * dispatcher re-queues. Not an error. Arm the busy-then-RX
+			 * check for one max-length packet. */
 			LOG_DBG("hwSendAsync: channel busy (LBT), re-queuing");
+			uint32_t until = k_uptime_get_32() +
+					 getEstAirtimeFor(MAX_TRANS_UNIT) + 100U;
+
+			_lbt_busy++;
+			_last_tx = LAST_BUSY;
+			atomic_set(&_lbt_busy_until, (atomic_val_t)(until ? until : 1U));
 		} else {
 			LOG_ERR("hwSendAsync failed: %d", ret);
+			_lbt_err++;
+			_last_tx = LAST_ERR;
+			_last_tx_err = (int16_t)ret;
 		}
 		_board->onAfterTransmit();
 		atomic_set(&_tx_active, 0);
@@ -727,11 +839,43 @@ bool LoRaRadio::startSendRaw(const uint8_t *bytes, int len)
 		/* Safe after any failure: on CAD-busy every driver has already
 		 * restored RX and recv_async is a no-op. */
 		startReceive();
+		/* Diagnostic builds only: what the receiver sees after the busy
+		 * verdict, as a series (first read after the GetRssiInst settle
+		 * time, then sleeping between reads; -128 = chip BUSY, e.g.
+		 * duty-cycle sleep). SX126x only: there a read leaves RX running;
+		 * an LR-family read restarts RX and could drop the packet that
+		 * made CAD busy. LLD 03 §17. */
+		if (IS_ENABLED(CONFIG_ZEPHCORE_LBT_LOGGING) && ret == -EBUSY &&
+		    !_ops.rssi_burst) {
+			static const uint16_t gap_us[LBT_RSSI_PROBES] = {
+				0, 750, 1000, 2000, 4000, 8000 };
+
+			_last_busy_pre = 0xFF;
+			_last_busy_fp_age = UINT32_MAX;
+			if (_ops.lbt_rx_evidence) {
+				uint32_t fms, fcount;
+
+				_ops.lbt_rx_evidence(_dev, &_last_busy_pre, &fms, &fcount);
+				if (fms) {
+					_last_busy_fp_age = k_uptime_get_32() - fms;
+				}
+			}
+			k_busy_wait(rssi_settle_delay_us(
+				(uint16_t)(getActiveBandwidthKHzX10() / 10)));
+			for (int i = 0; i < LBT_RSSI_PROBES; i++) {
+				if (gap_us[i]) {
+					k_usleep(gap_us[i]);
+				}
+				_last_busy_rssi[i] = hwGetCurrentRSSI();
+			}
+		}
 		return false;
 	}
 
 	/* TX has actually started — now we're no longer in RX. */
 	atomic_set(&_in_recv_mode, 0);
+	_lbt_clear++;
+	_last_tx = LAST_CLEAR;
 
 	LOG_DBG("TX started async, len=%d", len);
 	k_sem_give(&_tx_start_sem);
@@ -932,11 +1076,44 @@ void LoRaRadio::triggerNoiseFloorCalibrate(int threshold)
 		return;
 	}
 
+	int16_t rssi = sortAndMedian(samples, NOISE_FLOOR_SAMPLES_PER_TICK);
+	const int16_t floor_min = noise_floor_min_dbm(bw_khz);
+
+	/* A seed or a reading well below the floor is read again once the RSSI
+	 * start-up dip (-127, then a ramp of several ms after any RX entry,
+	 * mostly driver-internal and unseen here) is over. LLD 03 §13. */
+	if (_floor_est.wantsConfirm(rssi)) {
+		k_msleep(NOISE_FLOOR_CONFIRM_DELAY_MS);
+		if (!atomic_get(&_in_recv_mode) || atomic_get(&_tx_active) ||
+		    !isRadioReady() || isReceiving()) {
+			_rssi_bursts_abandoned++;
+			return;
+		}
+		got = hwGetRssiBurst(samples, NOISE_FLOOR_SAMPLES_PER_TICK, window_us);
+		if (got < 0) {
+			_rssi_bursts_abandoned++;
+			return;
+		}
+		_rssi_reads_ok += (uint32_t)got;
+		if (got < NOISE_FLOOR_SAMPLES_PER_TICK) {
+			_rssi_reads_busy++;
+			_rssi_bursts_abandoned++;
+			return;
+		}
+		_rssi_confirms++;
+		rssi = sortAndMedian(samples, NOISE_FLOOR_SAMPLES_PER_TICK);
+	}
+
+	/* Below thermal noise: not a channel reading. Dropped, retried soon;
+	 * neither the floor nor the CAD probe may see it. */
+	if (rssi < floor_min) {
+		_rssi_below_min++;
+		return;
+	}
+
 	/* A full sample landed: next one is a full interval away. */
 	_noise_floor_next_ms = now + _measure_interval_ms;
 	_noise_floor_retries = 0;
-
-	int16_t rssi = sortAndMedian(samples, NOISE_FLOOR_SAMPLES_PER_TICK);
 
 	/* Burst quality for `get cad` (sp:). Sorted, so max - min is the spread.
 	 * A high zero-spread share is only a fault together with a mean of 0.0. */
@@ -956,6 +1133,8 @@ void LoRaRadio::triggerNoiseFloorCalibrate(int threshold)
 		_rssi_reads_busy >>= 1;
 		_rssi_bursts_abandoned >>= 1;
 		_rssi_dc_blocked >>= 1;
+		_rssi_confirms >>= 1;
+		_rssi_below_min >>= 1;
 	}
 
 	/* Publish for cadMaintenance(): the CAD probe rides on this sample
@@ -976,10 +1155,8 @@ void LoRaRadio::triggerNoiseFloorCalibrate(int threshold)
 		_agc_rssi_frozen = 0;
 	}
 
-	/* The lower clamp tracks the active bandwidth (thermal noise is
-	 * 10*log10(BW)); a fixed rail pins narrow presets high. */
-	int16_t floor_min = noise_floor_min_dbm(getActiveBandwidthKHzX10() / 10);
-
+	/* floor_min tracks the active bandwidth (thermal noise is
+	 * 10*log10(BW)); a fixed rail would pin narrow presets high. */
 	switch (_floor_est.update(rssi, floor_min)) {
 	case NoiseFloorEstimator::SEEDED:
 		LOG_DBG("noise_floor_cal: seed=%d", _floor_est.floor());
@@ -1375,9 +1552,10 @@ int LoRaRadio::formatCadStatus(char *buf, int cap)
 	}
 
 	/* Terse: remote replies are capped at ~160 B. Fields (docs/ADAPTIVE_CAD.md):
-	 * a auto on/off/tmp (visiting a preset), o offset, pk peak (b base / 4
+	 * a auto on/off/tmp (visiting a preset), o offset, pk peak (b base / CAD
 	 * symbols), sp mean burst spread in dB / zero-spread share, bc busy cap.
-	 * Levels: *+1(22) 22p 18b 16f 2t 72% = rung(peak) probes busy fp tp fp%. */
+	 * Levels: *+1(22) 22p 18b 14f 2t 2u 64% = rung(peak) probes busy fp tp
+	 * undecoded-real fp%. */
 	unsigned spread_mean10 = _rssi_bursts
 		? (unsigned)((_rssi_spread_sum * 10U + _rssi_bursts / 2U) /
 			     _rssi_bursts)
@@ -1394,19 +1572,22 @@ int LoRaRadio::formatCadStatus(char *buf, int cap)
 	const int eff_off = _cad.effectiveOffset();
 
 	n += snprintf(buf + n, cap > n ? cap - n : 0,
-		      "a:%s o:%d pk:%d(b%u/4s) sp:%u.%u/%u%%",
+		      "a:%s o:%d pk:%d(b%u/%us) sp:%u.%u/%u%%",
 		      _cad.visiting() ? "tmp" : (_cad.autoEnabled() ? "on" : "off"),
-		      eff_off, (int)base + eff_off, base,
+		      eff_off, (int)base + eff_off, base, (unsigned)getLbtCadSymbols(),
 		      spread_mean10 / 10U, spread_mean10 % 10U, degen_pct);
 	if (room_for_count) {
-		/* (bursts r<ok reads>/b<busy reads>/a<abandoned>/d<dc-blocked>) */
+		/* (bursts r<ok reads>/b<busy reads>/a<abandoned>/d<dc-blocked>
+		 *  /c<read again>/l<below thermal floor>) */
 		n += snprintf(buf + n, cap > n ? cap - n : 0,
-			      "(%u r%u/b%u/a%u/d%u)",
+			      "(%u r%u/b%u/a%u/d%u/c%u/l%u)",
 			      (unsigned)_rssi_bursts,
 			      (unsigned)_rssi_reads_ok,
 			      (unsigned)_rssi_reads_busy,
 			      (unsigned)_rssi_bursts_abandoned,
-			      (unsigned)_rssi_dc_blocked);
+			      (unsigned)_rssi_dc_blocked,
+			      (unsigned)_rssi_confirms,
+			      (unsigned)_rssi_below_min);
 	}
 	n += snprintf(buf + n, cap > n ? cap - n : 0, " bc:%u%%",
 		      (unsigned)_cad.busycapPct());
@@ -1437,13 +1618,133 @@ int LoRaRadio::formatCadStatus(char *buf, int cap)
 			: 0;
 
 		n += snprintf(buf + n, cap > n ? cap - n : 0,
-			      "\n%c%+d(%d) %up %ub %uf %ut %u%%",
+			      "\n%c%+d(%d) %up %ub %uf %ut %uu %u%%",
 			      lvl == cur ? '*' : ' ',
 			      lvl, (int)base + lvl,
-			      s.probes, s.busy, s.fp, s.tp, fp_pct);
+			      s.probes, s.busy, s.fp, s.tp, s.pre, fp_pct);
 	}
 
 	return n;
+}
+
+/* ── LBT: backoff slot and outcome counters ───────────────────────────── */
+
+uint32_t LoRaRadio::getLbtSlotMs()
+{
+	uint32_t bw_hz = (uint32_t)getActiveBandwidthKHzX10() * 100U;
+	uint8_t sf = getActiveSpreadingFactor();
+
+	if (bw_hz == 0 || sf < 5 || sf > 12) {
+		return 0;
+	}
+	uint32_t tsym_us = (uint32_t)(((uint64_t)1U << sf) * 1000000U / bw_hz);
+
+	return ((uint32_t)lbtCadSymbolsFor(_cad_symbols, sf) * tsym_us + LBT_TURNAROUND_US + 999U) / 1000U;
+}
+
+uint8_t LoRaRadio::getLbtCadSymbols()
+{
+	return hwCadBasePeak() ? lbtCadSymbolsFor(_cad_symbols, getActiveSpreadingFactor()) : 0;
+}
+
+/* RAM only; a full reconfigure programs it, and resets the CAD probe stats,
+ * which belong to one CAD configuration. */
+bool LoRaRadio::setLbtCadSymbols(uint8_t n)
+{
+	if ((n != 4U && n != 8U && n != 16U) || hwCadBasePeak() == 0) {
+		return false;
+	}
+	_cad_symbols = n;
+	reconfigure();
+	LOG_INF("lbt: cad %u symbols requested, %u used", (unsigned)n,
+		(unsigned)lbtCadSymbolsFor(n, getActiveSpreadingFactor()));
+	return true;
+}
+
+/* RX callback context: count one reception per armed busy verdict. */
+void LoRaRadio::noteRxAfterLbtBusy()
+{
+	atomic_val_t until = atomic_get(&_lbt_busy_until);
+
+	if (until == 0) {
+		return;
+	}
+	bool in_window = (int32_t)((uint32_t)until - k_uptime_get_32()) >= 0;
+
+	if (atomic_cas(&_lbt_busy_until, until, 0) && in_window) {
+		atomic_inc(&_lbt_busy_rx);
+	}
+}
+
+int LoRaRadio::formatLbtCounters(char *buf, int cap)
+{
+	uint32_t slot = getLbtSlotMs();
+
+	/* No CAD on this family (SX127x): every transmit goes out unchecked. */
+	if (hwCadBasePeak() == 0) {
+		return snprintf(buf, cap, " lbt:none gate:%u slot:%ums",
+				(unsigned)_lbt_gate, (unsigned)slot);
+	}
+	uint32_t tries = _lbt_clear + _lbt_busy;
+	unsigned busy_pct = tries ? (unsigned)((_lbt_busy * 100U + tries / 2U) / tries) : 0;
+
+	return snprintf(buf, cap, " clr:%u busy:%u(%u%%) rx:%u err:%u gate:%u slot:%ums cad:%us",
+			(unsigned)_lbt_clear, (unsigned)_lbt_busy, busy_pct,
+			(unsigned)atomic_get(&_lbt_busy_rx), (unsigned)_lbt_err,
+			(unsigned)_lbt_gate, (unsigned)slot, (unsigned)getLbtCadSymbols());
+}
+
+int LoRaRadio::formatLastTxAttempt(char *buf, int cap)
+{
+	switch (_last_tx) {
+	case LAST_CLEAR:
+		/* No CAD on this family: the send went out unchecked. */
+		return snprintf(buf, cap, "%s", hwCadBasePeak() ? "clr" : "nocad");
+	case LAST_BUSY:
+		if (_ops.rssi_burst) {
+			return snprintf(buf, cap, "busy");
+		}
+		{
+			int n = snprintf(buf, cap, "busy rssi=%d,%d,%d,%d,%d,%d",
+					 (int)_last_busy_rssi[0], (int)_last_busy_rssi[1],
+					 (int)_last_busy_rssi[2], (int)_last_busy_rssi[3],
+					 (int)_last_busy_rssi[4], (int)_last_busy_rssi[5]);
+
+			if (_last_busy_pre == 0xFF || n < 0 || n >= cap) {
+				return n;
+			}
+			/* pre: P preamble, H header, E header error latched before CAD;
+			 * fp: ms since the last preamble that gave no header (- = none). */
+			char fp[12] = "-";
+
+			if (_last_busy_fp_age != UINT32_MAX) {
+				snprintf(fp, sizeof(fp), "%u", (unsigned)_last_busy_fp_age);
+			}
+			return n + snprintf(buf + n, cap - n, " pre=%c%c%c fp=%s",
+					    (_last_busy_pre & 1) ? 'P' : '-',
+					    (_last_busy_pre & 2) ? 'H' : '-',
+					    (_last_busy_pre & 4) ? 'E' : '-', fp);
+		}
+	case LAST_ERR:
+		return snprintf(buf, cap, "err=%d", (int)_last_tx_err);
+	case LAST_GATE_READY:
+		return snprintf(buf, cap, "gate=ready");
+	case LAST_GATE_RX:
+		return snprintf(buf, cap, "gate=rx");
+	case LAST_GATE_TX:
+		return snprintf(buf, cap, "gate=tx");
+	case LAST_TOO_LONG:
+		return snprintf(buf, cap, "toolong");
+	default:
+		return 0;
+	}
+}
+
+void LoRaRadio::resetLbtCounters()
+{
+	_lbt_clear = _lbt_busy = _lbt_err = _lbt_gate = 0;
+	atomic_set(&_lbt_busy_rx, 0);
+	atomic_set(&_lbt_busy_until, 0);
 }
 
 /* ── Power saving ─────────────────────────────────────────────────────── */

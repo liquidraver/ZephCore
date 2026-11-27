@@ -33,7 +33,7 @@ list(APPEND BOARD_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 # Service advertises (CONFIG_BT_DIS_FW_REV_STR, generated from it below), what the
 # GitHub release is tagged/named, and what the Mesh America catalog uses as its
 # version key. The release workflow reads this line directly — keep its form.
-set(ZEPHCORE_FIRMWARE_VERSION "1.18.2-zephcore")
+set(ZEPHCORE_FIRMWARE_VERSION "1.18.3-zephcore")
 
 # ========== Helpers ==========
 # Append FILE to the overlay list once, keeping its FIRST position. Position is
@@ -211,8 +211,10 @@ if(ZEPHCORE_PLATFORM STREQUAL "esp32")
     # management, so these builds need --sysbuild. Not on the classic ESP32
     # (".../esp32/..."): with WiFi functional, the driver buffers + 64 KB OTA heap
     # overflow its DRAM by ~10 KB, so the classic repeater stays CLI-only on simple
-    # boot.
-    if(ZEPHCORE_BUILD_ROLE STREQUAL "repeater" AND NOT BOARD MATCHES "/esp32/")
+    # boot. A board whose SoC has no Wi-Fi driver yet opts out with
+    # `wifi_ota: false` in its zephcore.yml.
+    if(ZEPHCORE_BUILD_ROLE STREQUAL "repeater" AND NOT BOARD MATCHES "/esp32/"
+       AND NOT ZEPHCORE_BOARD_NO_WIFI_OTA)
         zephcore_add_conf(${_zc}/wifi_ota.conf)
         message(STATUS "  WiFi OTA: auto-enabled (ESP32 repeater)")
     endif()
@@ -343,7 +345,11 @@ add_definitions(-DFIRMWARE_BUILD_EPOCH=${ZEPHCORE_BUILD_EPOCH}u)
 # Version string: set once near the top of this file (the release workflow reads
 # that line). The per-app `#ifndef FIRMWARE_VERSION` fallbacks only apply to
 # builds that bypass this injection.
-add_definitions(-DFIRMWARE_VERSION="${ZEPHCORE_FIRMWARE_VERSION}")
+set(_zc_fw_version "${ZEPHCORE_FIRMWARE_VERSION}")
+if(CONFIG_ZEPHCORE_LBT_LOGGING)
+    string(APPEND _zc_fw_version "+lbtlog")   # diagnostic build, visible in `ver`
+endif()
+add_definitions(-DFIRMWARE_VERSION="${_zc_fw_version}")
 
 add_subdirectory(lib/monocypher)
 target_link_libraries(app PRIVATE monocypher)
@@ -424,6 +430,7 @@ target_sources(app PRIVATE adapters/clock/ZephyrRTCDiscover.c)
 
 # SPA06-003 barometer. No upstream Zephyr driver; compiles to nothing when no
 # goertek,spa06 node is present.
+target_sources_ifdef(CONFIG_ZEPHCORE_GPS_GUARD app PRIVATE helpers/gps_guard.cpp)
 target_sources_ifdef(CONFIG_SENSOR app PRIVATE adapters/sensors/spa06.c)
 
 # T1000-E onboard NTC + photocell on the SAADC. Same deal: compiles to nothing
@@ -458,6 +465,15 @@ zephcore_board_file(_BOARD_SD_QUIESCE sd_quiesce.c)
 if(_BOARD_SD_QUIESCE)
   message(STATUS "ZephCore SD: shared-bus quiesce (${_BOARD_SD_QUIESCE})")
   target_sources(app PRIVATE "${_BOARD_SD_QUIESCE}")
+endif()
+
+# Optional per-board board_init.c — boot-time setup of board hardware that has
+# no Zephyr driver (e.g. the T-Impulse Plus charger). Registers itself with
+# SYS_INIT, so it is simply compiled in when the board provides one.
+zephcore_board_file(_BOARD_INIT board_init.c)
+if(_BOARD_INIT)
+  message(STATUS "ZephCore board init: ${_BOARD_INIT}")
+  target_sources(app PRIVATE "${_BOARD_INIT}")
 endif()
 
 # ESP32 pre-RF entropy source (bootloader_random).
@@ -555,10 +571,12 @@ if(CONFIG_ZEPHCORE_ROLE_REPEATER OR CONFIG_ZEPHCORE_ROLE_ROOM_SERVER)
     app/RepeaterDataStore.cpp
     helpers/ClientACL.cpp
     helpers/RegionMap.cpp
+    helpers/FwdFilter.cpp
     helpers/TransportKeyStore.cpp
     helpers/compat/SHA256.cpp
     helpers/compat/ZephyrFS.cpp
     helpers/CommonCLI.cpp
+    helpers/gps_cli_text.cpp
   )
   # Headless build (e.g. native-Linux SBC): no display/buttons/buzzer, so the
   # real ui_* implementation (helpers/ui-button or helpers/ui-joystick) isn't
@@ -650,6 +668,7 @@ else()
     # must be compiled unconditionally. Builds without CONFIG_LOG/COMPANION_USB/
     # COMPANION_SERIAL (e.g. plain ESP32/S3 companions) failed to link otherwise.
     helpers/CommonCLI.cpp
+    helpers/gps_cli_text.cpp
   )
   # Companion transports: main_companion.cpp registers every one the build
   # has in upstream's MultiSerialInterface — BLE NUS when there is a

@@ -1,10 +1,16 @@
-name: host regression tests
+name: host tests
 
 on:
   pull_request:
+    paths-ignore: ['**.md', 'docs/**', 'releasenotes/**', 'img/**']
   push:
     branches: [master]
+    paths-ignore: ['**.md', 'docs/**', 'releasenotes/**', 'img/**']
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 permissions:
   contents: read
@@ -15,18 +21,5 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - name: Install host build tools
-        run: sudo apt-get update && sudo apt-get install -y cmake ninja-build g++
-      - name: Run real production code with ASan and UBSan
-        run: python tests/run.py run --profile quick --sanitize
-      - name: Retain results and diagnostics
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: host-regression-results
-          path: test-results/
-          if-no-files-found: error
-          retention-days: 14
+      # The runner image ships Python 3.12, CMake, Ninja and GCC.
+      - run: python3 tests/run.py run --sanitize

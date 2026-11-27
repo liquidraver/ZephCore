@@ -26,6 +26,13 @@ undone:
   floating LFXO: BLE drops, timer skew). `promicro_sx1262` and `me25ls02` are the RC boards. nRF54L boards must
   also enable `&xo` and `&lfclk`.
 
+- **2026-11 bump (8b485ee52d7, via the ESP32-S31 fork pin, ADR 0012)**: Espressif flash size is read from
+  the board devicetree (`&flash0 reg`) by the app and MCUboot alike; `CONFIG_ESPTOOLPY_FLASHSIZE_*` no
+  longer exists, so `board.conf` does not state it and `sysbuild/` no longer propagates it. The SoC Kconfig
+  symbols moved to the `SOC_FAMILY_ESPRESSIF_*` prefix (`SPIRAM`, `SPIRAM_MODE_OCT`, `FLASH_MODE_DIO`,
+  `USB_SERIAL_JTAG_ENABLED`, `SIMPLE_BOOT`); the deprecated aliases do not cover the ESP32-S31, so ZephCore
+  uses the new names. Upstream `30ccc940f63` replaced patch `0017`.
+
 Patch `0003` (SX126x) is rebased behaviour-preserving (step A: upstream's own duty-cycle machinery removed in
 favour of ours), then reduced (step B, 2026-09-19: upstream's DC command helpers, `duty_cycle` fields and
 `sx126x_duty_cycle_stop()` reused; each piece benched). Switching to upstream's `SX126X_STATE_RX_DUTY_CYCLE`

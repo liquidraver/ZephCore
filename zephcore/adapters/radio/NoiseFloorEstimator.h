@@ -46,15 +46,29 @@ public:
 		return !seeded() || rssi <= _floor + CAD_PROBE_RSSI_GUARD;
 	}
 
-	/* Fold one sample in, clamped to [floor_min, NOISE_FLOOR_CEILING_DBM].
-	 * floor_min tracks the bandwidth (thermal noise is 10*log10(BW)).
+	/* Should the sampler read again before feeding `rssi` in? Yes for a
+	 * seed and for a reading NOISE_FLOOR_CONFIRM_DB or more below the floor:
+	 * the likely cause is the RSSI start-up dip, not a quieter channel. */
+	bool wantsConfirm(int rssi) const
+	{
+		return !seeded() || rssi <= _floor - NOISE_FLOOR_CONFIRM_DB;
+	}
+
+	/* Fold one sample in, clamped to NOISE_FLOOR_CEILING_DBM. A sample below
+	 * floor_min (thermal noise for the bandwidth, 10*log10(BW)) cannot be a
+	 * channel reading and is rejected, never clamped in.
 	 *
-	 * The first W = 2^EMA_SHIFT ticks accept every sample (a bad seed must
-	 * not lock the real floor out); after that, samples more than
-	 * SAMPLING_THRESHOLD above the floor are rejected as interference,
-	 * except every Pth tick, so a sustained rise is still tracked. */
+	 * The first W = 2^EMA_SHIFT ticks after the seed accept every sample and
+	 * weigh them equally (running mean, 1/2 .. 1/W), so a bad seed neither
+	 * locks the real floor out nor lingers; after that the EMA runs at 1/W,
+	 * and samples more than SAMPLING_THRESHOLD above the floor are rejected
+	 * as interference, except every Pth tick, so a sustained rise is still
+	 * tracked. */
 	Result update(int rssi, int floor_min)
 	{
+		if (rssi < floor_min) {
+			return REJECTED;
+		}
 		if (!seeded()) {
 			_floor = clamp(rssi, floor_min);
 			_unguarded = 0;
@@ -65,6 +79,7 @@ public:
 		const int P = NOISE_FLOOR_UNGUARDED_INTERVAL;
 		bool warmup = (_unguarded < W);
 		bool periodic = (!warmup && (_unguarded & (P - 1)) == 0);
+		int div = (warmup && _unguarded + 2 < W) ? _unguarded + 2 : W;
 		_unguarded++;
 
 		if (!warmup && !periodic &&
@@ -72,11 +87,11 @@ public:
 			return REJECTED;
 		}
 
-		/* floor += round_nearest((sample - floor) / W), symmetric in sign:
-		 * plain >> biases down and plain / has a +-(W-1) dead zone. */
+		/* floor += round_nearest((sample - floor) / div), symmetric in sign:
+		 * plain >> biases down and plain / has a +-(div-1) dead zone. */
 		int diff = rssi - _floor;
-		int half = W / 2;
-		_floor = clamp(_floor + (diff + (diff > 0 ? half : -half)) / W, floor_min);
+		int half = div / 2;
+		_floor = clamp(_floor + (diff + (diff > 0 ? half : -half)) / div, floor_min);
 		return UPDATED;
 	}
 

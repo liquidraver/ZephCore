@@ -86,6 +86,15 @@
 		regulator-boot-on;
 	};
 
+	/* Power-off: FEM enable, then WB_IO2 (3V3_S and the RAK13302 5 V boost)
+	 * driven low last, or the GPIO latch keeps the GPS, boost and FEM on
+	 * through System OFF. Upstream RAK3401Board::initiateShutdown(). LLD 10 §26. */
+	poweroff_gpios: poweroff-gpios {
+		compatible = "zephcore,poweroff-gpios";
+		gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>,  /* SKY66122 CSD+CPS */
+			<&gpio1 2 GPIO_ACTIVE_HIGH>;   /* WB_IO2: 3V3_S + 5 V boost */
+	};
+
 	/* SKY66122 FEM enable — must be HIGH before SX1262 can transmit.
 	 * SX126X_POWER_EN = P0.21 (IO3 on WisBlock base). */
 	lora_pwr_enable: lora-pwr-enable {

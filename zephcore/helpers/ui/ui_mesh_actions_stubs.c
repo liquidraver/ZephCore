@@ -22,7 +22,7 @@ __attribute__((weak)) void mesh_set_offgrid_mode(bool enable) { ARG_UNUSED(enabl
 __attribute__((weak)) bool mesh_offgrid_available(void) { return false; }
 __attribute__((weak)) void mesh_set_leds_disabled(bool disabled) { ARG_UNUSED(disabled); }
 __attribute__((weak)) void mesh_reboot_to_ota_dfu(void) {}
-__attribute__((weak)) bool mesh_ble_ota_open(void) { return false; }
+__attribute__((weak)) void mesh_ble_ota_open(void) {}
 __attribute__((weak)) uint32_t mesh_ble_ota_remaining_s(void) { return 0; }
 /* Repeater builds persist orientation through RepeaterDataStore in
  * main_repeater.cpp's CLI path, not through the companion action queue. */

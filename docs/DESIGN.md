@@ -195,7 +195,7 @@ flowchart TB
 | Component | Layer | Responsibility |
 |---|---|---|
 | Dispatcher, Mesh, Packet, PacketManager | L1 | TX/RX state machine, CAD/LBT gate, duty cycle, routing, dedup, adverts; 32-slot static pool |
-| ContentionTracker | L1 (ZephCore) | adaptive flood jitter and reactive backoff ([ADR 0007](adr/0007-adaptive-contention-window.md)) |
+| ContentionTracker | L1 (ZephCore) | contention estimate sizing the LBT slot window ([ADR 0007](adr/0007-adaptive-contention-window.md)) |
 | Identity / Utils | L1 | Ed25519/X25519 keys, AES/HMAC helpers |
 | `LoRaRadio` + per-family ops tables | L3 | one `mesh::Radio` adapter over SX126x / LR11xx / LR20xx / SX127x drivers; RX-busy gate, noise floor, CAD ([ADR 0006](adr/0006-sx126x-rx-duty-cycle-and-busy-gating.md)) |
 | BaseChatMesh, CompanionMesh | L2 / L4 | contacts, channels, messages; companion protocol (one handler per opcode), offline queue, v-contact |
@@ -331,6 +331,8 @@ it polls external state. Repeater and room server share one loop (`server_main_c
 - Packet logging (`packet_logging.conf`): upstream's `MESH_PACKET_LOGGING` RAW/RX/TX lines through `printk`, with
   the logging subsystem off so they share the console only with the CLI (R6.5). Every packet is one whole line
   starting at column 0, also while a host is typing commands (bench-verified SF7 BW62.5 to BW500).
+- LBT diagnostic lines (`lbt_logging.conf`, on top of packet logging): one `LBT ...` line per transmit attempt
+  and hold-back, printed the same way, so packet lines stay whole and mctomqtt ignores them.
 - CLI `get`/`stats-*`, `get pwrmgt.bootreason` (reset cause, shutdown reason, and the last fatal error with its pc).
 - Host regression suite (`tests/`, CI with ASan/UBSan) over the production sources.
 

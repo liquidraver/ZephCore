@@ -19,6 +19,5 @@ public:
   mesh::Packet* removeOutboundByIdx(int i) override;
   // ZEPHCORE: no inbound queue (see mesh::PacketManager); schedule access instead.
   uint32_t getOutboundSchedule(int i) const override;
-  bool rescheduleOutbound(int i, uint32_t new_scheduled_for) override;
   uint8_t peekNextOutboundPriority(uint32_t now) const override;
 };

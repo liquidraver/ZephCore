@@ -994,14 +994,19 @@ static bool isUpstreamCompanionCommand(const char *cmd)
 		"get path.hash.mode", "get multi.acks", "get txdelay", "get direct.txdelay",
 		"reboot", "poweroff", "shutdown", "get name", "get wifi.pwd", "set wifi.clear",
 		"get wifi.ssid", "get wifi.enabled", "get wifi.status", "get wifi.ip",
-		"board", "ver", "get tz.offset",
+		"board", "ver", "get tz.offset", "get adc.multiplier",
+		"gps", "gps fix", "gps period", "gps fix_stats", "gps diag",
+		"gps guard", "gps fence", "gps ref",  /* CONFIG_ZEPHCORE_GPS_GUARD */
 	};
 	static const char *const prefix[] = {
 		"set radio ", "set af ", "set dutycycle ", "set int.thresh ", "set cad ",
 		"set radio.rxgain ", "get tx ", "set tx ", "set rxdelay ", "set agc.reset.interval ",
 		"set path.hash.mode ", "set multi.acks ", "set txdelay ", "set direct.txdelay ",
 		"set name ", "set pin ", "set wifi.ssid ", "set wifi.pwd ", "set wifi.enabled ",
-		"set tz.offset ",
+		"set tz.offset ", "set adc.multiplier ",
+		/* upstream's CommonGpsPrefs, matched by prefix as there */
+		"gps once", "gps on", "gps off", "gps period ", "gps sync",
+		"gps guard ", "gps fence ",
 	};
 	for (const char *e : exact) {
 		if (strcmp(cmd, e) == 0) return true;
@@ -1527,14 +1532,17 @@ void CompanionMesh::onRawDataRecv(mesh::Packet *packet)
 	sendPush(buf[0], &buf[1], i - 1);
 }
 
+/* Off-grid repeat, flood and direct: one LBT slot draw (LLD 02 §21). */
 uint32_t CompanionMesh::getRetransmitDelay(const mesh::Packet *packet)
 {
-	return computeAdaptiveFloodDelay(packet);
+	(void)packet;
+	return computeForwardDelay();
 }
 
 uint32_t CompanionMesh::getDirectRetransmitDelay(const mesh::Packet *packet)
 {
-	return computeAdaptiveDirectDelay(packet);
+	(void)packet;
+	return computeForwardDelay();
 }
 
 uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
@@ -1547,7 +1555,7 @@ uint32_t CompanionMesh::getInitialFloodJitter(const mesh::Packet *packet)
 uint8_t CompanionMesh::getDutyCyclePercent() const
 {
 	/* Arduino formula: duty% = 100 / (af + 1). af=0 → 100%, af=9 → 10%. */
-	return (uint8_t)(100.0f / (prefs.airtime_factor + 1.0f) + 0.5f);
+	return zcDutyCyclePercent(prefs.airtime_factor);
 }
 
 uint8_t CompanionMesh::getExtraAckTransmitCount() const
@@ -2251,6 +2259,11 @@ bool CompanionMesh::handleCmdAddUpdateContact(const uint8_t *data, size_t len)
 		}
 		c.sync_since = 0;
 		c.shared_secret_valid = false;
+		/* The stored advert timestamp is the replay guard of adverts: the app
+		 * may raise it, never lower it. */
+		if (existing && existing->last_advert_timestamp > c.last_advert_timestamp) {
+			c.last_advert_timestamp = existing->last_advert_timestamp;
+		}
 
 		if (existing) {
 			// Update existing
@@ -2446,8 +2459,7 @@ bool CompanionMesh::handleCmdSetRadioParams(const uint8_t *data, size_t len)
 		 * setting used to vanish on reboot. */
 		} else if (freq >= (uint32_t)(ZC_RADIO_FREQ_MIN_MHZ * 1000.0f) &&
 		    freq <= (uint32_t)(ZC_RADIO_FREQ_MAX_MHZ * 1000.0f) &&
-		    bw >= (uint32_t)(ZC_RADIO_BW_MIN_KHZ * 1000.0f) &&
-		    bw <= (uint32_t)(ZC_RADIO_BW_MAX_KHZ * 1000.0f) &&
+		    zcRadioBwValid((float)bw / 1000.0f) &&
 		    sf >= 5 && sf <= 12 &&
 		    cr >= 5 && cr <= 8) {
 			/* Coding rate is deliberately not in this test:
@@ -2501,8 +2513,14 @@ bool CompanionMesh::handleCmdSetTuningParams(const uint8_t *data, size_t len)
 		writeErrFrame(ERR_ILLEGAL_ARG);
 		return true;
 	}
+	/* Same range as `set af`: a larger factor would not survive a reload. */
+	float af = (float)get_le32(&data[5]) / 1000.0f;
+	if (af > ZC_AIRTIME_FACTOR_MAX) {
+		writeErrFrame(ERR_ILLEGAL_ARG);
+		return true;
+	}
 	prefs.rx_delay_base = (float)get_le32(&data[1]) / 1000.0f;
-	prefs.airtime_factor = (float)get_le32(&data[5]) / 1000.0f;
+	prefs.airtime_factor = af;
 	_store->savePrefs(prefs);
 	writeOKFrame();
 	return true;

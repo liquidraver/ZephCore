@@ -288,7 +288,7 @@ bool ZephyrDataStore::prefsRadioImplausible() const
 	memcpy(&bw, &buf[64], sizeof(float));
 	return (freq < ZC_RADIO_FREQ_MIN_MHZ || freq > ZC_RADIO_FREQ_MAX_MHZ ||
 	        sf < 5 || sf > 12 ||
-	        bw < ZC_RADIO_BW_MIN_KHZ || bw > ZC_RADIO_BW_MAX_KHZ);
+	        !zcRadioBwValid(bw));
 }
 
 /* Returns true if the old file-based BLE bonds file exists.

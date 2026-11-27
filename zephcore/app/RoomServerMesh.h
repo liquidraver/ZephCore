@@ -92,6 +92,7 @@ class RoomServerMesh : public mesh::Mesh, public CommonCLICallbacks {
   bool recv_pkt_unscoped_flood;
   TransportKey default_scope;
   RateLimiter login_fail_limiter;  // wrong-password attempts (MeshCore#2556)
+  uint32_t _replay_floor = 0;      // lowest last_timestamp this boot (begin())
   bool region_load_active;
   unsigned long dirty_contacts_expiry;
   unsigned long next_push;
@@ -125,13 +126,14 @@ protected:
   // ZEPHCORE: our Dispatcher asks for a duty-cycle percentage.
   uint8_t getDutyCyclePercent() const override {
     // Arduino formula: duty% = 100 / (af + 1). af=0 -> 100%, af=9 -> 10%.
-    return (uint8_t)(100.0f / (_prefs.airtime_factor + 1.0f) + 0.5f);
+    return zcDutyCyclePercent(_prefs.airtime_factor);
   }
 
   void logRxRaw(float snr, float rssi, const uint8_t raw[], int len) override;
   void logRx(mesh::Packet* pkt, int len, float score) override;
   void logTx(mesh::Packet* pkt, int len) override;
   void logTxFail(mesh::Packet* pkt, int len) override;
+  void logTxAttempt(const mesh::Packet* pkt, const char* outcome, uint32_t retry_ms) override;
 
   const char* getLogDateTime() override;
   uint32_t getRetransmitDelay(const mesh::Packet* packet) override;
@@ -150,6 +152,9 @@ protected:
   }
   int formatCadStatus(char* buf, int cap) override {
     return _radio->formatCadStatus(buf, cap);
+  }
+  int formatLbtStats(char* buf, int cap) override {
+    return formatLbtStatus(buf, cap);
   }
   void applyCadPrefs() override {
     _radio->setCadParams(_prefs.cad_auto != 0, _prefs.cad_offset,
@@ -240,12 +245,7 @@ public:
   float getContentionEstimate() const override {
     return getContentionTracker().getContentionEstimate();
   }
-  float getFloodDelayFactor() const override {
-    return getContentionTracker().getFloodDelayFactor();
-  }
-  void setBackoffMultiplier(float m) override {
-    getContentionTracker().setBackoffMultiplier(m);
-  }
+  uint32_t getLbtWindowSlots() const override { return lbtWindowSlots(); }
   // Duty-cycle false-preamble re-arms (SX126x only; others return 0).
   uint32_t getDutyCycleTimeoutRestarts() const override;
   void resetDutyCycleTimeoutRestarts() override;

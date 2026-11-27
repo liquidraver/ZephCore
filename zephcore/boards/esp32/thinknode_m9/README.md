@@ -42,7 +42,7 @@ in high flash are untouched by the updater flash.
 ## Verified against Arduino MeshCore (2026-07-18 desk check)
 
 - **PSRAM**: upstream `boards/thinknode_m9.json` says `memory_type: qio_opi`,
-  16 MB flash → WROOM-1-**N16R8** + `CONFIG_SPIRAM_MODE_OCT=y` confirmed.
+  16 MB flash → WROOM-1-**N16R8** + `CONFIG_SOC_FAMILY_ESPRESSIF_SPIRAM_MODE_OCT=y` confirmed.
 - **MADCTL**: Arduino ends at **0xA0** (`landscapeScreen()` 0x60, then
   `DISPLAY_FLIP_VERTICALLY` overwrites with MV|MY) — DTS uses 0xA0.
 - **Panel inversion**: Arduino init sends INVON; Zephyr st7789v inverts by
