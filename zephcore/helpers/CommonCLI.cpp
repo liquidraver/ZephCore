@@ -34,6 +34,9 @@ extern "C" void power_diag_line(int n, char *out, size_t cap);  /* TEMPORARY: he
 #if IS_ENABLED(CONFIG_ZEPHCORE_WIFI_OTA)
 #include "wifi_ota.h"
 #endif
+#if defined(CONFIG_SOC_SERIES_NRF52)
+#include <nrfx.h>
+#endif
 #if IS_ENABLED(CONFIG_ZEPHCORE_BLE_OTA)
 #include "ble_ota.h"
 #endif
@@ -394,8 +397,17 @@ void CommonCLI::handleCommand(uint32_t sender_timestamp, const char* command, ch
 			snprintf(reply, CLI_REPLY_SIZE, "Error starting BLE OTA: %d", ota_ret);
 		}
 #elif defined(CONFIG_SOC_SERIES_NRF52)
-		/* nRF52: Reboot into Adafruit BLE OTA DFU mode */
-		strcpy(reply, "OK - rebooting to BLE OTA DFU");
+		/* nRF52: GPREGRET 0xA8 enters the Adafruit bootloader's BLE OTA DFU, or the
+		 * GFSK radio DFU of the GDFU bootloader (https://github.com/jbrazio/gdfu-bootloader).
+		 * GDFU gets the target ID it beacons, FICR DEVICEADDR[0], as the reply. */
+		char bl_ver[32];
+		if (_board->getBootloaderVersion(bl_ver, sizeof(bl_ver)) &&
+		    strncmp(bl_ver, "gdfu-", 5) == 0) {
+			sprintf(reply, "OK: 0x%08lx",
+				 (unsigned long)NRF_FICR->DEVICEADDR[0]);
+		} else {
+			strcpy(reply, "OK - rebooting to BLE OTA DFU");
+		}
 		scheduleReboot(REBOOT_OTA);
 #else
 		/* No OTA path in this build: never reboot. */
